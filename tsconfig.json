@@ -1,0 +1,7 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true
+  },
+  "include": ["packages", "apps", "tests", "vitest.config.ts", "playwright.config.ts"]
+}

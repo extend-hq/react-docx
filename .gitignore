@@ -1,0 +1,16 @@
+node_modules
+.pnpm-store
+dist
+coverage
+playwright-report
+test-results
+*.tsbuildinfo
+.DS_Store
+tmp/
+.tmp-*
+*.tmp
+tests/visual/tmp-*.spec.ts
+tests/visual/*-debug.spec.ts
+tests/visual/*-debug.test.ts
+
+skills/**

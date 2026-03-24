@@ -1,0 +1,27140 @@
+import * as React from "react";
+import { flushSync } from "react-dom";
+import {
+  buildDocModel,
+  cloneDocModel,
+  type DocModel,
+  type FooterSection,
+  type FormFieldRunNode,
+  type HeaderSection,
+  type HeadingLevel,
+  type NumberingDefinitionSet,
+  type NumberingLevelDefinition,
+  type ParagraphStyleDefinition,
+  type ParagraphAlignment,
+  type ParagraphBorderSet,
+  type ParagraphBorderStyle,
+  type ParagraphIndent,
+  type ImageRunNode,
+  type ParagraphNode,
+  type TableBorderSet,
+  type TableBorderStyle,
+  type TableCellStyle,
+  type TableCellContentNode,
+  type TableNode,
+  type TableRowStyle,
+  type TextRunNode
+} from "@react-docx/doc-model";
+import {
+  updateParagraphText,
+  updateTableCellParagraphTextRecursive,
+  updateTableCellParagraphText,
+  updateTableCellText
+} from "@react-docx/editor-ops";
+import { type OoxmlPackage, parseDocx } from "@react-docx/ooxml-core";
+import { serializeDocx } from "@react-docx/serializer";
+import {
+  collectTableExplicitPageBreakInfo,
+  collectTopLevelExplicitPageBreakStartNodeIndexes
+} from "./pagination-breaks";
+import { reconcilePagesToTargetCountByScalingHeight } from "./page-count-reconciliation";
+
+const HIGHLIGHT_TO_CSS: Record<string, string> = {
+  yellow: "#fff59d",
+  green: "#bbf7d0",
+  cyan: "#a5f3fc",
+  magenta: "#f5d0fe",
+  red: "#fecaca",
+  blue: "#bfdbfe",
+  black: "#111827",
+  white: "#ffffff"
+};
+
+export type DocxDocumentTheme = "light" | "dark";
+export type DocxHeadingStyleMap = Partial<Record<HeadingLevel, React.CSSProperties>>;
+
+const DEFAULT_WORD_HEADING_STYLES: Record<HeadingLevel, React.CSSProperties> = {
+  1: {
+    fontFamily: "\"Calibri Light\", Calibri, sans-serif",
+    fontSize: "16pt",
+    fontWeight: 600,
+    color: "#2f5496"
+  },
+  2: {
+    fontFamily: "\"Calibri Light\", Calibri, sans-serif",
+    fontSize: "13pt",
+    fontWeight: 600,
+    color: "#2f5496"
+  },
+  3: {
+    fontFamily: "\"Calibri\", sans-serif",
+    fontSize: "12pt",
+    fontWeight: 600,
+    color: "#1f3763"
+  },
+  4: {
+    fontFamily: "\"Calibri\", sans-serif",
+    fontSize: "11pt",
+    fontWeight: 600,
+    color: "#1f3763"
+  },
+  5: {
+    fontFamily: "\"Calibri\", sans-serif",
+    fontSize: "11pt",
+    fontWeight: 600,
+    color: "#1f3763"
+  },
+  6: {
+    fontFamily: "\"Calibri\", sans-serif",
+    fontSize: "11pt",
+    fontWeight: 600,
+    color: "#1f3763"
+  }
+};
+
+const DEFAULT_WORD_HEADING_RUN_STYLES: Record<
+  HeadingLevel,
+  NonNullable<ParagraphStyleDefinition["runStyle"]>
+> = {
+  1: {
+    fontFamily: "Calibri Light",
+    fontSizePt: 16,
+    bold: true,
+    color: "#2f5496"
+  },
+  2: {
+    fontFamily: "Calibri Light",
+    fontSizePt: 13,
+    bold: true,
+    color: "#2f5496"
+  },
+  3: {
+    fontFamily: "Calibri",
+    fontSizePt: 12,
+    bold: true,
+    color: "#1f3763"
+  },
+  4: {
+    fontFamily: "Calibri",
+    fontSizePt: 11,
+    bold: true,
+    color: "#1f3763"
+  },
+  5: {
+    fontFamily: "Calibri",
+    fontSizePt: 11,
+    bold: true,
+    color: "#1f3763"
+  },
+  6: {
+    fontFamily: "Calibri",
+    fontSizePt: 11,
+    bold: true,
+    color: "#1f3763"
+  }
+};
+
+const DEFAULT_DOC_PAGE_WIDTH = 900;
+const DEFAULT_DOC_PAGE_HEIGHT = 1200;
+const DEFAULT_DOC_PAGE_MARGIN = 56;
+const TWIPS_PER_PIXEL = 15;
+const DOC_PAGE_BREAK_GAP = 28;
+const PAGE_OVERFLOW_TOLERANCE_PX = 2;
+const DEFAULT_PARAGRAPH_FONT_SIZE_PT = 11;
+const SCRIPT_FONT_SCALE = 0.65;
+// Word defaults to single line spacing unless the document/style overrides it.
+const DEFAULT_PARAGRAPH_LINE_MULTIPLE = 1;
+// Browser line box metrics run taller at single-spacing but converge by ~1.08.
+const WORD_SINGLE_LINE_AUTO_SCALE = 0.88;
+const WORD_SINGLE_LINE_AUTO_SCALE_SANS = 0.9;
+const WORD_AUTO_LINE_SCALE_BLEND_END_MULTIPLE = 1.08;
+const MIN_AUTO_LINE_MULTIPLE = 0.1;
+const MIN_PARAGRAPH_LINE_HEIGHT_PX = 14;
+const WORD_TABLE_CELL_PARAGRAPH_AUTO_LINE_TWIPS = 240;
+const WORD_TABLE_CELL_PARAGRAPH_AFTER_TWIPS = 0;
+const DEFAULT_SPLIT_PARAGRAPH_LINE_TWIPS = 259;
+const DEFAULT_SPLIT_PARAGRAPH_AFTER_TWIPS = 160;
+const WORD_TABLE_CELL_FALLBACK_PADDING_PX = {
+  top: 4,
+  right: 4,
+  bottom: 4,
+  left: 4
+} as const;
+const SPLITTABLE_TABLE_ROW_ESTIMATE_EXTRA_LINE_COUNT = 2;
+const SPLITTABLE_TABLE_ROW_DEEP_CONTENT_NODE_THRESHOLD = 8;
+const PAGE_BREAK_XML_PATTERN = /<w:br\b[^>]*w:type="page"[^>]*\/?>/i;
+const LAST_RENDERED_PAGE_BREAK_XML_PATTERN = /<w:lastRenderedPageBreak\b[^>]*\/?>/i;
+const PAGE_BREAK_BEFORE_XML_PATTERN = /<w:pageBreakBefore\b[^>]*\/?>/i;
+const SECTION_PROPERTIES_XML_PATTERN = /<w:sectPr\b[\s\S]*?<\/w:sectPr>/i;
+const SECTION_TYPE_XML_PATTERN = /<w:type\b[^>]*w:val="([^"]+)"/i;
+const BOOKMARK_START_XML_PATTERN = /<w:bookmarkStart\b[^>]*w:name="([^"]+)"/gi;
+const FOOTNOTE_REFERENCE_XML_PATTERN = /<w:footnoteReference\b[^>]*w:id="(-?\d+)"/gi;
+const ENDNOTE_REFERENCE_XML_PATTERN = /<w:endnoteReference\b[^>]*w:id="(-?\d+)"/gi;
+const XML_CACHE_MAX_ENTRIES = 4000;
+const TEXT_MEASURE_CACHE_MAX_ENTRIES = 12000;
+const DEFAULT_TAB_STOP_PX = 48;
+const TAB_LEADER_ZONE_GAP_PX = 20;
+const EMPTY_PARAGRAPH_EXTRA_HEIGHT_PX = 4;
+const HEADER_FOOTER_INACTIVE_OPACITY = 0.5;
+
+const paragraphBreakFlagsBySourceXml = new Map<
+  string,
+  {
+    explicitPageBreak: boolean;
+    lastRenderedPageBreak: boolean;
+    pageBreakBefore: boolean;
+    sectionBreakStartsNewPage: boolean;
+  }
+>();
+const paragraphEstimatedHeightBySourceXml = new Map<string, Map<number, number>>();
+const tableEstimatedHeightBySourceXml = new Map<string, Map<number, number>>();
+const paragraphExplicitIndentBySourceXml = new Map<string, ParagraphIndent | null>();
+const paragraphDropCapBySourceXml = new Map<
+  string,
+  {
+    type: "drop" | "margin";
+    lines?: number;
+  } | null
+>();
+interface ParagraphTrackedInlineChange {
+  id: string;
+  kind: DocxTrackedChangeKind;
+  author?: string;
+  date?: string;
+  text?: string;
+}
+
+interface ParagraphTrackedDeletionSegment {
+  text: string;
+  change: ParagraphTrackedInlineChange;
+  style?: TextRunNode["style"] | FormFieldRunNode["style"];
+}
+
+interface ParagraphTrackedMarkup {
+  inlineChangeByVisibleChildIndex: Array<ParagraphTrackedInlineChange | undefined>;
+  deletedSegmentsByVisibleChildIndex: Map<number, ParagraphTrackedDeletionSegment[]>;
+  changes: ParagraphTrackedInlineChange[];
+}
+
+const paragraphTrackedMarkupBySourceXml = new Map<string, ParagraphTrackedMarkup | null>();
+let paragraphMeasureCanvasContext: CanvasRenderingContext2D | undefined;
+const textWidthByFontAndValue = new Map<string, number>();
+
+interface TableSpacingTwips {
+  topTwips?: number;
+  rightTwips?: number;
+  bottomTwips?: number;
+  leftTwips?: number;
+}
+
+function setCacheEntry<K, V>(cache: Map<K, V>, key: K, value: V): void {
+  if (!cache.has(key) && cache.size >= XML_CACHE_MAX_ENTRIES) {
+    const oldestKey = cache.keys().next().value as K | undefined;
+    if (oldestKey !== undefined) {
+      cache.delete(oldestKey);
+    }
+  }
+  cache.set(key, value);
+}
+
+function widthCacheKeyPx(widthPx?: number): number {
+  if (!Number.isFinite(widthPx) || (widthPx as number) <= 0) {
+    return -1;
+  }
+
+  return Math.max(1, Math.round(widthPx as number));
+}
+
+function heightEstimateCacheKeyPx(
+  widthPx?: number,
+  docGridLinePitchPx?: number,
+  disableDocGridSnap = false
+): number {
+  const widthKey = widthCacheKeyPx(widthPx);
+  const docGridKey =
+    Number.isFinite(docGridLinePitchPx) && (docGridLinePitchPx as number) > 0
+      ? Math.max(0, Math.round(docGridLinePitchPx as number))
+      : 0;
+
+  return (widthKey + 2) * 10_000 + docGridKey * 2 + (disableDocGridSnap ? 1 : 0);
+}
+
+function xmlAttribute(tagXml: string, attribute: string): string | undefined {
+  const escaped = attribute.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = tagXml.match(new RegExp(`${escaped}=(?:"([^"]+)"|'([^']+)')`, "i"));
+  return match?.[1] ?? match?.[2];
+}
+
+function headingLevelFromStyleLabel(value?: string): HeadingLevel | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  const match = value.match(/(?:^|[\s_-])(?:heading|h)\s*([1-6])(?:$|[\s_-])/i);
+  if (!match?.[1]) {
+    return undefined;
+  }
+
+  const parsed = Number(match[1]);
+  return parsed >= 1 && parsed <= 6 ? (parsed as HeadingLevel) : undefined;
+}
+
+function resolveParagraphStyleHeadingLevel(
+  styleDefinition: Pick<ParagraphStyleDefinition, "headingLevel" | "id" | "name">
+): HeadingLevel | undefined {
+  if (
+    Number.isFinite(styleDefinition.headingLevel) &&
+    (styleDefinition.headingLevel as number) >= 1 &&
+    (styleDefinition.headingLevel as number) <= 6
+  ) {
+    return styleDefinition.headingLevel as HeadingLevel;
+  }
+
+  return (
+    headingLevelFromStyleLabel(styleDefinition.id) ??
+    headingLevelFromStyleLabel(styleDefinition.name)
+  );
+}
+
+function normalizeParagraphStyleDefinitionsForUi(
+  styles: ParagraphStyleDefinition[]
+): ParagraphStyleDefinition[] {
+  return styles.map((styleDefinition) => {
+    const headingLevel = resolveParagraphStyleHeadingLevel(styleDefinition);
+    const headingRunStyle = headingLevel
+      ? DEFAULT_WORD_HEADING_RUN_STYLES[headingLevel]
+      : undefined;
+    const mergedRunStyle = headingRunStyle
+      ? {
+          ...headingRunStyle,
+          ...(styleDefinition.runStyle ?? {})
+        }
+      : styleDefinition.runStyle;
+    const runStyleChanged =
+      mergedRunStyle !== styleDefinition.runStyle ||
+      (headingRunStyle !== undefined && styleDefinition.runStyle === undefined);
+    const headingChanged = headingLevel !== styleDefinition.headingLevel;
+
+    if (!runStyleChanged && !headingChanged) {
+      return styleDefinition;
+    }
+
+    return {
+      ...styleDefinition,
+      headingLevel,
+      runStyle: mergedRunStyle
+    };
+  });
+}
+
+function paragraphDropCap(paragraph: ParagraphNode): { type: "drop" | "margin"; lines?: number } | undefined {
+  const xml = paragraph.sourceXml ?? "";
+  if (!xml) {
+    return undefined;
+  }
+
+  const cached = paragraphDropCapBySourceXml.get(xml);
+  if (cached !== undefined) {
+    return cached ?? undefined;
+  }
+
+  const framePrTag = xml.match(/<w:framePr\b[^>]*\/?>/i)?.[0];
+  if (!framePrTag) {
+    setCacheEntry(paragraphDropCapBySourceXml, xml, null);
+    return undefined;
+  }
+
+  const dropCapRaw = xmlAttribute(framePrTag, "w:dropCap")?.trim().toLowerCase();
+  let type: "drop" | "margin" | undefined;
+  if (dropCapRaw === "drop" || dropCapRaw === "margin") {
+    type = dropCapRaw;
+  }
+  if (!type) {
+    setCacheEntry(paragraphDropCapBySourceXml, xml, null);
+    return undefined;
+  }
+
+  const linesRaw = xmlAttribute(framePrTag, "w:lines");
+  const parsedLines = linesRaw ? Number(linesRaw) : Number.NaN;
+  const resolved = {
+    type,
+    lines: Number.isFinite(parsedLines) && parsedLines > 0 ? Math.round(parsedLines) : undefined
+  };
+  setCacheEntry(paragraphDropCapBySourceXml, xml, resolved);
+  return resolved;
+}
+
+function clampNumber(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+function resolveEffectiveZoomScale(element: HTMLElement): number {
+  let current: HTMLElement | null = element;
+  let scale = 1;
+  while (current) {
+    const zoomRaw = window.getComputedStyle(current).zoom;
+    if (zoomRaw && zoomRaw !== "normal") {
+      const zoom = Number.parseFloat(zoomRaw);
+      if (Number.isFinite(zoom) && zoom > 0) {
+        scale *= zoom;
+      }
+    }
+    current = current.parentElement;
+  }
+
+  return Number.isFinite(scale) && scale > 0 ? scale : 1;
+}
+
+const DOC_SURFACE_STYLE_BY_THEME: Record<DocxDocumentTheme, React.CSSProperties> = {
+  light: {
+    backgroundColor: "#ffffff",
+    color: "#111827",
+    colorScheme: "light",
+    border: "none",
+    boxShadow: "0 2px 10px rgba(15, 23, 42, 0.08), 0 1px 2px rgba(15, 23, 42, 0.05)"
+  },
+  dark: {
+    backgroundColor: "#111827",
+    color: "#f3f4f6",
+    colorScheme: "dark",
+    border: "none",
+    boxShadow: "0 2px 10px rgba(2, 6, 23, 0.55), 0 1px 2px rgba(2, 6, 23, 0.45)"
+  }
+};
+
+const TABLE_RESIZE_HANDLE_SIZE = 8;
+const TABLE_RESIZE_HANDLE_HIT_SIZE = 16;
+const TABLE_RESIZE_BORDER_SIZE = 1;
+const TABLE_MOVE_HANDLE_SIZE = 14;
+const TABLE_MOVE_HANDLE_HIT_SIZE = 18;
+const TABLE_HANDLE_HOVER_OUTSET_PX = 24;
+const TABLE_HANDLE_SAFEZONE_TOP_PX = TABLE_MOVE_HANDLE_HIT_SIZE + 4;
+const TABLE_HANDLE_SAFEZONE_LEFT_PX = TABLE_MOVE_HANDLE_HIT_SIZE + 4;
+const TABLE_HANDLE_SAFEZONE_RIGHT_PX = Math.ceil(TABLE_RESIZE_HANDLE_HIT_SIZE / 2) + 4;
+const TABLE_HANDLE_SAFEZONE_BOTTOM_PX = TABLE_RESIZE_HANDLE_HIT_SIZE + 8;
+const TABLE_RESIZE_HANDLE_ALIGNMENT_OFFSET_PX = 0.5;
+const TABLE_MOVE_DRAG_THRESHOLD_PX = 3;
+const TABLE_RESIZE_HANDLE_STYLE: React.CSSProperties = {
+  width: TABLE_RESIZE_HANDLE_SIZE,
+  height: TABLE_RESIZE_HANDLE_SIZE,
+  borderRadius: 2,
+  border: "1px solid #d4d4d8",
+  backgroundColor: "#ffffff",
+  boxShadow: "0 1px 2px rgba(0, 0, 0, 0.14)",
+  pointerEvents: "none"
+};
+const TABLE_MOVE_HANDLE_STYLE: React.CSSProperties = {
+  width: TABLE_MOVE_HANDLE_SIZE,
+  height: TABLE_MOVE_HANDLE_SIZE,
+  borderRadius: 4,
+  border: "1px solid #d4d4d8",
+  backgroundColor: "#ffffff",
+  boxShadow: "0 1px 2px rgba(0, 0, 0, 0.14)",
+  color: "#4b5563",
+  display: "grid",
+  placeItems: "center",
+  pointerEvents: "none"
+};
+
+const BASE_DOC_STYLE: React.CSSProperties = {
+  position: "relative",
+  margin: "0 auto",
+  width: DEFAULT_DOC_PAGE_WIDTH,
+  minHeight: DEFAULT_DOC_PAGE_HEIGHT,
+  padding: DEFAULT_DOC_PAGE_MARGIN,
+  display: "block",
+  gap: 0,
+  transition: "box-shadow 0.2s ease"
+};
+
+const TRACKED_CHANGE_GUTTER_WIDTH_PX = 300;
+const TRACKED_CHANGE_GUTTER_CARD_LEFT_PX = 28;
+const TRACKED_CHANGE_GUTTER_CARD_RIGHT_PX = 10;
+const TRACKED_CHANGE_GUTTER_CARD_GAP_PX = 8;
+const TRACKED_CHANGE_GUTTER_CARD_MIN_HEIGHT_PX = 52;
+
+function scheduleDomWrite(callback: () => void): void {
+  if (typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
+    window.requestAnimationFrame(() => {
+      callback();
+    });
+    return;
+  }
+
+  setTimeout(callback, 0);
+}
+
+function normalizeMeasuredTableRowHeightPx(heightPx: number): number {
+  if (!Number.isFinite(heightPx) || heightPx <= 0) {
+    return 24;
+  }
+
+  return Math.max(24, Math.round(heightPx));
+}
+
+function placeCaretInsideElementDom(element: HTMLElement): void {
+  const selection = window.getSelection();
+  if (!selection) {
+    return;
+  }
+
+  const range = document.createRange();
+  range.selectNodeContents(element);
+  range.collapse(false);
+  selection.removeAllRanges();
+  selection.addRange(range);
+}
+
+function selectionOffsetsWithinElementDom(
+  element: HTMLElement
+): { start: number; end: number } | undefined {
+  const selection = window.getSelection();
+  if (!selection || selection.rangeCount === 0) {
+    return undefined;
+  }
+
+  const selectedRange = selection.getRangeAt(0);
+  if (
+    !element.contains(selectedRange.startContainer) ||
+    !element.contains(selectedRange.endContainer)
+  ) {
+    return undefined;
+  }
+
+  try {
+    const textLengthWithoutNumberingLabels = (range: Range): number => {
+      const fragment = range.cloneContents();
+      fragment.querySelectorAll("[data-docx-numbering-label='true']").forEach((label) => {
+        label.remove();
+      });
+      return fragment.textContent?.length ?? 0;
+    };
+
+    const startRange = document.createRange();
+    startRange.setStart(element, 0);
+    startRange.setEnd(selectedRange.startContainer, selectedRange.startOffset);
+
+    const endRange = document.createRange();
+    endRange.setStart(element, 0);
+    endRange.setEnd(selectedRange.endContainer, selectedRange.endOffset);
+
+    const startOffset = textLengthWithoutNumberingLabels(startRange);
+    const endOffset = textLengthWithoutNumberingLabels(endRange);
+
+    return {
+      start: Math.min(startOffset, endOffset),
+      end: Math.max(startOffset, endOffset)
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function setSelectionWithinElementByTextOffsetsDom(
+  element: HTMLElement,
+  startOffset: number,
+  endOffset: number
+): void {
+  const selection = window.getSelection();
+  if (!selection) {
+    return;
+  }
+
+  const resolveDomPosition = (
+    container: HTMLElement,
+    targetOffset: number
+  ): {
+    node: Node;
+    offset: number;
+  } => {
+    const safeOffset = Math.max(0, Math.round(targetOffset));
+    const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+    let traversed = 0;
+    let currentTextNode: Node | null = walker.nextNode();
+
+    while (currentTextNode) {
+      if (
+        currentTextNode instanceof Text &&
+        currentTextNode.parentElement?.closest("[data-docx-numbering-label='true']")
+      ) {
+        currentTextNode = walker.nextNode();
+        continue;
+      }
+
+      const textLength = currentTextNode.textContent?.length ?? 0;
+      if (traversed + textLength >= safeOffset) {
+        return {
+          node: currentTextNode,
+          offset: Math.max(0, safeOffset - traversed)
+        };
+      }
+
+      traversed += textLength;
+      currentTextNode = walker.nextNode();
+    }
+
+    return {
+      node: container,
+      offset: container.childNodes.length
+    };
+  };
+
+  try {
+    const range = document.createRange();
+    const normalizedStart = Math.max(0, Math.min(startOffset, endOffset));
+    const normalizedEnd = Math.max(normalizedStart, Math.max(startOffset, endOffset));
+    const start = resolveDomPosition(element, normalizedStart);
+    const end = resolveDomPosition(element, normalizedEnd);
+    range.setStart(start.node, start.offset);
+    range.setEnd(end.node, end.offset);
+    selection.removeAllRanges();
+    selection.addRange(range);
+  } catch {
+    placeCaretInsideElementDom(element);
+  }
+}
+
+const DEFAULT_TABLE_CONTEXT_MENU_ACTIONS: DocxTableContextMenuAction[] = [
+  { id: "insert-row-above", label: "Insert row above" },
+  { id: "insert-row-below", label: "Insert row below" },
+  { id: "insert-column-left", label: "Insert column left" },
+  { id: "insert-column-right", label: "Insert column right" },
+  { id: "delete-row", label: "Delete row", destructive: true },
+  { id: "delete-column", label: "Delete column", destructive: true },
+  { id: "delete-table", label: "Delete table", destructive: true }
+];
+
+function usesCommandKeyShortcutLabel(): boolean {
+  if (typeof navigator === "undefined") {
+    return false;
+  }
+
+  const navigatorWithUAData = navigator as Navigator & {
+    userAgentData?: {
+      platform?: string;
+    };
+  };
+  const userAgentDataPlatform =
+    typeof navigatorWithUAData.userAgentData?.platform === "string"
+      ? navigatorWithUAData.userAgentData.platform
+      : "";
+  const platform = typeof navigator.platform === "string" ? navigator.platform : "";
+  const userAgent = typeof navigator.userAgent === "string" ? navigator.userAgent : "";
+  const combinedPlatform = `${userAgentDataPlatform} ${platform}`.toLowerCase();
+  const normalizedUserAgent = userAgent.toLowerCase();
+
+  return (
+    /mac|iphone|ipad|ipod/.test(combinedPlatform) ||
+    /macintosh|mac os x|iphone|ipad|ipod/.test(normalizedUserAgent)
+  );
+}
+
+function clipboardShortcutLabel(key: string): string {
+  return usesCommandKeyShortcutLabel() ? `⌘${key}` : `Ctrl+${key}`;
+}
+
+const DEFAULT_CONTEXT_MENU_CLIPBOARD_ACTIONS: DocxContextMenuAction[] = [
+  { id: "cut", label: "Cut", shortcut: clipboardShortcutLabel("X") },
+  { id: "copy", label: "Copy", shortcut: clipboardShortcutLabel("C") },
+  { id: "paste", label: "Paste", shortcut: clipboardShortcutLabel("V") }
+];
+
+const DEFAULT_CONTEXT_MENU_IMAGE_LAYER_ACTIONS: DocxContextMenuAction[] = [
+  {
+    id: "image-bring-to-front",
+    label: "Bring to Front",
+    children: [
+      { id: "image-bring-to-front", label: "Bring to Front" },
+      { id: "image-bring-forward", label: "Bring Forward" },
+      { id: "image-in-front-of-text", label: "In Front of Text" }
+    ]
+  },
+  {
+    id: "image-send-to-back",
+    label: "Send to Back",
+    children: [
+      { id: "image-send-to-back", label: "Send to Back" },
+      { id: "image-send-backward", label: "Send Backward" },
+      { id: "image-behind-text", label: "Behind Text" }
+    ]
+  }
+];
+
+const WORD_IMAGE_Z_INDEX_MIN = 0;
+const WORD_IMAGE_Z_INDEX_STEP = 65536;
+const WORD_IMAGE_Z_INDEX_MAX = 251658240;
+const WORD_IMAGE_Z_INDEX_DEFAULT = WORD_IMAGE_Z_INDEX_MAX;
+
+interface DocumentLayoutMetrics {
+  pageWidthPx: number;
+  pageHeightPx: number;
+  marginsPx: {
+    top: number;
+    right: number;
+    bottom: number;
+    left: number;
+  };
+  headerDistancePx: number;
+  footerDistancePx: number;
+  docGridLinePitchPx?: number;
+}
+
+interface SectionColumnLayout {
+  count: number;
+  gapPx: number;
+}
+
+const DEFAULT_PAGE_NUMBER_START = 1;
+
+const DEFAULT_DOCUMENT_LAYOUT: DocumentLayoutMetrics = {
+  pageWidthPx: DEFAULT_DOC_PAGE_WIDTH,
+  pageHeightPx: DEFAULT_DOC_PAGE_HEIGHT,
+  marginsPx: {
+    top: DEFAULT_DOC_PAGE_MARGIN,
+    right: DEFAULT_DOC_PAGE_MARGIN,
+    bottom: DEFAULT_DOC_PAGE_MARGIN,
+    left: DEFAULT_DOC_PAGE_MARGIN
+  },
+  headerDistancePx: DEFAULT_DOC_PAGE_MARGIN,
+  footerDistancePx: DEFAULT_DOC_PAGE_MARGIN,
+  docGridLinePitchPx: undefined
+};
+
+function createDefaultEditorTableBorders(): TableBorderSet {
+  return {
+    top: { type: "single", sizeEighthPt: 4, color: "#d1d5db" },
+    right: { type: "single", sizeEighthPt: 4, color: "#d1d5db" },
+    bottom: { type: "single", sizeEighthPt: 4, color: "#d1d5db" },
+    left: { type: "single", sizeEighthPt: 4, color: "#d1d5db" },
+    insideH: { type: "single", sizeEighthPt: 4, color: "#d1d5db" },
+    insideV: { type: "single", sizeEighthPt: 4, color: "#d1d5db" }
+  };
+}
+
+const DEFAULT_TOOLBAR_BORDER_SIZE_EIGHTH_PT = 8;
+const DEFAULT_TOOLBAR_BORDER_COLOR = "#000000";
+
+function twipsToPixels(twips?: number): number | undefined {
+  if (!Number.isFinite(twips)) {
+    return undefined;
+  }
+
+  return Math.max(0, Math.round((twips as number) / TWIPS_PER_PIXEL));
+}
+
+function twipsToSignedPixels(twips?: number): number | undefined {
+  if (!Number.isFinite(twips)) {
+    return undefined;
+  }
+
+  return Math.round((twips as number) / TWIPS_PER_PIXEL);
+}
+
+function pointsToPixels(points?: number): number | undefined {
+  if (!Number.isFinite(points)) {
+    return undefined;
+  }
+
+  return Math.max(0, Number((((points as number) * 96) / 72).toFixed(2)));
+}
+
+function parseSectionLayout(sectionPropertiesXml?: string): DocumentLayoutMetrics {
+  if (!sectionPropertiesXml) {
+    return DEFAULT_DOCUMENT_LAYOUT;
+  }
+
+  const readTwipsAttribute = (tagXml: string | undefined, attribute: string): number | undefined => {
+    if (!tagXml) {
+      return undefined;
+    }
+    const match = tagXml.match(new RegExp(`${attribute}="(\\d+)"`, "i"));
+    if (!match?.[1]) {
+      return undefined;
+    }
+
+    const parsed = Number(match[1]);
+    if (!Number.isFinite(parsed)) {
+      return undefined;
+    }
+
+    return parsed;
+  };
+
+  const pageSizeTag = sectionPropertiesXml.match(/<w:pgSz\b[^>]*>/i)?.[0];
+  const pageMarginTag = sectionPropertiesXml.match(/<w:pgMar\b[^>]*>/i)?.[0];
+  const docGridTag = sectionPropertiesXml.match(/<w:docGrid\b[^>]*\/?>/i)?.[0];
+
+  const pageWidthPx =
+    twipsToPixels(readTwipsAttribute(pageSizeTag, "w:w")) ?? DEFAULT_DOCUMENT_LAYOUT.pageWidthPx;
+  const pageHeightPx =
+    twipsToPixels(readTwipsAttribute(pageSizeTag, "w:h")) ?? DEFAULT_DOCUMENT_LAYOUT.pageHeightPx;
+  const topMarginPx =
+    twipsToPixels(readTwipsAttribute(pageMarginTag, "w:top")) ?? DEFAULT_DOCUMENT_LAYOUT.marginsPx.top;
+  const rightMarginPx =
+    twipsToPixels(readTwipsAttribute(pageMarginTag, "w:right")) ?? DEFAULT_DOCUMENT_LAYOUT.marginsPx.right;
+  const bottomMarginPx =
+    twipsToPixels(readTwipsAttribute(pageMarginTag, "w:bottom")) ?? DEFAULT_DOCUMENT_LAYOUT.marginsPx.bottom;
+  const leftMarginPx =
+    twipsToPixels(readTwipsAttribute(pageMarginTag, "w:left")) ?? DEFAULT_DOCUMENT_LAYOUT.marginsPx.left;
+  const headerDistancePx =
+    twipsToPixels(readTwipsAttribute(pageMarginTag, "w:header")) ?? DEFAULT_DOCUMENT_LAYOUT.headerDistancePx;
+  const footerDistancePx =
+    twipsToPixels(readTwipsAttribute(pageMarginTag, "w:footer")) ?? DEFAULT_DOCUMENT_LAYOUT.footerDistancePx;
+  const docGridLinePitchPx =
+    twipsToPixels(readTwipsAttribute(docGridTag, "w:linePitch")) ?? DEFAULT_DOCUMENT_LAYOUT.docGridLinePitchPx;
+
+  return {
+    pageWidthPx,
+    pageHeightPx,
+    marginsPx: {
+      top: topMarginPx,
+      right: rightMarginPx,
+      bottom: bottomMarginPx,
+      left: leftMarginPx
+    },
+    headerDistancePx,
+    footerDistancePx,
+    docGridLinePitchPx
+  };
+}
+
+type EmbeddedFontFaceDescriptor = {
+  family: string;
+  style: "normal" | "italic";
+  weight: string;
+  source: ArrayBuffer;
+};
+
+function relationshipPartNameForOoxmlPart(partName: string): string {
+  const segments = partName.split("/");
+  const fileName = segments.pop() ?? partName;
+  const directory = segments.join("/");
+  return directory.length > 0
+    ? `${directory}/_rels/${fileName}.rels`
+    : `_rels/${fileName}.rels`;
+}
+
+function resolveRelativeOoxmlPartName(basePartName: string, target: string): string {
+  if (/^[a-z]+:/i.test(target)) {
+    return target;
+  }
+
+  const normalizedBasePartName = basePartName.replace(/^\/+/, "");
+  if (target.startsWith("/")) {
+    return target.replace(/^\/+/, "");
+  }
+
+  const baseSegments = normalizedBasePartName.split("/");
+  baseSegments.pop();
+  target.split("/").forEach((segment) => {
+    if (!segment || segment === ".") {
+      return;
+    }
+
+    if (segment === "..") {
+      if (baseSegments.length > 0) {
+        baseSegments.pop();
+      }
+      return;
+    }
+
+    baseSegments.push(segment);
+  });
+
+  return baseSegments.join("/");
+}
+
+function parseOoxmlRelationships(pkg: OoxmlPackage, partName: string): Map<string, string> {
+  const relationships = new Map<string, string>();
+  const relationshipsXml = pkg.parts.get(relationshipPartNameForOoxmlPart(partName))?.content;
+  if (!relationshipsXml) {
+    return relationships;
+  }
+
+  const relationshipPattern = /<Relationship\b[^>]*Id="([^"]+)"[^>]*Target="([^"]+)"[^>]*\/?>/gi;
+  let match: RegExpExecArray | null;
+  while ((match = relationshipPattern.exec(relationshipsXml))) {
+    const relationshipId = match[1]?.trim();
+    const target = match[2]?.trim();
+    if (!relationshipId || !target) {
+      continue;
+    }
+
+    relationships.set(
+      relationshipId,
+      resolveRelativeOoxmlPartName(partName, target)
+    );
+  }
+
+  return relationships;
+}
+
+function deobfuscateEmbeddedFontData(fontData: Uint8Array, fontKey?: string): ArrayBuffer {
+  const output = Uint8Array.from(fontData);
+  const normalizedFontKey = (fontKey ?? "").replace(/[{}-]/g, "");
+  if (!/^[0-9a-f]{32}$/i.test(normalizedFontKey)) {
+    return output.buffer.slice(output.byteOffset, output.byteOffset + output.byteLength);
+  }
+
+  const keyBytes = Uint8Array.from(
+    normalizedFontKey.match(/../g)?.map((pair) => Number.parseInt(pair, 16)) ?? []
+  ).reverse();
+  const xorLength = Math.min(32, output.length);
+  for (let index = 0; index < xorLength; index += 1) {
+    output[index] ^= keyBytes[index % keyBytes.length] ?? 0;
+  }
+
+  return output.buffer.slice(output.byteOffset, output.byteOffset + output.byteLength);
+}
+
+function collectEmbeddedFontFaceDescriptors(pkg: OoxmlPackage): EmbeddedFontFaceDescriptor[] {
+  const fontTableXml = pkg.parts.get("word/fontTable.xml")?.content;
+  if (!fontTableXml) {
+    return [];
+  }
+
+  const fontRelationships = parseOoxmlRelationships(pkg, "word/fontTable.xml");
+  const descriptors: EmbeddedFontFaceDescriptor[] = [];
+  const fontPattern = /<w:font\b[^>]*w:name="([^"]+)"[^>]*>([\s\S]*?)<\/w:font>/gi;
+  const fontVariants = [
+    { tagName: "embedRegular", style: "normal" as const, weight: "400" },
+    { tagName: "embedBold", style: "normal" as const, weight: "700" },
+    { tagName: "embedItalic", style: "italic" as const, weight: "400" },
+    { tagName: "embedBoldItalic", style: "italic" as const, weight: "700" }
+  ];
+
+  let fontMatch: RegExpExecArray | null;
+  while ((fontMatch = fontPattern.exec(fontTableXml))) {
+    const family = fontMatch[1]?.trim();
+    const fontXml = fontMatch[2] ?? "";
+    if (!family) {
+      continue;
+    }
+
+    fontVariants.forEach((variant) => {
+      const tagXml = fontXml.match(new RegExp(`<w:${variant.tagName}\\b[^>]*\\/?>`, "i"))?.[0] ?? "";
+      const relationshipId = xmlAttribute(tagXml, "r:id");
+      if (!relationshipId) {
+        return;
+      }
+
+      const partName = fontRelationships.get(relationshipId);
+      const fontData = partName ? pkg.binaryAssets.get(partName) : undefined;
+      if (!fontData) {
+        return;
+      }
+
+      descriptors.push({
+        family,
+        style: variant.style,
+        weight: variant.weight,
+        source: deobfuscateEmbeddedFontData(fontData, xmlAttribute(tagXml, "w:fontKey"))
+      });
+    });
+  }
+
+  return descriptors;
+}
+
+function parseSectionColumns(sectionPropertiesXml?: string): SectionColumnLayout | undefined {
+  if (!sectionPropertiesXml) {
+    return undefined;
+  }
+
+  const columnsTag = sectionPropertiesXml.match(/<w:cols\b[^>]*\/?>/i)?.[0];
+  if (!columnsTag) {
+    return undefined;
+  }
+
+  const numberOfColumnsRaw = columnsTag.match(/w:num="(\d+)"/i)?.[1];
+  const numberOfColumns = numberOfColumnsRaw ? Number(numberOfColumnsRaw) : 1;
+  if (!Number.isFinite(numberOfColumns) || numberOfColumns <= 1) {
+    return undefined;
+  }
+
+  const columnGapTwipsRaw = columnsTag.match(/w:space="(\d+)"/i)?.[1];
+  const columnGapTwips = columnGapTwipsRaw ? Number(columnGapTwipsRaw) : 720;
+  const columnGapPx = twipsToPixels(columnGapTwips) ?? 24;
+
+  return {
+    count: Math.max(2, Math.round(numberOfColumns)),
+    gapPx: Math.max(0, columnGapPx)
+  };
+}
+
+function parseSectionPageNumberStart(sectionPropertiesXml?: string): number {
+  if (!sectionPropertiesXml) {
+    return DEFAULT_PAGE_NUMBER_START;
+  }
+
+  const pageNumberTag = sectionPropertiesXml.match(/<w:pgNumType\b[^>]*\/?>/i)?.[0];
+  if (!pageNumberTag) {
+    return DEFAULT_PAGE_NUMBER_START;
+  }
+
+  const startRaw = pageNumberTag.match(/\bw:start="(\d+)"/i)?.[1];
+  if (!startRaw) {
+    return DEFAULT_PAGE_NUMBER_START;
+  }
+
+  const start = Number(startRaw);
+  if (!Number.isFinite(start) || start <= 0) {
+    return DEFAULT_PAGE_NUMBER_START;
+  }
+
+  return Math.max(1, Math.round(start));
+}
+
+function parseSectionPageNumberStartOverride(sectionPropertiesXml?: string): number | undefined {
+  if (!sectionPropertiesXml) {
+    return undefined;
+  }
+
+  const pageNumberTag = sectionPropertiesXml.match(/<w:pgNumType\b[^>]*\/?>/i)?.[0];
+  if (!pageNumberTag) {
+    return undefined;
+  }
+
+  const startRaw = pageNumberTag.match(/\bw:start="(\d+)"/i)?.[1];
+  if (!startRaw) {
+    return undefined;
+  }
+
+  const start = Number(startRaw);
+  if (!Number.isFinite(start) || start <= 0) {
+    return undefined;
+  }
+
+  return Math.max(1, Math.round(start));
+}
+
+interface ResolvedDocumentSection {
+  startNodeIndex: number;
+  sectionPropertiesXml?: string;
+  headerSections: HeaderSection[];
+  footerSections: FooterSection[];
+}
+
+function resolveDocumentSectionsFromMetadata(metadata: DocModel["metadata"]): ResolvedDocumentSection[] {
+  const normalizedSections = (metadata.sections ?? [])
+    .map((section): ResolvedDocumentSection => ({
+      startNodeIndex:
+        Number.isFinite(section.startNodeIndex) && (section.startNodeIndex as number) >= 0
+          ? Math.round(section.startNodeIndex as number)
+          : 0,
+      sectionPropertiesXml: section.sectionPropertiesXml,
+      headerSections: section.headerSections ?? [],
+      footerSections: section.footerSections ?? []
+    }))
+    .sort((left, right) => left.startNodeIndex - right.startNodeIndex);
+
+  if (normalizedSections.length > 0) {
+    if (normalizedSections[0].startNodeIndex > 0) {
+      normalizedSections.unshift({
+        startNodeIndex: 0,
+        sectionPropertiesXml: normalizedSections[0].sectionPropertiesXml,
+        headerSections: normalizedSections[0].headerSections,
+        footerSections: normalizedSections[0].footerSections
+      });
+    }
+    return normalizedSections;
+  }
+
+  return [
+    {
+      startNodeIndex: 0,
+      sectionPropertiesXml: metadata.sectionPropertiesXml,
+      headerSections: metadata.headerSections ?? [],
+      footerSections: metadata.footerSections ?? []
+    }
+  ];
+}
+
+interface PaginationSectionMetrics {
+  startNodeIndex: number;
+  pageContentWidthPx: number;
+  pageContentHeightPx: number;
+  docGridLinePitchPx?: number;
+}
+
+function sectionHasVisibleHeaderContent(section: ResolvedDocumentSection): boolean {
+  const headerSections = section.headerSections ?? [];
+  return headerSections.some((headerSection) =>
+    (headerSection.nodes ?? []).some((node) =>
+      node.type === "table" || paragraphHasInFlowImage(node) || paragraphHasVisibleText(node)
+    )
+  );
+}
+
+function buildPaginationSectionMetrics(
+  sections: ResolvedDocumentSection[],
+  fallbackLayout: DocumentLayoutMetrics
+): PaginationSectionMetrics[] {
+  const fallbackWidthPx = Math.max(
+    120,
+    fallbackLayout.pageWidthPx - fallbackLayout.marginsPx.left - fallbackLayout.marginsPx.right
+  );
+  const fallbackHeightPx = Math.max(
+    120,
+    fallbackLayout.pageHeightPx - fallbackLayout.marginsPx.top - fallbackLayout.marginsPx.bottom
+  );
+
+  if (sections.length === 0) {
+    return [
+      {
+        startNodeIndex: 0,
+        pageContentWidthPx: fallbackWidthPx,
+        pageContentHeightPx: fallbackHeightPx
+      }
+    ];
+  }
+
+  return sections
+    .map((section) => {
+      const layout = parseSectionLayout(section.sectionPropertiesXml);
+      const hasHeaderContent = sectionHasVisibleHeaderContent(section);
+      const headerTopOffsetPx = Math.max(0, layout.headerDistancePx) - layout.marginsPx.top;
+      const headerFlowCompensationPx = Math.max(0, -headerTopOffsetPx);
+      // Header rendering keeps content in normal flow and adds this compensation.
+      // Reserve the same vertical budget during pagination to avoid late page breaks.
+      const headerPaginationReservePx = hasHeaderContent
+        ? Math.round(headerFlowCompensationPx + 8 + MIN_PARAGRAPH_LINE_HEIGHT_PX * 2)
+        : 0;
+      return {
+        startNodeIndex: Math.max(0, Math.round(section.startNodeIndex)),
+        pageContentWidthPx: Math.max(
+          120,
+          layout.pageWidthPx - layout.marginsPx.left - layout.marginsPx.right
+        ),
+        pageContentHeightPx: Math.max(
+          120,
+          layout.pageHeightPx - layout.marginsPx.top - layout.marginsPx.bottom - headerPaginationReservePx
+        ),
+        docGridLinePitchPx: layout.docGridLinePitchPx
+      };
+    })
+    .sort((left, right) => left.startNodeIndex - right.startNodeIndex);
+}
+
+function resolvePaginationSectionMetricsIndexForNodeIndex(
+  metricsBySection: PaginationSectionMetrics[],
+  nodeIndex: number,
+  previousSectionIndex: number
+): number {
+  if (metricsBySection.length === 0) {
+    return 0;
+  }
+
+  const safePrevious = Math.max(0, Math.min(previousSectionIndex, metricsBySection.length - 1));
+  let sectionIndex = safePrevious;
+  if (nodeIndex < metricsBySection[sectionIndex].startNodeIndex) {
+    sectionIndex = 0;
+  }
+
+  while (
+    sectionIndex + 1 < metricsBySection.length &&
+    metricsBySection[sectionIndex + 1].startNodeIndex <= nodeIndex
+  ) {
+    sectionIndex += 1;
+  }
+
+  return sectionIndex;
+}
+
+function scalePaginationSectionMetricsHeights(
+  metricsBySection: PaginationSectionMetrics[],
+  heightScale: number
+): PaginationSectionMetrics[] {
+  if (!Number.isFinite(heightScale) || Math.abs(heightScale - 1) < 0.001) {
+    return metricsBySection;
+  }
+
+  return metricsBySection.map((metrics) => ({
+    ...metrics,
+    pageContentHeightPx: Math.max(120, Math.round(metrics.pageContentHeightPx * heightScale))
+  }));
+}
+
+function scaleMeasuredPageContentHeights(
+  measuredPageContentHeightsPxByPageIndex: number[] | undefined,
+  heightScale: number
+): number[] | undefined {
+  if (
+    !measuredPageContentHeightsPxByPageIndex ||
+    measuredPageContentHeightsPxByPageIndex.length === 0
+  ) {
+    return measuredPageContentHeightsPxByPageIndex;
+  }
+
+  if (!Number.isFinite(heightScale) || Math.abs(heightScale - 1) < 0.001) {
+    return measuredPageContentHeightsPxByPageIndex;
+  }
+
+  return measuredPageContentHeightsPxByPageIndex.map((heightPx) =>
+    Math.max(120, Math.round(heightPx * heightScale))
+  );
+}
+
+export type DocxListType = "unordered" | "ordered";
+
+export type DocxEditorSelection =
+  | {
+      kind: "paragraph";
+      nodeIndex: number;
+    }
+  | {
+      kind: "table-cell";
+      tableIndex: number;
+      rowIndex: number;
+      cellIndex: number;
+    };
+
+interface DocxTableCellLocation {
+  tableIndex: number;
+  rowIndex: number;
+  cellIndex: number;
+}
+
+interface DocxTableCellSelectionRange {
+  tableIndex: number;
+  anchorRowIndex: number;
+  anchorCellIndex: number;
+  focusRowIndex: number;
+  focusCellIndex: number;
+}
+
+interface ParagraphLocationInBody {
+  kind: "paragraph";
+  nodeIndex: number;
+}
+
+interface ParagraphLocationInCell {
+  kind: "table-cell";
+  tableIndex: number;
+  rowIndex: number;
+  cellIndex: number;
+  paragraphIndex: number;
+}
+
+export type DocxTextRangeLocation = ParagraphLocationInBody | ParagraphLocationInCell;
+
+export interface DocxTextRangeBoundary {
+  location: DocxTextRangeLocation;
+  offset: number;
+}
+
+export interface DocxTextRange {
+  start: DocxTextRangeBoundary;
+  end: DocxTextRangeBoundary;
+}
+
+function parseDocumentIndexFromAttribute(raw: string | null): number | undefined {
+  const parsed = raw ? Number.parseInt(raw, 10) : Number.NaN;
+  if (!Number.isFinite(parsed)) {
+    return undefined;
+  }
+
+  return parsed;
+}
+
+function parseParagraphLocationFromElement(
+  element: Element | null
+): ParagraphLocation | undefined {
+  if (!element) {
+    return undefined;
+  }
+
+  const kind = element.getAttribute("data-docx-paragraph-kind");
+  if (kind === "paragraph") {
+    const nodeIndex = parseDocumentIndexFromAttribute(
+      element.getAttribute("data-docx-paragraph-node-index")
+    );
+    if (nodeIndex === undefined) {
+      return undefined;
+    }
+    return { kind: "paragraph", nodeIndex };
+  }
+
+  if (kind === "table-cell") {
+    const tableIndex = parseDocumentIndexFromAttribute(
+      element.getAttribute("data-docx-table-index")
+    );
+    const rowIndex = parseDocumentIndexFromAttribute(
+      element.getAttribute("data-docx-row-index")
+    );
+    const cellIndex = parseDocumentIndexFromAttribute(
+      element.getAttribute("data-docx-cell-index")
+    );
+    const paragraphIndex = parseDocumentIndexFromAttribute(
+      element.getAttribute("data-docx-paragraph-index")
+    );
+
+    if (
+      tableIndex === undefined ||
+      rowIndex === undefined ||
+      cellIndex === undefined ||
+      paragraphIndex === undefined
+    ) {
+      return undefined;
+    }
+
+    return {
+      kind: "table-cell",
+      tableIndex,
+      rowIndex,
+      cellIndex,
+      paragraphIndex
+    };
+  }
+
+  return undefined;
+}
+
+function parseTableCellLocationFromElement(
+  element: Element | null
+): DocxTableCellLocation | undefined {
+  if (!element) {
+    return undefined;
+  }
+
+  const cellElement = element.closest("[data-docx-table-cell='true']");
+  if (!cellElement) {
+    return undefined;
+  }
+
+  const tableIndex = parseDocumentIndexFromAttribute(
+    cellElement.getAttribute("data-docx-table-index")
+  );
+  const rowIndex = parseDocumentIndexFromAttribute(
+    cellElement.getAttribute("data-docx-row-index")
+  );
+  const cellIndex = parseDocumentIndexFromAttribute(
+    cellElement.getAttribute("data-docx-cell-index")
+  );
+  if (
+    tableIndex === undefined ||
+    rowIndex === undefined ||
+    cellIndex === undefined
+  ) {
+    return undefined;
+  }
+
+  return {
+    tableIndex,
+    rowIndex,
+    cellIndex
+  };
+}
+
+function tableCellSelectionRangeBounds(range: DocxTableCellSelectionRange): {
+  startRowIndex: number;
+  endRowIndex: number;
+  startCellIndex: number;
+  endCellIndex: number;
+} {
+  return {
+    startRowIndex: Math.min(range.anchorRowIndex, range.focusRowIndex),
+    endRowIndex: Math.max(range.anchorRowIndex, range.focusRowIndex),
+    startCellIndex: Math.min(range.anchorCellIndex, range.focusCellIndex),
+    endCellIndex: Math.max(range.anchorCellIndex, range.focusCellIndex)
+  };
+}
+
+function isSingleTableCellSelectionRange(
+  range: DocxTableCellSelectionRange
+): boolean {
+  return (
+    range.anchorRowIndex === range.focusRowIndex &&
+    range.anchorCellIndex === range.focusCellIndex
+  );
+}
+
+function sameTableCellSelectionRange(
+  a: DocxTableCellSelectionRange | undefined,
+  b: DocxTableCellSelectionRange | undefined
+): boolean {
+  if (!a || !b) {
+    return a === b;
+  }
+
+  return (
+    a.tableIndex === b.tableIndex &&
+    a.anchorRowIndex === b.anchorRowIndex &&
+    a.anchorCellIndex === b.anchorCellIndex &&
+    a.focusRowIndex === b.focusRowIndex &&
+    a.focusCellIndex === b.focusCellIndex
+  );
+}
+
+function isCellWithinTableSelectionRange(
+  range: DocxTableCellSelectionRange | undefined,
+  tableIndex: number,
+  rowIndex: number,
+  cellIndex: number
+): boolean {
+  if (!range || range.tableIndex !== tableIndex) {
+    return false;
+  }
+
+  const bounds = tableCellSelectionRangeBounds(range);
+  return (
+    rowIndex >= bounds.startRowIndex &&
+    rowIndex <= bounds.endRowIndex &&
+    cellIndex >= bounds.startCellIndex &&
+    cellIndex <= bounds.endCellIndex
+  );
+}
+
+function textRangeTouchesTable(
+  range: DocxTextRange | undefined,
+  tableIndex: number
+): boolean {
+  if (!range) {
+    return false;
+  }
+
+  return [range.start.location, range.end.location].some(
+    (location) => location.kind === "table-cell" && location.tableIndex === tableIndex
+  );
+}
+
+function selectedTableCellLocations(
+  table: TableNode,
+  range: DocxTableCellSelectionRange
+): Array<{ rowIndex: number; cellIndex: number }> {
+  const bounds = tableCellSelectionRangeBounds(range);
+  const selected: Array<{ rowIndex: number; cellIndex: number }> = [];
+
+  for (let rowIndex = 0; rowIndex < table.rows.length; rowIndex += 1) {
+    if (rowIndex < bounds.startRowIndex || rowIndex > bounds.endRowIndex) {
+      continue;
+    }
+
+    const row = table.rows[rowIndex];
+    if (!row) {
+      continue;
+    }
+
+    for (let cellIndex = 0; cellIndex < row.cells.length; cellIndex += 1) {
+      if (cellIndex < bounds.startCellIndex || cellIndex > bounds.endCellIndex) {
+        continue;
+      }
+
+      const cell = row.cells[cellIndex];
+      if (!cell || cell.style?.vMergeContinuation) {
+        continue;
+      }
+
+      selected.push({ rowIndex, cellIndex });
+    }
+  }
+
+  return selected;
+}
+
+function tableSelectableCellExtents(table: TableNode): {
+  first: { rowIndex: number; cellIndex: number };
+  last: { rowIndex: number; cellIndex: number };
+} | undefined {
+  let first: { rowIndex: number; cellIndex: number } | undefined;
+  let maxSelectableRowIndex = -1;
+  let maxSelectableCellIndex = -1;
+
+  for (let rowIndex = 0; rowIndex < table.rows.length; rowIndex += 1) {
+    const row = table.rows[rowIndex];
+    if (!row) {
+      continue;
+    }
+
+    for (let cellIndex = 0; cellIndex < row.cells.length; cellIndex += 1) {
+      const cell = row.cells[cellIndex];
+      if (!cell || cell.style?.vMergeContinuation) {
+        continue;
+      }
+
+      if (!first) {
+        first = { rowIndex, cellIndex };
+      }
+      if (rowIndex > maxSelectableRowIndex) {
+        maxSelectableRowIndex = rowIndex;
+      }
+      if (cellIndex > maxSelectableCellIndex) {
+        maxSelectableCellIndex = cellIndex;
+      }
+    }
+  }
+
+  if (!first || maxSelectableRowIndex < 0 || maxSelectableCellIndex < 0) {
+    return undefined;
+  }
+
+  return {
+    first,
+    last: {
+      rowIndex: maxSelectableRowIndex,
+      cellIndex: maxSelectableCellIndex
+    }
+  };
+}
+
+function tableSelectionCoversWholeTable(
+  table: TableNode,
+  range: DocxTableCellSelectionRange
+): boolean {
+  const selectedKeys = new Set(
+    selectedTableCellLocations(table, range).map(
+      (location) => `${location.rowIndex}:${location.cellIndex}`
+    )
+  );
+  if (selectedKeys.size === 0) {
+    return false;
+  }
+
+  let totalSelectableCells = 0;
+  for (let rowIndex = 0; rowIndex < table.rows.length; rowIndex += 1) {
+    const row = table.rows[rowIndex];
+    if (!row) {
+      continue;
+    }
+
+    for (let cellIndex = 0; cellIndex < row.cells.length; cellIndex += 1) {
+      const cell = row.cells[cellIndex];
+      if (!cell || cell.style?.vMergeContinuation) {
+        continue;
+      }
+
+      totalSelectableCells += 1;
+      if (!selectedKeys.has(`${rowIndex}:${cellIndex}`)) {
+        return false;
+      }
+    }
+  }
+
+  return totalSelectableCells > 0 && selectedKeys.size === totalSelectableCells;
+}
+
+function textLengthFromRange(range: Range): number {
+  const fragment = range.cloneContents();
+  fragment.querySelectorAll("[data-docx-numbering-label='true']").forEach((label) => {
+    label.remove();
+  });
+  return fragment.textContent?.length ?? 0;
+}
+
+function compareParagraphLocations(
+  a: ParagraphLocation,
+  b: ParagraphLocation
+): number {
+  if (a.kind === "paragraph" && b.kind === "paragraph") {
+    return Math.sign(a.nodeIndex - b.nodeIndex);
+  }
+
+  if (a.kind === "paragraph" && b.kind === "table-cell") {
+    if (a.nodeIndex !== b.tableIndex) {
+      return Math.sign(a.nodeIndex - b.tableIndex);
+    }
+
+    return -1;
+  }
+
+  if (a.kind === "table-cell" && b.kind === "paragraph") {
+    if (a.tableIndex !== b.nodeIndex) {
+      return Math.sign(a.tableIndex - b.nodeIndex);
+    }
+
+    return 1;
+  }
+
+  if (a.kind === "table-cell" && b.kind === "table-cell") {
+    if (a.tableIndex !== b.tableIndex) {
+      return Math.sign(a.tableIndex - b.tableIndex);
+    }
+
+    if (a.rowIndex !== b.rowIndex) {
+      return Math.sign(a.rowIndex - b.rowIndex);
+    }
+
+    if (a.cellIndex !== b.cellIndex) {
+      return Math.sign(a.cellIndex - b.cellIndex);
+    }
+
+    return Math.sign(a.paragraphIndex - b.paragraphIndex);
+  }
+
+  return 0;
+}
+
+function compareTextRangeBoundaries(
+  a: DocxTextRangeBoundary,
+  b: DocxTextRangeBoundary
+): number {
+  const locationCompare = compareParagraphLocations(a.location, b.location);
+  if (locationCompare !== 0) {
+    return locationCompare;
+  }
+
+  return Math.sign(a.offset - b.offset);
+}
+
+function normalizeTextRange(range: DocxTextRange): DocxTextRange {
+  if (compareTextRangeBoundaries(range.start, range.end) <= 0) {
+    return {
+      start: range.start,
+      end: range.end
+    };
+  }
+
+  return {
+    start: range.end,
+    end: range.start
+  };
+}
+
+interface DocxHistorySnapshot {
+  model: DocModel;
+  selection: DocxEditorSelection;
+  activeTextRange?: DocxTextRange;
+}
+
+interface DocxHistoryRestoreRequest {
+  nonce: number;
+  selection: DocxEditorSelection;
+  activeTextRange?: DocxTextRange;
+}
+
+interface DocxEditorTransactionContext {
+  model: DocModel;
+  selection: DocxEditorSelection;
+  activeTextRange?: DocxTextRange;
+  pendingRunStyle?: TextRunNode["style"];
+}
+
+interface DocxEditorTransactionPatch {
+  model?: DocModel;
+  selection?: DocxEditorSelection;
+  activeTextRange?: DocxTextRange;
+  pendingRunStyle?: TextRunNode["style"];
+  status?: string;
+  clearSelectedFormField?: boolean;
+  pushHistory?: boolean;
+}
+
+type ParagraphLocation = DocxTextRangeLocation;
+
+export type DocxImageLocation = ParagraphLocation & {
+  childIndex: number;
+};
+
+export type DocxSectionRegion = "header" | "footer";
+
+export interface DocxSectionParagraphLocation {
+  region: DocxSectionRegion;
+  partName: string;
+  nodeIndex: number;
+  rowIndex?: number;
+  cellIndex?: number;
+  paragraphIndex?: number;
+}
+
+export type DocxSectionImageLocation = DocxSectionParagraphLocation & {
+  childIndex: number;
+};
+
+export type DocxFormFieldLocation = ParagraphLocation & {
+  childIndex: number;
+};
+
+export interface DocxSelectedFormField {
+  location: DocxFormFieldLocation;
+  field: FormFieldRunNode;
+}
+
+export type DocxImageDropTarget = ParagraphLocation & {
+  childIndex: number;
+};
+
+export type DocxTrackedChangeKind =
+  | "insertion"
+  | "deletion"
+  | "move-from"
+  | "move-to"
+  | "format-change"
+  | "paragraph-format-change";
+
+export interface DocxTrackedChange {
+  id: string;
+  kind: DocxTrackedChangeKind;
+  author?: string;
+  date?: string;
+  text?: string;
+  nodeIndex: number;
+  location: DocxTextRangeLocation;
+}
+
+export type DocxLineSpacingRule = "auto" | "exact" | "atLeast";
+
+export interface DocxLineSpacingInfo {
+  lineRule: DocxLineSpacingRule;
+  lineTwips?: number;
+  multiple: number;
+}
+
+export type DocxBorderContext = "paragraph" | "table";
+
+export type DocxBorderPreset =
+  | "bottom"
+  | "top"
+  | "left"
+  | "right"
+  | "none"
+  | "all"
+  | "outside"
+  | "inside"
+  | "inside-horizontal"
+  | "inside-vertical"
+  | "diagonal-down"
+  | "diagonal-up"
+  | "horizontal-line";
+
+export type DocxBorderPresetState = Record<DocxBorderPreset, boolean>;
+
+export interface UseDocxEditorOptions {
+  starterModel?: DocModel;
+  initialFileName?: string;
+  initialStatus?: string;
+  initialDocumentTheme?: DocxDocumentTheme;
+  initialShowTrackedChanges?: boolean;
+}
+
+export interface DocxEditorController {
+  model: DocModel;
+  fileName: string;
+  status: string;
+  documentTheme: DocxDocumentTheme;
+  selection: DocxEditorSelection;
+  activeTextRange?: DocxTextRange;
+  historyRestoreRequest?: DocxHistoryRestoreRequest;
+  selectedFormField?: DocxSelectedFormField;
+  selectedParagraph?: ParagraphNode;
+  selectedRunStyle?: TextRunNode["style"];
+  selectedLink?: string;
+  pendingRunStyle?: TextRunNode["style"];
+  selectedParagraphStyleId?: string;
+  selectedLineSpacing: DocxLineSpacingInfo;
+  selectedBorderContext: DocxBorderContext;
+  activeBorderPresets: DocxBorderPresetState;
+  availableParagraphStyles: ParagraphStyleDefinition[];
+  trackedChanges: DocxTrackedChange[];
+  showTrackedChanges: boolean;
+  hasUnorderedList: boolean;
+  hasOrderedList: boolean;
+  canUndo: boolean;
+  canRedo: boolean;
+  registerPendingExportModelTransformer: (
+    transformer?: (model: DocModel) => DocModel
+  ) => void;
+  setStatus: React.Dispatch<React.SetStateAction<string>>;
+  setDocumentTheme: (theme: DocxDocumentTheme) => void;
+  setShowTrackedChanges: (showTrackedChanges: boolean) => void;
+  toggleShowTrackedChanges: () => void;
+  importDocxFile: (file: File) => Promise<void>;
+  newDocument: () => void;
+  exportDocx: () => void;
+  undo: () => void;
+  redo: () => void;
+  setHeading: (heading?: HeadingLevel) => void;
+  setParagraphStyle: (styleId?: string) => void;
+  setLineSpacing: (lineMultiple: number) => void;
+  setFontFamily: (fontFamily: string) => void;
+  setFontSize: (fontSizePt: number) => void;
+  toggleBold: () => void;
+  toggleItalic: () => void;
+  toggleUnderline: () => void;
+  toggleStrike: () => void;
+  toggleSuperscript: () => void;
+  toggleSubscript: () => void;
+  setHighlight: (highlight?: string) => void;
+  setTextColor: (color?: string) => void;
+  setLink: (link?: string) => void;
+  selectFormField: (location?: DocxFormFieldLocation) => void;
+  toggleFormCheckbox: (location: DocxFormFieldLocation) => void;
+  setFormFieldValue: (location: DocxFormFieldLocation, value: string) => void;
+  updateFormFieldWidget: (
+    location: DocxFormFieldLocation,
+    patch: Partial<NonNullable<FormFieldRunNode["widget"]>>
+  ) => void;
+  applyBorderPreset: (preset: DocxBorderPreset) => void;
+  setAlignment: (align?: ParagraphAlignment) => void;
+  toggleList: (listType: DocxListType) => void;
+  adjustSelectedListDepth: (levelDelta: number, draftText?: string) => boolean;
+  insertListItemAfterSelection: (
+    draftText: string,
+    startOffset: number,
+    endOffset?: number,
+    targetLocation?: ParagraphLocation
+  ) =>
+      | {
+          paragraphIndex: number;
+          caretOffset: number;
+        }
+      | undefined;
+  splitParagraphAtSelection: (
+    draftText: string,
+    startOffset: number,
+    endOffset?: number,
+    targetLocation?: ParagraphLocation
+  ) =>
+    | {
+        paragraphIndex: number;
+        caretOffset: number;
+      }
+    | undefined;
+  insertTable: () => void;
+  insertImageFile: (file: File) => Promise<void>;
+  appendParagraph: (text?: string) => number;
+  resizeImage: (location: DocxImageLocation, widthPx: number, heightPx: number) => void;
+  moveFloatingImage: (
+    location: DocxImageLocation,
+    patch: Partial<NonNullable<ImageRunNode["floating"]>>
+  ) => void;
+  moveSectionFloatingImage: (
+    location: DocxSectionImageLocation,
+    patch: Partial<NonNullable<ImageRunNode["floating"]>>
+  ) => void;
+  moveImage: (source: DocxImageLocation, target: DocxImageDropTarget) => void;
+  setActiveTextRange: (range?: DocxTextRange) => void;
+  selectParagraph: (nodeIndex: number) => void;
+  selectTableCell: (tableIndex: number, rowIndex: number, cellIndex: number) => void;
+  clearTableCellContents: (
+    tableIndex: number,
+    cells: Array<{ rowIndex: number; cellIndex: number }>
+  ) => void;
+  insertTableRow: (
+    tableIndex: number,
+    rowIndex: number,
+    direction: "above" | "below"
+  ) => void;
+  insertTableColumn: (
+    tableIndex: number,
+    cellIndex: number,
+    direction: "left" | "right",
+    rowIndex?: number
+  ) => void;
+  deleteTableRow: (tableIndex: number, rowIndex: number) => void;
+  deleteTableColumn: (tableIndex: number, cellIndex: number, rowIndex?: number) => void;
+  deleteTable: (tableIndex: number) => void;
+  moveTable: (tableIndex: number, targetNodeIndex: number) => void;
+  moveEmbeddedTableToBody: (tableRuntimeKey: string, targetNodeIndex: number) => void;
+  replaceExpandedSelection: (text: string, range?: DocxTextRange) => DocxTextRange | undefined;
+  deleteExpandedSelection: (range?: DocxTextRange) => DocxTextRange | undefined;
+  commitParagraphText: (nodeIndex: number, text: string) => void;
+  commitTableCellText: (tableIndex: number, rowIndex: number, cellIndex: number, text: string) => void;
+  commitTableCellParagraphTextRecursive: (
+    tableIndex: number,
+    rowIndex: number,
+    cellIndex: number,
+    paragraphIndex: number,
+    text: string
+  ) => void;
+  commitSectionParagraphText: (location: DocxSectionParagraphLocation, text: string) => void;
+}
+
+export type DocxTableContextMenuActionId =
+  | "insert-row-above"
+  | "insert-row-below"
+  | "insert-column-left"
+  | "insert-column-right"
+  | "delete-row"
+  | "delete-column"
+  | "delete-table";
+
+export type DocxContextMenuActionId =
+  | DocxTableContextMenuActionId
+  | "cut"
+  | "copy"
+  | "paste"
+  | "image-bring-to-front"
+  | "image-bring-forward"
+  | "image-in-front-of-text"
+  | "image-send-to-back"
+  | "image-send-backward"
+  | "image-behind-text";
+
+export interface DocxTableContextMenuContext {
+  tableIndex: number;
+  rowIndex: number;
+  cellIndex: number;
+}
+
+export interface DocxTableContextMenuAction {
+  id: DocxTableContextMenuActionId;
+  label: string;
+  destructive?: boolean;
+}
+
+export interface DocxContextMenuAction {
+  id: DocxContextMenuActionId | (string & {});
+  label: string;
+  shortcut?: string;
+  destructive?: boolean;
+  disabled?: boolean;
+  children?: DocxContextMenuAction[];
+}
+
+export interface DocxTableContextMenuRenderProps {
+  context: DocxTableContextMenuContext;
+  actions: DocxTableContextMenuAction[];
+  runAction: (actionId: DocxTableContextMenuActionId) => void;
+  closeMenu: () => void;
+  position: {
+    x: number;
+    y: number;
+  };
+  documentTheme: DocxDocumentTheme;
+}
+
+export interface DocxContextMenuContext {
+  kind: "text" | "table" | "image";
+  activeTextRange?: DocxTextRange;
+  location?: DocxTextRangeLocation;
+  tableContext?: DocxTableContextMenuContext;
+  image?:
+    | {
+        location: DocxImageLocation;
+        floating?: NonNullable<ImageRunNode["floating"]>;
+      }
+    | undefined;
+}
+
+export interface DocxContextMenuRenderProps {
+  context: DocxContextMenuContext;
+  actions: DocxContextMenuAction[];
+  runAction: (actionId: DocxContextMenuActionId | (string & {})) => void;
+  closeMenu: () => void;
+  position: {
+    x: number;
+    y: number;
+  };
+  documentTheme: DocxDocumentTheme;
+}
+
+export interface DocxEditorViewerProps {
+  editor: DocxEditorController;
+  className?: string;
+  style?: React.CSSProperties;
+  pageGapBackgroundColor?: string;
+  visiblePageRange?: {
+    startPageIndex: number;
+    endPageIndex: number;
+  };
+  onPageCountChange?: (pageCount: number) => void;
+  onRequestPageReveal?: (pageIndex: number) => void;
+  headingStyles?: DocxHeadingStyleMap;
+  mode?: DocxEditorViewerMode;
+  showTrackedChanges?: boolean;
+  renderTrackedChangeCard?: (
+    props: DocxTrackedChangeCardRenderProps
+  ) => React.ReactNode;
+  renderTableContextMenu?: (
+    props: DocxTableContextMenuRenderProps
+  ) => React.ReactNode;
+  renderContextMenu?: (
+    props: DocxContextMenuRenderProps
+  ) => React.ReactNode;
+  onFormFieldDoubleClick?: (location: DocxFormFieldLocation) => void;
+}
+
+export interface DocxTrackedChangeCardRenderProps {
+  change: DocxTrackedChange;
+  kindLabel: string;
+  snippet: string;
+  formattedDate?: string;
+  accentColor: string;
+  documentTheme: DocxDocumentTheme;
+  pageIndex: number;
+  style: React.CSSProperties;
+}
+
+export type DocxEditorViewerMode = "edit" | "read-only";
+
+export interface UseDocxDocumentThemeResult {
+  documentTheme: DocxDocumentTheme;
+  isDarkDocument: boolean;
+  setDocumentTheme: (theme: DocxDocumentTheme) => void;
+  toggleDocumentTheme: () => void;
+}
+
+export interface UseDocxParagraphStylesResult {
+  paragraphStyles: ParagraphStyleDefinition[];
+  selectedParagraphStyleId?: string;
+  setParagraphStyle: (styleId?: string) => void;
+}
+
+export interface UseDocxLineSpacingResult {
+  lineSpacing: DocxLineSpacingInfo;
+  setLineSpacing: (lineMultiple: number) => void;
+}
+
+export interface UseDocxBordersResult {
+  borderContext: DocxBorderContext;
+  activeBorderPresets: DocxBorderPresetState;
+  applyBorderPreset: (preset: DocxBorderPreset) => void;
+}
+
+export interface UseDocxFormFieldsResult {
+  formFields: DocxSelectedFormField[];
+  selectedFormField?: DocxSelectedFormField;
+  selectFormField: (location?: DocxFormFieldLocation) => void;
+  setFormFieldValue: (location: DocxFormFieldLocation, value: string) => void;
+  toggleFormCheckbox: (location: DocxFormFieldLocation) => void;
+  updateFormFieldWidget: (
+    location: DocxFormFieldLocation,
+    patch: Partial<NonNullable<FormFieldRunNode["widget"]>>
+  ) => void;
+  updateSelectedFormFieldWidget: (
+    patch: Partial<NonNullable<FormFieldRunNode["widget"]>>
+  ) => void;
+}
+
+export interface UseDocxTrackChangesResult {
+  trackedChanges: DocxTrackedChange[];
+  showTrackedChanges: boolean;
+  setShowTrackedChanges: (showTrackedChanges: boolean) => void;
+  toggleShowTrackedChanges: () => void;
+  changesByLocation: Map<string, DocxTrackedChange[]>;
+  getChangesForLocation: (location: DocxTextRangeLocation) => DocxTrackedChange[];
+}
+
+export interface DocxSectionColumnLayout {
+  count: number;
+  gapPx: number;
+}
+
+export interface DocxPageLayoutInfo {
+  pageWidthPx: number;
+  pageHeightPx: number;
+  contentWidthPx: number;
+  contentHeightPx: number;
+  marginsPx: {
+    top: number;
+    right: number;
+    bottom: number;
+    left: number;
+  };
+  headerDistancePx: number;
+  footerDistancePx: number;
+  pageNumberStart: number;
+  columns?: DocxSectionColumnLayout;
+  viewportDefaults: {
+    zoomPercent: number;
+    pageGapPx: number;
+  };
+}
+
+export interface UseDocxPageLayoutResult {
+  layout: DocxPageLayoutInfo;
+}
+
+export const defaultStarterModel: DocModel = {
+  nodes: [
+    {
+      type: "paragraph",
+      style: { headingLevel: 1, styleId: "Heading1", styleName: "Heading 1" },
+      children: [{ type: "text", text: "React DOCX WYSIWYG", style: { bold: true } }]
+    },
+    {
+      type: "paragraph",
+      children: [
+        {
+          type: "text",
+          text: "Import a .docx, edit styles from the toolbar, and export.",
+          style: { highlight: "yellow" }
+        }
+      ]
+    },
+    {
+      type: "table",
+      style: {
+        borders: createDefaultEditorTableBorders()
+      },
+      rows: [
+        {
+          type: "table-row",
+          cells: [
+            {
+              type: "table-cell",
+              style: { backgroundColor: "#eef2ff" },
+              nodes: [{ type: "paragraph", children: [{ type: "text", text: "Header A" }] }]
+            },
+            {
+              type: "table-cell",
+              style: { backgroundColor: "#eef2ff" },
+              nodes: [{ type: "paragraph", children: [{ type: "text", text: "Header B" }] }]
+            }
+          ]
+        },
+        {
+          type: "table-row",
+          cells: [
+            {
+              type: "table-cell",
+              nodes: [{ type: "paragraph", children: [{ type: "text", text: "Row 1" }] }]
+            },
+            {
+              type: "table-cell",
+              nodes: [{ type: "paragraph", children: [{ type: "text", text: "Value" }] }]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  metadata: {
+    sourceParts: 1,
+    warnings: [],
+    headerSections: [],
+    footerSections: [],
+    paragraphStyles: [
+      { id: "Normal", name: "Body", isDefault: true },
+      {
+        id: "Heading1",
+        name: "Heading 1",
+        headingLevel: 1,
+        isPrimary: true,
+        runStyle: {
+          fontFamily: "Calibri Light",
+          fontSizePt: 16,
+          bold: true,
+          color: "#2f5496"
+        }
+      },
+      {
+        id: "Heading2",
+        name: "Heading 2",
+        headingLevel: 2,
+        isPrimary: true,
+        runStyle: {
+          fontFamily: "Calibri Light",
+          fontSizePt: 13,
+          bold: true,
+          color: "#2f5496"
+        }
+      },
+      {
+        id: "Heading3",
+        name: "Heading 3",
+        headingLevel: 3,
+        isPrimary: true,
+        runStyle: {
+          fontFamily: "Calibri",
+          fontSizePt: 12,
+          bold: true,
+          color: "#1f3763"
+        }
+      },
+      {
+        id: "Heading4",
+        name: "Heading 4",
+        headingLevel: 4,
+        runStyle: {
+          fontFamily: "Calibri",
+          fontSizePt: 11,
+          bold: true,
+          color: "#1f3763"
+        }
+      },
+      {
+        id: "Heading5",
+        name: "Heading 5",
+        headingLevel: 5,
+        runStyle: {
+          fontFamily: "Calibri",
+          fontSizePt: 11,
+          bold: true,
+          color: "#1f3763"
+        }
+      },
+      {
+        id: "Heading6",
+        name: "Heading 6",
+        headingLevel: 6,
+        runStyle: {
+          fontFamily: "Calibri",
+          fontSizePt: 11,
+          bold: true,
+          color: "#1f3763"
+        }
+      }
+    ],
+    defaultParagraphStyleId: "Normal"
+  }
+};
+
+function textRuns(paragraph: ParagraphNode): TextRunNode[] {
+  return paragraph.children.filter((child): child is TextRunNode => child.type === "text");
+}
+
+function paragraphText(paragraph: ParagraphNode): string {
+  return textRuns(paragraph)
+    .map((run) => run.text)
+    .join("");
+}
+
+function replaceTabLayoutMarkersWithTabText(root: HTMLElement): void {
+  const centerRightLayouts = Array.from(
+    root.querySelectorAll<HTMLElement>("[data-docx-tab-layout='center-right']")
+  );
+  centerRightLayouts.forEach((layout) => {
+    const first = layout.querySelector<HTMLElement>("[data-docx-tab-zone='0']")?.textContent ?? "";
+    const second = layout.querySelector<HTMLElement>("[data-docx-tab-zone='1']")?.textContent ?? "";
+    const third = layout.querySelector<HTMLElement>("[data-docx-tab-zone='2']")?.textContent ?? "";
+    layout.replaceWith(`${first}\t${second}\t${third}`);
+  });
+
+  const leaderLayouts = Array.from(
+    root.querySelectorAll<HTMLElement>("[data-docx-tab-layout='leader']")
+  );
+  leaderLayouts.forEach((layout) => {
+    const left = layout.querySelector<HTMLElement>("[data-docx-tab-zone='left']")?.textContent ?? "";
+    const right = layout.querySelector<HTMLElement>("[data-docx-tab-zone='right']")?.textContent ?? "";
+    layout.replaceWith(`${left}\t${right}`);
+  });
+
+  const explicitTabMarkers = Array.from(
+    root.querySelectorAll<HTMLElement>("[data-docx-tab-char='true']")
+  );
+  explicitTabMarkers.forEach((marker) => {
+    marker.replaceWith("\t");
+  });
+}
+
+function editableTextFromElement(element: HTMLElement): string {
+  const clone = element.cloneNode(true) as HTMLElement;
+  replaceTabLayoutMarkersWithTabText(clone);
+  clone.querySelectorAll("[data-docx-numbering-label='true']").forEach((label) => {
+    label.remove();
+  });
+  clone.querySelectorAll("br").forEach((lineBreak) => {
+    lineBreak.replaceWith("\n");
+  });
+  return clone.textContent ?? "";
+}
+
+function editableTextFromTableCellElement(element: HTMLElement): string {
+  const paragraphLikeChildren = Array.from(element.children).filter(
+    (child): child is HTMLElement =>
+      child instanceof HTMLElement && child.getAttribute("contenteditable") !== "false"
+  );
+  if (paragraphLikeChildren.length === 0) {
+    return editableTextFromElement(element);
+  }
+
+  return paragraphLikeChildren
+    .map((paragraphLikeChild) => {
+      if (paragraphLikeChild.tagName.toUpperCase() === "BR") {
+        return "";
+      }
+      const text = editableTextFromElement(paragraphLikeChild);
+      return text === "\n" ? "" : text;
+    })
+    .join("\n");
+}
+
+function editableTextFromDraftHtml(html: string): string {
+  if (typeof document === "undefined") {
+    return html
+      .replace(/<br\s*\/?>/gi, "\n")
+      .replace(/<[^>]+>/g, "")
+      .replace(/&nbsp;/gi, " ");
+  }
+
+  const container = document.createElement("div");
+  container.innerHTML = html;
+  return editableTextFromElement(container);
+}
+
+function editableTextFromTableCellDraftHtml(html: string): string {
+  if (typeof document === "undefined") {
+    return editableTextFromDraftHtml(html);
+  }
+
+  const container = document.createElement("div");
+  container.innerHTML = html;
+  return editableTextFromTableCellElement(container);
+}
+
+function formFieldDisplayValue(field: FormFieldRunNode): string {
+  switch (field.fieldType) {
+    case "checkbox":
+      return field.checked ?? field.widget?.checkbox?.defaultChecked
+        ? field.checkedSymbol ?? "☒"
+        : field.uncheckedSymbol ?? "☐";
+    case "dropdown":
+      return field.value ?? field.options?.[0]?.displayText ?? "";
+    case "date":
+      return field.value ?? "";
+    case "text":
+      return field.value ?? field.widget?.text?.defaultText ?? "";
+    default:
+      return field.value ?? "";
+  }
+}
+
+function firstRunStyle(paragraph?: ParagraphNode): TextRunNode["style"] {
+  return textRuns(paragraph ?? ({ type: "paragraph", children: [] } as ParagraphNode))[0]?.style;
+}
+
+function ensureTextRunNode(paragraph: ParagraphNode): TextRunNode {
+  const existing = paragraph.children.find((child): child is TextRunNode => child.type === "text");
+  if (existing) {
+    return existing;
+  }
+
+  const created: TextRunNode = {
+    type: "text",
+    text: "",
+    style: {}
+  };
+  paragraph.children.unshift(created);
+  return created;
+}
+
+function isParagraphCellContentNode(node: TableCellContentNode): node is ParagraphNode {
+  return node.type === "paragraph";
+}
+
+function isTableCellTableContentNode(node: TableCellContentNode): node is TableNode {
+  return node.type === "table";
+}
+
+function tableCellParagraphs(nodeContent: TableCellContentNode[]): ParagraphNode[] {
+  return nodeContent.filter(isParagraphCellContentNode);
+}
+
+function tableCellParagraphsRecursively(nodeContent: TableCellContentNode[]): ParagraphNode[] {
+  const paragraphs: ParagraphNode[] = [];
+
+  const walk = (entries: TableCellContentNode[]): void => {
+    for (const entry of entries) {
+      if (isParagraphCellContentNode(entry)) {
+        paragraphs.push(entry);
+        continue;
+      }
+
+      for (const row of entry.rows) {
+        for (const nestedCell of row.cells) {
+          walk(nestedCell.nodes);
+        }
+      }
+    }
+  };
+
+  walk(nodeContent);
+  return paragraphs;
+}
+
+function tableCellHasImage(nodeContent: TableCellContentNode[]): boolean {
+  for (const entry of nodeContent) {
+    if (isParagraphCellContentNode(entry) && paragraphHasImage(entry)) {
+      return true;
+    }
+
+    if (isTableCellTableContentNode(entry)) {
+      for (const row of entry.rows) {
+        for (const nestedCell of row.cells) {
+          if (tableCellHasImage(nestedCell.nodes)) {
+            return true;
+          }
+        }
+      }
+    }
+  }
+
+  return false;
+}
+
+function paragraphHasImage(paragraph: ParagraphNode): boolean {
+  return paragraph.children.some((child) => child.type === "image");
+}
+
+function paragraphHasInFlowImage(paragraph: ParagraphNode): boolean {
+  return paragraph.children.some((child) => {
+    if (child.type !== "image") {
+      return false;
+    }
+
+    return !shouldRenderAbsoluteFloatingImage(child) && !shouldRenderWrappedFloatingImage(child);
+  });
+}
+
+function collectHeadingTextColorByLevel(model: DocModel): Partial<Record<number, string>> {
+  const colorsByLevel: Partial<Record<number, string>> = {};
+  const paragraphStyleById = new Map(
+    (model.metadata.paragraphStyles ?? []).map((styleDefinition) => [styleDefinition.id, styleDefinition])
+  );
+
+  const resolveParagraphHeadingLevel = (paragraph: ParagraphNode): number | undefined => {
+    if (Number.isFinite(paragraph.style?.headingLevel) && (paragraph.style?.headingLevel as number) > 0) {
+      return Math.round(paragraph.style?.headingLevel as number);
+    }
+
+    const styleDefinition = paragraph.style?.styleId
+      ? paragraphStyleById.get(paragraph.style.styleId)
+      : undefined;
+    const fromStyleDefinition = styleDefinition ? resolveParagraphStyleHeadingLevel(styleDefinition) : undefined;
+    if (fromStyleDefinition) {
+      return fromStyleDefinition;
+    }
+
+    return (
+      headingLevelFromStyleLabel(paragraph.style?.styleId) ??
+      headingLevelFromStyleLabel(paragraph.style?.styleName)
+    );
+  };
+
+  const resolveParagraphTextColor = (paragraph: ParagraphNode): string | undefined => {
+    for (const child of paragraph.children) {
+      if ((child.type === "text" || child.type === "form-field") && child.style?.color) {
+        return child.style.color;
+      }
+    }
+
+    const styleDefinition = paragraph.style?.styleId
+      ? paragraphStyleById.get(paragraph.style.styleId)
+      : undefined;
+    return styleDefinition?.runStyle?.color;
+  };
+
+  const registerParagraph = (paragraph: ParagraphNode): void => {
+    const headingLevel = resolveParagraphHeadingLevel(paragraph);
+    if (!headingLevel || colorsByLevel[headingLevel]) {
+      return;
+    }
+
+    const color = resolveParagraphTextColor(paragraph);
+    if (!color) {
+      return;
+    }
+
+    colorsByLevel[headingLevel] = color;
+  };
+
+  const walkCellNodes = (nodes: TableCellContentNode[]): void => {
+    nodes.forEach((node) => {
+      if (node.type === "paragraph") {
+        registerParagraph(node);
+        return;
+      }
+
+      node.rows.forEach((row) => {
+        row.cells.forEach((cell) => {
+          walkCellNodes(cell.nodes);
+        });
+      });
+    });
+  };
+
+  model.nodes.forEach((node) => {
+    if (node.type === "paragraph") {
+      registerParagraph(node);
+      return;
+    }
+
+    node.rows.forEach((row) => {
+      row.cells.forEach((cell) => {
+        walkCellNodes(cell.nodes);
+      });
+    });
+  });
+
+  return colorsByLevel;
+}
+
+function imageUsesLikelyUnsupportedBrowserFormat(image: ImageRunNode): boolean {
+  const contentType = image.contentType?.trim().toLowerCase();
+  if (
+    contentType === "image/tiff" ||
+    contentType === "image/tif" ||
+    contentType === "image/x-emf" ||
+    contentType === "image/emf" ||
+    contentType === "image/x-wmf" ||
+    contentType === "image/wmf"
+  ) {
+    return true;
+  }
+
+  const src = image.src?.trim().toLowerCase();
+  return Boolean(
+    src &&
+      (src.startsWith("data:image/tiff") ||
+        src.startsWith("data:image/tif") ||
+        src.startsWith("data:image/x-emf") ||
+        src.startsWith("data:image/emf") ||
+        src.startsWith("data:image/x-wmf") ||
+        src.startsWith("data:image/wmf"))
+  );
+}
+
+function sectionNodesNeedPageWideLayout(
+  nodes: DocModel["nodes"],
+  pageWidthPx: number,
+  contentWidthPx: number
+): boolean {
+  const safePageWidthPx = Math.max(1, Math.round(pageWidthPx));
+  const safeContentWidthPx = Math.max(1, Math.round(contentWidthPx));
+  const requiresWideImageLayout = (image: ImageRunNode): boolean => {
+    if (!image.floating) {
+      return false;
+    }
+
+    const horizontalRelativeTo = image.floating.horizontalRelativeTo?.toLowerCase();
+    if (image.floating.behindDocument || horizontalRelativeTo === "page") {
+      return true;
+    }
+
+    if (shouldRenderAbsoluteFloatingImage(image)) {
+      return true;
+    }
+
+    if (
+      Number.isFinite(image.widthPx) &&
+      Number.isFinite(image.floating.xPx) &&
+      (image.widthPx as number) >= safeContentWidthPx - 12 &&
+      (image.floating.xPx as number) <= 12
+    ) {
+      return true;
+    }
+
+    if (
+      Number.isFinite(image.widthPx) &&
+      Number.isFinite(image.floating.xPx) &&
+      (image.widthPx as number) >= safePageWidthPx - 12 &&
+      (image.floating.xPx as number) <= 12
+    ) {
+      return true;
+    }
+
+    return false;
+  };
+
+  const paragraphNeedsWideLayout = (paragraph: ParagraphNode): boolean =>
+    paragraph.children.some(
+      (child) => child.type === "image" && requiresWideImageLayout(child)
+    );
+  const tableNeedsWideLayout = (table: TableNode): boolean =>
+    table.rows.some((row) =>
+      row.cells.some((cell) =>
+        cell.nodes.some((cellNode) =>
+          cellNode.type === "paragraph"
+            ? paragraphNeedsWideLayout(cellNode)
+            : tableNeedsWideLayout(cellNode)
+        )
+      )
+    );
+
+  return nodes.some((node) =>
+    node.type === "paragraph" ? paragraphNeedsWideLayout(node) : tableNeedsWideLayout(node)
+  );
+}
+
+function paragraphHasFormField(paragraph: ParagraphNode): boolean {
+  return paragraph.children.some((child) => child.type === "form-field");
+}
+
+function paragraphHasVisibleText(paragraph: ParagraphNode): boolean {
+  return paragraph.children.some(
+    (child) =>
+      (child.type === "text" && child.text.trim().length > 0) ||
+      (child.type === "form-field" && formFieldDisplayValue(child).trim().length > 0)
+  );
+}
+
+function paragraphLooksLikeCheckboxChoiceRow(paragraph: ParagraphNode): boolean {
+  if (paragraph.children.some((child) => child.type === "image")) {
+    return false;
+  }
+
+  const checkboxCount = paragraph.children.filter(
+    (child) => child.type === "form-field" && child.fieldType === "checkbox"
+  ).length;
+  if (checkboxCount < 2) {
+    return false;
+  }
+
+  const combinedText = paragraph.children
+    .filter((child): child is TextRunNode => child.type === "text")
+    .map((child) => child.text)
+    .join("");
+  if (!combinedText.includes("\t")) {
+    return false;
+  }
+
+  const normalized = combinedText.replace(/\s+/g, " ").trim().toLowerCase();
+  return normalized.includes("yes") && normalized.includes("no");
+}
+
+function checkboxChoiceRowTabWidthPx(paragraph: ParagraphNode): number {
+  const checkboxCount = paragraph.children.filter(
+    (child) => child.type === "form-field" && child.fieldType === "checkbox"
+  ).length;
+  const labelCharCount = paragraph.children
+    .filter((child): child is TextRunNode => child.type === "text")
+    .map((child) => child.text.replace(/\t/g, ""))
+    .join("")
+    .replace(/\s+/g, "")
+    .length;
+
+  if (checkboxCount >= 3) {
+    return 6;
+  }
+
+  if (labelCharCount <= 8) {
+    return 8;
+  }
+
+  return 10;
+}
+
+function attachTextToPreviousCheckbox(
+  paragraph: ParagraphNode,
+  childIndex: number,
+  text: string
+): string {
+  if (!text || text[0] !== " ") {
+    return text;
+  }
+
+  const previousChild = childIndex > 0 ? paragraph.children[childIndex - 1] : undefined;
+  if (previousChild?.type !== "form-field" || previousChild.fieldType !== "checkbox") {
+    return text;
+  }
+
+  return `\u00a0${text.slice(1)}`;
+}
+
+function runFontSizePx(style?: TextRunNode["style"] | FormFieldRunNode["style"]): number {
+  if (style?.fontSizePt && Number.isFinite(style.fontSizePt) && style.fontSizePt > 0) {
+    return Math.max(9, (style.fontSizePt * 96) / 72);
+  }
+
+  return Math.max(9, (DEFAULT_PARAGRAPH_FONT_SIZE_PT * 96) / 72);
+}
+
+function estimateTextAdvanceWidthPx(
+  text: string,
+  style?: TextRunNode["style"] | FormFieldRunNode["style"]
+): number {
+  if (!text) {
+    return 0;
+  }
+
+  const normalized = text.replace(/\u00a0/g, " ");
+  const fontSizePx = runFontSizePx(style);
+  let total = 0;
+
+  for (const char of normalized) {
+    if (char === "\n" || char === "\r") {
+      continue;
+    }
+    if (char === "\t") {
+      total += fontSizePx * 2;
+      continue;
+    }
+    if (char === " ") {
+      total += fontSizePx * 0.33;
+      continue;
+    }
+    if (/[.,:;'"`!|ilI1]/.test(char)) {
+      total += fontSizePx * 0.29;
+      continue;
+    }
+    if (/[A-Z0-9]/.test(char)) {
+      total += fontSizePx * 0.6;
+      continue;
+    }
+    if (/[\u3000-\u9fff]/.test(char)) {
+      total += fontSizePx * 0.95;
+      continue;
+    }
+    total += fontSizePx * 0.54;
+  }
+
+  return Math.max(0, Math.round(total));
+}
+
+function updateEstimatedLineWidthPxForText(
+  currentLineWidthPx: number,
+  text: string,
+  style?: TextRunNode["style"] | FormFieldRunNode["style"]
+): number {
+  if (!text) {
+    return currentLineWidthPx;
+  }
+
+  if (!text.includes("\n")) {
+    return currentLineWidthPx + estimateTextAdvanceWidthPx(text, style);
+  }
+
+  const segments = text.split("\n");
+  const trailingSegment = segments[segments.length - 1] ?? "";
+  return estimateTextAdvanceWidthPx(trailingSegment, style);
+}
+
+function resolveTabSpacerWidthPx(
+  tabStopPositionsPx: number[],
+  currentLineWidthPx: number,
+  fallbackWidthPx: number
+): number {
+  const safeFallback = Math.max(12, Math.round(fallbackWidthPx));
+  if (tabStopPositionsPx.length === 0) {
+    return safeFallback;
+  }
+
+  const nextStop = tabStopPositionsPx.find((stop) => stop > currentLineWidthPx + 0.5);
+  if (nextStop !== undefined) {
+    return Math.max(8, Math.round(nextStop - currentLineWidthPx));
+  }
+
+  const lastStop = tabStopPositionsPx[tabStopPositionsPx.length - 1] ?? 0;
+  const overflow = Math.max(0, currentLineWidthPx - lastStop);
+  const stepCount = Math.floor(overflow / safeFallback) + 1;
+  const projectedStop = lastStop + stepCount * safeFallback;
+  return Math.max(8, Math.round(projectedStop - currentLineWidthPx));
+}
+
+function estimateInteractiveFieldWidthPx(field: FormFieldRunNode): number {
+  if (field.fieldType === "checkbox") {
+    return Math.max(14, estimateTextAdvanceWidthPx(formFieldDisplayValue(field), field.style));
+  }
+
+  if (field.fieldType === "date") {
+    const text = field.value?.trim() || "MM/DD/YYYY";
+    return Math.max(68, Math.min(220, estimateTextAdvanceWidthPx(text, field.style) + 12));
+  }
+
+  if (field.fieldType === "dropdown") {
+    const text =
+      field.value?.trim() ||
+      field.options?.[0]?.displayText?.trim() ||
+      field.title?.trim() ||
+      "Select";
+    return Math.max(58, Math.min(240, estimateTextAdvanceWidthPx(text, field.style) + 16));
+  }
+
+  const defaultText = field.widget?.text?.defaultText?.trim();
+  const textValue = field.value?.trim() || defaultText || field.title?.trim() || "Click here.";
+  return Math.max(42, Math.min(280, estimateTextAdvanceWidthPx(textValue, field.style) + 12));
+}
+
+function paragraphIsEffectivelyEmpty(paragraph: ParagraphNode): boolean {
+  if (paragraphHasImage(paragraph) || paragraphHasFormField(paragraph)) {
+    return false;
+  }
+
+  return paragraph.children.every((child) => child.type === "text" && child.text.length === 0);
+}
+
+function nodeHasSubstantiveContentForPagination(node: DocModel["nodes"][number]): boolean {
+  if (node.type === "table") {
+    return true;
+  }
+
+  if (paragraphHasVisibleText(node) || paragraphHasImage(node) || paragraphHasFormField(node)) {
+    return true;
+  }
+
+  return (
+    paragraphHasPageBreakBefore(node) ||
+    paragraphHasExplicitPageBreak(node) ||
+    sectionBreakAfterParagraphStartsNewPage(node)
+  );
+}
+
+function paragraphBookmarkNames(paragraph: ParagraphNode): string[] {
+  const sourceXml = paragraph.sourceXml ?? "";
+  if (!sourceXml) {
+    return [];
+  }
+
+  const names = [...sourceXml.matchAll(new RegExp(BOOKMARK_START_XML_PATTERN.source, "gi"))]
+    .map((match) => match[1]?.trim())
+    .filter((name): name is string => Boolean(name && name.length > 0 && name !== "_GoBack"));
+  return [...new Set(names)];
+}
+
+function paragraphReferencedNoteIds(
+  paragraph: ParagraphNode,
+  noteType: "footnote" | "endnote"
+): number[] {
+  const sourceXml = paragraph.sourceXml ?? "";
+  if (!sourceXml) {
+    return [];
+  }
+
+  const pattern =
+    noteType === "footnote"
+      ? new RegExp(FOOTNOTE_REFERENCE_XML_PATTERN.source, "gi")
+      : new RegExp(ENDNOTE_REFERENCE_XML_PATTERN.source, "gi");
+  const references: number[] = [];
+
+  for (const match of sourceXml.matchAll(pattern)) {
+    const rawId = Number(match[1]);
+    if (!Number.isFinite(rawId) || rawId < 0) {
+      continue;
+    }
+    references.push(Math.round(rawId));
+  }
+
+  return references;
+}
+
+function nodeReferencedNoteIds(
+  node: DocModel["nodes"][number],
+  noteType: "footnote" | "endnote",
+  tableRowRange?: TableRowRange,
+  paragraphLineRange?: ParagraphLineRange
+): number[] {
+  if (node.type === "paragraph") {
+    if (paragraphLineRange && paragraphLineRange.startLineIndex > 0) {
+      return [];
+    }
+    return paragraphReferencedNoteIds(node, noteType);
+  }
+
+  const references: number[] = [];
+  const startRowIndex = Math.max(0, tableRowRange?.startRowIndex ?? 0);
+  const endRowIndex = Math.min(node.rows.length, tableRowRange?.endRowIndex ?? node.rows.length);
+  for (let rowIndex = startRowIndex; rowIndex < endRowIndex; rowIndex += 1) {
+    const row = node.rows[rowIndex];
+    row?.cells.forEach((cell) => {
+      tableCellParagraphsRecursively(cell.nodes).forEach((paragraph) => {
+        references.push(...paragraphReferencedNoteIds(paragraph, noteType));
+      });
+    });
+  }
+  return references;
+}
+
+function eventTargetIsInteractiveControl(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) {
+    return false;
+  }
+
+  return Boolean(target.closest("a[href],button,input,select,textarea,[role='checkbox']"));
+}
+
+function eventTargetIsNestedTableParagraphEditor(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) {
+    return false;
+  }
+
+  return Boolean(target.closest("[data-docx-table-cell-paragraph-host='true']"));
+}
+
+function sectionBreakPropertiesStartNewPage(sectionPropertiesXml: string): boolean {
+  const sectionType =
+    sectionPropertiesXml.match(SECTION_TYPE_XML_PATTERN)?.[1]?.trim().toLowerCase() ?? "nextpage";
+
+  if (sectionType === "continuous") {
+    return false;
+  }
+
+  if (sectionType === "nextcolumn") {
+    const columnsTag = sectionPropertiesXml.match(/<w:cols\b[^>]*\/?>/i)?.[0];
+    const columnsCount = Number.parseInt(columnsTag?.match(/\bw:num="(\d+)"/i)?.[1] ?? "", 10);
+    // In single-column sections, "nextColumn" effectively behaves like "nextPage".
+    return !Number.isFinite(columnsCount) || columnsCount <= 1;
+  }
+
+  return true;
+}
+
+function paragraphHasExplicitPageBreak(paragraph: ParagraphNode): boolean {
+  const xml = paragraph.sourceXml ?? "";
+  if (!xml) {
+    return false;
+  }
+
+  const cached = paragraphBreakFlagsBySourceXml.get(xml);
+  if (cached) {
+    return cached.explicitPageBreak;
+  }
+
+  const flags = {
+    explicitPageBreak: PAGE_BREAK_XML_PATTERN.test(xml),
+    lastRenderedPageBreak: LAST_RENDERED_PAGE_BREAK_XML_PATTERN.test(xml),
+    pageBreakBefore: isOnOffTagEnabled(xml.match(PAGE_BREAK_BEFORE_XML_PATTERN)?.[0]),
+    sectionBreakStartsNewPage: (() => {
+      const sectionProperties = xml.match(SECTION_PROPERTIES_XML_PATTERN)?.[0];
+      if (!sectionProperties) {
+        return false;
+      }
+      // ECMA-376 §2.6.22: omitted <w:type> defaults to nextPage.
+      return sectionBreakPropertiesStartNewPage(sectionProperties);
+    })()
+  };
+  setCacheEntry(paragraphBreakFlagsBySourceXml, xml, flags);
+  return flags.explicitPageBreak;
+}
+
+function paragraphHasLastRenderedPageBreak(paragraph: ParagraphNode): boolean {
+  const xml = paragraph.sourceXml ?? "";
+  if (!xml) {
+    return false;
+  }
+
+  const cached = paragraphBreakFlagsBySourceXml.get(xml);
+  if (cached) {
+    return cached.lastRenderedPageBreak;
+  }
+
+  return paragraphHasExplicitPageBreak(paragraph)
+    ? (paragraphBreakFlagsBySourceXml.get(xml)?.lastRenderedPageBreak ?? false)
+    : false;
+}
+
+function isOnOffTagEnabled(tagXml: string | undefined): boolean {
+  if (!tagXml) {
+    return false;
+  }
+
+  const valueMatch = tagXml.match(/\bw:val="([^"]+)"/i)?.[1]?.trim().toLowerCase();
+  if (!valueMatch) {
+    return true;
+  }
+
+  return !["0", "false", "off", "no"].includes(valueMatch);
+}
+
+function sectionTitlePageEnabled(sectionPropertiesXml?: string): boolean {
+  if (!sectionPropertiesXml) {
+    return false;
+  }
+
+  const titlePageTag = sectionPropertiesXml.match(/<w:titlePg\b[^>]*\/?>/i)?.[0];
+  return isOnOffTagEnabled(titlePageTag);
+}
+
+function selectSectionVariantForPage<T extends HeaderSection | FooterSection>(
+  sections: T[],
+  sectionPropertiesXml: string | undefined,
+  pageIndex: number
+): T | undefined {
+  if (sections.length === 0) {
+    return undefined;
+  }
+
+  const titlePage = sectionTitlePageEnabled(sectionPropertiesXml);
+  const normalizeType = (value: string | undefined): string => value?.trim().toLowerCase() ?? "";
+  const first = sections.find((section) => normalizeType(section.referenceType) === "first");
+  const defaultSection = sections.find((section) => {
+    const referenceType = normalizeType(section.referenceType);
+    return referenceType === "default" || referenceType === "";
+  });
+  const even = sections.find((section) => normalizeType(section.referenceType) === "even");
+
+  const safePageIndex = Number.isFinite(pageIndex) ? Math.max(0, Math.round(pageIndex)) : 0;
+  const oddPageNumber = safePageIndex % 2 === 0;
+
+  if (safePageIndex === 0 && titlePage && first) {
+    return first;
+  }
+
+  if (!oddPageNumber && even) {
+    return even;
+  }
+
+  if (defaultSection) {
+    return defaultSection;
+  }
+
+  return first ?? even ?? sections[0];
+}
+
+function resolveSectionIndexForNodeIndex(
+  sections: ResolvedDocumentSection[],
+  nodeIndex: number,
+  previousSectionIndex: number
+): number {
+  if (sections.length === 0) {
+    return 0;
+  }
+
+  const safePrevious = Math.max(0, Math.min(previousSectionIndex, sections.length - 1));
+  let sectionIndex = safePrevious;
+
+  if (nodeIndex < sections[sectionIndex].startNodeIndex) {
+    sectionIndex = 0;
+  }
+
+  while (
+    sectionIndex + 1 < sections.length &&
+    sections[sectionIndex + 1].startNodeIndex <= nodeIndex
+  ) {
+    sectionIndex += 1;
+  }
+
+  return sectionIndex;
+}
+
+function paragraphHasPageBreakBefore(paragraph: ParagraphNode): boolean {
+  if (paragraph.style?.pageBreakBefore === true) {
+    return true;
+  }
+
+  const xml = paragraph.sourceXml ?? "";
+  if (!xml) {
+    return false;
+  }
+
+  const cached = paragraphBreakFlagsBySourceXml.get(xml);
+  if (cached) {
+    return cached.pageBreakBefore;
+  }
+
+  return paragraphHasExplicitPageBreak(paragraph)
+    ? (paragraphBreakFlagsBySourceXml.get(xml)?.pageBreakBefore ?? false)
+    : false;
+}
+
+function sectionBreakAfterParagraphStartsNewPage(paragraph: ParagraphNode): boolean {
+  const xml = paragraph.sourceXml ?? "";
+  if (!xml) {
+    return false;
+  }
+
+  const cached = paragraphBreakFlagsBySourceXml.get(xml);
+  if (cached) {
+    return cached.sectionBreakStartsNewPage;
+  }
+
+  return paragraphHasExplicitPageBreak(paragraph)
+    ? (paragraphBreakFlagsBySourceXml.get(xml)?.sectionBreakStartsNewPage ?? false)
+    : false;
+}
+
+function collectDocxHardPageBreakStartNodeIndexes(model: DocModel): Set<number> {
+  const breaks = collectTopLevelExplicitPageBreakStartNodeIndexes(model.nodes);
+
+  const sections = resolveDocumentSectionsFromMetadata(model.metadata);
+  for (let sectionIndex = 1; sectionIndex < sections.length; sectionIndex += 1) {
+    const section = sections[sectionIndex];
+    const startNodeIndex = Math.max(0, Math.round(section.startNodeIndex));
+    if (startNodeIndex <= 0 || startNodeIndex >= model.nodes.length) {
+      continue;
+    }
+
+    const sectionPropertiesXml = section.sectionPropertiesXml;
+    if (!sectionPropertiesXml) {
+      continue;
+    }
+
+    // Section break pagination should follow the section that starts at this
+    // node index, which is represented by metadata.sections.
+    if (sectionBreakPropertiesStartNewPage(sectionPropertiesXml)) {
+      breaks.add(startNodeIndex);
+    }
+  }
+
+  for (const breakIndex of [...breaks]) {
+    if (breakIndex <= 0 || breakIndex >= model.nodes.length) {
+      breaks.delete(breakIndex);
+    }
+  }
+
+  return breaks;
+}
+
+function paragraphDominantFontSizePt(paragraph: ParagraphNode): number | undefined {
+  const weightByFontSizePt = new Map<number, number>();
+
+  const addWeight = (fontSizePt: number | undefined, weight: number): void => {
+    if (!Number.isFinite(fontSizePt) || (fontSizePt as number) <= 0 || weight <= 0) {
+      return;
+    }
+
+    const key = Number((fontSizePt as number).toFixed(2));
+    weightByFontSizePt.set(key, (weightByFontSizePt.get(key) ?? 0) + weight);
+  };
+
+  paragraph.children.forEach((child) => {
+    if (child.type !== "text" && child.type !== "form-field") {
+      return;
+    }
+
+    const text =
+      child.type === "text"
+        ? child.text.replace(/\u2063/g, "")
+        : formFieldDisplayValue(child);
+    const textWeight = Math.max(1, text.length);
+    addWeight(child.style?.fontSizePt, textWeight);
+  });
+
+  if (weightByFontSizePt.size === 0) {
+    return undefined;
+  }
+
+  let dominantFontSizePt: number | undefined;
+  let dominantWeight = -1;
+
+  for (const [fontSizePt, weight] of weightByFontSizePt) {
+    if (
+      weight > dominantWeight ||
+      (weight === dominantWeight &&
+        (dominantFontSizePt === undefined || fontSizePt > dominantFontSizePt))
+    ) {
+      dominantWeight = weight;
+      dominantFontSizePt = fontSizePt;
+    }
+  }
+
+  return dominantFontSizePt;
+}
+
+function paragraphBaseFontSizePx(paragraph: ParagraphNode): number {
+  const dominantRunFontSizePt = paragraphDominantFontSizePt(paragraph);
+  const fontSizePt =
+    dominantRunFontSizePt && dominantRunFontSizePt > 0
+      ? dominantRunFontSizePt
+      : Number.isFinite(paragraph.style?.headingLevel)
+        ? DEFAULT_PARAGRAPH_FONT_SIZE_PT + Math.max(0, 6 - (paragraph.style?.headingLevel ?? 6))
+        : DEFAULT_PARAGRAPH_FONT_SIZE_PT;
+
+  return Math.max(10, Math.round((fontSizePt * 96) / 72));
+}
+
+function normalizeFontFamilyToken(fontFamily?: string): string | undefined {
+  if (!fontFamily) {
+    return undefined;
+  }
+
+  const [firstToken] = fontFamily.split(",");
+  const normalized = firstToken?.trim().replace(/^['"]+|['"]+$/g, "").toLowerCase();
+  return normalized || undefined;
+}
+
+function paragraphDominantFontFamily(paragraph: ParagraphNode): string | undefined {
+  const weightByFamily = new Map<string, number>();
+  const addWeight = (fontFamily: string | undefined, weight: number): void => {
+    const normalizedFamily = normalizeFontFamilyToken(fontFamily);
+    if (!normalizedFamily) {
+      return;
+    }
+
+    const safeWeight = Math.max(1, Math.round(weight));
+    weightByFamily.set(normalizedFamily, (weightByFamily.get(normalizedFamily) ?? 0) + safeWeight);
+  };
+
+  paragraph.children.forEach((child) => {
+    if (child.type !== "text" && child.type !== "form-field") {
+      return;
+    }
+
+    const text =
+      child.type === "text"
+        ? child.text.replace(/\u2063/g, "")
+        : formFieldDisplayValue(child);
+    addWeight(child.style?.fontFamily, text.length);
+  });
+
+  if (weightByFamily.size === 0) {
+    return undefined;
+  }
+
+  let dominantFamily: string | undefined;
+  let dominantWeight = -1;
+  for (const [family, weight] of weightByFamily) {
+    if (weight > dominantWeight) {
+      dominantFamily = family;
+      dominantWeight = weight;
+    }
+  }
+
+  return dominantFamily;
+}
+
+function singleLineAutoScaleForFontFamily(fontFamily?: string): number {
+  const normalized = normalizeFontFamilyToken(fontFamily) ?? fontFamily?.toLowerCase();
+  if (!normalized) {
+    return WORD_SINGLE_LINE_AUTO_SCALE;
+  }
+
+  if (
+    normalized === "arial"
+  ) {
+    return WORD_SINGLE_LINE_AUTO_SCALE_SANS;
+  }
+
+  return WORD_SINGLE_LINE_AUTO_SCALE;
+}
+
+function paragraphLineCount(paragraph: ParagraphNode): number {
+  return paragraphLineCountWithinWidth(paragraph);
+}
+
+function estimatedGlyphWidthPx(character: string, fontSizePx: number): number {
+  if (/\s/.test(character)) {
+    return fontSizePx * 0.34;
+  }
+  if (/[A-Z]/.test(character)) {
+    return fontSizePx * 0.66;
+  }
+  if (/[a-z]/.test(character)) {
+    return fontSizePx * 0.55;
+  }
+  if (/[0-9]/.test(character)) {
+    return fontSizePx * 0.57;
+  }
+  if (/[\u2e80-\u9fff\u3040-\u30ff\uac00-\ud7af]/.test(character)) {
+    return fontSizePx;
+  }
+
+  return fontSizePx * 0.48;
+}
+
+function fallbackMeasureTextWidthPx(text: string, fontSizePx: number): number {
+  let widthPx = 0;
+  for (const character of text) {
+    widthPx += estimatedGlyphWidthPx(character, fontSizePx);
+  }
+  return widthPx;
+}
+
+function resolveMeasureFontSizePx(
+  style: TextRunNode["style"] | FormFieldRunNode["style"] | undefined,
+  paragraphBaseFontPx: number
+): number {
+  const runFontSizePx =
+    Number.isFinite(style?.fontSizePt) && (style?.fontSizePt as number) > 0
+      ? ((style?.fontSizePt as number) * 96) / 72
+      : paragraphBaseFontPx;
+  const verticalAlignScale = style?.verticalAlign === "superscript" || style?.verticalAlign === "subscript"
+    ? SCRIPT_FONT_SCALE
+    : 1;
+  return Math.max(8, Math.round(runFontSizePx * verticalAlignScale));
+}
+
+function resolveMeasureFont(
+  style: TextRunNode["style"] | FormFieldRunNode["style"] | undefined,
+  paragraphBaseFontPx: number
+): string {
+  const fontStyle = style?.italic ? "italic" : "normal";
+  const fontWeight = style?.bold ? "700" : "400";
+  const fontSizePx = resolveMeasureFontSizePx(style, paragraphBaseFontPx);
+  const fontFamily = cssFontFamily(style?.fontFamily) ?? "\"Calibri\", \"Segoe UI\", Arial, sans-serif";
+  return `${fontStyle} normal ${fontWeight} ${fontSizePx}px ${fontFamily}`;
+}
+
+function measureTextWidthPx(
+  text: string,
+  style: TextRunNode["style"] | FormFieldRunNode["style"] | undefined,
+  paragraphBaseFontPx: number
+): number {
+  if (!text) {
+    return 0;
+  }
+
+  const font = resolveMeasureFont(style, paragraphBaseFontPx);
+  const cacheKey = `${font}\u0000${text}`;
+  const cached = textWidthByFontAndValue.get(cacheKey);
+  if (cached !== undefined) {
+    return cached;
+  }
+
+  const fontSizePx = resolveMeasureFontSizePx(style, paragraphBaseFontPx);
+  let measuredWidthPx = fallbackMeasureTextWidthPx(text, fontSizePx);
+
+  if (typeof document !== "undefined") {
+    try {
+      if (!paragraphMeasureCanvasContext) {
+        const canvas = document.createElement("canvas");
+        paragraphMeasureCanvasContext = canvas.getContext("2d") ?? undefined;
+      }
+      const context = paragraphMeasureCanvasContext;
+      if (context) {
+        context.font = font;
+        measuredWidthPx = context.measureText(text).width;
+      }
+    } catch {
+      // Keep deterministic fallback width when canvas measurement is unavailable.
+    }
+  }
+
+  setCacheEntry(textWidthByFontAndValue, cacheKey, measuredWidthPx);
+  while (textWidthByFontAndValue.size > TEXT_MEASURE_CACHE_MAX_ENTRIES) {
+    const firstKey = textWidthByFontAndValue.keys().next().value as string | undefined;
+    if (!firstKey) {
+      break;
+    }
+    textWidthByFontAndValue.delete(firstKey);
+  }
+
+  return measuredWidthPx;
+}
+
+function resolveParagraphTabStopsPx(paragraph: ParagraphNode): number[] {
+  const stopsPx = (paragraph.style?.tabStops ?? [])
+    .map((tabStop) => twipsToPixels(tabStop.positionTwips))
+    .filter((value): value is number => Number.isFinite(value) && (value as number) > 0)
+    .map((value) => Math.round(value))
+    .sort((left, right) => left - right);
+
+  return stopsPx;
+}
+
+function resolveNextTabStopPx(currentLineWidthPx: number, tabStopsPx: number[]): number {
+  const nextExplicit = tabStopsPx.find((stopPx) => stopPx > currentLineWidthPx + 0.5);
+  if (nextExplicit !== undefined) {
+    return nextExplicit;
+  }
+
+  const tabStepPx = DEFAULT_TAB_STOP_PX;
+  const nextMultiple = Math.floor(Math.max(0, currentLineWidthPx) / tabStepPx + 1) * tabStepPx;
+  return Math.max(tabStepPx, nextMultiple);
+}
+
+function estimateWrappedLineCountForParagraph(paragraph: ParagraphNode, availableWidthPx: number): number {
+  const paragraphBaseFontPx = paragraphBaseFontSizePx(paragraph);
+  const maxLineWidthPx = Math.max(paragraphBaseFontPx * 2, Math.round(availableWidthPx));
+  const tabStopsPx = resolveParagraphTabStopsPx(paragraph);
+  const useTabLeaderLayout = paragraphUsesTabLeaders(paragraph);
+  const useCenterRightTabLayout = !useTabLeaderLayout && paragraphUsesCenterRightTabLayout(paragraph);
+  let lineCount = 1;
+  let currentLineWidthPx = 0;
+  let hasVisibleContent = false;
+  let tabLeaderRightZoneActive = false;
+  let tabLeaderRightZoneWidthPx = 0;
+
+  const advanceByTextToken = (
+    token: string,
+    style: TextRunNode["style"] | FormFieldRunNode["style"] | undefined
+  ): void => {
+    const tokenWidthPx = measureTextWidthPx(token, style, paragraphBaseFontPx);
+    if (token.trim().length > 0 && currentLineWidthPx > 0 && currentLineWidthPx + tokenWidthPx > maxLineWidthPx) {
+      lineCount += 1;
+      currentLineWidthPx = 0;
+    }
+
+    if (tokenWidthPx <= maxLineWidthPx) {
+      currentLineWidthPx = Math.min(maxLineWidthPx, currentLineWidthPx + tokenWidthPx);
+      return;
+    }
+
+    for (const character of token) {
+      const characterWidthPx = measureTextWidthPx(character, style, paragraphBaseFontPx);
+      if (currentLineWidthPx > 0 && currentLineWidthPx + characterWidthPx > maxLineWidthPx) {
+        lineCount += 1;
+        currentLineWidthPx = 0;
+      }
+      currentLineWidthPx = Math.min(maxLineWidthPx, currentLineWidthPx + characterWidthPx);
+    }
+  };
+
+  const commitToken = (
+    token: string,
+    style: TextRunNode["style"] | FormFieldRunNode["style"] | undefined
+  ): void => {
+    if (token.length === 0 || token === "\r") {
+      return;
+    }
+
+    hasVisibleContent = true;
+    if (token === "\n" || token === "\r\n") {
+      tabLeaderRightZoneActive = false;
+      tabLeaderRightZoneWidthPx = 0;
+      lineCount += 1;
+      currentLineWidthPx = 0;
+      return;
+    }
+
+    if (useTabLeaderLayout && tabLeaderRightZoneActive) {
+      tabLeaderRightZoneWidthPx += measureTextWidthPx(token, style, paragraphBaseFontPx);
+      if (
+        currentLineWidthPx > 0 &&
+        currentLineWidthPx + tabLeaderRightZoneWidthPx + TAB_LEADER_ZONE_GAP_PX >
+          maxLineWidthPx + PAGE_OVERFLOW_TOLERANCE_PX
+      ) {
+        lineCount += 1;
+        currentLineWidthPx = 0;
+        tabLeaderRightZoneWidthPx = 0;
+      }
+      return;
+    }
+
+    if (token === "\t") {
+      if (useTabLeaderLayout) {
+        // TOC leader layout renders the right-side page-number zone independently
+        // from left text width while still sharing the same visual line.
+        tabLeaderRightZoneActive = true;
+        tabLeaderRightZoneWidthPx = 0;
+        return;
+      }
+
+      if (useCenterRightTabLayout) {
+        currentLineWidthPx = Math.min(maxLineWidthPx, Math.max(currentLineWidthPx, maxLineWidthPx - 1));
+        return;
+      }
+
+      const nextTabStopPx = resolveNextTabStopPx(currentLineWidthPx, tabStopsPx);
+      if (nextTabStopPx > maxLineWidthPx + PAGE_OVERFLOW_TOLERANCE_PX && currentLineWidthPx > 0) {
+        lineCount += 1;
+        currentLineWidthPx = 0;
+      } else {
+        currentLineWidthPx = Math.min(maxLineWidthPx, nextTabStopPx);
+      }
+      return;
+    }
+
+    advanceByTextToken(token, style);
+  };
+
+  for (const child of paragraph.children) {
+    if (child.type === "image") {
+      if (shouldRenderAbsoluteFloatingImage(child) || shouldRenderWrappedFloatingImage(child)) {
+        continue;
+      }
+      const inlineImageWidthPx = Math.max(1, Math.round(child.widthPx ?? child.heightPx ?? 24));
+      hasVisibleContent = true;
+      if (currentLineWidthPx > 0 && currentLineWidthPx + inlineImageWidthPx > maxLineWidthPx) {
+        lineCount += 1;
+        currentLineWidthPx = 0;
+      }
+      currentLineWidthPx = Math.min(maxLineWidthPx, currentLineWidthPx + inlineImageWidthPx);
+      continue;
+    }
+
+    const text = child.type === "text" ? child.text : formFieldDisplayValue(child);
+    if (!text) {
+      continue;
+    }
+
+    const tokens =
+      text.match(/(\r\n|\n|\t|[^\S\r\n\t]+|[^\s\r\n\t]+)/g) ?? [];
+    for (const token of tokens) {
+      commitToken(token, child.style);
+    }
+  }
+
+  return hasVisibleContent ? Math.max(1, lineCount) : 1;
+}
+
+function paragraphAvailableTextWidthPx(
+  paragraph: ParagraphNode,
+  availableWidthPx: number,
+  numberingDefinitions?: NumberingDefinitionSet
+): number {
+  const safeAvailableWidthPx = Math.max(24, Math.round(availableWidthPx));
+  const resolvedIndent = resolveListParagraphIndent(paragraph, numberingDefinitions);
+  const leftIndentPx = Math.max(0, twipsToSignedPixels(resolvedIndent?.leftTwips) ?? 0);
+  const rightIndentPx = Math.max(0, twipsToSignedPixels(paragraph.style?.indent?.rightTwips) ?? 0);
+  const firstLineIndentPx = twipsToSignedPixels(resolvedIndent?.firstLineTwips);
+  const hangingIndentPx = twipsToSignedPixels(resolvedIndent?.hangingTwips);
+  const firstLineDeltaPx = firstLineIndentPx ?? (hangingIndentPx ? -hangingIndentPx : 0);
+  const textIndentReductionPx =
+    Number.isFinite(firstLineDeltaPx) && (firstLineDeltaPx as number) > 0
+      ? (firstLineDeltaPx as number)
+      : 0;
+  const leftPaddingPx = paragraphBorderPaddingPx(paragraph.style?.borders?.left) ?? 0;
+  const rightPaddingPx = paragraphBorderPaddingPx(paragraph.style?.borders?.right) ?? 0;
+
+  return Math.max(
+    24,
+    Math.round(
+      safeAvailableWidthPx -
+        leftIndentPx -
+        rightIndentPx -
+        textIndentReductionPx -
+        leftPaddingPx -
+        rightPaddingPx
+    )
+  );
+}
+
+function paragraphLineCountWithinWidth(
+  paragraph: ParagraphNode,
+  availableWidthPx?: number,
+  numberingDefinitions?: NumberingDefinitionSet
+): number {
+  const textContent = paragraph.children
+    .map((child) => {
+      if (child.type === "text") {
+        return child.text;
+      }
+      if (child.type === "form-field") {
+        return formFieldDisplayValue(child);
+      }
+      return "";
+    })
+    .join("");
+  if (!textContent) {
+    return 1;
+  }
+
+  if (!Number.isFinite(availableWidthPx) || (availableWidthPx as number) <= 0) {
+    return Math.max(1, textContent.split(/\r?\n/).length);
+  }
+
+  const effectiveWidthPx = paragraphAvailableTextWidthPx(
+    paragraph,
+    availableWidthPx as number,
+    numberingDefinitions
+  );
+  return estimateWrappedLineCountForParagraph(paragraph, effectiveWidthPx);
+}
+
+function estimateWrappedFloatingImageFootprintPx(
+  paragraph: ParagraphNode,
+  image: ImageRunNode
+): number {
+  if (!shouldRenderWrappedFloatingImage(image)) {
+    return 0;
+  }
+
+  const wrapType = image.floating?.wrapType;
+  const isTopAndBottomWrap = wrapType === "topAndBottom";
+  const isImageOnlyAnchorParagraph = !paragraphHasVisibleText(paragraph);
+  if (!isTopAndBottomWrap && !isImageOnlyAnchorParagraph) {
+    return 0;
+  }
+
+  const floating = image.floating;
+  const imageHeightPx =
+    Number.isFinite(image.heightPx) && (image.heightPx as number) > 0
+      ? Math.round(image.heightPx as number)
+      : Number.isFinite(image.widthPx) && (image.widthPx as number) > 0
+        ? Math.round(image.widthPx as number)
+        : MIN_PARAGRAPH_LINE_HEIGHT_PX;
+  const distTPx = Math.max(0, Math.round(floating?.distTPx ?? 0));
+  const distBPx = Math.max(0, Math.round(floating?.distBPx ?? 0));
+  const verticalOffsetPx = Math.max(0, Math.round(floating?.yPx ?? 0));
+
+  return Math.max(
+    MIN_PARAGRAPH_LINE_HEIGHT_PX,
+    imageHeightPx + distTPx + distBPx + verticalOffsetPx
+  );
+}
+
+function estimateAbsoluteFloatingImageFootprintPx(
+  paragraph: ParagraphNode,
+  image: ImageRunNode
+): number {
+  if (!shouldRenderAbsoluteFloatingImage(image)) {
+    return 0;
+  }
+
+  const floating = image.floating;
+  if (!floating || floating.behindDocument) {
+    return 0;
+  }
+
+  const wrapType = (floating.wrapType ?? "none").trim().toLowerCase();
+  if (wrapType !== "none") {
+    return 0;
+  }
+
+  const verticalRelativeTo = floating.verticalRelativeTo?.trim().toLowerCase();
+  const lineAnchored = verticalRelativeTo === "line" || verticalRelativeTo === "paragraph";
+  if (!lineAnchored && paragraphHasVisibleText(paragraph)) {
+    return 0;
+  }
+
+  const imageHeightPx =
+    Number.isFinite(image.heightPx) && (image.heightPx as number) > 0
+      ? Math.round(image.heightPx as number)
+      : Number.isFinite(image.widthPx) && (image.widthPx as number) > 0
+        ? Math.round(image.widthPx as number)
+        : MIN_PARAGRAPH_LINE_HEIGHT_PX;
+  const distTPx = Math.max(0, Math.round(floating.distTPx ?? 0));
+  const distBPx = Math.max(0, Math.round(floating.distBPx ?? 0));
+  const verticalOffsetPx = Math.max(0, Math.round(floating.yPx ?? 0));
+
+  return Math.max(
+    MIN_PARAGRAPH_LINE_HEIGHT_PX,
+    imageHeightPx + distTPx + distBPx + verticalOffsetPx
+  );
+}
+
+function resolveAutoLineSpacingMultiple(
+  lineTwips: number | undefined,
+  fallbackMultiple: number
+): number {
+  if (!Number.isFinite(lineTwips)) {
+    return Math.max(MIN_AUTO_LINE_MULTIPLE, fallbackMultiple);
+  }
+
+  return Math.max(MIN_AUTO_LINE_MULTIPLE, (lineTwips as number) / 240);
+}
+
+function autoLineHeightScaleForMultiple(multiple: number, singleLineScale: number): number {
+  const safeSingleLineScale = Math.max(
+    MIN_AUTO_LINE_MULTIPLE,
+    Math.min(1, Number.isFinite(singleLineScale) ? singleLineScale : WORD_SINGLE_LINE_AUTO_SCALE)
+  );
+  if (!Number.isFinite(multiple)) {
+    return safeSingleLineScale;
+  }
+
+  if (multiple <= 1) {
+    return safeSingleLineScale;
+  }
+
+  if (multiple >= WORD_AUTO_LINE_SCALE_BLEND_END_MULTIPLE) {
+    return 1;
+  }
+
+  const blendProgress =
+    (multiple - 1) / (WORD_AUTO_LINE_SCALE_BLEND_END_MULTIPLE - 1);
+  return Number(
+    (
+      safeSingleLineScale +
+      (1 - safeSingleLineScale) * blendProgress
+    ).toFixed(4)
+  );
+}
+
+function calibrateAutoLineSpacingMultiple(
+  multiple: number,
+  fontFamily?: string
+): number {
+  const normalizedMultiple = Math.max(MIN_AUTO_LINE_MULTIPLE, multiple);
+  const singleLineScale = singleLineAutoScaleForFontFamily(fontFamily);
+  return Math.max(
+    MIN_AUTO_LINE_MULTIPLE,
+    Number(
+      (
+        normalizedMultiple *
+        autoLineHeightScaleForMultiple(normalizedMultiple, singleLineScale)
+      ).toFixed(3)
+    )
+  );
+}
+
+function paragraphDocGridSnapState(paragraph: ParagraphNode): "inherit" | "snap" | "disable" {
+  const sourceXml = paragraph.sourceXml ?? "";
+  if (!sourceXml) {
+    return "inherit";
+  }
+
+  const paragraphPropertiesXml =
+    sourceXml.match(/<w:pPr\b[\s\S]*?<\/w:pPr>/i)?.[0] ??
+    sourceXml.match(/<w:pPr\b[^>]*\/>/i)?.[0] ??
+    "";
+  if (!paragraphPropertiesXml) {
+    return "inherit";
+  }
+
+  const snapToGridTag = paragraphPropertiesXml.match(/<w:snapToGrid\b[^>]*\/?>/i)?.[0] ?? "";
+  if (!snapToGridTag) {
+    return "inherit";
+  }
+
+  const valueMatch = snapToGridTag.match(/\bw:val="([^"]+)"/i)?.[1]?.trim().toLowerCase();
+  if (!valueMatch) {
+    return "snap";
+  }
+
+  return valueMatch === "0" || valueMatch === "false" || valueMatch === "off"
+    ? "disable"
+    : "snap";
+}
+
+function resolveParagraphDocGridLinePitchPx(
+  paragraph: ParagraphNode,
+  docGridLinePitchPx?: number,
+  disableDocGridSnap = false
+): number | undefined {
+  const docGridSnapState = paragraphDocGridSnapState(paragraph);
+  if (
+    disableDocGridSnap ||
+    docGridSnapState !== "snap" ||
+    !Number.isFinite(docGridLinePitchPx) ||
+    (docGridLinePitchPx as number) <= 0
+  ) {
+    return undefined;
+  }
+
+  return Math.max(1, Math.round(docGridLinePitchPx as number));
+}
+
+function estimateParagraphLineHeightPx(
+  paragraph: ParagraphNode,
+  docGridLinePitchPx?: number,
+  disableDocGridSnap = false
+): number {
+  const lineTwips = paragraph.style?.spacing?.lineTwips;
+  const lineRule = paragraph.style?.spacing?.lineRule ?? "auto";
+  const docGridMinimumLineHeightPx = resolveParagraphDocGridLinePitchPx(
+    paragraph,
+    docGridLinePitchPx,
+    disableDocGridSnap
+  );
+  const baseFontPx = paragraphBaseFontSizePx(paragraph);
+  const baseFontFamily = paragraphDominantFontFamily(paragraph);
+  const defaultLineMultiple =
+    isTableOfContentsParagraph(paragraph)
+      ? 1.05
+      : DEFAULT_PARAGRAPH_LINE_MULTIPLE;
+  const normalLineHeightPx = Math.max(
+    1,
+    Math.round(
+      baseFontPx *
+        calibrateAutoLineSpacingMultiple(DEFAULT_PARAGRAPH_LINE_MULTIPLE, baseFontFamily)
+    )
+  );
+
+  if (lineRule !== "auto" && Number.isFinite(lineTwips)) {
+    const explicitLineHeightPx = Math.max(1, twipsToPixels(lineTwips) ?? 1);
+    if (lineRule === "exact") {
+      return explicitLineHeightPx;
+    }
+
+    return Math.max(
+      explicitLineHeightPx,
+      normalLineHeightPx,
+      docGridMinimumLineHeightPx ?? 0
+    );
+  }
+
+  const multiple = calibrateAutoLineSpacingMultiple(
+    resolveAutoLineSpacingMultiple(lineTwips, defaultLineMultiple),
+    baseFontFamily
+  );
+  const autoLineHeightPx = Math.max(1, Math.round(baseFontPx * multiple));
+  return Math.max(autoLineHeightPx, docGridMinimumLineHeightPx ?? 0);
+}
+
+function estimateParagraphHeightPx(
+  paragraph: ParagraphNode,
+  availableWidthPx?: number,
+  numberingDefinitions?: NumberingDefinitionSet,
+  docGridLinePitchPx?: number,
+  disableDocGridSnap = false
+): number {
+  const sourceXml = paragraph.sourceXml;
+  const widthKey = heightEstimateCacheKeyPx(
+    availableWidthPx,
+    docGridLinePitchPx,
+    disableDocGridSnap
+  );
+  if (sourceXml) {
+    const cachedByWidth = paragraphEstimatedHeightBySourceXml.get(sourceXml);
+    const cached = cachedByWidth?.get(widthKey);
+    if (cached !== undefined) {
+      return cached;
+    }
+  }
+
+  const beforeSpacing = twipsToPixels(paragraph.style?.spacing?.beforeTwips) ?? 0;
+  const afterSpacing = twipsToPixels(paragraph.style?.spacing?.afterTwips) ?? 0;
+  const lineHeightPx = estimateParagraphLineHeightPx(
+    paragraph,
+    docGridLinePitchPx,
+    disableDocGridSnap
+  );
+  const lineCount = paragraphLineCountWithinWidth(
+    paragraph,
+    availableWidthPx,
+    numberingDefinitions
+  );
+  const inlineImageHeightPx = paragraph.children.reduce((largest, child) => {
+    if (child.type !== "image") {
+      return largest;
+    }
+    if (shouldRenderAbsoluteFloatingImage(child) || shouldRenderWrappedFloatingImage(child)) {
+      return largest;
+    }
+
+    return Math.max(largest, child.heightPx ?? 0);
+  }, 0);
+  const wrappedFloatingImageHeightPx = paragraph.children.reduce((largest, child) => {
+    if (child.type !== "image") {
+      return largest;
+    }
+
+    return Math.max(largest, estimateWrappedFloatingImageFootprintPx(paragraph, child));
+  }, 0);
+  const absoluteFloatingImageHeightPx = paragraph.children.reduce((largest, child) => {
+    if (child.type !== "image") {
+      return largest;
+    }
+
+    return Math.max(largest, estimateAbsoluteFloatingImageFootprintPx(paragraph, child));
+  }, 0);
+  const emptyParagraphHeightPx = paragraphIsEffectivelyEmpty(paragraph)
+    ? lineHeightPx + EMPTY_PARAGRAPH_EXTRA_HEIGHT_PX
+    : 0;
+
+  const contentHeightPx = Math.max(
+    lineHeightPx,
+    lineHeightPx * lineCount,
+    inlineImageHeightPx,
+    wrappedFloatingImageHeightPx,
+    absoluteFloatingImageHeightPx,
+    emptyParagraphHeightPx
+  );
+  const estimatedHeightPx = Math.max(1, beforeSpacing + afterSpacing + contentHeightPx);
+  if (sourceXml) {
+    const cachedByWidth = paragraphEstimatedHeightBySourceXml.get(sourceXml) ?? new Map<number, number>();
+    cachedByWidth.set(widthKey, estimatedHeightPx);
+    setCacheEntry(paragraphEstimatedHeightBySourceXml, sourceXml, cachedByWidth);
+  }
+  return estimatedHeightPx;
+}
+
+function paragraphHasExplicitBeforeSpacing(paragraph: ParagraphNode): boolean {
+  const xml = paragraph.sourceXml ?? "";
+  if (!xml) {
+    return false;
+  }
+
+  const spacingTag = xml.match(/<w:spacing\b[^>]*\/?>/i)?.[0];
+  if (!spacingTag) {
+    return false;
+  }
+
+  return /\bw:before(?:\s*=|Lines\s*=|Autospacing\s*=)/i.test(spacingTag);
+}
+
+function paragraphHasExplicitSpacing(paragraph: ParagraphNode): boolean {
+  const xml = paragraph.sourceXml ?? "";
+  if (!xml) {
+    return false;
+  }
+
+  const paragraphPropertiesXml =
+    xml.match(/<w:pPr\b[\s\S]*?<\/w:pPr>/i)?.[0] ?? xml.match(/<w:pPr\b[^>]*\/>/i)?.[0] ?? "";
+  if (!paragraphPropertiesXml) {
+    return false;
+  }
+
+  return /<w:spacing\b[^>]*\/?>/i.test(paragraphPropertiesXml);
+}
+
+function wordLikeTableCellParagraph(
+  paragraph: ParagraphNode,
+  applyWordTableDefaults: boolean
+): ParagraphNode {
+  if (!applyWordTableDefaults || !paragraph.sourceXml || paragraphHasExplicitSpacing(paragraph)) {
+    return paragraph;
+  }
+
+  return {
+    ...paragraph,
+    sourceXml: undefined,
+    style: {
+      ...(paragraph.style ?? {}),
+      spacing: {
+        ...(paragraph.style?.spacing ?? {}),
+        afterTwips: WORD_TABLE_CELL_PARAGRAPH_AFTER_TWIPS,
+        lineTwips: WORD_TABLE_CELL_PARAGRAPH_AUTO_LINE_TWIPS,
+        lineRule: "auto"
+      }
+    }
+  };
+}
+
+function suppressFirstTableCellParagraphTopSpacing(paragraph: ParagraphNode): boolean {
+  // Keep explicit paragraph top spacing from DOCX; only suppress implicit style spacing.
+  if (!paragraph.sourceXml) {
+    const beforeTwips = paragraph.style?.spacing?.beforeTwips;
+    return !(Number.isFinite(beforeTwips) && (beforeTwips as number) > 0);
+  }
+
+  return !paragraphHasExplicitBeforeSpacing(paragraph);
+}
+
+function estimateTableCellContentHeightPx(
+  nodeContent: TableCellContentNode[],
+  availableWidthPx?: number,
+  numberingDefinitions?: NumberingDefinitionSet,
+  applyWordTableDefaults = false,
+  docGridLinePitchPx?: number
+): number {
+  let paragraphIndex = 0;
+
+  return nodeContent.reduce((sum, contentNode) => {
+    if (!isParagraphCellContentNode(contentNode)) {
+      return sum + estimateTableHeightPx(
+        contentNode,
+        availableWidthPx,
+        numberingDefinitions,
+        docGridLinePitchPx
+      );
+    }
+
+    const disableDocGridSnap = paragraphDocGridSnapState(contentNode) === "disable";
+    const paragraphForLayout = wordLikeTableCellParagraph(contentNode, applyWordTableDefaults);
+    const baseHeight = estimateParagraphHeightPx(
+      paragraphForLayout,
+      availableWidthPx,
+      numberingDefinitions,
+      docGridLinePitchPx,
+      disableDocGridSnap
+    );
+    const suppressTopSpacing =
+      paragraphIndex === 0 && suppressFirstTableCellParagraphTopSpacing(contentNode);
+    paragraphIndex += 1;
+
+    if (!suppressTopSpacing) {
+      return sum + baseHeight;
+    }
+
+    const beforeSpacing = twipsToPixels(paragraphForLayout.style?.spacing?.beforeTwips) ?? 0;
+    return sum + Math.max(1, baseHeight - beforeSpacing);
+  }, 0);
+}
+
+function rowAllowsPageSplit(row: TableNode["rows"][number]): boolean {
+  return row.style?.cantSplit !== true && row.style?.heightRule !== "exact";
+}
+
+function rowHasDeepFlowContent(row: TableNode["rows"][number]): boolean {
+  let blockNodeCount = 0;
+  let nestedTableCount = 0;
+
+  for (const cell of row.cells) {
+    blockNodeCount += cell.nodes.length;
+    for (const contentNode of cell.nodes) {
+      if (contentNode.type === "table") {
+        nestedTableCount += 1;
+      }
+    }
+  }
+
+  return (
+    nestedTableCount > 0 ||
+    blockNodeCount >= SPLITTABLE_TABLE_ROW_DEEP_CONTENT_NODE_THRESHOLD
+  );
+}
+
+function capSplitFriendlyTableRowEstimatePx(
+  row: TableNode["rows"][number],
+  estimatedRowHeightPx: number,
+  explicitHeightPx?: number
+): number {
+  if (!rowAllowsPageSplit(row)) {
+    return estimatedRowHeightPx;
+  }
+
+  if (!Number.isFinite(explicitHeightPx) || (explicitHeightPx as number) <= 0) {
+    return estimatedRowHeightPx;
+  }
+
+  if (!rowHasDeepFlowContent(row)) {
+    return estimatedRowHeightPx;
+  }
+
+  const safeExplicitHeightPx = Math.max(
+    MIN_PARAGRAPH_LINE_HEIGHT_PX * 2,
+    Math.round(explicitHeightPx as number)
+  );
+  const cappedHeightPx =
+    safeExplicitHeightPx + MIN_PARAGRAPH_LINE_HEIGHT_PX * SPLITTABLE_TABLE_ROW_ESTIMATE_EXTRA_LINE_COUNT;
+
+  return Math.min(estimatedRowHeightPx, cappedHeightPx);
+}
+
+function tableStyleIdFromSourceXml(table: TableNode): string | undefined {
+  const sourceXml = table.sourceXml ?? "";
+  if (!sourceXml) {
+    return undefined;
+  }
+
+  const styleMatch = sourceXml.match(/<w:tblStyle\b[^>]*w:val="([^"]+)"/i);
+  const styleId = styleMatch?.[1]?.trim();
+  return styleId ? styleId : undefined;
+}
+
+function tableUsesWordLikeParagraphDefaults(table: TableNode): boolean {
+  const styleId = tableStyleIdFromSourceXml(table)?.toLowerCase();
+  return styleId === "tablegrid";
+}
+
+function estimateTableRowHeightsPx(
+  table: TableNode,
+  maxAvailableWidthPx?: number,
+  numberingDefinitions?: NumberingDefinitionSet,
+  docGridLinePitchPx?: number
+): number[] {
+  const defaultCellMargin = table.style?.cellMarginTwips;
+  const columnCount = tableColumnCount(table);
+  const tableWidthPx = twipsToPixels(table.style?.widthTwips);
+  const rawTableColumnWidthsPx = (() => {
+    const definedWidthsTwips = columnWidthsFromTableDefinition(table, columnCount);
+    if (!definedWidthsTwips || definedWidthsTwips.length === 0) {
+      return defaultColumnWidthsPx(columnCount, tableWidthPx);
+    }
+
+    const widthsPx = definedWidthsTwips.map((widthTwips) => twipsToPixels(widthTwips) ?? 0);
+    return normalizeColumnWidthsPx(widthsPx, columnCount, tableWidthPx, 1);
+  })();
+  const rawResolvedTableWidthPx =
+    tableWidthPx ?? rawTableColumnWidthsPx.reduce((sum, widthPx) => sum + widthPx, 0);
+  const maxTableWidthPx =
+    Number.isFinite(maxAvailableWidthPx) && (maxAvailableWidthPx as number) > 0
+      ? Math.max(120, maxAvailableWidthPx as number)
+      : undefined;
+  const resolvedTableWidthPx = clampTableWidthPx(rawResolvedTableWidthPx, maxTableWidthPx);
+  const tableColumnWidthsPx = fitColumnWidthsToWidth(rawTableColumnWidthsPx, resolvedTableWidthPx);
+  const applyWordTableDefaults = tableUsesWordLikeParagraphDefaults(table);
+
+  return table.rows.map((row) => {
+    let columnCursor = 0;
+    let rowHeightPx = row.cells.reduce((largest, cell) => {
+      const columnSpan = cell.style?.gridSpan && cell.style.gridSpan > 1 ? cell.style.gridSpan : 1;
+      const startColumnIndex = columnCursor;
+      const endColumnIndex = Math.min(columnCount - 1, startColumnIndex + columnSpan - 1);
+      columnCursor += columnSpan;
+      const spanWidthPx = tableColumnWidthsPx
+        .slice(startColumnIndex, endColumnIndex + 1)
+        .reduce((sum, widthPx) => sum + widthPx, 0);
+      const fallbackCellWidthPx = (resolvedTableWidthPx / Math.max(1, columnCount)) * columnSpan;
+      const cellWidthPx = spanWidthPx > 0 ? spanWidthPx : fallbackCellWidthPx;
+      const margin = cell.style?.marginTwips ?? defaultCellMargin;
+      const resolvedPaddingPx = resolveTableSpacingPaddingPx(margin);
+      const verticalPaddingPx = resolvedPaddingPx.top + resolvedPaddingPx.bottom;
+      const horizontalPaddingPx = resolvedPaddingPx.left + resolvedPaddingPx.right;
+      const contentWidthPx = Math.max(24, Math.round(cellWidthPx - horizontalPaddingPx));
+      const paragraphHeightPx = estimateTableCellContentHeightPx(
+        cell.nodes,
+        contentWidthPx,
+        numberingDefinitions,
+        applyWordTableDefaults,
+        docGridLinePitchPx
+      );
+      return Math.max(largest, paragraphHeightPx + verticalPaddingPx);
+    }, 0);
+
+    const explicitHeightPx = twipsToPixels(row.style?.heightTwips);
+    if (explicitHeightPx && explicitHeightPx > 0) {
+      rowHeightPx =
+        row.style?.heightRule === "exact" ? explicitHeightPx : Math.max(rowHeightPx, explicitHeightPx);
+    }
+    rowHeightPx = capSplitFriendlyTableRowEstimatePx(row, rowHeightPx, explicitHeightPx);
+
+    return Math.max(MIN_PARAGRAPH_LINE_HEIGHT_PX, rowHeightPx);
+  });
+}
+
+function estimateTableHeightPx(
+  table: TableNode,
+  maxAvailableWidthPx?: number,
+  numberingDefinitions?: NumberingDefinitionSet,
+  docGridLinePitchPx?: number
+): number {
+  const sourceXml = table.sourceXml;
+  const widthKey = heightEstimateCacheKeyPx(maxAvailableWidthPx, docGridLinePitchPx);
+  if (sourceXml) {
+    const cachedByWidth = tableEstimatedHeightBySourceXml.get(sourceXml);
+    const cached = cachedByWidth?.get(widthKey);
+    if (cached !== undefined) {
+      return cached;
+    }
+  }
+
+  const estimatedRowsHeightPx = estimateTableRowHeightsPx(
+    table,
+    maxAvailableWidthPx,
+    numberingDefinitions,
+    docGridLinePitchPx
+  ).reduce(
+    (sum, rowHeightPx) => sum + Math.max(MIN_PARAGRAPH_LINE_HEIGHT_PX, rowHeightPx),
+    0
+  );
+
+  const estimatedHeightPx = Math.max(MIN_PARAGRAPH_LINE_HEIGHT_PX * 2, estimatedRowsHeightPx);
+  if (sourceXml) {
+    const cachedByWidth = tableEstimatedHeightBySourceXml.get(sourceXml) ?? new Map<number, number>();
+    cachedByWidth.set(widthKey, estimatedHeightPx);
+    setCacheEntry(tableEstimatedHeightBySourceXml, sourceXml, cachedByWidth);
+  }
+  return estimatedHeightPx;
+}
+
+function estimateDocNodeHeightPx(
+  node: DocModel["nodes"][number],
+  availableWidthPx?: number,
+  numberingDefinitions?: NumberingDefinitionSet,
+  docGridLinePitchPx?: number
+): number {
+  return node.type === "paragraph"
+    ? estimateParagraphHeightPx(
+        node,
+        availableWidthPx,
+        numberingDefinitions,
+        docGridLinePitchPx
+      )
+    : estimateTableHeightPx(
+        node,
+        availableWidthPx,
+        numberingDefinitions,
+        docGridLinePitchPx
+      );
+}
+
+function paragraphBeforeSpacingPx(paragraph: ParagraphNode): number {
+  return twipsToPixels(paragraph.style?.spacing?.beforeTwips) ?? 0;
+}
+
+function paragraphAfterSpacingPx(paragraph: ParagraphNode): number {
+  return twipsToPixels(paragraph.style?.spacing?.afterTwips) ?? 0;
+}
+
+function paragraphWidowControlEnabled(paragraph: ParagraphNode): boolean {
+  return paragraph.style?.widowControl !== false;
+}
+
+function paragraphIsOnlyExplicitPageBreak(paragraph: ParagraphNode): boolean {
+  if (!paragraphHasExplicitPageBreak(paragraph)) {
+    return false;
+  }
+
+  return (
+    !paragraphHasVisibleText(paragraph) &&
+    !paragraphHasImage(paragraph) &&
+    !paragraphHasFormField(paragraph)
+  );
+}
+
+function resolveParagraphBeforeSpacingPx(
+  model: DocModel,
+  nodeIndex: number,
+  paragraph: ParagraphNode,
+  pageConsumedHeightPx: number,
+  suppressSpacingBeforeAfterPageBreak: boolean
+): number {
+  const beforeSpacingPx = paragraphBeforeSpacingPx(paragraph);
+  if (!suppressSpacingBeforeAfterPageBreak || pageConsumedHeightPx > 0 || nodeIndex <= 0) {
+    return beforeSpacingPx;
+  }
+
+  const previousNode = model.nodes[nodeIndex - 1];
+  if (previousNode?.type !== "paragraph") {
+    return beforeSpacingPx;
+  }
+
+  // ECMA-376 §2.15.3.49: when enabled, suppress before-spacing on first content
+  // line following a page-break-only paragraph.
+  return paragraphIsOnlyExplicitPageBreak(previousNode) ? 0 : beforeSpacingPx;
+}
+
+function paragraphCanSplitAcrossPages(
+  paragraph: ParagraphNode,
+  lineCount: number,
+  options?: {
+    allowKeepLinesOverflow?: boolean;
+    allowKeepNextOverflow?: boolean;
+  }
+): boolean {
+  if (lineCount < 2) {
+    return false;
+  }
+
+  if (paragraph.style?.keepLines === true && !options?.allowKeepLinesOverflow) {
+    return false;
+  }
+
+  if (paragraph.style?.keepNext === true && !options?.allowKeepNextOverflow) {
+    return false;
+  }
+
+  if (paragraphHasImage(paragraph) || paragraphHasFormField(paragraph)) {
+    return false;
+  }
+
+  return true;
+}
+
+function collectDocxEstimatedOverflowBreakStartNodeIndexes(
+  model: DocModel,
+  hardBreakStartNodeIndexes: Set<number>,
+  pageContentHeightPx: number,
+  pageContentWidthPx: number,
+  numberingDefinitions?: NumberingDefinitionSet,
+  paginationMetricsBySection?: PaginationSectionMetrics[],
+  options?: {
+    suppressSpacingBeforeAfterPageBreak?: boolean;
+  }
+): Set<number> {
+  const breaks = new Set<number>();
+  if (!Number.isFinite(pageContentHeightPx) || pageContentHeightPx <= 0) {
+    return breaks;
+  }
+
+  const fallbackMetrics: PaginationSectionMetrics = {
+    startNodeIndex: 0,
+    pageContentWidthPx: Math.max(120, Math.round(pageContentWidthPx)),
+    pageContentHeightPx: Math.max(120, Math.round(pageContentHeightPx)),
+    docGridLinePitchPx: undefined
+  };
+  const metricsBySection = paginationMetricsBySection?.length
+    ? paginationMetricsBySection
+    : [fallbackMetrics];
+
+  let pageConsumedHeightPx = 0;
+  let previousParagraphAfterPx = 0;
+  let currentMetricsIndex = 0;
+  const suppressSpacingBeforeAfterPageBreak = options?.suppressSpacingBeforeAfterPageBreak ?? false;
+  let currentPageContentHeightPx =
+    metricsBySection[0]?.pageContentHeightPx ?? fallbackMetrics.pageContentHeightPx;
+  for (let nodeIndex = 0; nodeIndex < model.nodes.length; nodeIndex += 1) {
+    currentMetricsIndex = resolvePaginationSectionMetricsIndexForNodeIndex(
+      metricsBySection,
+      nodeIndex,
+      currentMetricsIndex
+    );
+    const nodeMetrics = metricsBySection[currentMetricsIndex] ?? fallbackMetrics;
+
+    if (hardBreakStartNodeIndexes.has(nodeIndex)) {
+      pageConsumedHeightPx = 0;
+      previousParagraphAfterPx = 0;
+      currentPageContentHeightPx = nodeMetrics.pageContentHeightPx;
+    }
+
+    const node = model.nodes[nodeIndex];
+    const rawNodeHeightPx = Math.max(
+      1,
+      estimateDocNodeHeightPx(
+        node,
+        nodeMetrics.pageContentWidthPx,
+        numberingDefinitions,
+        nodeMetrics.docGridLinePitchPx
+      )
+    );
+    const nodeBeforeSpacingPx =
+      node.type === "paragraph"
+        ? resolveParagraphBeforeSpacingPx(
+            model,
+            nodeIndex,
+            node,
+            pageConsumedHeightPx,
+            suppressSpacingBeforeAfterPageBreak
+          )
+        : 0;
+    const collapsedMarginPx =
+      node.type === "paragraph" && pageConsumedHeightPx > 0
+        ? Math.min(previousParagraphAfterPx, nodeBeforeSpacingPx)
+        : 0;
+    const collapsedNodeHeightPx = Math.max(1, rawNodeHeightPx - collapsedMarginPx);
+
+    let requiredHeightPx = collapsedNodeHeightPx;
+
+    if (
+      node.type === "paragraph" &&
+      node.style?.keepNext === true &&
+      paragraphHasVisibleText(node)
+    ) {
+      let chainCursor = nodeIndex;
+      let chainPreviousParagraphAfterPx = paragraphAfterSpacingPx(node);
+      while (chainCursor < model.nodes.length - 1) {
+        const currentChainNode = model.nodes[chainCursor];
+        if (
+          currentChainNode.type !== "paragraph" ||
+          currentChainNode.style?.keepNext !== true ||
+          !paragraphHasVisibleText(currentChainNode)
+        ) {
+          break;
+        }
+        if (hardBreakStartNodeIndexes.has(chainCursor + 1)) {
+          break;
+        }
+        const nextChainNode = model.nodes[chainCursor + 1];
+        if (nextChainNode.type !== "paragraph") {
+          break;
+        }
+
+        chainCursor += 1;
+        const chainMetricsIndex = resolvePaginationSectionMetricsIndexForNodeIndex(
+          metricsBySection,
+          chainCursor,
+          currentMetricsIndex
+        );
+        const chainMetrics = metricsBySection[chainMetricsIndex] ?? fallbackMetrics;
+        const nextRawHeightPx = Math.max(
+          1,
+          estimateDocNodeHeightPx(
+            nextChainNode,
+            chainMetrics.pageContentWidthPx,
+            numberingDefinitions,
+            chainMetrics.docGridLinePitchPx
+          )
+        );
+        const collapsedChainMarginPx =
+          nextChainNode.type === "paragraph"
+            ? Math.min(chainPreviousParagraphAfterPx, paragraphBeforeSpacingPx(nextChainNode))
+            : 0;
+        requiredHeightPx += Math.max(1, nextRawHeightPx - collapsedChainMarginPx);
+        chainPreviousParagraphAfterPx =
+          nextChainNode.type === "paragraph" ? paragraphAfterSpacingPx(nextChainNode) : 0;
+      }
+    }
+
+    const remainingHeightPx = currentPageContentHeightPx - pageConsumedHeightPx;
+    if (
+      pageConsumedHeightPx > 0 &&
+      requiredHeightPx > remainingHeightPx + PAGE_OVERFLOW_TOLERANCE_PX
+    ) {
+      breaks.add(nodeIndex);
+      pageConsumedHeightPx = 0;
+      previousParagraphAfterPx = 0;
+      currentPageContentHeightPx = nodeMetrics.pageContentHeightPx;
+    }
+
+    const effectiveNodeHeightPx = pageConsumedHeightPx > 0 ? collapsedNodeHeightPx : rawNodeHeightPx;
+    pageConsumedHeightPx += effectiveNodeHeightPx;
+    previousParagraphAfterPx = node.type === "paragraph" ? paragraphAfterSpacingPx(node) : 0;
+  }
+
+  for (const breakIndex of [...breaks]) {
+    if (
+      breakIndex <= 0 ||
+      breakIndex >= model.nodes.length ||
+      hardBreakStartNodeIndexes.has(breakIndex)
+    ) {
+      breaks.delete(breakIndex);
+    }
+  }
+
+  return breaks;
+}
+
+interface DocumentPageRange {
+  startNodeIndex: number;
+  endNodeIndex: number;
+}
+
+function buildDocumentPageRanges(
+  nodeCount: number,
+  pageBreakStartNodeIndexes: Set<number>
+): DocumentPageRange[] {
+  if (nodeCount <= 0) {
+    return [];
+  }
+
+  const sortedBreakStartIndexes = [...pageBreakStartNodeIndexes]
+    .filter((index) => index > 0 && index < nodeCount)
+    .sort((left, right) => left - right);
+
+  const ranges: DocumentPageRange[] = [];
+  let startNodeIndex = 0;
+
+  for (const breakStartIndex of sortedBreakStartIndexes) {
+    if (breakStartIndex <= startNodeIndex) {
+      continue;
+    }
+
+    ranges.push({
+      startNodeIndex,
+      endNodeIndex: breakStartIndex
+    });
+    startNodeIndex = breakStartIndex;
+  }
+
+  ranges.push({
+    startNodeIndex,
+    endNodeIndex: nodeCount
+  });
+
+  return ranges;
+}
+
+function collectDocxPageBreakStartNodeIndexes(
+  model: DocModel,
+  pageContentHeightPx: number,
+  pageContentWidthPx: number,
+  numberingDefinitions?: NumberingDefinitionSet,
+  paginationMetricsBySection?: PaginationSectionMetrics[],
+  options?: {
+    suppressSpacingBeforeAfterPageBreak?: boolean;
+  }
+): Set<number> {
+  const hardBreaks = collectDocxHardPageBreakStartNodeIndexes(model);
+  const overflowBreaks = collectDocxEstimatedOverflowBreakStartNodeIndexes(
+    model,
+    hardBreaks,
+    pageContentHeightPx,
+    pageContentWidthPx,
+    numberingDefinitions,
+    paginationMetricsBySection,
+    options
+  );
+  return new Set<number>([...hardBreaks, ...overflowBreaks]);
+}
+
+interface TableRowRange {
+  startRowIndex: number;
+  endRowIndex: number;
+}
+
+interface ParagraphLineRange {
+  startLineIndex: number;
+  endLineIndex: number;
+  totalLineCount: number;
+  lineHeightPx: number;
+}
+
+interface DocumentPageNodeSegment {
+  nodeIndex: number;
+  tableRowRange?: TableRowRange;
+  paragraphLineRange?: ParagraphLineRange;
+}
+
+function paragraphSegmentHasPartialLineRange(paragraphLineRange?: ParagraphLineRange): boolean {
+  if (!paragraphLineRange) {
+    return false;
+  }
+
+  return (
+    paragraphLineRange.startLineIndex > 0 ||
+    paragraphLineRange.endLineIndex < paragraphLineRange.totalLineCount
+  );
+}
+
+function sumEstimatedTableRowHeightsPx(rowHeightsPx: number[], startRowIndex: number, endRowIndex: number): number {
+  let total = 0;
+  const clampedStart = Math.max(0, startRowIndex);
+  const clampedEnd = Math.max(clampedStart, Math.min(endRowIndex, rowHeightsPx.length));
+  for (let rowIndex = clampedStart; rowIndex < clampedEnd; rowIndex += 1) {
+    total += Math.max(1, rowHeightsPx[rowIndex] ?? MIN_PARAGRAPH_LINE_HEIGHT_PX);
+  }
+  return total;
+}
+
+function fitTableRowsWithinHeightPx(
+  rowHeightsPx: number[],
+  startRowIndex: number,
+  availableHeightPx: number,
+  forceAtLeastOneRow: boolean
+): number {
+  if (startRowIndex >= rowHeightsPx.length) {
+    return startRowIndex;
+  }
+
+  const safeAvailableHeightPx =
+    Number.isFinite(availableHeightPx) && availableHeightPx > 0 ? availableHeightPx : 0;
+  let consumedHeightPx = 0;
+  let rowCursor = startRowIndex;
+
+  while (rowCursor < rowHeightsPx.length) {
+    const rowHeightPx = Math.max(1, rowHeightsPx[rowCursor] ?? MIN_PARAGRAPH_LINE_HEIGHT_PX);
+    if (consumedHeightPx + rowHeightPx > safeAvailableHeightPx + PAGE_OVERFLOW_TOLERANCE_PX) {
+      break;
+    }
+
+    consumedHeightPx += rowHeightPx;
+    rowCursor += 1;
+  }
+
+  if (rowCursor === startRowIndex && forceAtLeastOneRow) {
+    return Math.min(rowHeightsPx.length, startRowIndex + 1);
+  }
+
+  return rowCursor;
+}
+
+function buildDocumentPageNodeSegments(
+  model: DocModel,
+  pageContentHeightPx: number,
+  pageContentWidthPx: number,
+  numberingDefinitions?: NumberingDefinitionSet,
+  paginationMetricsBySection?: PaginationSectionMetrics[],
+  options?: {
+    allowParagraphLineSplitting?: boolean;
+    suppressSpacingBeforeAfterPageBreak?: boolean;
+    measuredTableRowHeightsByNodeIndex?: Record<number, number[]>;
+    measuredPageContentHeightsPxByPageIndex?: number[];
+  }
+): DocumentPageNodeSegment[][] {
+  if (model.nodes.length === 0) {
+    return [];
+  }
+
+  const fallbackMetrics: PaginationSectionMetrics = {
+    startNodeIndex: 0,
+    pageContentWidthPx: Math.max(120, Math.round(pageContentWidthPx)),
+    pageContentHeightPx: Math.max(120, Math.round(pageContentHeightPx)),
+    docGridLinePitchPx: undefined
+  };
+  const metricsBySection = paginationMetricsBySection?.length
+    ? paginationMetricsBySection
+    : [fallbackMetrics];
+
+  const pages: DocumentPageNodeSegment[][] = [];
+  let currentPageSegments: DocumentPageNodeSegment[] = [];
+  const hardBreakStartNodeIndexes = collectDocxHardPageBreakStartNodeIndexes(model);
+  const estimatedRowHeightsByTableNodeIndex = new Map<number, number[]>();
+  const allowParagraphLineSplitting = options?.allowParagraphLineSplitting ?? true;
+  const suppressSpacingBeforeAfterPageBreak =
+    options?.suppressSpacingBeforeAfterPageBreak ?? false;
+  const measuredPageContentHeightsPxByPageIndex =
+    options?.measuredPageContentHeightsPxByPageIndex;
+  const resolvePageContentHeightPx = (
+    pageIndex: number,
+    fallbackHeightPx: number
+  ): number => {
+    const overrideHeightPx = measuredPageContentHeightsPxByPageIndex?.[pageIndex];
+    if (Number.isFinite(overrideHeightPx) && (overrideHeightPx as number) > 0) {
+      return Math.max(120, Math.round(overrideHeightPx as number));
+    }
+    return Math.max(120, Math.round(fallbackHeightPx));
+  };
+
+  const startNextPage = (): void => {
+    if (currentPageSegments.length > 0) {
+      pages.push(currentPageSegments);
+    }
+    currentPageSegments = [];
+    currentPageIndex += 1;
+  };
+
+  if (!Number.isFinite(pageContentHeightPx) || pageContentHeightPx <= 0) {
+    return [model.nodes.map((_, nodeIndex) => ({ nodeIndex }))];
+  }
+
+  let pageConsumedHeightPx = 0;
+  let previousParagraphAfterPx = 0;
+  let currentMetricsIndex = 0;
+  let currentPageIndex = 0;
+  let currentPageContentHeightPx =
+    resolvePageContentHeightPx(
+      0,
+      metricsBySection[0]?.pageContentHeightPx ?? fallbackMetrics.pageContentHeightPx
+    );
+
+  for (let nodeIndex = 0; nodeIndex < model.nodes.length; nodeIndex += 1) {
+    currentMetricsIndex = resolvePaginationSectionMetricsIndexForNodeIndex(
+      metricsBySection,
+      nodeIndex,
+      currentMetricsIndex
+    );
+    const nodeMetrics = metricsBySection[currentMetricsIndex] ?? fallbackMetrics;
+
+    if (hardBreakStartNodeIndexes.has(nodeIndex) && currentPageSegments.length > 0) {
+      startNextPage();
+      pageConsumedHeightPx = 0;
+      previousParagraphAfterPx = 0;
+      currentPageContentHeightPx = resolvePageContentHeightPx(
+        currentPageIndex,
+        nodeMetrics.pageContentHeightPx
+      );
+    }
+
+    const node = model.nodes[nodeIndex];
+    if (node.type === "paragraph") {
+      if (paragraphHasPageBreakBefore(node) && currentPageSegments.length > 0) {
+        startNextPage();
+        pageConsumedHeightPx = 0;
+        previousParagraphAfterPx = 0;
+        currentPageContentHeightPx = resolvePageContentHeightPx(
+          currentPageIndex,
+          nodeMetrics.pageContentHeightPx
+        );
+      }
+
+      const rawNodeHeightPx = Math.max(
+        1,
+        estimateParagraphHeightPx(
+          node,
+          nodeMetrics.pageContentWidthPx,
+          numberingDefinitions,
+          nodeMetrics.docGridLinePitchPx
+        )
+      );
+      const paragraphTooTallForSinglePage =
+        rawNodeHeightPx > nodeMetrics.pageContentHeightPx + PAGE_OVERFLOW_TOLERANCE_PX;
+      const keepLinesOverflowSplit = node.style?.keepLines === true && paragraphTooTallForSinglePage;
+      const keepNextOverflowSplit = node.style?.keepNext === true && paragraphTooTallForSinglePage;
+      const forceOverflowSplit = keepLinesOverflowSplit || keepNextOverflowSplit;
+      if (forceOverflowSplit && pageConsumedHeightPx > 0 && currentPageSegments.length > 0) {
+        // ECMA-376 §2.3.1.14/§2.3.1.15: if "keep" constraints cannot fit on one
+        // page, start at a new page and continue with page breaks as needed.
+        startNextPage();
+        pageConsumedHeightPx = 0;
+        previousParagraphAfterPx = 0;
+        currentPageContentHeightPx = resolvePageContentHeightPx(
+          currentPageIndex,
+          nodeMetrics.pageContentHeightPx
+        );
+      }
+
+      const beforeSpacingPx = resolveParagraphBeforeSpacingPx(
+        model,
+        nodeIndex,
+        node,
+        pageConsumedHeightPx,
+        suppressSpacingBeforeAfterPageBreak
+      );
+      const afterSpacingPx = paragraphAfterSpacingPx(node);
+      const collapsedMarginPx =
+        pageConsumedHeightPx > 0 ? Math.min(previousParagraphAfterPx, beforeSpacingPx) : 0;
+      const collapsedNodeHeightPx = Math.max(1, rawNodeHeightPx - collapsedMarginPx);
+      const paragraphLineHeightPx = estimateParagraphLineHeightPx(
+        node,
+        nodeMetrics.docGridLinePitchPx
+      );
+      const paragraphLineCount = paragraphLineCountWithinWidth(
+        node,
+        nodeMetrics.pageContentWidthPx,
+        numberingDefinitions
+      );
+      const widowControlEnabled = paragraphWidowControlEnabled(node);
+      const minLinesPerSegment = widowControlEnabled ? 2 : 1;
+      const canSplitParagraphAcrossPages =
+        paragraphCanSplitAcrossPages(node, paragraphLineCount, {
+          allowKeepLinesOverflow: keepLinesOverflowSplit,
+          allowKeepNextOverflow: keepNextOverflowSplit
+        }) &&
+        (!widowControlEnabled || paragraphLineCount > 3);
+
+      if (canSplitParagraphAcrossPages && allowParagraphLineSplitting) {
+        let lineCursor = 0;
+        let isFirstSegment = true;
+        while (lineCursor < paragraphLineCount) {
+          const linesRemaining = paragraphLineCount - lineCursor;
+          const topSpacingPx = isFirstSegment
+            ? pageConsumedHeightPx > 0
+              ? Math.max(0, beforeSpacingPx - collapsedMarginPx)
+              : beforeSpacingPx
+            : 0;
+          const mustKeepBottomSpacing = linesRemaining <= minLinesPerSegment;
+          const bottomSpacingPx = mustKeepBottomSpacing ? afterSpacingPx : 0;
+          const remainingHeightPx = Math.max(0, currentPageContentHeightPx - pageConsumedHeightPx);
+          const allRemainingHeightPx =
+            topSpacingPx + linesRemaining * paragraphLineHeightPx + bottomSpacingPx;
+
+          if (
+            allRemainingHeightPx <= remainingHeightPx + PAGE_OVERFLOW_TOLERANCE_PX
+          ) {
+            currentPageSegments.push({
+              nodeIndex,
+              paragraphLineRange: {
+                startLineIndex: lineCursor,
+                endLineIndex: paragraphLineCount,
+                totalLineCount: paragraphLineCount,
+                lineHeightPx: paragraphLineHeightPx
+              }
+            });
+            pageConsumedHeightPx += allRemainingHeightPx;
+            previousParagraphAfterPx = afterSpacingPx;
+            lineCursor = paragraphLineCount;
+            break;
+          }
+
+          const maxLinesThisPage = Math.max(0, linesRemaining - minLinesPerSegment);
+          const availableForLinesPx = Math.max(0, remainingHeightPx - topSpacingPx);
+          let linesThatFit = Math.floor(
+            (availableForLinesPx + PAGE_OVERFLOW_TOLERANCE_PX) / paragraphLineHeightPx
+          );
+          linesThatFit = Math.min(linesThatFit, maxLinesThisPage);
+
+          if (linesThatFit < minLinesPerSegment) {
+            if (currentPageSegments.length > 0) {
+              startNextPage();
+              pageConsumedHeightPx = 0;
+              previousParagraphAfterPx = 0;
+              currentPageContentHeightPx = resolvePageContentHeightPx(
+                currentPageIndex,
+                nodeMetrics.pageContentHeightPx
+              );
+              continue;
+            }
+
+            const fallbackLines = Math.max(
+              1,
+              Math.floor(Math.max(1, availableForLinesPx) / paragraphLineHeightPx)
+            );
+            linesThatFit = Math.max(
+              1,
+              Math.min(
+                maxLinesThisPage > 0 ? maxLinesThisPage : linesRemaining,
+                fallbackLines
+              )
+            );
+          }
+
+          const segmentEndLineIndex = Math.min(paragraphLineCount, lineCursor + linesThatFit);
+          currentPageSegments.push({
+            nodeIndex,
+            paragraphLineRange: {
+              startLineIndex: lineCursor,
+              endLineIndex: segmentEndLineIndex,
+              totalLineCount: paragraphLineCount,
+              lineHeightPx: paragraphLineHeightPx
+            }
+          });
+
+          pageConsumedHeightPx +=
+            topSpacingPx + (segmentEndLineIndex - lineCursor) * paragraphLineHeightPx;
+          previousParagraphAfterPx = 0;
+          lineCursor = segmentEndLineIndex;
+          isFirstSegment = false;
+
+          if (lineCursor < paragraphLineCount) {
+            startNextPage();
+            pageConsumedHeightPx = 0;
+            previousParagraphAfterPx = 0;
+            currentPageContentHeightPx = resolvePageContentHeightPx(
+              currentPageIndex,
+              nodeMetrics.pageContentHeightPx
+            );
+          }
+        }
+        continue;
+      }
+
+      let requiredHeightPx = collapsedNodeHeightPx;
+      if (node.style?.keepNext === true && paragraphHasVisibleText(node)) {
+        let chainCursor = nodeIndex;
+        let chainPreviousParagraphAfterPx = afterSpacingPx;
+        while (chainCursor < model.nodes.length - 1) {
+          const currentChainNode = model.nodes[chainCursor];
+          if (
+            currentChainNode.type !== "paragraph" ||
+            currentChainNode.style?.keepNext !== true ||
+            !paragraphHasVisibleText(currentChainNode)
+          ) {
+            break;
+          }
+          if (hardBreakStartNodeIndexes.has(chainCursor + 1)) {
+            break;
+          }
+          const nextChainNode = model.nodes[chainCursor + 1];
+          if (nextChainNode.type !== "paragraph") {
+            break;
+          }
+
+          chainCursor += 1;
+          const chainMetricsIndex = resolvePaginationSectionMetricsIndexForNodeIndex(
+            metricsBySection,
+            chainCursor,
+            currentMetricsIndex
+          );
+          const chainMetrics = metricsBySection[chainMetricsIndex] ?? fallbackMetrics;
+          const nextRawHeightPx = Math.max(
+            1,
+            estimateParagraphHeightPx(
+              nextChainNode,
+              chainMetrics.pageContentWidthPx,
+              numberingDefinitions,
+              chainMetrics.docGridLinePitchPx
+            )
+          );
+          const collapsedChainMarginPx = Math.min(
+            chainPreviousParagraphAfterPx,
+            paragraphBeforeSpacingPx(nextChainNode)
+          );
+          requiredHeightPx += Math.max(1, nextRawHeightPx - collapsedChainMarginPx);
+          chainPreviousParagraphAfterPx = paragraphAfterSpacingPx(nextChainNode);
+        }
+      }
+
+      const remainingHeightPx = currentPageContentHeightPx - pageConsumedHeightPx;
+      if (
+        pageConsumedHeightPx > 0 &&
+        requiredHeightPx > remainingHeightPx + PAGE_OVERFLOW_TOLERANCE_PX
+      ) {
+        startNextPage();
+        pageConsumedHeightPx = 0;
+        previousParagraphAfterPx = 0;
+        currentPageContentHeightPx = resolvePageContentHeightPx(
+          currentPageIndex,
+          nodeMetrics.pageContentHeightPx
+        );
+      }
+
+      currentPageSegments.push({ nodeIndex });
+      const effectiveNodeHeightPx = pageConsumedHeightPx > 0 ? collapsedNodeHeightPx : rawNodeHeightPx;
+      pageConsumedHeightPx += effectiveNodeHeightPx;
+      previousParagraphAfterPx = afterSpacingPx;
+      continue;
+    }
+
+    const measuredRowHeightsPxRaw = options?.measuredTableRowHeightsByNodeIndex?.[nodeIndex];
+    const measuredRowHeightsPx =
+      measuredRowHeightsPxRaw && measuredRowHeightsPxRaw.length === node.rows.length
+        ? measuredRowHeightsPxRaw.map((heightPx) =>
+            Math.max(
+              MIN_PARAGRAPH_LINE_HEIGHT_PX,
+              Number.isFinite(heightPx)
+                ? Math.round(heightPx as number)
+                : MIN_PARAGRAPH_LINE_HEIGHT_PX
+            )
+          )
+        : undefined;
+    const estimatedRowHeightsPx =
+      measuredRowHeightsPx ??
+      estimatedRowHeightsByTableNodeIndex.get(nodeIndex) ??
+      estimateTableRowHeightsPx(
+        node,
+        nodeMetrics.pageContentWidthPx,
+        numberingDefinitions,
+        nodeMetrics.docGridLinePitchPx
+      );
+    if (!measuredRowHeightsPx && !estimatedRowHeightsByTableNodeIndex.has(nodeIndex)) {
+      estimatedRowHeightsByTableNodeIndex.set(nodeIndex, estimatedRowHeightsPx);
+    }
+
+    if (estimatedRowHeightsPx.length === 0) {
+      currentPageSegments.push({ nodeIndex });
+      previousParagraphAfterPx = 0;
+      continue;
+    }
+
+    const tableExplicitPageBreakInfo = collectTableExplicitPageBreakInfo(node);
+    const tableBreakStartRows = tableExplicitPageBreakInfo.startRowIndexes;
+    if (tableBreakStartRows.includes(0) && currentPageSegments.length > 0) {
+      startNextPage();
+      pageConsumedHeightPx = 0;
+      previousParagraphAfterPx = 0;
+      currentPageContentHeightPx = resolvePageContentHeightPx(
+        currentPageIndex,
+        nodeMetrics.pageContentHeightPx
+      );
+    }
+
+    let rowStartIndex = 0;
+    while (rowStartIndex < estimatedRowHeightsPx.length) {
+      const remainingHeightPx = Math.max(0, currentPageContentHeightPx - pageConsumedHeightPx);
+      const fittedRowEndIndex = fitTableRowsWithinHeightPx(
+        estimatedRowHeightsPx,
+        rowStartIndex,
+        remainingHeightPx,
+        pageConsumedHeightPx <= 0
+      );
+      let rowEndIndex = fittedRowEndIndex;
+      const forcedBreakRowIndex = tableBreakStartRows.find((breakRowIndex) => breakRowIndex > rowStartIndex);
+      if (forcedBreakRowIndex !== undefined) {
+        rowEndIndex = Math.min(rowEndIndex, forcedBreakRowIndex);
+      }
+
+      // Avoid orphaning a single trailing table row on the final page when at
+      // least two rows already fit in the current segment.
+      const remainingRowsAfterSegment = estimatedRowHeightsPx.length - rowEndIndex;
+      const segmentRowCount = rowEndIndex - rowStartIndex;
+      if (
+        forcedBreakRowIndex === undefined &&
+        remainingRowsAfterSegment === 1 &&
+        segmentRowCount > 1
+      ) {
+        rowEndIndex = fittedRowEndIndex - 1;
+      }
+
+      if (rowEndIndex <= rowStartIndex) {
+        if (currentPageSegments.length > 0) {
+          startNextPage();
+          pageConsumedHeightPx = 0;
+          previousParagraphAfterPx = 0;
+          currentPageContentHeightPx = resolvePageContentHeightPx(
+            currentPageIndex,
+            nodeMetrics.pageContentHeightPx
+          );
+          continue;
+        }
+
+        const forcedEndIndex = Math.min(estimatedRowHeightsPx.length, rowStartIndex + 1);
+        const forcedHeightPx = sumEstimatedTableRowHeightsPx(
+          estimatedRowHeightsPx,
+          rowStartIndex,
+          forcedEndIndex
+        );
+        currentPageSegments.push({
+          nodeIndex,
+          tableRowRange: {
+            startRowIndex: rowStartIndex,
+            endRowIndex: forcedEndIndex
+          }
+        });
+        pageConsumedHeightPx += forcedHeightPx;
+        previousParagraphAfterPx = 0;
+        rowStartIndex = forcedEndIndex;
+
+        if (rowStartIndex < estimatedRowHeightsPx.length) {
+          startNextPage();
+          pageConsumedHeightPx = 0;
+          previousParagraphAfterPx = 0;
+          currentPageContentHeightPx = resolvePageContentHeightPx(
+            currentPageIndex,
+            nodeMetrics.pageContentHeightPx
+          );
+        }
+        continue;
+      }
+
+      const segmentHeightPx = sumEstimatedTableRowHeightsPx(
+        estimatedRowHeightsPx,
+        rowStartIndex,
+        rowEndIndex
+      );
+      const coversWholeTable = rowStartIndex === 0 && rowEndIndex >= estimatedRowHeightsPx.length;
+      currentPageSegments.push({
+        nodeIndex,
+        tableRowRange: coversWholeTable
+          ? undefined
+          : {
+              startRowIndex: rowStartIndex,
+              endRowIndex: rowEndIndex
+            }
+      });
+      pageConsumedHeightPx += segmentHeightPx;
+      previousParagraphAfterPx = 0;
+      rowStartIndex = rowEndIndex;
+
+      if (rowStartIndex < estimatedRowHeightsPx.length) {
+        startNextPage();
+        pageConsumedHeightPx = 0;
+        previousParagraphAfterPx = 0;
+        currentPageContentHeightPx = resolvePageContentHeightPx(
+          currentPageIndex,
+          nodeMetrics.pageContentHeightPx
+        );
+      }
+    }
+  }
+
+  if (currentPageSegments.length > 0 || pages.length === 0) {
+    pages.push(currentPageSegments);
+  }
+
+  return pages;
+}
+
+function mergeTrailingPagesToTargetCount(
+  pages: DocumentPageNodeSegment[][],
+  targetPageCount: number
+): DocumentPageNodeSegment[][] {
+  const safeTargetPageCount = Math.max(1, Math.round(targetPageCount));
+  if (pages.length <= safeTargetPageCount) {
+    return pages;
+  }
+
+  const merged = pages.map((pageSegments) => [...pageSegments]);
+  while (merged.length > safeTargetPageCount) {
+    const trailingPage = merged.pop();
+    if (!trailingPage || merged.length === 0) {
+      break;
+    }
+
+    merged[merged.length - 1] = [...merged[merged.length - 1], ...trailingPage];
+  }
+
+  return merged;
+}
+
+function shouldRenderWrappedFloatingImage(image: ImageRunNode): boolean {
+  const floating = image.floating;
+  if (!floating || image.syntheticTextBox) {
+    return false;
+  }
+
+  const wrapType = floating.wrapType;
+  if (wrapType === undefined || wrapType === "none") {
+    return false;
+  }
+
+  if (shouldRenderTopAnchoredMarginFloatAsAbsolute(image)) {
+    return false;
+  }
+
+  if (!floating.behindDocument) {
+    return true;
+  }
+
+  const horizontalRelativeTo = floating.horizontalRelativeTo?.toLowerCase();
+  const verticalRelativeTo = floating.verticalRelativeTo?.toLowerCase();
+  const hasAnchoredAlignment = Boolean(floating.horizontalAlign || floating.verticalAlign || floating.wrapText);
+
+  // Some DOCX exports mark anchored wrapped images as behindDoc even when Word
+  // still lays them out like wrapped content. Keep those in flow unless they
+  // are explicitly page-anchored overlays.
+  return (
+    hasAnchoredAlignment &&
+    horizontalRelativeTo !== "page" &&
+    verticalRelativeTo !== "page"
+  );
+}
+
+function shouldRenderTopAnchoredMarginFloatAsAbsolute(image: ImageRunNode): boolean {
+  const floating = image.floating;
+  if (!floating) {
+    return false;
+  }
+
+  if (
+    !floating.wrapType ||
+    floating.wrapType === "none" ||
+    floating.behindDocument
+  ) {
+    return false;
+  }
+
+  const hasExplicitOffsets =
+    Number.isFinite(floating.xPx) || Number.isFinite(floating.yPx);
+  if (hasExplicitOffsets) {
+    return false;
+  }
+
+  const horizontalRelativeTo = floating.horizontalRelativeTo?.toLowerCase();
+  const verticalRelativeTo = floating.verticalRelativeTo?.toLowerCase();
+  const horizontalAlign = floating.horizontalAlign?.toLowerCase();
+  const verticalAlign = floating.verticalAlign?.toLowerCase();
+
+  const pageAnchoredHorizontally =
+    horizontalRelativeTo === "margin" || horizontalRelativeTo === "page";
+  const pageAnchoredVertically =
+    verticalRelativeTo === "margin" || verticalRelativeTo === "page";
+  const sideAligned =
+    horizontalAlign === "left" ||
+    horizontalAlign === "right" ||
+    horizontalAlign === "inside" ||
+    horizontalAlign === "outside";
+  const topAligned = verticalAlign === "top" || verticalAlign === "inside";
+
+  return pageAnchoredHorizontally && pageAnchoredVertically && sideAligned && topAligned;
+}
+
+function resolveWrappedFloatingSide(
+  image: ImageRunNode,
+  options?: {
+    containerWidthPx?: number;
+    imageWidthPx?: number;
+  }
+): "left" | "right" {
+  const floating = image.floating;
+  const wrapText = floating?.wrapText;
+  if (wrapText === "left") {
+    return "right";
+  }
+  if (wrapText === "right") {
+    return "left";
+  }
+
+  const horizontalAlign = floating?.horizontalAlign?.toLowerCase();
+  if (horizontalAlign === "right" || horizontalAlign === "outside") {
+    return "right";
+  }
+  if (horizontalAlign === "left" || horizontalAlign === "inside") {
+    return "left";
+  }
+
+  const containerWidthPx =
+    Number.isFinite(options?.containerWidthPx) && (options?.containerWidthPx as number) > 0
+      ? Math.max(1, Math.round(options?.containerWidthPx as number))
+      : undefined;
+  const imageWidthPx =
+    Number.isFinite(options?.imageWidthPx) && (options?.imageWidthPx as number) > 0
+      ? Math.max(1, Math.round(options?.imageWidthPx as number))
+      : undefined;
+  if (
+    Number.isFinite(containerWidthPx) &&
+    Number.isFinite(imageWidthPx) &&
+    Number.isFinite(floating?.xPx)
+  ) {
+    const centerX = (floating?.xPx as number) + (imageWidthPx as number) / 2;
+    return centerX <= (containerWidthPx as number) / 2 ? "left" : "right";
+  }
+
+  if ((floating?.xPx ?? 0) >= 0) {
+    return (floating?.xPx ?? 0) > 96 ? "right" : "left";
+  }
+
+  return "left";
+}
+
+function wrappedFloatingImageStyle(
+  image: ImageRunNode,
+  options?: {
+    containerWidthPx?: number;
+    deltaX?: number;
+    deltaY?: number;
+    allowNegativeOffsets?: boolean;
+  }
+): React.CSSProperties {
+  const floating = image.floating;
+  const wrapType = floating?.wrapType;
+  if (!floating || !wrapType) {
+    return {};
+  }
+
+  // Wrap distances should come from the DOCX anchor only; avoid synthetic gaps.
+  const distL = floating.distLPx ?? 0;
+  const distR = floating.distRPx ?? 0;
+  const distT = floating.distTPx ?? 0;
+  const distB = floating.distBPx ?? 0;
+  const deltaX = Number.isFinite(options?.deltaX) ? Math.round(options?.deltaX as number) : 0;
+  const deltaY = Number.isFinite(options?.deltaY) ? Math.round(options?.deltaY as number) : 0;
+  const allowNegativeOffsets = options?.allowNegativeOffsets === true;
+  const shiftedXPx = Number.isFinite(floating.xPx) ? Math.round((floating.xPx as number) + deltaX) : undefined;
+  const shiftedYPx = Number.isFinite(floating.yPx) ? Math.round((floating.yPx as number) + deltaY) : undefined;
+  const horizontalOffset = allowNegativeOffsets
+    ? Math.round(shiftedXPx ?? 0)
+    : Math.max(0, Math.round(shiftedXPx ?? 0));
+  const verticalOffset = allowNegativeOffsets
+    ? Math.round(shiftedYPx ?? 0)
+    : Math.max(0, Math.round(shiftedYPx ?? 0));
+  const horizontalAlign = floating.horizontalAlign?.toLowerCase();
+  const hasExplicitHorizontalAlign =
+    horizontalAlign === "left" ||
+    horizontalAlign === "center" ||
+    horizontalAlign === "right" ||
+    horizontalAlign === "inside" ||
+    horizontalAlign === "outside";
+  const containerWidthPx = Number.isFinite(options?.containerWidthPx)
+    ? Math.max(1, Math.round(options?.containerWidthPx as number))
+    : undefined;
+  const imageWidthPx = Number.isFinite(image.widthPx)
+    ? Math.max(1, Math.round(image.widthPx as number))
+    : undefined;
+  const intrinsicBlockWidthStyle: Pick<React.CSSProperties, "width"> = imageWidthPx
+    ? { width: imageWidthPx }
+    : { width: "fit-content" };
+  const rightOffsetPx =
+    !hasExplicitHorizontalAlign &&
+    Number.isFinite(shiftedXPx) &&
+    Number.isFinite(containerWidthPx) &&
+    Number.isFinite(imageWidthPx)
+      ? allowNegativeOffsets
+        ? Math.round((containerWidthPx as number) - (shiftedXPx as number) - (imageWidthPx as number))
+        : Math.max(
+            0,
+            Math.round((containerWidthPx as number) - (shiftedXPx as number) - (imageWidthPx as number))
+          )
+      : 0;
+  const leftOffsetPx = hasExplicitHorizontalAlign ? 0 : horizontalOffset;
+
+  if (wrapType === "topAndBottom") {
+    if (horizontalAlign === "center") {
+      return {
+        display: "block",
+        ...intrinsicBlockWidthStyle,
+        marginTop: distT + verticalOffset,
+        marginBottom: distB,
+        marginLeft: "auto",
+        marginRight: "auto",
+        clear: "both"
+      };
+    }
+    if (horizontalAlign === "right" || horizontalAlign === "outside") {
+      return {
+        display: "block",
+        ...intrinsicBlockWidthStyle,
+        marginTop: distT + verticalOffset,
+        marginBottom: distB,
+        marginLeft: "auto",
+        marginRight: distR,
+        clear: "both"
+      };
+    }
+    return {
+      display: "block",
+      ...intrinsicBlockWidthStyle,
+      marginTop: distT + verticalOffset,
+      marginBottom: distB,
+      marginLeft: distL + leftOffsetPx,
+      marginRight: distR,
+      clear: "both"
+    };
+  }
+
+  const side = resolveWrappedFloatingSide(image, {
+    containerWidthPx,
+    imageWidthPx
+  });
+  return {
+    display: "block",
+    float: side,
+    marginTop: distT + verticalOffset,
+    marginBottom: distB,
+    marginLeft: side === "left" ? distL + leftOffsetPx : distL,
+    marginRight: side === "right" ? distR + rightOffsetPx : distR
+  };
+}
+
+interface WrappedFloatingDualExclusionLayout {
+  leftSpacerStyle: React.CSSProperties;
+  rightSpacerStyle: React.CSSProperties;
+  imageStyle: React.CSSProperties;
+}
+
+function wrappedFloatingImageDualExclusionLayout(
+  image: ImageRunNode,
+  options?: {
+    containerWidthPx?: number;
+    deltaX?: number;
+    deltaY?: number;
+  }
+): WrappedFloatingDualExclusionLayout | undefined {
+  void image;
+  void options;
+  // Center-hole exclusion requires a real line layout engine. The CSS spacer approach
+  // created incorrect middle-column wrapping and placement regressions across documents.
+  // Keep the stable side-float path until a proper glyph-line layout implementation exists.
+  return undefined;
+}
+
+function absoluteFloatingImageStyle(
+  image: ImageRunNode,
+  options?: {
+    pageOriginLeft?: number;
+    pageOriginTop?: number;
+    deltaX?: number;
+    deltaY?: number;
+  }
+): React.CSSProperties {
+  const floating = image.floating;
+  if (!floating) {
+    return {};
+  }
+
+  const horizontalRelativeTo = floating.horizontalRelativeTo?.toLowerCase();
+  const verticalRelativeTo = floating.verticalRelativeTo?.toLowerCase();
+  const horizontalAlign = floating.horizontalAlign?.toLowerCase();
+  const verticalAlign = floating.verticalAlign?.toLowerCase();
+  const usesWrapDistance = Boolean(floating.wrapType && floating.wrapType !== "none");
+  const distL = usesWrapDistance ? (floating.distLPx ?? 0) : 0;
+  const distR = usesWrapDistance ? (floating.distRPx ?? 0) : 0;
+  const distT = usesWrapDistance ? (floating.distTPx ?? 0) : 0;
+  const distB = usesWrapDistance ? (floating.distBPx ?? 0) : 0;
+  const deltaX = Number.isFinite(options?.deltaX) ? Math.round(options?.deltaX as number) : 0;
+  const deltaY = Number.isFinite(options?.deltaY) ? Math.round(options?.deltaY as number) : 0;
+  const resolvedZIndex =
+    floating.behindDocument
+      ? 0
+      : Number.isFinite(floating.zIndex)
+        ? Math.max(1, Math.min(65535, Math.round((floating.zIndex as number) / 65536)))
+        : 4;
+
+  const resolvedLeft =
+    floating.xPx !== undefined
+      ? horizontalRelativeTo === "margin"
+        ? floating.xPx + (options?.pageOriginLeft ?? 0)
+        : floating.xPx
+      : undefined;
+  const resolvedTop =
+    floating.yPx !== undefined
+      ? verticalRelativeTo === "margin"
+        ? floating.yPx + (options?.pageOriginTop ?? 0)
+        : floating.yPx
+      : undefined;
+
+  const style: React.CSSProperties = {
+    position: "absolute",
+    zIndex: resolvedZIndex
+  };
+  const transforms: string[] = [];
+
+  if (resolvedLeft !== undefined) {
+    style.left = resolvedLeft + deltaX;
+  } else if (
+    horizontalAlign === "right" ||
+    horizontalAlign === "outside"
+  ) {
+    style.right = distR - deltaX;
+  } else if (horizontalAlign === "center") {
+    style.left = "50%";
+    transforms.push("translateX(-50%)");
+  } else {
+    style.left = distL + deltaX;
+  }
+
+  if (resolvedTop !== undefined) {
+    style.top = resolvedTop + deltaY;
+  } else if (
+    verticalAlign === "bottom" ||
+    verticalAlign === "outside"
+  ) {
+    style.bottom = distB - deltaY;
+  } else if (verticalAlign === "center") {
+    style.top = "50%";
+    transforms.push("translateY(-50%)");
+  } else {
+    style.top = distT + deltaY;
+  }
+
+  if (transforms.length > 0 || deltaX !== 0 || deltaY !== 0) {
+    const applyDeltaTranslationX = resolvedLeft === undefined && horizontalAlign === "center";
+    const applyDeltaTranslationY = resolvedTop === undefined && verticalAlign === "center";
+    const translatePart =
+      applyDeltaTranslationX || applyDeltaTranslationY
+        ? `translate(${applyDeltaTranslationX ? deltaX : 0}px, ${applyDeltaTranslationY ? deltaY : 0}px)`
+        : "";
+    style.transform = [...transforms, translatePart].filter(Boolean).join(" ");
+  }
+
+  return style;
+}
+
+function shouldRenderAbsoluteFloatingImage(image: ImageRunNode): boolean {
+  const floating = image.floating;
+  if (!floating) {
+    return false;
+  }
+
+  if (shouldRenderWrappedFloatingImage(image)) {
+    return false;
+  }
+
+  return (
+    floating.xPx !== undefined ||
+    floating.yPx !== undefined ||
+    floating.horizontalAlign !== undefined ||
+    floating.verticalAlign !== undefined ||
+    floating.zIndex !== undefined ||
+    floating.behindDocument === true
+  );
+}
+
+function isPageOrMarginAnchoredAbsoluteFloatingImage(image: ImageRunNode): boolean {
+  if (!shouldRenderAbsoluteFloatingImage(image)) {
+    return false;
+  }
+
+  const floating = image.floating;
+  if (!floating) {
+    return false;
+  }
+
+  const horizontalRelativeTo = floating.horizontalRelativeTo?.toLowerCase();
+  const verticalRelativeTo = floating.verticalRelativeTo?.toLowerCase();
+  const horizontalPageAnchored =
+    horizontalRelativeTo === "page" || horizontalRelativeTo === "margin";
+  const verticalPageAnchored =
+    verticalRelativeTo === "page" || verticalRelativeTo === "margin";
+
+  // Use page-level absolute positioning context only when both axes are page/margin
+  // anchored. Mixed anchors (e.g. horizontal=page + vertical=line) must stay
+  // paragraph-anchored so the line-relative axis remains stable.
+  return horizontalPageAnchored && verticalPageAnchored;
+}
+
+function paragraphNeedsPageAnchoredAbsolutePositioningContext(paragraph: ParagraphNode): boolean {
+  return paragraph.children.some(
+    (child) => child.type === "image" && isPageOrMarginAnchoredAbsoluteFloatingImage(child)
+  );
+}
+
+function resolveHighlightColor(value?: string): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) {
+    return undefined;
+  }
+
+  if (normalized.startsWith("#")) {
+    return normalized;
+  }
+
+  return HIGHLIGHT_TO_CSS[normalized] ?? normalized;
+}
+
+function paragraphLineHeight(
+  paragraph: ParagraphNode,
+  docGridLinePitchPx?: number,
+  disableDocGridSnap = false
+): number | string | undefined {
+  const baseFontFamily = paragraphDominantFontFamily(paragraph);
+  const lineTwips = paragraph.style?.spacing?.lineTwips;
+  const docGridMinimumLineHeightPx = resolveParagraphDocGridLinePitchPx(
+    paragraph,
+    docGridLinePitchPx,
+    disableDocGridSnap
+  );
+  if (!Number.isFinite(lineTwips)) {
+    if (docGridMinimumLineHeightPx) {
+      return `${estimateParagraphLineHeightPx(
+        paragraph,
+        docGridLinePitchPx,
+        disableDocGridSnap
+      )}px`;
+    }
+    return calibrateAutoLineSpacingMultiple(DEFAULT_PARAGRAPH_LINE_MULTIPLE, baseFontFamily);
+  }
+
+  const lineRule = paragraph.style?.spacing?.lineRule ?? "auto";
+  if (lineRule === "auto") {
+    if (docGridMinimumLineHeightPx) {
+      return `${estimateParagraphLineHeightPx(
+        paragraph,
+        docGridLinePitchPx,
+        disableDocGridSnap
+      )}px`;
+    }
+    const lineMultiple = calibrateAutoLineSpacingMultiple(
+      resolveAutoLineSpacingMultiple(lineTwips as number, DEFAULT_PARAGRAPH_LINE_MULTIPLE),
+      baseFontFamily
+    );
+    return Number(lineMultiple.toFixed(3));
+  }
+
+  const lineHeightPx = twipsToPixels(lineTwips);
+  if (lineRule === "atLeast") {
+    const normalLineHeightPx = Math.max(
+      1,
+      Math.round(
+        paragraphBaseFontSizePx(paragraph) *
+          calibrateAutoLineSpacingMultiple(DEFAULT_PARAGRAPH_LINE_MULTIPLE, baseFontFamily)
+      )
+    );
+    return `${Math.max(
+      normalLineHeightPx,
+      lineHeightPx ?? 0,
+      docGridMinimumLineHeightPx ?? 0
+    )}px`;
+  }
+
+  if (lineHeightPx && lineHeightPx > 0) {
+    return `${lineHeightPx}px`;
+  }
+
+  if (lineRule === "exact") {
+    return calibrateAutoLineSpacingMultiple(DEFAULT_PARAGRAPH_LINE_MULTIPLE, baseFontFamily);
+  }
+
+  return calibrateAutoLineSpacingMultiple(DEFAULT_PARAGRAPH_LINE_MULTIPLE, baseFontFamily);
+}
+
+function paragraphBorderToCss(border: ParagraphBorderStyle | undefined): string | undefined {
+  return tableBorderToCss(border);
+}
+
+function paragraphBorderPaddingPx(border: ParagraphBorderStyle | undefined): number | undefined {
+  const type = normalizeBorderType(border?.type);
+  if (!type || type === "none" || type === "nil") {
+    return undefined;
+  }
+
+  return pointsToPixels(border?.spacePt);
+}
+
+function paragraphExplicitIndentTwips(paragraph: ParagraphNode): ParagraphIndent | undefined {
+  const sourceXml = paragraph.sourceXml;
+  if (!sourceXml) {
+    return undefined;
+  }
+
+  const cached = paragraphExplicitIndentBySourceXml.get(sourceXml);
+  if (cached !== undefined) {
+    return cached === null ? undefined : cached;
+  }
+
+  const paragraphPropertiesXml =
+    sourceXml.match(/<w:pPr\b[\s\S]*?<\/w:pPr>/i)?.[0] ??
+    sourceXml.match(/<w:pPr\b[^>]*\/>/i)?.[0];
+  if (!paragraphPropertiesXml) {
+    paragraphExplicitIndentBySourceXml.set(sourceXml, null);
+    return undefined;
+  }
+
+  const indentTag = paragraphPropertiesXml.match(/<w:ind\b[^>]*\/?>/i)?.[0];
+  if (!indentTag) {
+    paragraphExplicitIndentBySourceXml.set(sourceXml, null);
+    return undefined;
+  }
+
+  const parseIndentTwips = (attribute: string): number | undefined => {
+    const match = indentTag.match(new RegExp(`\\b${attribute}="(-?\\d+)"`, "i"));
+    if (!match?.[1]) {
+      return undefined;
+    }
+
+    const parsed = Number.parseInt(match[1], 10);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  };
+
+  let firstLineTwips = parseIndentTwips("w:firstLine");
+  const hangingTwips = parseIndentTwips("w:hanging");
+  if (Number.isFinite(firstLineTwips) && Number.isFinite(hangingTwips)) {
+    // ECMA-376: when both firstLine and hanging are present, firstLine is ignored.
+    firstLineTwips = undefined;
+  }
+
+  const explicitIndent: ParagraphIndent = {
+    leftTwips: parseIndentTwips("w:left"),
+    firstLineTwips,
+    hangingTwips
+  };
+  const hasAnyExplicitIndent =
+    Number.isFinite(explicitIndent.leftTwips) ||
+    Number.isFinite(explicitIndent.firstLineTwips) ||
+    Number.isFinite(explicitIndent.hangingTwips);
+  if (!hasAnyExplicitIndent) {
+    paragraphExplicitIndentBySourceXml.set(sourceXml, null);
+    return undefined;
+  }
+
+  paragraphExplicitIndentBySourceXml.set(sourceXml, explicitIndent);
+  return explicitIndent;
+}
+
+function resolveListParagraphIndent(
+  paragraph: ParagraphNode,
+  numberingDefinitions?: NumberingDefinitionSet
+): ParagraphIndent | undefined {
+  const numbering = paragraph.style?.numbering;
+  if (!numbering || !Number.isFinite(numbering.numId) || numbering.numId <= 0) {
+    return paragraph.style?.indent;
+  }
+
+  if (!numberingDefinitions) {
+    return paragraph.style?.indent;
+  }
+
+  const ilvl = Math.max(0, Math.round(numbering.ilvl ?? 0));
+  const level = findNumberingLevelDefinition(numberingDefinitions, numbering.numId, ilvl);
+  const baseLevel = findNumberingLevelDefinition(numberingDefinitions, numbering.numId, 0);
+  const levelIndent = level?.indent;
+  const styleIndent = paragraph.style?.indent;
+  const styleLeftTwips = styleIndent?.leftTwips;
+  const explicitParagraphIndent = paragraphExplicitIndentTwips(paragraph);
+  const explicitParagraphLeftTwips = explicitParagraphIndent?.leftTwips;
+  const explicitParagraphFirstLineTwips = explicitParagraphIndent?.firstLineTwips;
+  const explicitParagraphHangingTwips = explicitParagraphIndent?.hangingTwips;
+  const hasExplicitParagraphFirstLineTwips = Number.isFinite(explicitParagraphFirstLineTwips);
+  const hasExplicitParagraphHangingTwips = Number.isFinite(explicitParagraphHangingTwips);
+  const baseLevelLeftTwips = Number.isFinite(baseLevel?.indent?.leftTwips)
+    ? (baseLevel?.indent?.leftTwips ?? 0)
+    : Number.isFinite(styleLeftTwips)
+      ? styleLeftTwips
+      : undefined;
+  const levelLeftTwips = levelIndent?.leftTwips;
+  const hasExplicitLevelLeftTwips = Number.isFinite(levelLeftTwips);
+  const hasExplicitStyleLeftTwips = Number.isFinite(styleLeftTwips);
+  const hasExplicitParagraphLeftTwips = Number.isFinite(explicitParagraphLeftTwips);
+  let nextLeftTwips = styleLeftTwips;
+
+  if (hasExplicitParagraphLeftTwips) {
+    nextLeftTwips = explicitParagraphLeftTwips;
+  } else if (
+    Number.isFinite(levelLeftTwips) &&
+    Number.isFinite(baseLevelLeftTwips) &&
+    Number.isFinite(styleLeftTwips)
+  ) {
+    const levelOffsetTwips = Math.max(0, (levelLeftTwips ?? 0) - (baseLevelLeftTwips ?? 0));
+    // When paragraph style indentation comes from defaults (often 0), it should not
+    // suppress the numbering level indentation from DOCX.
+    const styleUsesListBaseIndent = (styleLeftTwips as number) >= ((baseLevelLeftTwips as number) - 120);
+    nextLeftTwips = styleUsesListBaseIndent
+      ? (styleLeftTwips ?? 0) + levelOffsetTwips
+      : (levelLeftTwips ?? 0);
+  } else if (Number.isFinite(levelLeftTwips)) {
+    nextLeftTwips = levelLeftTwips;
+  } else if (ilvl > 0) {
+    nextLeftTwips = ilvl * LIST_LEVEL_STEP_TWIPS;
+  }
+
+  // Some documents provide numbering but omit usable paragraph indents for list
+  // paragraphs. Preserve explicit zero indents from OOXML and only synthesize
+  // a fallback list indent when both style and numbering level omit left indents.
+  if (!Number.isFinite(nextLeftTwips)) {
+    if (hasExplicitParagraphLeftTwips) {
+      nextLeftTwips = explicitParagraphLeftTwips;
+    } else if (hasExplicitLevelLeftTwips) {
+      nextLeftTwips = levelLeftTwips;
+    } else if (hasExplicitStyleLeftTwips) {
+      nextLeftTwips = styleLeftTwips;
+    } else {
+      nextLeftTwips = Math.max(LIST_LEVEL_STEP_TWIPS, (ilvl + 1) * LIST_LEVEL_STEP_TWIPS);
+    }
+  } else if ((nextLeftTwips as number) <= 0) {
+    if (hasExplicitParagraphLeftTwips) {
+      nextLeftTwips = explicitParagraphLeftTwips;
+    } else if (hasExplicitLevelLeftTwips) {
+      nextLeftTwips = levelLeftTwips;
+    } else if (hasExplicitStyleLeftTwips) {
+      nextLeftTwips = styleLeftTwips;
+    } else if (Number.isFinite(levelLeftTwips) && (levelLeftTwips as number) > 0) {
+      nextLeftTwips = levelLeftTwips;
+    } else if (Number.isFinite(styleLeftTwips) && (styleLeftTwips as number) > 0) {
+      nextLeftTwips = styleLeftTwips;
+    } else {
+      nextLeftTwips = Math.max(LIST_LEVEL_STEP_TWIPS, (ilvl + 1) * LIST_LEVEL_STEP_TWIPS);
+    }
+  }
+
+  if (!Number.isFinite(nextLeftTwips)) {
+    return styleIndent;
+  }
+
+  const nextLeftTwipsRounded = Math.max(0, Math.round(nextLeftTwips ?? 0));
+  let nextFirstLineTwips: number | undefined;
+  let nextHangingTwips: number | undefined;
+  if (hasExplicitParagraphFirstLineTwips || hasExplicitParagraphHangingTwips) {
+    // Paragraph-level w:ind overrides numbering/style indentation semantics.
+    // If firstLine is explicitly present without hanging, do not inherit hanging.
+    // If hanging is explicitly present without firstLine, do not inherit firstLine.
+    nextFirstLineTwips = hasExplicitParagraphFirstLineTwips
+      ? explicitParagraphFirstLineTwips
+      : undefined;
+    nextHangingTwips = hasExplicitParagraphHangingTwips
+      ? explicitParagraphHangingTwips
+      : undefined;
+  } else {
+    nextFirstLineTwips = Number.isFinite(styleIndent?.firstLineTwips)
+      ? styleIndent?.firstLineTwips
+      : levelIndent?.firstLineTwips;
+    nextHangingTwips = Number.isFinite(styleIndent?.hangingTwips)
+      ? styleIndent?.hangingTwips
+      : levelIndent?.hangingTwips;
+  }
+
+  if (Number.isFinite(nextFirstLineTwips) && Number.isFinite(nextHangingTwips)) {
+    // ECMA-376: firstLine is ignored when both values are present.
+    nextFirstLineTwips = undefined;
+  }
+
+  return {
+    ...styleIndent,
+    leftTwips: nextLeftTwipsRounded,
+    firstLineTwips: nextFirstLineTwips,
+    hangingTwips: nextHangingTwips
+  };
+}
+
+function resolveNumberingMarkerBoxWidthPx(
+  paragraph: ParagraphNode,
+  numberingDefinitions?: NumberingDefinitionSet,
+  numberingLabel?: ParagraphNumberingLabel
+): number | undefined {
+  const resolvedIndent = resolveListParagraphIndent(paragraph, numberingDefinitions);
+  const hangingIndentPx = twipsToSignedPixels(resolvedIndent?.hangingTwips);
+  const firstLineIndentPx = twipsToSignedPixels(resolvedIndent?.firstLineTwips);
+  const candidateWidthPx = Number.isFinite(hangingIndentPx) && Math.abs(hangingIndentPx as number) > 0
+    ? Math.abs(hangingIndentPx as number)
+    : Number.isFinite(firstLineIndentPx) && (firstLineIndentPx as number) < 0
+      ? Math.abs(firstLineIndentPx as number)
+      : undefined;
+
+  const labelTextForWidth = numberingLabel?.imageSrc
+    ? (numberingLabel.trailingText ?? "")
+    : (numberingLabel?.text ?? "");
+  const normalizedLabelTextForWidth = labelTextForWidth
+    .replace(/\t/g, " ")
+    .replace(/\u00a0/g, " ");
+  const measuredLabelWidthPx = normalizedLabelTextForWidth.length > 0
+    ? Math.ceil(
+      measureTextWidthPx(
+        normalizedLabelTextForWidth,
+        numberingLabel?.style,
+        paragraphBaseFontSizePx(paragraph)
+      )
+    ) + 4
+    : 0;
+
+  const imageWidthPx = numberingLabel?.imageWidthPx;
+  const tocLeadingLeftTabStopPx = tableOfContentsLeadingLeftTabStopPx(paragraph);
+  const tocLabelGapPx = isTableOfContentsParagraph(paragraph) ? 6 : 0;
+  const tocMarkerTargetWidthPx =
+    Number.isFinite(tocLeadingLeftTabStopPx) && (tocLeadingLeftTabStopPx as number) > 0
+      ? Math.min(
+          Math.ceil(tocLeadingLeftTabStopPx as number),
+          Math.max(measuredLabelWidthPx + tocLabelGapPx, measuredLabelWidthPx + 16)
+        )
+      : 0;
+  const minimumVisualWidthPx = Math.max(
+    measuredLabelWidthPx + tocLabelGapPx,
+    Number.isFinite(imageWidthPx) && (imageWidthPx as number) > 0
+      ? Math.ceil(imageWidthPx as number) + 2
+      : 0,
+    tocMarkerTargetWidthPx
+  );
+
+  if (!Number.isFinite(candidateWidthPx) || (candidateWidthPx as number) < 8) {
+    return minimumVisualWidthPx > 0
+      ? clampNumber(Math.round(minimumVisualWidthPx), 8, 220)
+      : undefined;
+  }
+
+  return Math.max(
+    minimumVisualWidthPx,
+    clampNumber(Math.round(candidateWidthPx as number), 8, 220)
+  );
+}
+
+function numberingMarkerStyle(
+  paragraph: ParagraphNode,
+  numberingDefinitions: NumberingDefinitionSet | undefined,
+  numberingLabel: ParagraphNumberingLabel,
+  baseStyle: React.CSSProperties | undefined,
+  documentTheme: DocxDocumentTheme
+): React.CSSProperties {
+  const markerBoxWidthPx = resolveNumberingMarkerBoxWidthPx(
+    paragraph,
+    numberingDefinitions,
+    numberingLabel
+  );
+  const markerGapPx = isTableOfContentsParagraph(paragraph) ? 6 : markerBoxWidthPx ? 0 : 2;
+
+  return {
+    ...(baseStyle ?? {}),
+    display: "inline-flex",
+    alignItems: "baseline",
+    justifyContent: "flex-end",
+    verticalAlign: "baseline",
+    width: markerBoxWidthPx ? `${markerBoxWidthPx}px` : undefined,
+    minWidth: markerBoxWidthPx ? `${markerBoxWidthPx}px` : "1.1em",
+    marginRight: markerGapPx,
+    whiteSpace: "pre",
+    fontFamily: cssFontFamily(numberingLabel.fontFamily ?? numberingLabel.style?.fontFamily),
+    color: themedRunColor(numberingLabel.color ?? numberingLabel.style?.color, documentTheme)
+  };
+}
+
+function paragraphBlockStyle(
+  paragraph: ParagraphNode,
+  numberingDefinitions?: NumberingDefinitionSet,
+  headingStyles?: DocxHeadingStyleMap,
+  docGridLinePitchPx?: number,
+  disableDocGridSnap = false
+): React.CSSProperties {
+  const beforeSpacing = twipsToPixels(paragraph.style?.spacing?.beforeTwips) ?? 0;
+  const afterSpacing = twipsToPixels(paragraph.style?.spacing?.afterTwips) ?? 0;
+  const resolvedIndent = resolveListParagraphIndent(paragraph, numberingDefinitions);
+  const leftIndent = twipsToSignedPixels(resolvedIndent?.leftTwips) ?? 0;
+  const rightIndent = twipsToSignedPixels(paragraph.style?.indent?.rightTwips) ?? 0;
+  const firstLineIndent = twipsToSignedPixels(resolvedIndent?.firstLineTwips);
+  const hangingIndent = twipsToSignedPixels(resolvedIndent?.hangingTwips);
+  const topBorder = paragraphBorderToCss(paragraph.style?.borders?.top);
+  const rightBorder = paragraphBorderToCss(paragraph.style?.borders?.right);
+  const bottomBorder = paragraphBorderToCss(paragraph.style?.borders?.bottom);
+  const leftBorder = paragraphBorderToCss(paragraph.style?.borders?.left);
+  const topPadding = paragraphBorderPaddingPx(paragraph.style?.borders?.top);
+  const rightPadding = paragraphBorderPaddingPx(paragraph.style?.borders?.right);
+  const bottomPadding = paragraphBorderPaddingPx(paragraph.style?.borders?.bottom);
+  const leftPadding = paragraphBorderPaddingPx(paragraph.style?.borders?.left);
+  const checkboxChoiceRow = paragraphLooksLikeCheckboxChoiceRow(paragraph);
+  const suppressTocNumberingTextIndent =
+    isTableOfContentsParagraph(paragraph) && paragraphHasNumbering(paragraph);
+  const headingLevel = paragraph.style?.headingLevel;
+  const applyWordLikeHeadingFallback = !paragraph.sourceXml;
+  const hasSoftLineBreak = paragraphText(paragraph).includes("\n");
+  const headingStyle =
+    headingLevel && headingLevel >= 1 && headingLevel <= 6
+      ? (headingStyles?.[headingLevel] ??
+        (applyWordLikeHeadingFallback ? DEFAULT_WORD_HEADING_STYLES[headingLevel] : undefined))
+      : undefined;
+
+  return {
+    position: "relative",
+    textAlign: paragraph.style?.align ?? "left",
+    ...(paragraph.style?.align === "justify" && hasSoftLineBreak
+      ? ({ textAlignLast: "justify" } as React.CSSProperties)
+      : undefined),
+    lineHeight: paragraphLineHeight(paragraph, docGridLinePitchPx, disableDocGridSnap),
+    marginTop: beforeSpacing,
+    marginBottom: afterSpacing,
+    marginLeft: leftIndent,
+    marginRight: rightIndent,
+    backgroundColor: paragraph.style?.backgroundColor,
+    textIndent: suppressTocNumberingTextIndent
+      ? undefined
+      : firstLineIndent ?? (hangingIndent ? -hangingIndent : undefined),
+    minHeight: paragraphIsEffectivelyEmpty(paragraph)
+      ? `${estimateParagraphLineHeightPx(
+          paragraph,
+          docGridLinePitchPx,
+          disableDocGridSnap
+        ) + EMPTY_PARAGRAPH_EXTRA_HEIGHT_PX}px`
+      : undefined,
+    ...(headingStyle ?? undefined),
+    ...(topBorder !== undefined ? { borderTop: topBorder } : undefined),
+    ...(rightBorder !== undefined ? { borderRight: rightBorder } : undefined),
+    ...(bottomBorder !== undefined ? { borderBottom: bottomBorder } : undefined),
+    ...(leftBorder !== undefined ? { borderLeft: leftBorder } : undefined),
+    ...(topPadding !== undefined ? { paddingTop: topPadding } : undefined),
+    ...(rightPadding !== undefined ? { paddingRight: rightPadding } : undefined),
+    ...(bottomPadding !== undefined ? { paddingBottom: bottomPadding } : undefined),
+    ...(leftPadding !== undefined ? { paddingLeft: leftPadding } : undefined),
+    whiteSpace: checkboxChoiceRow ? "nowrap" : "pre-wrap",
+    ...(checkboxChoiceRow ? ({ tabSize: 1 } as React.CSSProperties) : undefined),
+    wordWrap: checkboxChoiceRow ? "normal" : "break-word",
+    overflowWrap: checkboxChoiceRow ? "normal" : "break-word",
+    wordBreak: checkboxChoiceRow ? "normal" : "break-word"
+  };
+}
+
+function tableCellParagraphBlockStyle(
+  paragraph: ParagraphNode,
+  numberingDefinitions: NumberingDefinitionSet | undefined,
+  headingStyles: DocxHeadingStyleMap | undefined,
+  paragraphIndex: number,
+  applyWordTableDefaults: boolean,
+  docGridLinePitchPx?: number
+): React.CSSProperties {
+  const paragraphForLayout = wordLikeTableCellParagraph(paragraph, applyWordTableDefaults);
+  const disableDocGridSnap = paragraphDocGridSnapState(paragraph) === "disable";
+  const baseStyle = paragraphBlockStyle(
+    paragraphForLayout,
+    numberingDefinitions,
+    headingStyles,
+    docGridLinePitchPx,
+    disableDocGridSnap
+  );
+  const suppressTopSpacing =
+    paragraphIndex <= 0 && suppressFirstTableCellParagraphTopSpacing(paragraph);
+
+  return {
+    ...baseStyle,
+    ...(suppressTopSpacing ? { marginTop: 0 } : undefined)
+  };
+}
+
+function themedRunColor(color: string | undefined, documentTheme: DocxDocumentTheme): string | undefined {
+  if (documentTheme !== "dark") {
+    return color;
+  }
+
+  if (!color) {
+    return "#f3f4f6";
+  }
+
+  const normalized = color.trim().toLowerCase();
+  if (
+    normalized === "#000" ||
+    normalized === "#000000" ||
+    normalized === "#111111" ||
+    normalized === "#111827" ||
+    normalized === "black" ||
+    normalized === "rgb(0,0,0)" ||
+    normalized === "rgb(0, 0, 0)"
+  ) {
+    return "#f3f4f6";
+  }
+
+  return color;
+}
+
+function cssFontFamily(fontFamily?: string): string | undefined {
+  if (!fontFamily) {
+    return undefined;
+  }
+
+  const trimmed = fontFamily.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+
+  if (trimmed.includes(",")) {
+    return trimmed;
+  }
+
+  const normalized = trimmed.replace(/^['"]+|['"]+$/g, "");
+  if (!normalized) {
+    return undefined;
+  }
+
+  const escaped = normalized.replace(/"/g, '\\"');
+  const familyToken = /\s/.test(escaped) ? `"${escaped}"` : escaped;
+  const lower = normalized.toLowerCase();
+  const genericFamily = /(mono|consolas|courier|menlo|code)/.test(lower)
+    ? "monospace"
+    : /(times|cambria|georgia|garamond|baskerville|serif)/.test(lower)
+      ? "serif"
+      : "sans-serif";
+
+  return `${familyToken}, ${genericFamily}`;
+}
+
+function runStyleToCss(
+  style?: TextRunNode["style"],
+  documentTheme: DocxDocumentTheme = "light"
+): React.CSSProperties {
+  const hasScriptVerticalAlign =
+    style?.verticalAlign === "superscript" || style?.verticalAlign === "subscript";
+  const verticalAlign =
+    style?.verticalAlign === "superscript"
+      ? "super"
+      : style?.verticalAlign === "subscript"
+        ? "sub"
+        : undefined;
+  const textDecorationTokens = [style?.underline ? "underline" : "", style?.strike ? "line-through" : ""].filter(
+    Boolean
+  );
+  const textDecoration = textDecorationTokens.length > 0 ? textDecorationTokens.join(" ") : "none";
+
+  return {
+    fontWeight: style?.bold ? 700 : undefined,
+    fontStyle: style?.italic ? "italic" : undefined,
+    textDecoration,
+    color: themedRunColor(style?.color, documentTheme),
+    backgroundColor: resolveHighlightColor(style?.highlight),
+    fontSize: style?.fontSizePt
+      ? `${Number(
+          (style.fontSizePt * (hasScriptVerticalAlign ? SCRIPT_FONT_SCALE : 1)).toFixed(3)
+        )}pt`
+      : hasScriptVerticalAlign
+        ? `${SCRIPT_FONT_SCALE}em`
+        : undefined,
+    fontFamily: cssFontFamily(style?.fontFamily),
+    verticalAlign,
+    whiteSpace: "pre-wrap"
+  };
+}
+
+function linkStyleToCss(
+  style?: TextRunNode["style"],
+  documentTheme: DocxDocumentTheme = "light"
+): React.CSSProperties {
+  const base = runStyleToCss(style, documentTheme);
+  const resolvedTextDecoration =
+    typeof base.textDecoration === "string" && base.textDecoration.trim().length > 0
+      ? base.textDecoration
+      : "none";
+  return {
+    ...base,
+    color: base.color ?? "inherit",
+    textDecoration: resolvedTextDecoration
+  };
+}
+
+function mergeTextDecorations(
+  baseDecoration: React.CSSProperties["textDecoration"],
+  decoration: string
+): string {
+  const tokens = new Set<string>();
+  if (typeof baseDecoration === "string") {
+    baseDecoration
+      .split(/\s+/)
+      .map((token) => token.trim())
+      .filter(Boolean)
+      .forEach((token) => tokens.add(token));
+  }
+
+  decoration
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter(Boolean)
+    .forEach((token) => tokens.add(token));
+
+  return tokens.size > 0 ? Array.from(tokens).join(" ") : "none";
+}
+
+function trackedInlineStyle(
+  baseStyle: React.CSSProperties,
+  change: ParagraphTrackedInlineChange | undefined
+): React.CSSProperties {
+  if (!change) {
+    return baseStyle;
+  }
+
+  if (change.kind === "insertion" || change.kind === "move-to") {
+    return {
+      ...baseStyle,
+      color: "#2563eb",
+      textDecoration: mergeTextDecorations(baseStyle.textDecoration, "underline")
+    };
+  }
+
+  return baseStyle;
+}
+
+function trackedDeletedStyle(
+  documentTheme: DocxDocumentTheme,
+  baseRunStyle?: TextRunNode["style"] | FormFieldRunNode["style"]
+): React.CSSProperties {
+  const baseStyle = runStyleToCss(baseRunStyle, documentTheme);
+  return {
+    ...baseStyle,
+    color: documentTheme === "dark" ? "#fca5a5" : "#b91c1c",
+    textDecoration: mergeTextDecorations(baseStyle.textDecoration, "line-through"),
+    whiteSpace: baseStyle.whiteSpace ?? "pre-wrap",
+    lineHeight: "inherit",
+    opacity: 0.95
+  };
+}
+
+const TABLE_OF_CONTENTS_STYLE_ID = /^toc(?:[\s_-]*\d+)?$/i;
+
+function isTableOfContentsStyle(styleId?: string): boolean {
+  if (!styleId) {
+    return false;
+  }
+  return TABLE_OF_CONTENTS_STYLE_ID.test(styleId.trim());
+}
+
+function tableOfContentsLevel(paragraph: ParagraphNode): number | undefined {
+  const candidates = [paragraph.style?.styleId, paragraph.style?.styleName];
+  for (const candidate of candidates) {
+    if (!candidate) {
+      continue;
+    }
+    const match = candidate.trim().match(/^toc(?:[\s_-]*(\d+))?$/i);
+    if (!match) {
+      continue;
+    }
+    const parsedLevel = match[1] ? Number.parseInt(match[1], 10) : 1;
+    if (Number.isFinite(parsedLevel) && parsedLevel > 0) {
+      return Math.round(parsedLevel);
+    }
+    return 1;
+  }
+  return undefined;
+}
+
+function isTableOfContentsParagraph(paragraph: ParagraphNode): boolean {
+  return (
+    isTableOfContentsStyle(paragraph.style?.styleId) ||
+    isTableOfContentsStyle(paragraph.style?.styleName)
+  );
+}
+
+function paragraphUsesTabLeaders(paragraph: ParagraphNode): boolean {
+  if (!isTableOfContentsParagraph(paragraph)) {
+    return false;
+  }
+
+  const tabStops = paragraph.style?.tabStops ?? [];
+  if (tabStops.some((tabStop) => tabStop.alignment === "right" || tabStop.leader === "dot")) {
+    return true;
+  }
+
+  return paragraph.children.some((child) => {
+    if (child.type === "text") {
+      return child.text.includes("\t");
+    }
+    if (child.type === "form-field") {
+      return formFieldDisplayValue(child).includes("\t");
+    }
+    return false;
+  });
+}
+
+function paragraphLeadingTabStop(
+  paragraph: ParagraphNode
+): {
+  alignment?: "left" | "center" | "right" | "decimal" | "bar";
+  leader?: "none" | "dot" | "hyphen" | "underscore" | "middleDot";
+  positionTwips?: number;
+} | undefined {
+  const tabStops = paragraph.style?.tabStops ?? [];
+  const explicitTabStop = tabStops.find((tabStop) => tabStop.alignment === "right" || tabStop.leader === "dot");
+  if (explicitTabStop) {
+    return explicitTabStop;
+  }
+  if (isTableOfContentsParagraph(paragraph)) {
+    return {
+      alignment: "right",
+      leader: "dot"
+    };
+  }
+  return undefined;
+}
+
+function tableOfContentsLeadingLeftTabStopPx(paragraph: ParagraphNode): number | undefined {
+  if (!isTableOfContentsParagraph(paragraph)) {
+    return undefined;
+  }
+
+  const leftTabStopPositionsPx = (paragraph.style?.tabStops ?? [])
+    .filter((tabStop) => tabStop.alignment === "left")
+    .map((tabStop) => twipsToPixels(tabStop.positionTwips))
+    .filter((positionPx): positionPx is number => Number.isFinite(positionPx) && (positionPx as number) > 0)
+    .sort((left, right) => left - right);
+  return leftTabStopPositionsPx[0];
+}
+
+function paragraphUsesCenterRightTabLayout(paragraph: ParagraphNode): boolean {
+  const tabStops = paragraph.style?.tabStops ?? [];
+  const hasCenter = tabStops.some((tabStop) => tabStop.alignment === "center");
+  const hasRight = tabStops.some((tabStop) => tabStop.alignment === "right");
+  if (!hasCenter || !hasRight) {
+    return false;
+  }
+
+  return paragraph.children.some((child) => {
+    if (child.type === "text") {
+      return child.text.includes("\t");
+    }
+    if (child.type === "form-field") {
+      return formFieldDisplayValue(child).includes("\t");
+    }
+    return false;
+  });
+}
+
+type PageFieldKind = "PAGE" | "NUMPAGES";
+
+interface PageFieldValueToken {
+  kind: PageFieldKind;
+  rawText: string;
+}
+
+function decodeXmlText(text: string): string {
+  if (!text) {
+    return text;
+  }
+
+  const withNumericEntities = text
+    .replace(/&#x([0-9a-f]+);/gi, (_, hex: string) => {
+      const codePoint = Number.parseInt(hex, 16);
+      return Number.isFinite(codePoint) ? String.fromCodePoint(codePoint) : _;
+    })
+    .replace(/&#([0-9]+);/g, (_, decimal: string) => {
+      const codePoint = Number.parseInt(decimal, 10);
+      return Number.isFinite(codePoint) ? String.fromCodePoint(codePoint) : _;
+    });
+
+  return withNumericEntities
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, "\"")
+    .replace(/&apos;/g, "'");
+}
+
+interface XmlBalancedTagRange {
+  start: number;
+  end: number;
+  tagName: string;
+  openTag: string;
+}
+
+function extractBalancedTagRanges(xml: string, tagName: string): XmlBalancedTagRange[] {
+  if (!xml) {
+    return [];
+  }
+
+  const escapedTagName = tagName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const pattern = new RegExp(`<(/?)${escapedTagName}(?=[\\s>/])[^>]*>`, "gi");
+  const stack: Array<{ start: number; openTag: string }> = [];
+  const ranges: XmlBalancedTagRange[] = [];
+
+  for (const match of xml.matchAll(pattern)) {
+    const fullMatch = match[0] ?? "";
+    if (!fullMatch) {
+      continue;
+    }
+
+    const start = match.index ?? 0;
+    const isClosing = match[1] === "/";
+    const isSelfClosing = !isClosing && /\/>\s*$/i.test(fullMatch);
+    if (isSelfClosing) {
+      ranges.push({
+        start,
+        end: start + fullMatch.length,
+        tagName,
+        openTag: fullMatch
+      });
+      continue;
+    }
+
+    if (!isClosing) {
+      stack.push({
+        start,
+        openTag: fullMatch
+      });
+      continue;
+    }
+
+    const opener = stack.pop();
+    if (!opener) {
+      continue;
+    }
+
+    ranges.push({
+      start: opener.start,
+      end: start + fullMatch.length,
+      tagName,
+      openTag: opener.openTag
+    });
+  }
+
+  return ranges;
+}
+
+interface RevisionTagRange extends XmlBalancedTagRange {
+  kind: Exclude<DocxTrackedChangeKind, "format-change" | "paragraph-format-change">;
+  revisionId?: string;
+  author?: string;
+  date?: string;
+}
+
+function trackedChangeKindFromTagName(
+  tagName: string
+): Exclude<DocxTrackedChangeKind, "format-change" | "paragraph-format-change"> | undefined {
+  const normalized = tagName.trim().toLowerCase();
+  switch (normalized) {
+    case "w:ins":
+      return "insertion";
+    case "w:del":
+      return "deletion";
+    case "w:movefrom":
+      return "move-from";
+    case "w:moveto":
+      return "move-to";
+    default:
+      return undefined;
+  }
+}
+
+function normalizeTrackedChangeSnippet(value?: string): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const normalized = value.replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
+  return normalized.length > 0 ? normalized : undefined;
+}
+
+function formatTrackedChangeDate(value?: string): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+
+  const parsed = new Date(trimmed);
+  if (Number.isNaN(parsed.getTime())) {
+    return undefined;
+  }
+
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "2-digit",
+    year: "numeric",
+    timeZone: "UTC"
+  }).format(parsed);
+}
+
+function stripTextBoxContentFromRunXml(runXml: string): string {
+  if (!runXml.includes("w:txbxContent")) {
+    return runXml;
+  }
+  return runXml.replace(/<w:txbxContent\b[\s\S]*?<\/w:txbxContent>/gi, "");
+}
+
+function parseTrackedRunTokens(runXml: string, includeDeletedText: boolean): Array<{ text: string; isNote: boolean }> {
+  if (!runXml) {
+    return [];
+  }
+
+  const tokens: Array<{ text: string; isNote: boolean }> = [];
+  const pattern =
+    /<w:delText\b[^>]*>([\s\S]*?)<\/w:delText>|<(?:w|a):t\b[^>]*>([\s\S]*?)<\/(?:w|a):t>|<w:tab\b[^>]*\/?>|<w:(?:br|cr)\b[^>]*\/?>|<w:footnoteReference\b[^>]*\/?>|<w:endnoteReference\b[^>]*\/?>/gi;
+
+  for (const match of runXml.matchAll(pattern)) {
+    if (match[1] !== undefined) {
+      if (!includeDeletedText) {
+        continue;
+      }
+      const decoded = decodeXmlText(match[1] ?? "");
+      tokens.push({ text: decoded, isNote: false });
+      continue;
+    }
+
+    if (match[2] !== undefined) {
+      const decoded = decodeXmlText(match[2] ?? "");
+      tokens.push({ text: decoded, isNote: false });
+      continue;
+    }
+
+    const tagXml = match[0] ?? "";
+    if (/^<w:tab\b/i.test(tagXml)) {
+      tokens.push({ text: "\t", isNote: false });
+      continue;
+    }
+    if (/^<w:(?:br|cr)\b/i.test(tagXml)) {
+      tokens.push({ text: "\n", isNote: false });
+      continue;
+    }
+    if (/^<w:(?:footnoteReference|endnoteReference)\b/i.test(tagXml)) {
+      tokens.push({ text: "\u2063", isNote: true });
+    }
+  }
+
+  return tokens;
+}
+
+function xmlBooleanFlag(tagXml: string | undefined): boolean {
+  if (!tagXml) {
+    return false;
+  }
+
+  const raw = xmlAttribute(tagXml, "w:val")?.trim().toLowerCase();
+  if (!raw) {
+    return true;
+  }
+
+  return !(raw === "false" || raw === "0" || raw === "off" || raw === "none");
+}
+
+function xmlColorValue(tagXml: string | undefined): string | undefined {
+  if (!tagXml) {
+    return undefined;
+  }
+
+  const raw = xmlAttribute(tagXml, "w:val")?.trim();
+  if (!raw || /^auto$/i.test(raw)) {
+    return undefined;
+  }
+
+  if (/^#[0-9a-f]{6}$/i.test(raw)) {
+    return raw.toLowerCase();
+  }
+
+  if (/^[0-9a-f]{6}$/i.test(raw)) {
+    return `#${raw.toLowerCase()}`;
+  }
+
+  return raw;
+}
+
+function parseRunStyleFromRunXml(runXml: string): TextRunNode["style"] | undefined {
+  const rPrRange = extractBalancedTagRanges(runXml, "w:rPr")[0];
+  const rPrXml = rPrRange ? runXml.slice(rPrRange.start, rPrRange.end) : "";
+  if (!rPrXml) {
+    return undefined;
+  }
+
+  const rFontsTag = rPrXml.match(/<w:rFonts\b[^>]*\/?>/i)?.[0];
+  const rFontsAscii = rFontsTag ? xmlAttribute(rFontsTag, "w:ascii") : undefined;
+  const rFontsHAnsi = rFontsTag ? xmlAttribute(rFontsTag, "w:hAnsi") : undefined;
+  const rFontsEastAsia = rFontsTag ? xmlAttribute(rFontsTag, "w:eastAsia") : undefined;
+  const rFontsCs = rFontsTag ? xmlAttribute(rFontsTag, "w:cs") : undefined;
+  const fontFamily =
+    rFontsAscii ??
+    rFontsHAnsi ??
+    rFontsEastAsia ??
+    rFontsCs;
+
+  const sizeTag =
+    rPrXml.match(/<w:sz\b[^>]*\/?>/i)?.[0] ??
+    rPrXml.match(/<w:szCs\b[^>]*\/?>/i)?.[0];
+  const sizeHalfPoints = sizeTag ? Number(xmlAttribute(sizeTag, "w:val")) : Number.NaN;
+  const fontSizePt =
+    Number.isFinite(sizeHalfPoints) && sizeHalfPoints > 0
+      ? Number((sizeHalfPoints / 2).toFixed(2))
+      : undefined;
+
+  const bold = xmlBooleanFlag(rPrXml.match(/<w:b(?:Cs)?\b[^>]*\/?>/i)?.[0]);
+  const italic = xmlBooleanFlag(rPrXml.match(/<w:i(?:Cs)?\b[^>]*\/?>/i)?.[0]);
+  const underlineTag = rPrXml.match(/<w:u\b[^>]*\/?>/i)?.[0];
+  const underline = xmlBooleanFlag(underlineTag);
+  const strike = xmlBooleanFlag(rPrXml.match(/<w:strike\b[^>]*\/?>/i)?.[0]);
+  const color = xmlColorValue(rPrXml.match(/<w:color\b[^>]*\/?>/i)?.[0]);
+  const highlightTag = rPrXml.match(/<w:highlight\b[^>]*\/?>/i)?.[0];
+  const highlight = highlightTag ? xmlAttribute(highlightTag, "w:val") : undefined;
+  const verticalAlignTag = rPrXml.match(/<w:vertAlign\b[^>]*\/?>/i)?.[0];
+  const verticalAlign = verticalAlignTag ? xmlAttribute(verticalAlignTag, "w:val") : undefined;
+
+  const style: NonNullable<TextRunNode["style"]> = {
+    fontFamily: fontFamily?.trim() || undefined,
+    fontSizePt,
+    bold: bold || undefined,
+    italic: italic || undefined,
+    underline: underline || undefined,
+    strike: strike || undefined,
+    color,
+    highlight: highlight?.trim() || undefined,
+    verticalAlign:
+      verticalAlign === "superscript" || verticalAlign === "subscript"
+        ? verticalAlign
+        : undefined
+  };
+
+  return Object.values(style).some((value) => value !== undefined) ? style : undefined;
+}
+
+function summarizeChangeFeatures(prefix: string, features: string[], fallback: string): string {
+  if (features.length === 0) {
+    return fallback;
+  }
+
+  const unique = Array.from(new Set(features));
+  return `${prefix}: ${unique.join(", ")}`;
+}
+
+function summarizeRunFormattingChange(changeXml: string): string {
+  const features: string[] = [];
+  if (/<w:rFonts\b/i.test(changeXml)) {
+    features.push("font");
+  }
+  if (/<w:sz\b/i.test(changeXml)) {
+    features.push("size");
+  }
+  if (/<w:color\b/i.test(changeXml)) {
+    features.push("color");
+  }
+  if (/<w:highlight\b/i.test(changeXml)) {
+    features.push("highlight");
+  }
+  if (/<w:b(?:Cs)?\b/i.test(changeXml)) {
+    features.push("bold");
+  }
+  if (/<w:i(?:Cs)?\b/i.test(changeXml)) {
+    features.push("italic");
+  }
+  if (/<w:u\b/i.test(changeXml)) {
+    features.push("underline");
+  }
+  if (/<w:strike\b/i.test(changeXml)) {
+    features.push("strikethrough");
+  }
+  if (/<w:vertAlign\b/i.test(changeXml)) {
+    features.push("baseline");
+  }
+  return summarizeChangeFeatures("Run formatting", features, "Run formatting");
+}
+
+function summarizeParagraphFormattingChange(changeXml: string): string {
+  const features: string[] = [];
+  if (/<w:ind\b/i.test(changeXml)) {
+    features.push("margins/indent");
+  }
+  if (/<w:spacing\b/i.test(changeXml)) {
+    features.push("line spacing");
+  }
+  if (/<w:jc\b/i.test(changeXml)) {
+    features.push("alignment");
+  }
+  if (/<w:tabs\b/i.test(changeXml)) {
+    features.push("tabs");
+  }
+  if (/<w:numPr\b/i.test(changeXml)) {
+    features.push("numbering");
+  }
+  if (/<w:pBdr\b/i.test(changeXml)) {
+    features.push("borders");
+  }
+  if (/<w:shd\b/i.test(changeXml)) {
+    features.push("shading");
+  }
+  if (/<w:rPr\b/i.test(changeXml)) {
+    features.push("text style");
+  }
+  return summarizeChangeFeatures("Paragraph formatting", features, "Paragraph formatting");
+}
+
+function summarizeTableFormattingChange(scope: "table" | "row" | "cell", changeXml: string): string {
+  const features: string[] = [];
+  if (/<w:tblW\b|<w:tcW\b|<w:gridSpan\b/i.test(changeXml)) {
+    features.push("width");
+  }
+  if (/<w:tblLayout\b/i.test(changeXml)) {
+    features.push("layout");
+  }
+  if (/<w:tblInd\b|<w:ind\b/i.test(changeXml)) {
+    features.push("indent");
+  }
+  if (/<w:tblCellMar\b|<w:tcMar\b/i.test(changeXml)) {
+    features.push("margins");
+  }
+  if (/<w:(?:tblBorders|tcBorders|trBorders|pBdr)\b/i.test(changeXml)) {
+    features.push("borders");
+  }
+  if (/<w:trHeight\b/i.test(changeXml)) {
+    features.push("row height");
+  }
+  if (/<w:vAlign\b/i.test(changeXml)) {
+    features.push("vertical align");
+  }
+  if (/<w:jc\b/i.test(changeXml)) {
+    features.push("alignment");
+  }
+  if (/<w:shd\b/i.test(changeXml)) {
+    features.push("shading");
+  }
+
+  const prefix = scope === "table" ? "Table formatting" : scope === "row" ? "Row formatting" : "Cell formatting";
+  return summarizeChangeFeatures(prefix, features, prefix);
+}
+
+function resolveParagraphTrackedMarkup(paragraph: ParagraphNode): ParagraphTrackedMarkup | undefined {
+  const sourceXml = paragraph.sourceXml ?? "";
+  if (!sourceXml) {
+    return undefined;
+  }
+
+  const cached = paragraphTrackedMarkupBySourceXml.get(sourceXml);
+  if (cached !== undefined) {
+    return cached ?? undefined;
+  }
+
+  const revisionRanges: RevisionTagRange[] = [];
+  for (const tagName of ["w:ins", "w:del", "w:moveFrom", "w:moveTo"] as const) {
+    const kind = trackedChangeKindFromTagName(tagName);
+    if (!kind) {
+      continue;
+    }
+
+    extractBalancedTagRanges(sourceXml, tagName).forEach((range) => {
+      revisionRanges.push({
+        ...range,
+        kind,
+        revisionId: xmlAttribute(range.openTag, "w:id"),
+        author: decodeXmlText(xmlAttribute(range.openTag, "w:author") ?? ""),
+        date: xmlAttribute(range.openTag, "w:date")
+      });
+    });
+  }
+
+  const inlineChangeByVisibleChildIndex: Array<ParagraphTrackedInlineChange | undefined> = [];
+  const deletedSegmentsByVisibleChildIndex = new Map<number, ParagraphTrackedDeletionSegment[]>();
+  const changes: ParagraphTrackedInlineChange[] = [];
+  const changeByKey = new Map<string, ParagraphTrackedInlineChange>();
+  let anonymousChangeCounter = 0;
+  let visibleChildIndex = 0;
+
+  const getOrCreateChange = (
+    kind: DocxTrackedChangeKind,
+    revisionId: string | undefined,
+    author: string | undefined,
+    date: string | undefined,
+    text: string | undefined
+  ): ParagraphTrackedInlineChange => {
+    const normalizedAuthor = author?.trim() || undefined;
+    const normalizedDate = date?.trim() || undefined;
+    const normalizedText = normalizeTrackedChangeSnippet(text);
+    const normalizedRevisionId = revisionId?.trim() || undefined;
+    // Word groups tracked items primarily by revision id. Keep a single card per
+    // revision id/kind to avoid over-fragmenting changes into many tiny entries.
+    const key = normalizedRevisionId
+      ? `${kind}:id:${normalizedRevisionId}`
+      : `${kind}:anon:${normalizedAuthor ?? ""}:${normalizedDate ?? ""}:${normalizedText ?? ""}`;
+    const existing = changeByKey.get(key);
+    if (existing) {
+      if (!existing.text && normalizedText) {
+        existing.text = normalizedText;
+      } else if (
+        existing.text &&
+        normalizedText &&
+        normalizedText.length > existing.text.length
+      ) {
+        existing.text = normalizedText;
+      }
+      if (!existing.author && normalizedAuthor) {
+        existing.author = normalizedAuthor;
+      }
+      if (!existing.date && normalizedDate) {
+        existing.date = normalizedDate;
+      }
+      return existing;
+    }
+
+    const stableId = normalizedRevisionId
+      ? `${kind}-${normalizedRevisionId}`
+      : `${kind}-inline-${anonymousChangeCounter}`;
+    anonymousChangeCounter += 1;
+    const next: ParagraphTrackedInlineChange = {
+      id: stableId,
+      kind,
+      author: normalizedAuthor,
+      date: normalizedDate,
+      text: normalizedText
+    };
+    changeByKey.set(key, next);
+    changes.push(next);
+    return next;
+  };
+
+  const runPattern = /<w:r\b[\s\S]*?<\/w:r>/gi;
+  for (const runMatch of sourceXml.matchAll(runPattern)) {
+    const runXml = runMatch[0] ?? "";
+    if (!runXml) {
+      continue;
+    }
+
+    const runStart = runMatch.index ?? 0;
+    const runEnd = runStart + runXml.length;
+    const enclosingRevision = revisionRanges
+      .filter((revisionRange) => runStart >= revisionRange.start && runEnd <= revisionRange.end)
+      .sort((left, right) => (left.end - left.start) - (right.end - right.start))[0];
+
+    const revisionKind = enclosingRevision?.kind;
+    const revisionId = enclosingRevision?.revisionId;
+    const revisionAuthor = enclosingRevision?.author;
+    const revisionDate = enclosingRevision?.date;
+    const isDeletionLike = revisionKind === "deletion" || revisionKind === "move-from";
+    const contentRunXml = stripTextBoxContentFromRunXml(runXml);
+    const trackedRunStyle = parseRunStyleFromRunXml(contentRunXml);
+    const visibleTokens = parseTrackedRunTokens(contentRunXml, false);
+    const deletedTokens = parseTrackedRunTokens(contentRunXml, true);
+    const hasImage = /<w:(?:drawing|pict)\b/i.test(runXml);
+    const visibleChildCount =
+      visibleTokens.filter((token) => token.text.length > 0 || token.isNote).length + (hasImage ? 1 : 0);
+    const visibleText = normalizeTrackedChangeSnippet(
+      visibleTokens.map((token) => token.text).join("")
+    );
+    const deletedText = normalizeTrackedChangeSnippet(
+      deletedTokens.map((token) => token.text).join("")
+    );
+
+    if (isDeletionLike) {
+      const deletionSnippet = deletedText ?? (hasImage ? "[image]" : undefined);
+      if (!deletionSnippet) {
+        continue;
+      }
+      const change = getOrCreateChange(
+        revisionKind,
+        revisionId,
+        revisionAuthor,
+        revisionDate,
+        deletionSnippet
+      );
+      if (deletedText) {
+        const segments = deletedSegmentsByVisibleChildIndex.get(visibleChildIndex) ?? [];
+        segments.push({
+          text: deletedText,
+          change,
+          style: trackedRunStyle
+        });
+        deletedSegmentsByVisibleChildIndex.set(visibleChildIndex, segments);
+      }
+      continue;
+    }
+
+    const rPrChangeRanges = extractBalancedTagRanges(runXml, "w:rPrChange");
+    rPrChangeRanges.forEach((rPrChangeRange) => {
+      const rPrChangeTag = rPrChangeRange.openTag ?? "";
+      const rPrChangeXml = runXml.slice(rPrChangeRange.start, rPrChangeRange.end);
+      const formatAuthor = decodeXmlText(xmlAttribute(rPrChangeTag, "w:author") ?? "") || revisionAuthor;
+      const formatDate = xmlAttribute(rPrChangeTag, "w:date") ?? revisionDate;
+      const formatId = xmlAttribute(rPrChangeTag, "w:id") ?? revisionId;
+      const formatSnippet = summarizeRunFormattingChange(rPrChangeXml);
+      getOrCreateChange("format-change", formatId, formatAuthor, formatDate, formatSnippet);
+    });
+
+    if (revisionKind === "insertion" || revisionKind === "move-to") {
+      const insertionSnippet = visibleText ?? (hasImage ? "[image]" : undefined);
+      if (!insertionSnippet) {
+        visibleChildIndex += visibleChildCount;
+        continue;
+      }
+      const inlineChange = getOrCreateChange(
+        revisionKind,
+        revisionId,
+        revisionAuthor,
+        revisionDate,
+        insertionSnippet
+      );
+      for (let index = 0; index < visibleChildCount; index += 1) {
+        inlineChangeByVisibleChildIndex[visibleChildIndex + index] = inlineChange;
+      }
+    }
+
+    visibleChildIndex += visibleChildCount;
+  }
+
+  const pPrChangeRanges = extractBalancedTagRanges(sourceXml, "w:pPrChange");
+  pPrChangeRanges.forEach((pPrChangeRange) => {
+    const pPrChangeTag = pPrChangeRange.openTag ?? "";
+    const pPrChangeXml = sourceXml.slice(pPrChangeRange.start, pPrChangeRange.end);
+    getOrCreateChange(
+      "paragraph-format-change",
+      xmlAttribute(pPrChangeTag, "w:id"),
+      decodeXmlText(xmlAttribute(pPrChangeTag, "w:author") ?? ""),
+      xmlAttribute(pPrChangeTag, "w:date"),
+      summarizeParagraphFormattingChange(pPrChangeXml)
+    );
+  });
+
+  // Some DOCX revisions wrap non-run content. Ensure every revision range is
+  // represented even if the run-based pass above does not emit it.
+  revisionRanges.forEach((revisionRange) => {
+    const revisionXml = sourceXml.slice(revisionRange.start, revisionRange.end);
+    const includeDeletedText = revisionRange.kind === "deletion" || revisionRange.kind === "move-from";
+    const revisionTokens = parseTrackedRunTokens(stripTextBoxContentFromRunXml(revisionXml), includeDeletedText);
+    const revisionText = normalizeTrackedChangeSnippet(revisionTokens.map((token) => token.text).join(""));
+    const hasImage = /<w:(?:drawing|pict)\b/i.test(revisionXml);
+    const revisionSnippet = revisionText ?? (hasImage ? "[image]" : undefined);
+    if (!revisionSnippet) {
+      return;
+    }
+    getOrCreateChange(
+      revisionRange.kind,
+      revisionRange.revisionId,
+      revisionRange.author,
+      revisionRange.date,
+      revisionSnippet
+    );
+  });
+
+  const hasInlineChanges = inlineChangeByVisibleChildIndex.some(Boolean);
+  const hasDeletedSegments = deletedSegmentsByVisibleChildIndex.size > 0;
+  if (!hasInlineChanges && !hasDeletedSegments && changes.length === 0) {
+    setCacheEntry(paragraphTrackedMarkupBySourceXml, sourceXml, null);
+    return undefined;
+  }
+
+  const resolved: ParagraphTrackedMarkup = {
+    inlineChangeByVisibleChildIndex,
+    deletedSegmentsByVisibleChildIndex,
+    changes
+  };
+  setCacheEntry(paragraphTrackedMarkupBySourceXml, sourceXml, resolved);
+  return resolved;
+}
+
+function instructionTextToPageFieldKind(rawInstruction: string): PageFieldKind | undefined {
+  const normalized = decodeXmlText(rawInstruction).replace(/\s+/g, " ").trim().toUpperCase();
+  if (!normalized || normalized.includes("PAGEREF")) {
+    return undefined;
+  }
+
+  if (/\bNUMPAGES\b/.test(normalized)) {
+    return "NUMPAGES";
+  }
+  if (/\bPAGE\b/.test(normalized)) {
+    return "PAGE";
+  }
+
+  return undefined;
+}
+
+function paragraphPageFieldSequence(paragraph: ParagraphNode): PageFieldKind[] {
+  const xml = paragraph.sourceXml ?? "";
+  if (!xml) {
+    return [];
+  }
+
+  const fields: PageFieldKind[] = [];
+  for (const instructionMatch of xml.matchAll(/<w:instrText\b[^>]*>([\s\S]*?)<\/w:instrText>/gi)) {
+    const kind = instructionTextToPageFieldKind(instructionMatch[1] ?? "");
+    if (kind) {
+      fields.push(kind);
+    }
+  }
+  for (const simpleFieldMatch of xml.matchAll(/<w:fldSimple\b[^>]*\bw:instr="([^"]+)"[^>]*>/gi)) {
+    const kind = instructionTextToPageFieldKind(simpleFieldMatch[1] ?? "");
+    if (kind) {
+      fields.push(kind);
+    }
+  }
+
+  return fields;
+}
+
+function paragraphPageFieldValueSequence(paragraph: ParagraphNode): PageFieldValueToken[] {
+  const xml = paragraph.sourceXml ?? "";
+  if (!xml) {
+    return [];
+  }
+
+  const values: PageFieldValueToken[] = [];
+  const fieldStack: Array<{ kind?: PageFieldKind; inResult: boolean }> = [];
+  const tokenPattern =
+    /<w:fldSimple\b[^>]*\bw:instr="([^"]+)"[^>]*>[\s\S]*?<\/w:fldSimple>|<w:r\b[\s\S]*?<\/w:r>/gi;
+
+  for (const tokenMatch of xml.matchAll(tokenPattern)) {
+    const tokenXml = tokenMatch[0] ?? "";
+    if (!tokenXml) {
+      continue;
+    }
+
+    if (/^<w:fldSimple\b/i.test(tokenXml)) {
+      const kind = instructionTextToPageFieldKind(tokenMatch[1] ?? "");
+      if (!kind) {
+        continue;
+      }
+
+      for (const textMatch of tokenXml.matchAll(/<w:t\b[^>]*>([\s\S]*?)<\/w:t>/gi)) {
+        values.push({
+          kind,
+          rawText: decodeXmlText(textMatch[1] ?? "")
+        });
+      }
+      continue;
+    }
+
+    const beginCount =
+      tokenXml.match(/<w:fldChar\b[^>]*\bw:fldCharType="begin"[^>]*\/?>/gi)?.length ?? 0;
+    for (let index = 0; index < beginCount; index += 1) {
+      fieldStack.push({ inResult: false });
+    }
+
+    for (const instructionMatch of tokenXml.matchAll(/<w:instrText\b[^>]*>([\s\S]*?)<\/w:instrText>/gi)) {
+      const kind = instructionTextToPageFieldKind(instructionMatch[1] ?? "");
+      if (!kind || fieldStack.length === 0) {
+        continue;
+      }
+
+      let assigned = false;
+      for (let stackIndex = fieldStack.length - 1; stackIndex >= 0; stackIndex -= 1) {
+        if (fieldStack[stackIndex].kind === undefined) {
+          fieldStack[stackIndex].kind = kind;
+          assigned = true;
+          break;
+        }
+      }
+      if (!assigned) {
+        fieldStack[fieldStack.length - 1].kind = kind;
+      }
+    }
+
+    const separateCount =
+      tokenXml.match(/<w:fldChar\b[^>]*\bw:fldCharType="separate"[^>]*\/?>/gi)?.length ?? 0;
+    for (let index = 0; index < separateCount; index += 1) {
+      for (let stackIndex = fieldStack.length - 1; stackIndex >= 0; stackIndex -= 1) {
+        if (!fieldStack[stackIndex].inResult) {
+          fieldStack[stackIndex].inResult = true;
+          break;
+        }
+      }
+    }
+
+    const activeFieldKind = (() => {
+      for (let stackIndex = fieldStack.length - 1; stackIndex >= 0; stackIndex -= 1) {
+        const stackEntry = fieldStack[stackIndex];
+        if (stackEntry.inResult && stackEntry.kind) {
+          return stackEntry.kind;
+        }
+      }
+      return undefined;
+    })();
+
+    if (activeFieldKind) {
+      for (const textMatch of tokenXml.matchAll(/<w:t\b[^>]*>([\s\S]*?)<\/w:t>/gi)) {
+        values.push({
+          kind: activeFieldKind,
+          rawText: decodeXmlText(textMatch[1] ?? "")
+        });
+      }
+    }
+
+    const endCount = tokenXml.match(/<w:fldChar\b[^>]*\bw:fldCharType="end"[^>]*\/?>/gi)?.length ?? 0;
+    for (let index = 0; index < endCount; index += 1) {
+      fieldStack.pop();
+    }
+  }
+
+  return values;
+}
+
+function tabLeaderStyle(leader: string | undefined, color: string | undefined): React.CSSProperties {
+  const normalizedLeader = leader === "middleDot" ? "dot" : leader;
+  const resolvedColor = color || "currentColor";
+  if (normalizedLeader === "hyphen") {
+    return {
+      backgroundImage: `linear-gradient(to right, transparent 0, transparent 4px, ${resolvedColor} 4px, ${resolvedColor} 5px, transparent 5px, transparent 8px)`,
+      backgroundSize: "8px 1px",
+      backgroundPosition: "0 80%",
+      backgroundRepeat: "repeat-x"
+    };
+  }
+  if (normalizedLeader === "underscore") {
+    return {
+      backgroundImage: `linear-gradient(to right, ${resolvedColor} 0, ${resolvedColor} 1px, transparent 1px, transparent 4px)`,
+      backgroundSize: "4px 1px",
+      backgroundPosition: "0 90%",
+      backgroundRepeat: "repeat-x"
+    };
+  }
+
+  return {
+    backgroundImage: `radial-gradient(${resolvedColor} 1px, transparent 1px)`,
+    backgroundSize: "7px 9px",
+    backgroundPosition: "0 72%",
+    backgroundRepeat: "repeat-x"
+  };
+}
+
+function noteMarkerLabel(
+  noteReference: TextRunNode["noteReference"],
+  footnoteDisplayIndexById: Map<number, number>,
+  endnoteDisplayIndexById: Map<number, number>
+): string | undefined {
+  if (!noteReference) {
+    return undefined;
+  }
+
+  const index = noteReference.kind === "footnote"
+    ? footnoteDisplayIndexById.get(noteReference.id)
+    : endnoteDisplayIndexById.get(noteReference.id);
+
+  if (noteReference.kind === "footnote") {
+    const value = index ?? Math.max(1, Math.round(noteReference.id));
+    if (!Number.isFinite(value) || value <= 0) {
+      return undefined;
+    }
+    return String(Math.round(value));
+  }
+
+  const romanValue = index ?? Math.max(1, Math.round(noteReference.id));
+  if (!Number.isFinite(romanValue) || romanValue <= 0) {
+    return undefined;
+  }
+
+  return numberToRoman(Math.round(romanValue)).toLowerCase();
+}
+
+function normalizeDateInputValue(value?: string): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+
+  const directMatch = trimmed.match(/^(\d{4}-\d{2}-\d{2})/);
+  if (directMatch?.[1]) {
+    return directMatch[1];
+  }
+
+  const parsed = new Date(trimmed);
+  if (Number.isNaN(parsed.getTime())) {
+    return undefined;
+  }
+
+  return parsed.toISOString().slice(0, 10);
+}
+
+interface ParagraphRunRenderOptions {
+  showTrackedChanges?: boolean;
+  numberingDefinitions?: NumberingDefinitionSet;
+  tocLinkColorByLevel?: Partial<Record<number, string | undefined>>;
+  trackedMarkupMode?: "inline" | "gutter";
+  withinHeaderFooter?: boolean;
+  sectionImageInteraction?: HeaderFooterImageInteraction;
+}
+
+function renderParagraphRuns(
+  paragraph: ParagraphNode,
+  keyPrefix: string,
+  documentTheme: DocxDocumentTheme = "light",
+  numberingLabel?: ParagraphNumberingLabel,
+  onInternalLinkClick?: (bookmarkName: string) => void,
+  floatingPageOriginPx?: {
+    left: number;
+    top: number;
+    pageWidth?: number;
+  },
+  noteMarkerIndexes?: {
+    footnote: Map<number, number>;
+    endnote: Map<number, number>;
+  },
+  pageNumber?: number,
+  totalPages?: number,
+  options?: ParagraphRunRenderOptions
+): React.ReactNode {
+  const runs: React.ReactNode[] = [];
+  const runsLeft: React.ReactNode[] = [];
+  const runsRight: React.ReactNode[] = [];
+  const safeNoteMarkerIndexes = {
+    footnote: noteMarkerIndexes?.footnote ?? new Map<number, number>(),
+    endnote: noteMarkerIndexes?.endnote ?? new Map<number, number>()
+  };
+  const useTabLeaderLayout = paragraphUsesTabLeaders(paragraph);
+  const useCenterRightTabLayout = !useTabLeaderLayout && paragraphUsesCenterRightTabLayout(paragraph);
+  const pageFieldSequence = paragraphPageFieldSequence(paragraph);
+  const pageFieldValueSequence = paragraphPageFieldValueSequence(paragraph);
+  const hasPageField = pageFieldSequence.length > 0 || pageFieldValueSequence.length > 0;
+  let consumedPageFieldValues = 0;
+  const tabStop = paragraphLeadingTabStop(paragraph);
+  const tabStopPositionsPx = (paragraph.style?.tabStops ?? [])
+    .map((tabStopEntry) => twipsToPixels(tabStopEntry.positionTwips))
+    .filter((value): value is number => Number.isFinite(value) && (value as number) > 0)
+    .sort((left, right) => left - right);
+  let hasTabSplit = false;
+  let tabLeaderColor: string | undefined;
+  const showTrackedChanges = options?.showTrackedChanges === true;
+  const showTrackedInlineMarkup = showTrackedChanges && options?.trackedMarkupMode !== "gutter";
+  const trackedMarkup = showTrackedInlineMarkup ? resolveParagraphTrackedMarkup(paragraph) : undefined;
+  const tocParagraphLevel = tableOfContentsLevel(paragraph);
+  const tocLinkColor = tocParagraphLevel ? options?.tocLinkColorByLevel?.[tocParagraphLevel] : undefined;
+  const checkboxChoiceRow = paragraphLooksLikeCheckboxChoiceRow(paragraph);
+  const fallbackTabWidthPx = checkboxChoiceRow ? checkboxChoiceRowTabWidthPx(paragraph) : 56;
+  const shouldTrackTabLineWidth = !useTabLeaderLayout && !useCenterRightTabLayout;
+  let approximateLineWidthPx = 0;
+  let trackedVisibleChildCursor = 0;
+  const appendTrackedDeletionSegments = (
+    target: React.ReactNode[],
+    keySeed: string,
+    fallbackStyle?: TextRunNode["style"] | FormFieldRunNode["style"]
+  ): void => {
+    if (!trackedMarkup) {
+      return;
+    }
+
+    const segments = trackedMarkup.deletedSegmentsByVisibleChildIndex.get(trackedVisibleChildCursor);
+    if (!segments || segments.length === 0) {
+      return;
+    }
+
+    segments.forEach((segment, segmentIndex) => {
+      target.push(
+        <span
+          key={`${keySeed}-tracked-del-${trackedVisibleChildCursor}-${segmentIndex}`}
+          data-docx-tracked-change="deletion"
+          data-docx-tracked-change-id={segment.change.id}
+          title={segment.change.author ? `${segment.change.author} deleted` : "Deleted"}
+          style={trackedDeletedStyle(documentTheme, segment.style ?? fallbackStyle)}
+        >
+          {segment.text}
+        </span>
+      );
+    });
+  };
+  const currentTrackedInlineChange = (): ParagraphTrackedInlineChange | undefined =>
+    trackedMarkup?.inlineChangeByVisibleChildIndex[trackedVisibleChildCursor];
+  const consumeTrackedVisibleChild = (child: ParagraphNode["children"][number]): void => {
+    if (!trackedMarkup) {
+      return;
+    }
+    if (child.type === "form-field") {
+      return;
+    }
+    trackedVisibleChildCursor += 1;
+  };
+  const normalizeFieldComparableText = (input: string): string =>
+    input.replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
+  const trackTextAdvance = (
+    text: string,
+    style?: TextRunNode["style"] | FormFieldRunNode["style"]
+  ): void => {
+    if (!shouldTrackTabLineWidth) {
+      return;
+    }
+    approximateLineWidthPx = updateEstimatedLineWidthPxForText(approximateLineWidthPx, text, style);
+  };
+  const trackInlineAdvance = (widthPx: number): void => {
+    if (!shouldTrackTabLineWidth) {
+      return;
+    }
+    approximateLineWidthPx += Math.max(0, Math.round(widthPx));
+  };
+  const resolveNextTabWidthPx = (): number =>
+    resolveTabSpacerWidthPx(tabStopPositionsPx, approximateLineWidthPx, fallbackTabWidthPx);
+  const appendPlainTextWithSoftBreakControl = (
+    target: React.ReactNode[],
+    keySeed: string,
+    text: string,
+    style: React.CSSProperties,
+    measureStyle?: TextRunNode["style"] | FormFieldRunNode["style"]
+  ): void => {
+    const shouldControlSoftBreakStretch =
+      paragraph.style?.align === "justify" && text.includes("\n");
+    if (!shouldControlSoftBreakStretch) {
+      target.push(
+        <span key={keySeed} style={style}>
+          {text}
+        </span>
+      );
+      trackTextAdvance(text, measureStyle);
+      return;
+    }
+
+    const segments = text.split("\n");
+    segments.forEach((segment, segmentIndex) => {
+      const isLastSegment = segmentIndex === segments.length - 1;
+      if (segmentIndex > 0) {
+        target.push(<br key={`${keySeed}-soft-break-${segmentIndex}`} />);
+      }
+
+      if (segment.length > 0) {
+        target.push(
+          <span
+            key={`${keySeed}-segment-${segmentIndex}`}
+            style={
+              isLastSegment
+                ? {
+                    ...style,
+                    display: "inline-block",
+                    maxWidth: "100%",
+                    whiteSpace: "pre-wrap",
+                    verticalAlign: "baseline"
+                  }
+                : style
+            }
+          >
+            {segment}
+          </span>
+        );
+      }
+
+      trackTextAdvance(segment, measureStyle);
+      if (!isLastSegment) {
+        approximateLineWidthPx = 0;
+      }
+    });
+  };
+  const tabTextStyle = (
+    style: TextRunNode["style"] | FormFieldRunNode["style"],
+    textStyle: React.CSSProperties
+  ): React.CSSProperties => {
+    const tabWidthPx = resolveNextTabWidthPx();
+    trackInlineAdvance(tabWidthPx);
+    const hasUnderline = Boolean(style?.underline);
+    return {
+      ...textStyle,
+      display: "inline-block",
+      width: tabWidthPx,
+      minWidth: tabWidthPx,
+      whiteSpace: "pre",
+      textDecoration: hasUnderline ? "none" : textStyle.textDecoration,
+      borderBottom: hasUnderline ? "1px solid currentColor" : undefined,
+      lineHeight: "1em"
+    };
+  };
+  const resolvePageFieldText = (value: string, preferredZone?: number): string => {
+    if (!hasPageField || value.trim().length === 0) {
+      return value;
+    }
+
+    let fieldKind = pageFieldSequence[consumedPageFieldValues];
+    const valueToken = pageFieldValueSequence[consumedPageFieldValues];
+    if (valueToken) {
+      if (
+        normalizeFieldComparableText(value) !==
+        normalizeFieldComparableText(valueToken.rawText)
+      ) {
+        return value;
+      }
+      fieldKind = valueToken.kind;
+    } else {
+      if (!fieldKind) {
+        return value;
+      }
+
+      const normalized = value.trim();
+      const likelyFieldResult = /^\d+$/.test(normalized) || /^[ivxlcdm]+$/i.test(normalized);
+      if (!likelyFieldResult && preferredZone !== 1) {
+        return value;
+      }
+    }
+
+    const resolvedFieldValue =
+      fieldKind === "NUMPAGES"
+        ? Number.isFinite(totalPages) && (totalPages as number) > 0
+          ? Math.max(1, Math.round(totalPages as number))
+          : undefined
+        : Number.isFinite(pageNumber) && (pageNumber as number) > 0
+          ? Number.isFinite(totalPages) && (totalPages as number) > 0
+            ? Math.min(Math.max(1, Math.round(pageNumber as number)), Math.max(1, Math.round(totalPages as number)))
+            : Math.max(1, Math.round(pageNumber as number))
+          : undefined;
+    if (!Number.isFinite(resolvedFieldValue)) {
+      return value;
+    }
+
+    consumedPageFieldValues += 1;
+    const leadingWhitespace = value.match(/^\s*/)?.[0] ?? "";
+    const trailingWhitespace = value.match(/\s*$/)?.[0] ?? "";
+    return `${leadingWhitespace}${Math.max(1, Math.round(resolvedFieldValue as number))}${trailingWhitespace}`;
+  };
+
+  const trackedLinkStyle = (
+    style: TextRunNode["style"] | FormFieldRunNode["style"] | undefined,
+    trackedInlineChange: ParagraphTrackedInlineChange | undefined
+  ): React.CSSProperties => {
+    if (!isTableOfContentsParagraph(paragraph)) {
+      return trackedInlineStyle(linkStyleToCss(style, documentTheme), trackedInlineChange);
+    }
+
+    const base = runStyleToCss(style, documentTheme);
+    return trackedInlineStyle(
+      {
+        ...base,
+        color: tocLinkColor ? themedRunColor(tocLinkColor, documentTheme) : "inherit",
+        textDecoration: "none"
+      },
+      trackedInlineChange
+    );
+  };
+
+  const renderRun = (
+    target: React.ReactNode[],
+    child: ParagraphNode["children"][number],
+    key: string,
+    textOverride?: string,
+    trackedInlineChange?: ParagraphTrackedInlineChange,
+    childIndex = -1
+  ): void => {
+    if (child.type === "form-field") {
+      const textValue = (formFieldDisplayValue(child) || "\u00a0").replace(/\t/g, " ");
+      const text = textOverride ?? textValue;
+      if (child.link) {
+        const linkHref = child.link;
+        const isInternalLink = linkHref.startsWith("#");
+        target.push(
+          <a
+            key={key}
+            href={linkHref}
+            target={isInternalLink ? undefined : "_blank"}
+            rel={isInternalLink ? undefined : "noreferrer noopener"}
+            onMouseDown={(event) => {
+              if (!isInternalLink || !onInternalLinkClick) {
+                return;
+              }
+
+              event.preventDefault();
+              event.stopPropagation();
+            }}
+            onClick={(event) => {
+              if (!isInternalLink || !onInternalLinkClick) {
+                return;
+              }
+
+              event.preventDefault();
+              event.stopPropagation();
+              onInternalLinkClick(linkHref.slice(1));
+            }}
+            style={trackedLinkStyle(child.style, trackedInlineChange)}
+          >
+            {text}
+          </a>
+        );
+        trackTextAdvance(text, child.style);
+        return;
+      }
+
+      const trackedStyle = trackedInlineStyle(runStyleToCss(child.style, documentTheme), trackedInlineChange);
+      if (text === "\t" && !useTabLeaderLayout && !useCenterRightTabLayout) {
+        target.push(
+          <span key={key} style={tabTextStyle(child.style, trackedStyle)}>
+            {"\u00a0"}
+          </span>
+        );
+        return;
+      }
+
+      target.push(
+        <span key={key} style={trackedStyle}>
+          {text}
+        </span>
+      );
+      trackTextAdvance(text, child.style);
+      return;
+    }
+
+    if (child.type === "image") {
+      const sectionImageInteraction = options?.sectionImageInteraction;
+      const sectionImageLocation = sectionImageInteraction?.imageLocationForChild?.(childIndex);
+      const sectionImageKey = sectionImageLocation
+        ? sectionImageLocationKey(sectionImageLocation)
+        : undefined;
+      const movePreview =
+        sectionImageKey &&
+        sectionImageInteraction?.floatingMovePreview?.imageKey === sectionImageKey
+          ? sectionImageInteraction.floatingMovePreview
+          : undefined;
+      const forceWrappedTopAnchoredSectionFloat =
+        options?.withinHeaderFooter === true &&
+        Boolean(child.floating?.wrapType && child.floating.wrapType !== "none") &&
+        shouldRenderTopAnchoredMarginFloatAsAbsolute(child);
+      const isWrappedFloatingImage = forceWrappedTopAnchoredSectionFloat
+        ? true
+        : shouldRenderWrappedFloatingImage(child);
+      const isAbsoluteFloatingImage = forceWrappedTopAnchoredSectionFloat
+        ? false
+        : shouldRenderAbsoluteFloatingImage(child);
+      const horizontalRelativeTo = child.floating?.horizontalRelativeTo?.toLowerCase();
+      const verticalRelativeTo = child.floating?.verticalRelativeTo?.toLowerCase();
+      let widthPx = child.widthPx;
+      let heightPx = child.heightPx;
+      const shouldStretchBannerToPageWidth =
+        isAbsoluteFloatingImage &&
+        child.floating?.behindDocument === true &&
+        horizontalRelativeTo === "page" &&
+        (child.floating?.wrapType === undefined || child.floating.wrapType === "none") &&
+        Number.isFinite(floatingPageOriginPx?.pageWidth) &&
+        Number.isFinite(child.floating?.xPx);
+      if (shouldStretchBannerToPageWidth) {
+        const pageWidthPx = Math.max(1, Math.round(floatingPageOriginPx?.pageWidth as number));
+        const xPx = Math.max(0, Math.round(child.floating?.xPx as number));
+        const minimumWidthPx = Math.max(1, pageWidthPx - xPx);
+        if (!Number.isFinite(widthPx) || (widthPx as number) < minimumWidthPx) {
+          if (
+            Number.isFinite(widthPx) &&
+            Number.isFinite(heightPx) &&
+            (widthPx as number) > 0
+          ) {
+            heightPx = Math.max(
+              1,
+              Math.round(((heightPx as number) * minimumWidthPx) / (widthPx as number))
+            );
+          }
+          widthPx = minimumWidthPx;
+        }
+      }
+      const floatingStyle: React.CSSProperties = isWrappedFloatingImage
+        ? wrappedFloatingImageStyle(child, {
+            containerWidthPx: floatingPageOriginPx?.pageWidth,
+            deltaX: movePreview?.deltaX ?? 0,
+            deltaY: movePreview?.deltaY ?? 0,
+            allowNegativeOffsets: true
+          })
+        : isAbsoluteFloatingImage
+          ? absoluteFloatingImageStyle(child, {
+              pageOriginLeft: floatingPageOriginPx?.left,
+              pageOriginTop: floatingPageOriginPx?.top,
+              deltaX: movePreview?.deltaX ?? 0,
+              deltaY: movePreview?.deltaY ?? 0
+            })
+          : movePreview
+            ? {
+                transform: `translate(${movePreview.deltaX}px, ${movePreview.deltaY}px)`,
+                position: "relative",
+                zIndex: 4
+              }
+            : {};
+      const floatingStyleWithMovePreview = isWrappedFloatingImage
+        ? {
+            ...floatingStyle
+          }
+        : floatingStyle;
+      const onSectionImagePointerDown =
+        sectionImageLocation &&
+        sectionImageInteraction?.onImagePointerDown &&
+        !sectionImageInteraction.isReadOnly
+          ? (event: React.PointerEvent<HTMLElement>) => {
+              sectionImageInteraction.onImagePointerDown?.(
+                event,
+                sectionImageLocation,
+                child,
+                isWrappedFloatingImage,
+                isAbsoluteFloatingImage
+              );
+            }
+          : undefined;
+      const onSectionImageClick =
+        sectionImageLocation &&
+        sectionImageInteraction?.onImageClick &&
+        !sectionImageInteraction.isReadOnly
+          ? (event: React.MouseEvent<HTMLElement>) => {
+              event.stopPropagation();
+              sectionImageInteraction.onImageClick?.(sectionImageLocation);
+            }
+          : undefined;
+      const sectionImageCursor =
+        sectionImageLocation &&
+        !sectionImageInteraction?.isReadOnly &&
+        (isWrappedFloatingImage || isAbsoluteFloatingImage)
+          ? "move"
+          : undefined;
+      const isCenteredStandaloneInlineImage =
+        !isWrappedFloatingImage &&
+        !isAbsoluteFloatingImage &&
+        paragraph.style?.align === "center" &&
+        paragraph.children.length === 1 &&
+        paragraph.children[0]?.type === "image";
+      const trackedImageStyle =
+        trackedInlineChange?.kind === "insertion" || trackedInlineChange?.kind === "move-to"
+          ? {
+              outline: "2px solid rgba(37, 99, 235, 0.35)",
+              outlineOffset: 1
+            }
+          : undefined;
+
+	      if (!child.src) {
+	        target.push(
+	          <span
+            key={key}
+            style={{
+              display: "inline-flex",
+              minWidth: 112,
+              minHeight: 80,
+              alignItems: "center",
+              justifyContent: "center",
+              border: "1px dashed #d1d5db",
+              borderRadius: 4,
+              color: "#6b7280",
+              fontSize: 12,
+              marginInline: 0,
+              paddingInline: 8,
+              ...trackedImageStyle,
+              ...floatingStyleWithMovePreview,
+              cursor: sectionImageCursor
+            }}
+            onPointerDown={onSectionImagePointerDown}
+            onClick={onSectionImageClick}
+          >
+            Missing image
+          </span>
+	        );
+	        return;
+	      }
+
+	      if (imageUsesLikelyUnsupportedBrowserFormat(child)) {
+	        const isSmallIcon = (widthPx ?? 0) <= 56 && (heightPx ?? 0) <= 56;
+          const contentType = child.contentType?.trim().toLowerCase();
+	        const fallbackText =
+            contentType === "image/x-emf" || contentType === "image/emf"
+              ? (isSmallIcon ? "e" : "EMF")
+              : contentType === "image/x-wmf" || contentType === "image/wmf"
+                ? (isSmallIcon ? "w" : "WMF")
+                : isSmallIcon
+                  ? "e"
+                  : "TIFF";
+	        target.push(
+	          <span
+	            key={key}
+	            role="img"
+	            aria-label={child.alt ?? "DOCX image"}
+	            style={{
+	              display: "inline-flex",
+	              alignItems: "center",
+	              justifyContent: "center",
+	              width: widthPx ? `${widthPx}px` : "1.8em",
+	              height: heightPx ? `${heightPx}px` : "1.8em",
+	              minWidth: 16,
+	              minHeight: 16,
+	              border: "1px solid #d1d5db",
+	              borderRadius: 3,
+	              backgroundColor: "#ffffff",
+	              color: "#0f172a",
+	              fontSize: isSmallIcon ? 12 : 10,
+	              fontWeight: 700,
+	              textTransform: "lowercase",
+	              fontFamily: "Arial, sans-serif",
+	              lineHeight: 1,
+	              verticalAlign: "middle",
+	              marginInline: 0,
+                ...trackedImageStyle,
+	              ...floatingStyleWithMovePreview,
+                cursor: sectionImageCursor
+	            }}
+              onPointerDown={onSectionImagePointerDown}
+              onClick={onSectionImageClick}
+	          >
+	            {fallbackText}
+	          </span>
+	        );
+	        return;
+	      }
+
+	      target.push(
+	        <img
+          key={key}
+          src={child.src}
+          alt={child.alt ?? "DOCX image"}
+          draggable={false}
+          onPointerDown={onSectionImagePointerDown}
+          onClick={onSectionImageClick}
+          style={{
+            width: widthPx ? `${widthPx}px` : undefined,
+            height: heightPx ? `${heightPx}px` : undefined,
+            maxWidth: isWrappedFloatingImage || isAbsoluteFloatingImage ? undefined : "100%",
+            display: isCenteredStandaloneInlineImage ? "block" : undefined,
+            marginLeft: isCenteredStandaloneInlineImage ? "auto" : undefined,
+            marginRight: isCenteredStandaloneInlineImage ? "auto" : undefined,
+            verticalAlign: "middle",
+            marginInline: 0,
+            ...trackedImageStyle,
+            ...floatingStyleWithMovePreview,
+            cursor: sectionImageCursor
+          }}
+        />
+      );
+      if (!isWrappedFloatingImage && !isAbsoluteFloatingImage) {
+        trackInlineAdvance(widthPx ?? 0);
+      }
+      return;
+    }
+
+    const textStyle = trackedInlineStyle(runStyleToCss(child.style, documentTheme), trackedInlineChange);
+    const noteLabel = noteMarkerLabel(
+      child.noteReference,
+      safeNoteMarkerIndexes.footnote,
+      safeNoteMarkerIndexes.endnote
+    );
+    if (noteLabel) {
+      target.push(
+        <span
+          key={key}
+          style={{
+            ...textStyle,
+            verticalAlign: "super",
+            fontSize: "0.75em"
+          }}
+        >
+          {noteLabel}
+        </span>
+      );
+      trackTextAdvance(noteLabel, child.style);
+      return;
+    }
+
+    if ((textOverride ?? child.text) === "\t" && !useTabLeaderLayout && !useCenterRightTabLayout) {
+      target.push(
+        <span key={key} style={tabTextStyle(child.style, textStyle)}>
+          {"\u00a0"}
+        </span>
+      );
+      return;
+    }
+
+    if (child.link) {
+      const linkHref = child.link;
+      const isInternalLink = linkHref.startsWith("#");
+      target.push(
+        <a
+          key={key}
+          href={linkHref}
+          target={isInternalLink ? undefined : "_blank"}
+          rel={isInternalLink ? undefined : "noreferrer noopener"}
+          onMouseDown={(event) => {
+            if (!isInternalLink || !onInternalLinkClick) {
+              return;
+            }
+
+            event.preventDefault();
+            event.stopPropagation();
+          }}
+            onClick={(event) => {
+            if (!isInternalLink || !onInternalLinkClick) {
+              return;
+            }
+
+            event.preventDefault();
+              event.stopPropagation();
+              onInternalLinkClick(linkHref.slice(1));
+            }}
+          style={trackedLinkStyle(child.style, trackedInlineChange)}
+        >
+          {textOverride ?? child.text}
+        </a>
+      );
+      trackTextAdvance(textOverride ?? child.text, child.style);
+      return;
+    }
+
+    appendPlainTextWithSoftBreakControl(
+      target,
+      key,
+      textOverride ?? child.text,
+      textStyle,
+      child.style
+    );
+  };
+
+  if (numberingLabel) {
+    const numberingTextStyle = numberingLabel.style ? runStyleToCss(numberingLabel.style, documentTheme) : undefined;
+    (useTabLeaderLayout ? runsLeft : runs).push(
+      <span
+        key={`${keyPrefix}-numbering`}
+        style={numberingMarkerStyle(
+          paragraph,
+          options?.numberingDefinitions,
+          numberingLabel,
+          numberingTextStyle,
+          documentTheme
+        )}
+      >
+        {numberingLabel.imageSrc ? (
+          <>
+            <img
+              src={numberingLabel.imageSrc}
+              alt=""
+              aria-hidden="true"
+              style={{
+                display: "inline-block",
+                verticalAlign: "text-bottom",
+                width: numberingLabel.imageWidthPx ?? 12,
+                height: numberingLabel.imageHeightPx ?? 12,
+                marginRight: 2
+              }}
+            />
+            {numberingLabel.trailingText ?? ""}
+          </>
+        ) : (
+          numberingLabel.text ?? ""
+        )}
+      </span>
+    );
+    if (numberingLabel.imageSrc) {
+      trackInlineAdvance(numberingLabel.imageWidthPx ?? 12);
+      trackTextAdvance(numberingLabel.trailingText ?? "", numberingLabel.style);
+    } else {
+      trackTextAdvance(numberingLabel.text ?? "", numberingLabel.style);
+    }
+  }
+
+  if (!useCenterRightTabLayout) {
+    paragraph.children.forEach((child, childIndex) => {
+      const key = `${keyPrefix}-run-${childIndex}`;
+      const target = useTabLeaderLayout ? (hasTabSplit ? runsRight : runsLeft) : runs;
+      appendTrackedDeletionSegments(
+        target,
+        `${key}-before`,
+        child.type === "text" || child.type === "form-field" ? child.style : undefined
+      );
+      const trackedInlineChange = currentTrackedInlineChange();
+      if (useTabLeaderLayout && child.type === "text" && child.text.includes("\t") && !hasTabSplit) {
+        const text = child.text;
+        const tabIndex = text.lastIndexOf("\t");
+        const leftText = text.slice(0, tabIndex);
+        const rightText = text.slice(tabIndex + 1);
+        if (!tabLeaderColor && child.style?.color) {
+          tabLeaderColor = child.style.color;
+        }
+
+        const hasLaterTab = paragraph.children
+          .slice(childIndex + 1)
+          .some(
+            (nextChild) =>
+              (nextChild.type === "text" && nextChild.text.includes("\t")) ||
+              (nextChild.type === "form-field" && formFieldDisplayValue(nextChild).includes("\t"))
+          );
+        if (leftText.length === 0 && rightText.length === 0 && hasLaterTab) {
+          renderRun(
+            runsLeft,
+            child,
+            `${keyPrefix}-run-${childIndex}-spacer`,
+            " ",
+            trackedInlineChange,
+            childIndex
+          );
+          consumeTrackedVisibleChild(child);
+          return;
+        }
+
+        if (leftText.length > 0) {
+          renderRun(
+            runsLeft,
+            child,
+            `${keyPrefix}-run-${childIndex}-left`,
+            resolvePageFieldText(leftText, 0),
+            trackedInlineChange,
+            childIndex
+          );
+        }
+        renderRun(
+          runsRight,
+          child,
+          `${keyPrefix}-run-${childIndex}-right`,
+          resolvePageFieldText(rightText, 1),
+          trackedInlineChange,
+          childIndex
+        );
+        hasTabSplit = true;
+        consumeTrackedVisibleChild(child);
+        return;
+      }
+
+      if (child.type === "text") {
+        const resolvedText = resolvePageFieldText(child.text);
+        renderRun(
+          target,
+          child,
+          key,
+          attachTextToPreviousCheckbox(paragraph, childIndex, resolvedText),
+          trackedInlineChange,
+          childIndex
+        );
+        consumeTrackedVisibleChild(child);
+        return;
+      }
+      renderRun(target, child, key, undefined, trackedInlineChange, childIndex);
+      consumeTrackedVisibleChild(child);
+    });
+
+    const trailingTarget = useTabLeaderLayout ? (hasTabSplit ? runsRight : runsLeft) : runs;
+    appendTrackedDeletionSegments(trailingTarget, `${keyPrefix}-tail`);
+  }
+
+  if (useCenterRightTabLayout) {
+    const zones: [React.ReactNode[], React.ReactNode[], React.ReactNode[]] = [[], [], []];
+    let activeZone = 0;
+
+    if (numberingLabel) {
+      const numberingTextStyle = numberingLabel.style ? runStyleToCss(numberingLabel.style, documentTheme) : undefined;
+      zones[0].push(
+        <span
+          key={`${keyPrefix}-numbering-center-right`}
+          style={numberingMarkerStyle(
+            paragraph,
+            options?.numberingDefinitions,
+            numberingLabel,
+            numberingTextStyle,
+            documentTheme
+          )}
+        >
+          {numberingLabel.imageSrc ? (
+            <>
+              <img
+                src={numberingLabel.imageSrc}
+                alt=""
+                aria-hidden="true"
+                style={{
+                  display: "inline-block",
+                  verticalAlign: "text-bottom",
+                  width: numberingLabel.imageWidthPx ?? 12,
+                  height: numberingLabel.imageHeightPx ?? 12,
+                  marginRight: 2
+                }}
+              />
+              {numberingLabel.trailingText ?? ""}
+            </>
+          ) : (
+            numberingLabel.text ?? ""
+          )}
+        </span>
+      );
+    }
+
+    paragraph.children.forEach((child, childIndex) => {
+      const zoneIndex = Math.max(0, Math.min(2, activeZone));
+      const zoneTarget = zones[zoneIndex];
+      const key = `${keyPrefix}-center-right-run-${childIndex}`;
+      appendTrackedDeletionSegments(
+        zoneTarget,
+        `${key}-before`,
+        child.type === "text" || child.type === "form-field" ? child.style : undefined
+      );
+      const trackedInlineChange = currentTrackedInlineChange();
+
+      const rawText = child.type === "text" ? child.text : child.type === "form-field" ? formFieldDisplayValue(child) : undefined;
+      if (typeof rawText !== "string" || !rawText.includes("\t")) {
+        if (child.type === "text") {
+          const resolvedText = resolvePageFieldText(rawText ?? "", zoneIndex);
+          renderRun(
+            zoneTarget,
+            child,
+            key,
+            attachTextToPreviousCheckbox(paragraph, childIndex, resolvedText),
+            trackedInlineChange,
+            childIndex
+          );
+        } else {
+          renderRun(zoneTarget, child, key, undefined, trackedInlineChange, childIndex);
+        }
+        consumeTrackedVisibleChild(child);
+        return;
+      }
+
+      const parts = rawText.split("\t");
+      parts.forEach((part, partIndex) => {
+        const currentZone = Math.max(0, Math.min(2, activeZone));
+        if (part.length > 0) {
+          renderRun(
+            zones[currentZone],
+            child,
+            `${key}-part-${partIndex}`,
+            resolvePageFieldText(part, currentZone),
+            trackedInlineChange,
+            childIndex
+          );
+        }
+        if (partIndex < parts.length - 1 && activeZone < 2) {
+          activeZone += 1;
+        }
+      });
+      consumeTrackedVisibleChild(child);
+    });
+
+    appendTrackedDeletionSegments(zones[Math.max(0, Math.min(2, activeZone))], `${keyPrefix}-tail`);
+
+    return (
+      <div
+        key={`${keyPrefix}-center-right-tabs`}
+        data-docx-tab-layout="center-right"
+        style={{
+          display: "grid",
+          gridTemplateColumns: "1fr 1fr 1fr",
+          alignItems: "baseline",
+          width: "100%"
+        }}
+      >
+        <span
+          data-docx-tab-zone="0"
+          style={{
+            display: "inline-flex",
+            minWidth: 0,
+            whiteSpace: "pre-wrap",
+            alignItems: "baseline"
+          }}
+        >
+          {zones[0]}
+        </span>
+        <span
+          data-docx-tab-zone="1"
+          style={{
+            display: "inline-flex",
+            minWidth: 0,
+            justifyContent: "center",
+            textAlign: "center",
+            whiteSpace: "pre-wrap",
+            alignItems: "baseline"
+          }}
+        >
+          {zones[1]}
+        </span>
+        <span
+          data-docx-tab-zone="2"
+          style={{
+            display: "inline-flex",
+            minWidth: 0,
+            justifyContent: "flex-end",
+            textAlign: "right",
+            whiteSpace: "pre-wrap",
+            alignItems: "baseline"
+          }}
+        >
+          {zones[2]}
+        </span>
+      </div>
+    );
+  }
+
+  if (!useTabLeaderLayout || !hasTabSplit) {
+    return runsLeft.length > 0 ? runsLeft : runs;
+  }
+
+  return (
+    <div
+      key={`${keyPrefix}-toc`}
+      data-docx-tab-layout="leader"
+      style={{
+        display: "flex",
+        alignItems: "baseline",
+        width: "100%"
+      }}
+    >
+      <span
+        data-docx-tab-zone="left"
+        style={{
+          display: "inline-flex",
+          minWidth: 0,
+          whiteSpace: "pre-wrap",
+          alignItems: "baseline"
+        }}
+      >
+        {runsLeft}
+      </span>
+      <span
+        aria-hidden="true"
+        style={{
+          ...tabLeaderStyle(tabStop?.leader, themedRunColor(tabLeaderColor, documentTheme)),
+          flex: "1 1 auto",
+          minWidth: 8,
+          marginLeft: 6,
+          marginRight: 6,
+          height: "1em",
+          alignSelf: "center"
+        }}
+      />
+      <span
+        data-docx-tab-zone="right"
+        style={{
+          display: "inline-flex",
+          minWidth: 0,
+          justifyContent: "flex-end",
+          textAlign: "right",
+          whiteSpace: "pre-wrap",
+          alignItems: "baseline"
+        }}
+      >
+        {runsRight}
+      </span>
+    </div>
+  );
+}
+
+function numberToRoman(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) {
+    return "";
+  }
+
+  const numerals: Array<[number, string]> = [
+    [1000, "M"],
+    [900, "CM"],
+    [500, "D"],
+    [400, "CD"],
+    [100, "C"],
+    [90, "XC"],
+    [50, "L"],
+    [40, "XL"],
+    [10, "X"],
+    [9, "IX"],
+    [5, "V"],
+    [4, "IV"],
+    [1, "I"]
+  ];
+
+  let remaining = Math.floor(value);
+  let output = "";
+
+  for (const [base, numeral] of numerals) {
+    while (remaining >= base) {
+      output += numeral;
+      remaining -= base;
+    }
+  }
+
+  return output;
+}
+
+function numberToLetters(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) {
+    return "";
+  }
+
+  let remaining = Math.floor(value);
+  let output = "";
+  while (remaining > 0) {
+    const offset = (remaining - 1) % 26;
+    output = String.fromCharCode(65 + offset) + output;
+    remaining = Math.floor((remaining - 1) / 26);
+  }
+
+  return output;
+}
+
+interface ParagraphNumberingLabel {
+  text?: string;
+  fontFamily?: string;
+  color?: string;
+  style?: TextRunNode["style"];
+  imageSrc?: string;
+  imageWidthPx?: number;
+  imageHeightPx?: number;
+  trailingText?: string;
+}
+
+function formatNumberingCounter(format: string | undefined, value: number): string {
+  if (!Number.isFinite(value) || value <= 0) {
+    return "";
+  }
+
+  switch ((format ?? "decimal").toLowerCase()) {
+    case "decimal":
+      return String(value);
+    case "upperroman":
+      return numberToRoman(value);
+    case "lowerroman":
+      return numberToRoman(value).toLowerCase();
+    case "upperletter":
+      return numberToLetters(value);
+    case "lowerletter":
+      return numberToLetters(value).toLowerCase();
+    case "ordinal":
+    case "cardinaltext":
+    case "ordinaltext":
+      return String(value);
+    case "bullet":
+      return "\u2022";
+    case "none":
+      return "";
+    default:
+      return String(value);
+  }
+}
+
+function findNumberingLevelDefinition(
+  numbering: NumberingDefinitionSet,
+  numId: number,
+  ilvl: number
+): NumberingLevelDefinition | undefined {
+  const instance = numbering.instances.find((item) => item.numId === numId);
+  if (!instance) {
+    return undefined;
+  }
+
+  const overrideLevel = instance.levelOverrides?.find((item) => item.ilvl === ilvl);
+  if (overrideLevel) {
+    return overrideLevel;
+  }
+
+  const abstract = numbering.abstracts.find((item) => item.abstractNumId === instance.abstractNumId);
+  return abstract?.levels.find((item) => item.ilvl === ilvl);
+}
+
+function numberingStartValue(
+  numbering: NumberingDefinitionSet,
+  numId: number,
+  ilvl: number
+): number {
+  const instance = numbering.instances.find((item) => item.numId === numId);
+  const override = instance?.levelStartOverrides?.[String(ilvl)];
+  if (Number.isFinite(override)) {
+    return Math.max(1, Math.round(override as number));
+  }
+
+  const level = findNumberingLevelDefinition(numbering, numId, ilvl);
+  if (Number.isFinite(level?.start) && (level?.start as number) > 0) {
+    return Math.round(level?.start as number);
+  }
+
+  return 1;
+}
+
+function numberingSuffix(level: NumberingLevelDefinition | undefined): string {
+  if (level?.suffix === "tab") {
+    return "\t";
+  }
+  if (level?.suffix === "space") {
+    return " ";
+  }
+  return "";
+}
+
+const LEGACY_BULLET_GLYPH_FALLBACKS: Record<string, string> = {
+  "\uf0a7": "□",
+  "\uf0a8": "▪",
+  "\uf0b7": "•",
+  "\uf0d8": "➢"
+};
+
+function normalizeLegacyBulletGlyphs(text: string, bulletFontFamily?: string): string {
+  if (!text) {
+    return text;
+  }
+
+  const normalizedFont = bulletFontFamily?.trim().toLowerCase() ?? "";
+  const fontUsesLegacyGlyphs =
+    normalizedFont.includes("wingdings") ||
+    normalizedFont.includes("symbol") ||
+    normalizedFont.includes("courier");
+  if (!fontUsesLegacyGlyphs && !/[\uf0a7\uf0a8\uf0b7\uf0d8]/.test(text)) {
+    return text;
+  }
+
+  return Array.from(text)
+    .map((glyph) => {
+      const mapped = LEGACY_BULLET_GLYPH_FALLBACKS[glyph];
+      if (mapped) {
+        return mapped;
+      }
+      if (glyph === "o" && normalizedFont.includes("courier")) {
+        return "◦";
+      }
+      return glyph;
+    })
+    .join("");
+}
+
+function buildParagraphNumberingLabels(model: DocModel): Map<string, ParagraphNumberingLabel> {
+  const labels = new Map<string, ParagraphNumberingLabel>();
+  const numbering = model.metadata.numberingDefinitions;
+  if (!numbering) {
+    return labels;
+  }
+
+  const numberingInstanceByNumId = new Map(numbering.instances.map((instance) => [instance.numId, instance]));
+  const paragraphStyleById = new Map(
+    (model.metadata.paragraphStyles ?? []).map((styleDefinition) => [styleDefinition.id, styleDefinition])
+  );
+  const countersByNumId = new Map<number, Array<number | undefined>>();
+  const headingCountersByAbstractNumId = new Map<number, Array<number | undefined>>();
+
+  const isHeadingLikeParagraph = (paragraph: ParagraphNode): boolean => {
+    if (Number.isFinite(paragraph.style?.headingLevel)) {
+      return true;
+    }
+
+    if (isTableOfContentsParagraph(paragraph)) {
+      return true;
+    }
+
+    const styleId = paragraph.style?.styleId?.trim().toLowerCase();
+    if (!styleId) {
+      return false;
+    }
+
+    return /(?:^|[\s_-])heading(?:[\s_-]?\d+)?$/.test(styleId) || /^heading\d*$/.test(styleId);
+  };
+
+  const registerParagraph = (paragraph: ParagraphNode, key: string): void => {
+    const paragraphNumbering = paragraph.style?.numbering;
+    if (!paragraphNumbering || paragraphNumbering.numId <= 0) {
+      return;
+    }
+
+    const numId = paragraphNumbering.numId;
+    const ilvl = Math.max(0, paragraphNumbering.ilvl ?? 0);
+    const level = findNumberingLevelDefinition(numbering, numId, ilvl);
+    const numberingInstance = numberingInstanceByNumId.get(numId);
+    const abstractNumId = numberingInstance?.abstractNumId;
+    const isSharedCounterParagraph = isHeadingLikeParagraph(paragraph);
+    const template = level?.text ?? `%${ilvl + 1}.`;
+    if (!template || template.trim().length === 0) {
+      return;
+    }
+
+    const counters = countersByNumId.get(numId) ?? [];
+    const sharedAbstractCounters =
+      isSharedCounterParagraph && Number.isFinite(abstractNumId)
+        ? (headingCountersByAbstractNumId.get(abstractNumId as number) ?? [])
+        : undefined;
+    let parentCountersChanged = false;
+    for (let index = 0; index < ilvl; index += 1) {
+      const abstractCounterValue =
+        sharedAbstractCounters && Number.isFinite(sharedAbstractCounters[index])
+          ? Math.max(1, Math.round(sharedAbstractCounters[index] as number))
+          : undefined;
+      if (abstractCounterValue !== undefined) {
+        const previousCounter = counters[index];
+        if (
+          !Number.isFinite(previousCounter) ||
+          Math.max(1, Math.round(previousCounter as number)) !== abstractCounterValue
+        ) {
+          parentCountersChanged = true;
+        }
+        counters[index] = abstractCounterValue;
+        continue;
+      }
+      if (!Number.isFinite(counters[index])) {
+        counters[index] = numberingStartValue(numbering, numId, index);
+      }
+    }
+
+    const currentValue = parentCountersChanged ? undefined : counters[ilvl];
+    counters[ilvl] = Number.isFinite(currentValue)
+      ? (currentValue as number) + 1
+      : numberingStartValue(numbering, numId, ilvl);
+    for (let index = ilvl + 1; index < counters.length; index += 1) {
+      counters[index] = undefined;
+    }
+    countersByNumId.set(numId, counters);
+    if (sharedAbstractCounters && Number.isFinite(abstractNumId)) {
+      for (let index = 0; index <= ilvl; index += 1) {
+        sharedAbstractCounters[index] = counters[index];
+      }
+      for (let index = ilvl + 1; index < sharedAbstractCounters.length; index += 1) {
+        sharedAbstractCounters[index] = undefined;
+      }
+      headingCountersByAbstractNumId.set(abstractNumId as number, sharedAbstractCounters);
+    }
+
+    const label = template.replaceAll(/%(\d+)/g, (_, rawLevel) => {
+      const levelIndex = Math.max(0, Number(rawLevel) - 1);
+      const levelValue = counters[levelIndex];
+      const safeValue = Number.isFinite(levelValue)
+        ? Math.max(1, Math.round(levelValue as number))
+        : numberingStartValue(numbering, numId, levelIndex);
+      const levelFormat = findNumberingLevelDefinition(numbering, numId, levelIndex)?.format;
+      return formatNumberingCounter(levelFormat, safeValue);
+    });
+
+    if (!label || label.trim().length === 0) {
+      return;
+    }
+
+    const isBullet = (level?.format ?? "").trim().toLowerCase() === "bullet";
+    const trailingText = numberingSuffix(level);
+    if (isBullet && level?.pictureBullet?.src) {
+      labels.set(key, {
+        imageSrc: level.pictureBullet.src,
+        imageWidthPx: level.pictureBullet.widthPx,
+        imageHeightPx: level.pictureBullet.heightPx,
+        trailingText
+      });
+      return;
+    }
+
+    const firstStyledRun = paragraph.children.find(
+      (child): child is TextRunNode | FormFieldRunNode =>
+        (child.type === "text" || child.type === "form-field") && Boolean(child.style)
+    );
+    const paragraphStyleRunStyle = paragraph.style?.styleId
+      ? paragraphStyleById.get(paragraph.style.styleId)?.runStyle
+      : undefined;
+    const baseNumberingTextStyle = firstStyledRun?.style ?? paragraphStyleRunStyle;
+    const numberingTextStyle = level?.runStyle
+      ? { ...(baseNumberingTextStyle ?? {}), ...level.runStyle }
+      : baseNumberingTextStyle;
+    const normalizedLabel = isBullet
+      ? normalizeLegacyBulletGlyphs(label, level?.bulletFontFamily)
+      : label;
+    labels.set(key, {
+      text: `${normalizedLabel}${trailingText}`,
+      fontFamily: isBullet ? level?.bulletFontFamily : undefined,
+      color: isBullet ? level?.bulletColor : undefined,
+      style: numberingTextStyle ? { ...numberingTextStyle } : undefined
+    });
+  };
+
+  model.nodes.forEach((node, nodeIndex) => {
+    if (node.type === "paragraph") {
+      registerParagraph(node, `p:${nodeIndex}`);
+      return;
+    }
+
+    node.rows.forEach((row, rowIndex) => {
+      row.cells.forEach((cell, cellIndex) => {
+        tableCellParagraphs(cell.nodes).forEach((paragraph, paragraphIndex) => {
+          registerParagraph(
+            paragraph,
+            `t:${nodeIndex}:${rowIndex}:${cellIndex}:${paragraphIndex}`
+          );
+        });
+      });
+    });
+  });
+
+  return labels;
+}
+
+const UNORDERED_LIST_PREFIX_PATTERN = /^\s*•\s+/;
+const ORDERED_LIST_PREFIX_PATTERN = /^\s*\d+\.\s+/;
+const LIST_PREFIX_PATTERN = /^\s*(?:•\s+|\d+\.\s+)/;
+const ORDERED_LIST_PREFIX_CAPTURE_PATTERN = /^(\s*)(\d+)\.\s+/;
+const LIST_LEVEL_STEP_TWIPS = 720;
+const DEFAULT_LIST_HANGING_TWIPS = 360;
+const MAX_FALLBACK_LIST_LEVEL = 8;
+
+function isUnorderedListText(text: string): boolean {
+  return UNORDERED_LIST_PREFIX_PATTERN.test(text);
+}
+
+function isOrderedListText(text: string): boolean {
+  return ORDERED_LIST_PREFIX_PATTERN.test(text);
+}
+
+function isBulletLikeNumberingText(text: string, bulletFontFamily?: string): boolean {
+  const normalized = normalizeLegacyBulletGlyphs(text, bulletFontFamily).trim();
+  if (!normalized || /%[\d]+/.test(normalized)) {
+    return false;
+  }
+
+  return /^[\u2022\u25cf\u25cb\u25a0\u25a1\u25aa\u25ab\u25c6\u25c7\u25e6\u2043\-–—]+$/.test(normalized);
+}
+
+function paragraphHasNumbering(paragraph: ParagraphNode): boolean {
+  return Boolean(paragraph.style?.numbering && paragraph.style.numbering.numId > 0);
+}
+
+function paragraphListType(
+  paragraph: ParagraphNode,
+  numberingDefinitions?: NumberingDefinitionSet
+): DocxListType | undefined {
+  const numbering = paragraph.style?.numbering;
+  if (numbering && numbering.numId > 0) {
+    if (numberingDefinitions) {
+      const level = findNumberingLevelDefinition(
+        numberingDefinitions,
+        numbering.numId,
+        Math.max(0, numbering.ilvl ?? 0)
+      );
+      const format = level?.format?.trim().toLowerCase();
+      if (format === "bullet" || level?.pictureBullet || isBulletLikeNumberingText(level?.text ?? "", level?.bulletFontFamily)) {
+        return "unordered";
+      }
+      if (format && format !== "none") {
+        return "ordered";
+      }
+    }
+    // If numbering exists but we cannot resolve a specific list format, treat it as ordered.
+    return "ordered";
+  }
+
+  const text = paragraphText(paragraph);
+  if (isUnorderedListText(text)) {
+    return "unordered";
+  }
+  if (isOrderedListText(text)) {
+    return "ordered";
+  }
+  return undefined;
+}
+
+function paragraphIsList(paragraph: ParagraphNode, textOverride?: string): boolean {
+  const text = textOverride ?? paragraphText(paragraph);
+  return paragraphHasNumbering(paragraph) || isUnorderedListText(text) || isOrderedListText(text);
+}
+
+function stripListPrefix(text: string): string {
+  return text.replace(/^\s*(?:•\s+|\d+\.\s+)/, "");
+}
+
+function listPrefixLength(text: string): number {
+  return text.match(LIST_PREFIX_PATTERN)?.[0]?.length ?? 0;
+}
+
+function nextOrderedListItemText(currentText: string, nextItemText: string): string {
+  const match = currentText.match(ORDERED_LIST_PREFIX_CAPTURE_PATTERN);
+  const leadingWhitespace = match?.[1] ?? "";
+  const currentNumber = Number.parseInt(match?.[2] ?? "", 10);
+  const nextNumber = Number.isFinite(currentNumber) ? Math.max(1, currentNumber + 1) : 1;
+  return `${leadingWhitespace}${nextNumber}. ${stripListPrefix(nextItemText)}`;
+}
+
+function textWithListType(text: string, listType: DocxListType): string {
+  const normalized = stripListPrefix(text);
+  return listType === "unordered" ? `• ${normalized}` : `1. ${normalized}`;
+}
+
+function cloneParagraphBorderStyle(
+  border?: ParagraphBorderStyle
+): ParagraphBorderStyle | undefined {
+  return border ? { ...border } : undefined;
+}
+
+function cloneParagraphBorderSet(
+  borders?: ParagraphBorderSet
+): ParagraphBorderSet | undefined {
+  if (!borders) {
+    return undefined;
+  }
+
+  return {
+    top: cloneParagraphBorderStyle(borders.top),
+    right: cloneParagraphBorderStyle(borders.right),
+    bottom: cloneParagraphBorderStyle(borders.bottom),
+    left: cloneParagraphBorderStyle(borders.left),
+    between: cloneParagraphBorderStyle(borders.between),
+    bar: cloneParagraphBorderStyle(borders.bar)
+  };
+}
+
+function cloneParagraphStyle(style?: ParagraphNode["style"]): ParagraphNode["style"] | undefined {
+  if (!style) {
+    return undefined;
+  }
+
+  return {
+    ...style,
+    numbering: style.numbering ? { ...style.numbering } : undefined,
+    spacing: style.spacing ? { ...style.spacing } : undefined,
+    indent: style.indent ? { ...style.indent } : undefined,
+    tabStops: style.tabStops ? style.tabStops.map((tabStop) => ({ ...tabStop })) : undefined,
+    borders: cloneParagraphBorderSet(style.borders)
+  };
+}
+
+function splitParagraphStyleWithDefaultSpacing(
+  style?: ParagraphNode["style"],
+  sourceXml?: string
+): ParagraphNode["style"] | undefined {
+  const clonedStyle = cloneParagraphStyle(style);
+  // Keep imported/explicit paragraph styling untouched.
+  if (sourceXml || clonedStyle?.styleId) {
+    return clonedStyle;
+  }
+
+  const spacing = clonedStyle?.spacing;
+  const hasExplicitSpacing =
+    spacing?.beforeTwips !== undefined ||
+    spacing?.afterTwips !== undefined ||
+    spacing?.lineTwips !== undefined ||
+    spacing?.lineRule !== undefined;
+  if (hasExplicitSpacing) {
+    return clonedStyle;
+  }
+
+  return {
+    ...(clonedStyle ?? {}),
+    spacing: {
+      ...(spacing ?? {}),
+      lineRule: "auto",
+      lineTwips: DEFAULT_SPLIT_PARAGRAPH_LINE_TWIPS,
+      afterTwips: DEFAULT_SPLIT_PARAGRAPH_AFTER_TWIPS
+    }
+  };
+}
+
+function cloneTableBoxSpacing(
+  spacing?: TableCellStyle["marginTwips"]
+): TableCellStyle["marginTwips"] | undefined {
+  if (!spacing) {
+    return undefined;
+  }
+
+  return {
+    topTwips: spacing.topTwips,
+    rightTwips: spacing.rightTwips,
+    bottomTwips: spacing.bottomTwips,
+    leftTwips: spacing.leftTwips
+  };
+}
+
+function cloneTableBorderStyle(border?: TableBorderStyle): TableBorderStyle | undefined {
+  if (!border) {
+    return undefined;
+  }
+
+  return {
+    type: border.type,
+    color: border.color,
+    sizeEighthPt: border.sizeEighthPt
+  };
+}
+
+function cloneTableBorderSet(borders?: TableBorderSet): TableBorderSet | undefined {
+  if (!borders) {
+    return undefined;
+  }
+
+  return {
+    top: cloneTableBorderStyle(borders.top),
+    right: cloneTableBorderStyle(borders.right),
+    bottom: cloneTableBorderStyle(borders.bottom),
+    left: cloneTableBorderStyle(borders.left),
+    insideH: cloneTableBorderStyle(borders.insideH),
+    insideV: cloneTableBorderStyle(borders.insideV),
+    tl2br: cloneTableBorderStyle(borders.tl2br),
+    tr2bl: cloneTableBorderStyle(borders.tr2bl)
+  };
+}
+
+function cloneTableCellStyle(style?: TableCellStyle): TableCellStyle | undefined {
+  if (!style) {
+    return undefined;
+  }
+
+  return {
+    ...style,
+    marginTwips: cloneTableBoxSpacing(style.marginTwips),
+    borders: cloneTableBorderSet(style.borders)
+  };
+}
+
+function cloneTableRowStyle(style?: TableRowStyle): TableRowStyle | undefined {
+  if (!style) {
+    return undefined;
+  }
+
+  return {
+    ...style
+  };
+}
+
+function createEmptyParagraphFromTemplate(template?: ParagraphNode): ParagraphNode {
+  const nextTextStyle = cloneTextStyle(firstRunStyle(template));
+
+  return {
+    type: "paragraph",
+    style: cloneParagraphStyle(template?.style),
+    children: [
+      {
+        type: "text",
+        text: "",
+        style: nextTextStyle
+      }
+    ]
+  };
+}
+
+function createEmptyTableCellFromTemplate(
+  templateCell?: TableNode["rows"][number]["cells"][number]
+): TableNode["rows"][number]["cells"][number] {
+  const templateParagraph = templateCell ? tableCellParagraphs(templateCell.nodes)[0] : undefined;
+  const clonedStyle = cloneTableCellStyle(templateCell?.style);
+  const normalizedStyle = clonedStyle
+    ? {
+        ...clonedStyle,
+        rowSpan: undefined,
+        vMergeContinuation: undefined
+      }
+    : undefined;
+
+  return {
+    type: "table-cell",
+    style: normalizedStyle,
+    nodes: [createEmptyParagraphFromTemplate(templateParagraph)]
+  };
+}
+
+function resolveMaxNumberingLevel(
+  numberingDefinitions: NumberingDefinitionSet | undefined,
+  numId: number
+): number {
+  if (!numberingDefinitions) {
+    return MAX_FALLBACK_LIST_LEVEL;
+  }
+
+  const instance = numberingDefinitions.instances.find((item) => item.numId === numId);
+  if (!instance) {
+    return MAX_FALLBACK_LIST_LEVEL;
+  }
+
+  const abstract = numberingDefinitions.abstracts.find(
+    (item) => item.abstractNumId === instance.abstractNumId
+  );
+  const levels = [
+    ...(abstract?.levels ?? []),
+    ...(instance.levelOverrides ?? [])
+  ];
+  if (levels.length === 0) {
+    return MAX_FALLBACK_LIST_LEVEL;
+  }
+
+  return clampNumber(
+    Math.max(
+      0,
+      ...levels.map((level) => Math.max(0, Math.round(level.ilvl ?? 0)))
+    ),
+    0,
+    MAX_FALLBACK_LIST_LEVEL
+  );
+}
+
+function shiftListIndent(indent: ParagraphIndent | undefined, levelDelta: number): ParagraphIndent | undefined {
+  if (!levelDelta) {
+    return indent;
+  }
+
+  const nextLeftTwips = Math.max(0, (indent?.leftTwips ?? 0) + levelDelta * LIST_LEVEL_STEP_TWIPS);
+  const nextHangingTwips =
+    indent?.hangingTwips ?? (nextLeftTwips > 0 ? DEFAULT_LIST_HANGING_TWIPS : undefined);
+
+  return {
+    ...(indent ?? {}),
+    leftTwips: nextLeftTwips,
+    hangingTwips: nextHangingTwips
+  };
+}
+
+function ensurePrefixListIndent(paragraph: ParagraphNode): boolean {
+  const clonedStyle = cloneParagraphStyle(paragraph.style) ?? {};
+  const existingIndent = clonedStyle.indent;
+  const hasMeaningfulLeftIndent =
+    Number.isFinite(existingIndent?.leftTwips) && Math.abs(existingIndent?.leftTwips ?? 0) > 0;
+  const hasMeaningfulFirstLine =
+    Number.isFinite(existingIndent?.firstLineTwips) &&
+    Math.abs(existingIndent?.firstLineTwips ?? 0) > 0;
+  const hasMeaningfulHanging =
+    Number.isFinite(existingIndent?.hangingTwips) &&
+    Math.abs(existingIndent?.hangingTwips ?? 0) > 0;
+
+  if (hasMeaningfulLeftIndent || hasMeaningfulFirstLine || hasMeaningfulHanging) {
+    return false;
+  }
+
+  paragraph.style = {
+    ...clonedStyle,
+    indent: {
+      ...(existingIndent ?? {}),
+      leftTwips: LIST_LEVEL_STEP_TWIPS,
+      hangingTwips: DEFAULT_LIST_HANGING_TWIPS
+    }
+  };
+  paragraph.sourceXml = undefined;
+  return true;
+}
+
+function clearAutoPrefixListIndent(paragraph: ParagraphNode): boolean {
+  const clonedStyle = cloneParagraphStyle(paragraph.style);
+  const existingIndent = clonedStyle?.indent;
+  if (!clonedStyle || !existingIndent) {
+    return false;
+  }
+
+  const leftTwips = existingIndent.leftTwips;
+  const hangingTwips = existingIndent.hangingTwips;
+  const firstLineTwips = existingIndent.firstLineTwips;
+  const matchesAutoIndent =
+    Number.isFinite(leftTwips) &&
+    Math.round(leftTwips ?? 0) === LIST_LEVEL_STEP_TWIPS &&
+    Number.isFinite(hangingTwips) &&
+    Math.round(hangingTwips ?? 0) === DEFAULT_LIST_HANGING_TWIPS &&
+    !Number.isFinite(firstLineTwips);
+  if (!matchesAutoIndent) {
+    return false;
+  }
+
+  const nextIndent: ParagraphIndent = {
+    ...existingIndent,
+    leftTwips: undefined,
+    hangingTwips: undefined
+  };
+  const hasRemainingIndent = [
+    nextIndent.leftTwips,
+    nextIndent.rightTwips,
+    nextIndent.firstLineTwips,
+    nextIndent.hangingTwips
+  ].some((value) => Number.isFinite(value));
+
+  paragraph.style = {
+    ...clonedStyle,
+    indent: hasRemainingIndent ? nextIndent : undefined
+  };
+  paragraph.sourceXml = undefined;
+  return true;
+}
+
+function tableCellText(paragraphs: ParagraphNode[]): string {
+  return paragraphs.map(paragraphText).join("\n");
+}
+
+function tableColumnCount(table: TableNode): number {
+  return Math.max(
+    1,
+    ...table.rows.map((row) =>
+      row.cells.reduce(
+        (total, cell) => total + (cell.style?.gridSpan && cell.style.gridSpan > 1 ? cell.style.gridSpan : 1),
+        0
+      )
+    )
+  );
+}
+
+function resolveFloatingTableSide(table: TableNode): "left" | "right" | undefined {
+  const floating = table.style?.floating;
+  if (!floating) {
+    return undefined;
+  }
+
+  const horizontalAlign = floating.horizontalAlign?.toLowerCase();
+  if (horizontalAlign === "right" || horizontalAlign === "outside") {
+    return "right";
+  }
+  if (horizontalAlign === "left" || horizontalAlign === "inside") {
+    return "left";
+  }
+
+  if (Number.isFinite(floating.xTwips) && (floating.xTwips as number) > 1440) {
+    return "right";
+  }
+
+  return "left";
+}
+
+function tableWrapperStyle(table: TableNode, indentPx: number): React.CSSProperties {
+  const floating = table.style?.floating;
+  if (!floating) {
+    return {
+      marginLeft: indentPx,
+      position: "relative"
+    };
+  }
+
+  const side = resolveFloatingTableSide(table) ?? "left";
+  const marginTop = twipsToPixels(floating.topFromTextTwips) ?? 0;
+  const marginBottom = twipsToPixels(floating.bottomFromTextTwips) ?? 8;
+  const marginLeftFromText = twipsToPixels(floating.leftFromTextTwips) ?? 8;
+  const marginRightFromText = twipsToPixels(floating.rightFromTextTwips) ?? 8;
+
+  return {
+    float: side,
+    clear: "none",
+    marginTop,
+    marginBottom,
+    marginLeft: side === "left" ? marginLeftFromText + indentPx : marginLeftFromText,
+    marginRight: side === "right" ? marginRightFromText + indentPx : marginRightFromText,
+    position: "relative",
+    zIndex: 1
+  };
+}
+
+interface EmbeddedTableRuntimeKeySegment {
+  rowIndex: number;
+  cellIndex: number;
+  contentIndex: number;
+}
+
+interface EmbeddedTableRuntimeKeyLocation {
+  hostTableIndex: number;
+  hostRowIndex: number;
+  hostCellIndex: number;
+  rootContentIndex: number;
+  descendants: EmbeddedTableRuntimeKeySegment[];
+}
+
+function parseEmbeddedTableRuntimeKey(
+  tableRuntimeKey: string
+): EmbeddedTableRuntimeKeyLocation | undefined {
+  const tokens = tableRuntimeKey.split("-");
+  const parseIndex = (token: string | undefined): number | undefined => {
+    const value = Number(token);
+    if (!Number.isInteger(value) || value < 0) {
+      return undefined;
+    }
+    return value;
+  };
+
+  if (
+    tokens.length < 8 ||
+    (tokens[0] !== "body" && tokens[0] !== "active") ||
+    tokens[1] !== "cell" ||
+    tokens[2] !== "nested" ||
+    tokens[3] !== "table"
+  ) {
+    return undefined;
+  }
+
+  const hostTableIndex = parseIndex(tokens[4]);
+  const hostRowIndex = parseIndex(tokens[5]);
+  const hostCellIndex = parseIndex(tokens[6]);
+  const rootContentIndex = parseIndex(tokens[7]);
+  if (
+    hostTableIndex === undefined ||
+    hostRowIndex === undefined ||
+    hostCellIndex === undefined ||
+    rootContentIndex === undefined
+  ) {
+    return undefined;
+  }
+
+  const descendants: EmbeddedTableRuntimeKeySegment[] = [];
+  let cursor = 8;
+  while (cursor < tokens.length) {
+    if (tokens[cursor] !== "nested" || tokens[cursor + 1] !== "table") {
+      return undefined;
+    }
+
+    const rowIndex = parseIndex(tokens[cursor + 2]);
+    const cellIndex = parseIndex(tokens[cursor + 3]);
+    const contentIndex = parseIndex(tokens[cursor + 4]);
+    if (rowIndex === undefined || cellIndex === undefined || contentIndex === undefined) {
+      return undefined;
+    }
+
+    descendants.push({ rowIndex, cellIndex, contentIndex });
+    cursor += 5;
+  }
+
+  return {
+    hostTableIndex,
+    hostRowIndex,
+    hostCellIndex,
+    rootContentIndex,
+    descendants
+  };
+}
+
+function columnWidthsFromTableDefinition(table: TableNode, columnCount: number): number[] | undefined {
+  const gridWidths = table.style?.columnWidthsTwips;
+  if (gridWidths && gridWidths.length > 0) {
+    return normalizeColumnWidthsTwips(gridWidths, columnCount);
+  }
+
+  const firstRow = table.rows[0];
+  if (!firstRow) {
+    return undefined;
+  }
+
+  const derived: number[] = [];
+  for (const cell of firstRow.cells) {
+    const span = cell.style?.gridSpan && cell.style.gridSpan > 1 ? cell.style.gridSpan : 1;
+    const cellWidth = cell.style?.widthTwips;
+
+    if (cellWidth && cellWidth > 0) {
+      const perColumn = cellWidth / span;
+      for (let index = 0; index < span; index += 1) {
+        derived.push(perColumn);
+      }
+      continue;
+    }
+
+    for (let index = 0; index < span; index += 1) {
+      derived.push(0);
+    }
+  }
+
+  if (derived.length === 0 || derived.every((value) => value <= 0)) {
+    return undefined;
+  }
+
+  return normalizeColumnWidthsTwips(derived, columnCount);
+}
+
+function normalizeColumnWidthsTwips(widths: number[], columnCount: number): number[] {
+  const fallback = 1440 / Math.max(1, columnCount);
+  const sanitized = Array.from({ length: columnCount }, (_, index) => {
+    const raw = widths[index];
+    if (!Number.isFinite(raw)) {
+      return fallback;
+    }
+    return Math.max(1, raw);
+  });
+
+  if (sanitized.every((value) => value <= 0)) {
+    return Array.from({ length: columnCount }, () => fallback);
+  }
+
+  return sanitized;
+}
+
+function normalizeColumnWidthsPx(
+  widths: number[],
+  columnCount: number,
+  fallbackTableWidthPx?: number,
+  minimumWidthPx = 24
+): number[] {
+  const fallbackWidth = Number.isFinite(fallbackTableWidthPx) && (fallbackTableWidthPx as number) > 0
+    ? (fallbackTableWidthPx as number) / Math.max(1, columnCount)
+    : 140;
+
+  return Array.from({ length: columnCount }, (_, index) => {
+    const raw = widths[index];
+    if (!Number.isFinite(raw) || (raw as number) <= 0) {
+      return Math.max(minimumWidthPx, Math.round(fallbackWidth));
+    }
+    return Math.max(minimumWidthPx, Math.round(raw as number));
+  });
+}
+
+function defaultColumnWidthsPx(columnCount: number, tableWidthPx?: number): number[] {
+  const fallbackWidth =
+    Number.isFinite(tableWidthPx) && (tableWidthPx as number) > 0
+      ? (tableWidthPx as number) / Math.max(1, columnCount)
+      : 140;
+  return Array.from({ length: columnCount }, () => Math.max(24, Math.round(fallbackWidth)));
+}
+
+function clampTableWidthPx(widthPx: number, maxWidthPx?: number): number {
+  if (!Number.isFinite(widthPx) || widthPx <= 0) {
+    return 1;
+  }
+
+  if (!Number.isFinite(maxWidthPx) || (maxWidthPx as number) <= 0) {
+    return Math.max(1, Math.round(widthPx));
+  }
+
+  return Math.max(1, Math.min(Math.round(widthPx), Math.round(maxWidthPx as number)));
+}
+
+function fitColumnWidthsToWidth(columnWidths: number[], targetWidthPx: number): number[] {
+  if (columnWidths.length === 0) {
+    return [];
+  }
+
+  if (!Number.isFinite(targetWidthPx) || targetWidthPx <= 0) {
+    return [...columnWidths];
+  }
+
+  const sanitized = columnWidths.map((value) =>
+    Number.isFinite(value) && (value as number) > 0 ? (value as number) : 1
+  );
+  const currentTotal = sanitized.reduce((sum, value) => sum + value, 0);
+  if (!Number.isFinite(currentTotal) || currentTotal <= 0) {
+    const even = Math.max(1, targetWidthPx / sanitized.length);
+    return Array.from({ length: sanitized.length }, () => even);
+  }
+
+  if (Math.abs(currentTotal - targetWidthPx) <= 0.5) {
+    return sanitized;
+  }
+
+  if (currentTotal < targetWidthPx) {
+    const scale = targetWidthPx / currentTotal;
+    return sanitized.map((value) => Math.max(1, value * scale));
+  }
+
+  const minimumWidthPx = 8;
+  if (sanitized.length * minimumWidthPx >= targetWidthPx) {
+    const even = Math.max(1, targetWidthPx / sanitized.length);
+    return Array.from({ length: sanitized.length }, () => even);
+  }
+
+  const scaled = sanitized.map((value) => Math.max(minimumWidthPx, (value / currentTotal) * targetWidthPx));
+  let overflow = scaled.reduce((sum, value) => sum + value, 0) - targetWidthPx;
+  let guard = 0;
+
+  while (overflow > 0.25 && guard < 64) {
+    const adjustableIndexes = scaled
+      .map((value, index) => ({ value, index }))
+      .filter((entry) => entry.value > minimumWidthPx + 0.01);
+    if (adjustableIndexes.length === 0) {
+      break;
+    }
+
+    const adjustableTotal = adjustableIndexes.reduce((sum, entry) => sum + (entry.value - minimumWidthPx), 0);
+    if (adjustableTotal <= 0) {
+      break;
+    }
+
+    for (const entry of adjustableIndexes) {
+      const share = ((entry.value - minimumWidthPx) / adjustableTotal) * overflow;
+      scaled[entry.index] = Math.max(minimumWidthPx, entry.value - share);
+    }
+
+    overflow = scaled.reduce((sum, value) => sum + value, 0) - targetWidthPx;
+    guard += 1;
+  }
+
+  return scaled;
+}
+
+function rowGridSpanCount(row: TableNode["rows"][number], maxColumnCount: number): number {
+  const span = row.cells.reduce((total, cell) => {
+    const cellSpan = cell.style?.gridSpan && cell.style.gridSpan > 1 ? cell.style.gridSpan : 1;
+    return total + cellSpan;
+  }, 0);
+
+  return Math.max(0, Math.min(maxColumnCount, span));
+}
+
+function resolveFittedTableColumnWidths(
+  table: TableNode,
+  rawColumnWidthsPx: number[],
+  targetWidthPx: number
+): {
+  columnWidthsPx: number[];
+  effectiveColumnCount: number;
+} {
+  const columnCount = rawColumnWidthsPx.length;
+  if (columnCount === 0) {
+    return {
+      columnWidthsPx: [],
+      effectiveColumnCount: 0
+    };
+  }
+
+  const fallback = fitColumnWidthsToWidth(rawColumnWidthsPx, targetWidthPx);
+  const rawTotalWidthPx = rawColumnWidthsPx.reduce((sum, widthPx) => sum + widthPx, 0);
+  if (
+    table.style?.layout !== "fixed" ||
+    table.rows.length < 2 ||
+    !Number.isFinite(rawTotalWidthPx) ||
+    rawTotalWidthPx <= 0 ||
+    !Number.isFinite(targetWidthPx) ||
+    targetWidthPx <= 0 ||
+    rawTotalWidthPx <= targetWidthPx + 0.5
+  ) {
+    return {
+      columnWidthsPx: fallback,
+      effectiveColumnCount: columnCount
+    };
+  }
+
+  const rowSpanCounts = table.rows.map((row) => rowGridSpanCount(row, columnCount));
+  const spanFrequency = new Map<number, number>();
+  rowSpanCounts.forEach((spanCount) => {
+    if (spanCount <= 0 || spanCount >= columnCount) {
+      return;
+    }
+    spanFrequency.set(spanCount, (spanFrequency.get(spanCount) ?? 0) + 1);
+  });
+
+  if (spanFrequency.size === 0) {
+    return {
+      columnWidthsPx: fallback,
+      effectiveColumnCount: columnCount
+    };
+  }
+
+  let dominantSpanCount = columnCount;
+  let dominantSpanFrequency = 0;
+  for (const [spanCount, frequency] of spanFrequency.entries()) {
+    if (
+      frequency > dominantSpanFrequency ||
+      (frequency === dominantSpanFrequency && spanCount > dominantSpanCount)
+    ) {
+      dominantSpanCount = spanCount;
+      dominantSpanFrequency = frequency;
+    }
+  }
+
+  const dominantCoverage = dominantSpanFrequency / Math.max(1, rowSpanCounts.length);
+  if (dominantCoverage < 0.6 || dominantSpanCount <= 0 || dominantSpanCount >= columnCount) {
+    return {
+      columnWidthsPx: fallback,
+      effectiveColumnCount: columnCount
+    };
+  }
+
+  const trailingColumnWidthsPx = rawColumnWidthsPx.slice(dominantSpanCount);
+  const trailingWidthPx = trailingColumnWidthsPx.reduce((sum, widthPx) => sum + widthPx, 0);
+  const trailingRatio = trailingWidthPx / rawTotalWidthPx;
+  if (!Number.isFinite(trailingWidthPx) || trailingWidthPx < 24 || trailingRatio < 0.12) {
+    return {
+      columnWidthsPx: fallback,
+      effectiveColumnCount: columnCount
+    };
+  }
+
+  const leadingWidthsPx = rawColumnWidthsPx.slice(0, dominantSpanCount);
+  const fittedLeadingWidthsPx = fitColumnWidthsToWidth(leadingWidthsPx, targetWidthPx);
+  return {
+    columnWidthsPx: [
+      ...fittedLeadingWidthsPx,
+      ...Array.from({ length: columnCount - dominantSpanCount }, () => 0)
+    ],
+    effectiveColumnCount: dominantSpanCount
+  };
+}
+
+function resolveTableSpacingPaddingPx(spacing?: TableSpacingTwips): {
+  top: number;
+  right: number;
+  bottom: number;
+  left: number;
+} {
+  return {
+    top: twipsToPixels(spacing?.topTwips) ?? WORD_TABLE_CELL_FALLBACK_PADDING_PX.top,
+    right: twipsToPixels(spacing?.rightTwips) ?? WORD_TABLE_CELL_FALLBACK_PADDING_PX.right,
+    bottom: twipsToPixels(spacing?.bottomTwips) ?? WORD_TABLE_CELL_FALLBACK_PADDING_PX.bottom,
+    left: twipsToPixels(spacing?.leftTwips) ?? WORD_TABLE_CELL_FALLBACK_PADDING_PX.left
+  };
+}
+
+function tableSpacingPaddingStyle(spacing?: TableSpacingTwips): React.CSSProperties {
+  const { top, right, bottom, left } = resolveTableSpacingPaddingPx(spacing);
+
+  return {
+    paddingTop: top,
+    paddingRight: right,
+    paddingBottom: bottom,
+    paddingLeft: left
+  };
+}
+
+function mergeTableSpacing(
+  baseSpacing?: TableSpacingTwips,
+  overrideSpacing?: TableSpacingTwips
+): TableSpacingTwips | undefined {
+  if (!baseSpacing && !overrideSpacing) {
+    return undefined;
+  }
+
+  return {
+    topTwips: overrideSpacing?.topTwips ?? baseSpacing?.topTwips,
+    rightTwips: overrideSpacing?.rightTwips ?? baseSpacing?.rightTwips,
+    bottomTwips: overrideSpacing?.bottomTwips ?? baseSpacing?.bottomTwips,
+    leftTwips: overrideSpacing?.leftTwips ?? baseSpacing?.leftTwips
+  };
+}
+
+type TableBorderSide = "top" | "right" | "bottom" | "left";
+
+function normalizeBorderType(type: string | undefined): string | undefined {
+  if (!type) {
+    return undefined;
+  }
+
+  const normalized = type.trim().toLowerCase();
+  return normalized.length > 0 ? normalized : undefined;
+}
+
+function tableBorderToCss(border: TableBorderStyle | undefined): string | undefined {
+  const type = normalizeBorderType(border?.type);
+  if (!type) {
+    return undefined;
+  }
+
+  if (type === "none" || type === "nil") {
+    return "none";
+  }
+
+  const cssStyle =
+    type === "double"
+      ? "double"
+      : type === "dashed" || type === "dashsmallgap" || type === "dotdash" || type === "dotdotdash"
+        ? "dashed"
+        : type === "dotted"
+          ? "dotted"
+          : "solid";
+  const sizeEighthPt = border?.sizeEighthPt;
+  const widthPx =
+    Number.isFinite(sizeEighthPt) && (sizeEighthPt as number) > 0
+      ? Math.max(0.5, Number(((sizeEighthPt as number) / 6).toFixed(2)))
+      : 1;
+  const color = border?.color ?? "#000000";
+
+  return `${widthPx}px ${cssStyle} ${color}`;
+}
+
+function borderTypeVisible(type: string | undefined): boolean {
+  const normalizedType = normalizeBorderType(type);
+  return Boolean(normalizedType && normalizedType !== "none" && normalizedType !== "nil");
+}
+
+function paragraphBorderVisible(border: ParagraphBorderStyle | undefined): boolean {
+  return borderTypeVisible(border?.type);
+}
+
+function tableBorderVisible(border: TableBorderStyle | undefined): boolean {
+  return borderTypeVisible(border?.type);
+}
+
+function resolvePreferredParagraphBorder(
+  borders: ParagraphBorderSet | undefined
+): ParagraphBorderStyle | undefined {
+  if (!borders) {
+    return undefined;
+  }
+
+  return (
+    borders.top ??
+    borders.right ??
+    borders.bottom ??
+    borders.left ??
+    borders.between ??
+    borders.bar
+  );
+}
+
+function resolvePreferredTableBorder(
+  borders: TableBorderSet | undefined
+): TableBorderStyle | undefined {
+  if (!borders) {
+    return undefined;
+  }
+
+  return (
+    borders.top ??
+    borders.right ??
+    borders.bottom ??
+    borders.left ??
+    borders.insideH ??
+    borders.insideV ??
+    borders.tl2br ??
+    borders.tr2bl
+  );
+}
+
+function toolbarParagraphBorderStyle(
+  seed: ParagraphBorderStyle | undefined
+): ParagraphBorderStyle {
+  return {
+    type: borderTypeVisible(seed?.type) ? (seed?.type as string) : "single",
+    sizeEighthPt:
+      Number.isFinite(seed?.sizeEighthPt) && (seed?.sizeEighthPt as number) > 0
+        ? Math.round(seed?.sizeEighthPt as number)
+        : DEFAULT_TOOLBAR_BORDER_SIZE_EIGHTH_PT,
+    color: seed?.color ?? DEFAULT_TOOLBAR_BORDER_COLOR,
+    ...(Number.isFinite(seed?.spacePt) ? { spacePt: Math.max(0, Math.round(seed?.spacePt as number)) } : undefined)
+  };
+}
+
+function toolbarTableBorderStyle(seed: TableBorderStyle | undefined): TableBorderStyle {
+  return {
+    type: borderTypeVisible(seed?.type) ? (seed?.type as string) : "single",
+    sizeEighthPt:
+      Number.isFinite(seed?.sizeEighthPt) && (seed?.sizeEighthPt as number) > 0
+        ? Math.round(seed?.sizeEighthPt as number)
+        : DEFAULT_TOOLBAR_BORDER_SIZE_EIGHTH_PT,
+    color: seed?.color ?? DEFAULT_TOOLBAR_BORDER_COLOR
+  };
+}
+
+function nilParagraphBorderStyle(): ParagraphBorderStyle {
+  return { type: "nil" };
+}
+
+function nilTableBorderStyle(): TableBorderStyle {
+  return { type: "nil" };
+}
+
+function paragraphBorderPresetState(
+  borders: ParagraphBorderSet | undefined
+): DocxBorderPresetState {
+  const top = paragraphBorderVisible(borders?.top);
+  const right = paragraphBorderVisible(borders?.right);
+  const bottom = paragraphBorderVisible(borders?.bottom);
+  const left = paragraphBorderVisible(borders?.left);
+  const between = paragraphBorderVisible(borders?.between);
+  const bar = paragraphBorderVisible(borders?.bar);
+  const hasAny = top || right || bottom || left || between || bar;
+
+  return {
+    bottom,
+    top,
+    left,
+    right,
+    none: !hasAny,
+    all: top && right && bottom && left,
+    outside: top && right && bottom && left,
+    inside: between || bar,
+    "inside-horizontal": between,
+    "inside-vertical": bar,
+    "diagonal-down": false,
+    "diagonal-up": false,
+    "horizontal-line": bottom
+  };
+}
+
+function paragraphRangePresetActive(
+  preset: DocxBorderPreset,
+  bordersByParagraph: Array<ParagraphBorderSet | undefined>
+): boolean {
+  if (bordersByParagraph.length === 0) {
+    return false;
+  }
+
+  const firstBorders = bordersByParagraph[0];
+  const lastBorders = bordersByParagraph[bordersByParagraph.length - 1];
+  const allLeft = bordersByParagraph.every((borders) => paragraphBorderVisible(borders?.left));
+  const allRight = bordersByParagraph.every((borders) => paragraphBorderVisible(borders?.right));
+  const allTop = bordersByParagraph.every((borders) => paragraphBorderVisible(borders?.top));
+  const allBottom = bordersByParagraph.every((borders) => paragraphBorderVisible(borders?.bottom));
+  const allBetween = bordersByParagraph.every((borders) => paragraphBorderVisible(borders?.between));
+  const allBar = bordersByParagraph.every((borders) => paragraphBorderVisible(borders?.bar));
+
+  switch (preset) {
+    case "top":
+      return paragraphBorderVisible(firstBorders?.top);
+    case "bottom":
+      return paragraphBorderVisible(lastBorders?.bottom);
+    case "left":
+      return allLeft;
+    case "right":
+      return allRight;
+    case "all":
+    case "outside":
+      return (
+        paragraphBorderVisible(firstBorders?.top) &&
+        paragraphBorderVisible(lastBorders?.bottom) &&
+        allLeft &&
+        allRight
+      );
+    case "none":
+      return bordersByParagraph.every((borders) => paragraphBorderPresetState(borders).none);
+    case "inside":
+      return allBetween && allBar;
+    case "inside-horizontal":
+      return allBetween;
+    case "inside-vertical":
+      return allBar;
+    case "horizontal-line":
+      return paragraphBorderVisible(lastBorders?.bottom);
+    case "diagonal-down":
+    case "diagonal-up":
+      return false;
+    default:
+      return allTop && allBottom;
+  }
+}
+
+function applyParagraphBorderPresetForRangeEntry(
+  borders: ParagraphBorderSet | undefined,
+  preset: DocxBorderPreset,
+  remove: boolean,
+  index: number,
+  total: number
+): ParagraphBorderSet | undefined {
+  if (total <= 1) {
+    return applyParagraphBorderPreset(borders, preset, remove);
+  }
+
+  const nextBorders = cloneParagraphBorderSet(borders) ?? {};
+  const visibleBorder = toolbarParagraphBorderStyle(resolvePreferredParagraphBorder(nextBorders));
+  const nilBorder = nilParagraphBorderStyle();
+  const borderToApply = remove ? nilBorder : visibleBorder;
+  const isFirst = index === 0;
+  const isLast = index === total - 1;
+
+  switch (preset) {
+    case "top":
+      nextBorders.top = { ...(isFirst ? borderToApply : nilBorder) };
+      return nextBorders;
+    case "bottom":
+      nextBorders.bottom = { ...(isLast ? borderToApply : nilBorder) };
+      return nextBorders;
+    case "left":
+      nextBorders.left = { ...borderToApply };
+      return nextBorders;
+    case "right":
+      nextBorders.right = { ...borderToApply };
+      return nextBorders;
+    case "all":
+    case "outside":
+      if (remove) {
+        nextBorders.top = { ...nilBorder };
+        nextBorders.right = { ...nilBorder };
+        nextBorders.bottom = { ...nilBorder };
+        nextBorders.left = { ...nilBorder };
+      } else {
+        nextBorders.top = { ...(isFirst ? borderToApply : nilBorder) };
+        nextBorders.right = { ...borderToApply };
+        nextBorders.bottom = { ...(isLast ? borderToApply : nilBorder) };
+        nextBorders.left = { ...borderToApply };
+      }
+      return nextBorders;
+    case "horizontal-line":
+      nextBorders.bottom = { ...(isLast ? borderToApply : nilBorder) };
+      return nextBorders;
+    case "none":
+      nextBorders.top = { ...nilBorder };
+      nextBorders.right = { ...nilBorder };
+      nextBorders.bottom = { ...nilBorder };
+      nextBorders.left = { ...nilBorder };
+      nextBorders.between = { ...nilBorder };
+      nextBorders.bar = { ...nilBorder };
+      return nextBorders;
+    default:
+      return applyParagraphBorderPreset(borders, preset, remove);
+  }
+}
+
+function tableBorderPresetState(
+  borders: TableBorderSet | undefined,
+  selectedCellBorders?: TableBorderSet
+): DocxBorderPresetState {
+  const top = tableBorderVisible(borders?.top);
+  const right = tableBorderVisible(borders?.right);
+  const bottom = tableBorderVisible(borders?.bottom);
+  const left = tableBorderVisible(borders?.left);
+  const insideH = tableBorderVisible(borders?.insideH);
+  const insideV = tableBorderVisible(borders?.insideV);
+  const diagonalDown = tableBorderVisible(selectedCellBorders?.tl2br ?? borders?.tl2br);
+  const diagonalUp = tableBorderVisible(selectedCellBorders?.tr2bl ?? borders?.tr2bl);
+  const hasAny = top || right || bottom || left || insideH || insideV || diagonalDown || diagonalUp;
+
+  return {
+    bottom,
+    top,
+    left,
+    right,
+    none: !hasAny,
+    all: top && right && bottom && left && insideH && insideV,
+    outside: top && right && bottom && left,
+    inside: insideH && insideV,
+    "inside-horizontal": insideH,
+    "inside-vertical": insideV,
+    "diagonal-down": diagonalDown,
+    "diagonal-up": diagonalUp,
+    "horizontal-line": insideH
+  };
+}
+
+function applyParagraphBorderPreset(
+  borders: ParagraphBorderSet | undefined,
+  preset: DocxBorderPreset,
+  remove = false
+): ParagraphBorderSet | undefined {
+  const nextBorders = cloneParagraphBorderSet(borders) ?? {};
+  const visibleBorder = toolbarParagraphBorderStyle(resolvePreferredParagraphBorder(nextBorders));
+  const nilBorder = nilParagraphBorderStyle();
+  const borderToApply = remove ? nilBorder : visibleBorder;
+
+  switch (preset) {
+    case "top":
+      nextBorders.top = { ...borderToApply };
+      break;
+    case "right":
+      nextBorders.right = { ...borderToApply };
+      break;
+    case "bottom":
+      nextBorders.bottom = { ...borderToApply };
+      break;
+    case "left":
+      nextBorders.left = { ...borderToApply };
+      break;
+    case "all":
+    case "outside":
+      nextBorders.top = { ...borderToApply };
+      nextBorders.right = { ...borderToApply };
+      nextBorders.bottom = { ...borderToApply };
+      nextBorders.left = { ...borderToApply };
+      break;
+    case "inside":
+      nextBorders.between = { ...borderToApply };
+      nextBorders.bar = { ...borderToApply };
+      break;
+    case "inside-horizontal":
+      nextBorders.between = { ...borderToApply };
+      break;
+    case "inside-vertical":
+      nextBorders.bar = { ...borderToApply };
+      break;
+    case "horizontal-line":
+      nextBorders.bottom = { ...borderToApply };
+      break;
+    case "none":
+      nextBorders.top = { ...nilBorder };
+      nextBorders.right = { ...nilBorder };
+      nextBorders.bottom = { ...nilBorder };
+      nextBorders.left = { ...nilBorder };
+      nextBorders.between = { ...nilBorder };
+      nextBorders.bar = { ...nilBorder };
+      break;
+    case "diagonal-down":
+    case "diagonal-up":
+      return undefined;
+    default:
+      return nextBorders;
+  }
+
+  return nextBorders;
+}
+
+function applyTableBorderPreset(
+  borders: TableBorderSet | undefined,
+  preset: DocxBorderPreset,
+  remove = false
+): TableBorderSet | undefined {
+  const nextBorders = cloneTableBorderSet(borders) ?? {};
+  const visibleBorder = toolbarTableBorderStyle(resolvePreferredTableBorder(nextBorders));
+  const nilBorder = nilTableBorderStyle();
+  const borderToApply = remove ? nilBorder : visibleBorder;
+
+  switch (preset) {
+    case "top":
+      nextBorders.top = { ...borderToApply };
+      break;
+    case "right":
+      nextBorders.right = { ...borderToApply };
+      break;
+    case "bottom":
+      nextBorders.bottom = { ...borderToApply };
+      break;
+    case "left":
+      nextBorders.left = { ...borderToApply };
+      break;
+    case "all":
+      nextBorders.top = { ...borderToApply };
+      nextBorders.right = { ...borderToApply };
+      nextBorders.bottom = { ...borderToApply };
+      nextBorders.left = { ...borderToApply };
+      nextBorders.insideH = { ...borderToApply };
+      nextBorders.insideV = { ...borderToApply };
+      break;
+    case "outside":
+      nextBorders.top = { ...borderToApply };
+      nextBorders.right = { ...borderToApply };
+      nextBorders.bottom = { ...borderToApply };
+      nextBorders.left = { ...borderToApply };
+      if (!remove) {
+        nextBorders.insideH = { ...nilBorder };
+        nextBorders.insideV = { ...nilBorder };
+      }
+      break;
+    case "inside":
+      nextBorders.insideH = { ...borderToApply };
+      nextBorders.insideV = { ...borderToApply };
+      break;
+    case "inside-horizontal":
+      nextBorders.insideH = { ...borderToApply };
+      break;
+    case "inside-vertical":
+      nextBorders.insideV = { ...borderToApply };
+      break;
+    case "horizontal-line":
+      nextBorders.insideH = { ...borderToApply };
+      break;
+    case "none":
+      nextBorders.top = { ...nilBorder };
+      nextBorders.right = { ...nilBorder };
+      nextBorders.bottom = { ...nilBorder };
+      nextBorders.left = { ...nilBorder };
+      nextBorders.insideH = { ...nilBorder };
+      nextBorders.insideV = { ...nilBorder };
+      nextBorders.tl2br = { ...nilBorder };
+      nextBorders.tr2bl = { ...nilBorder };
+      break;
+    case "diagonal-down":
+      nextBorders.tl2br = { ...borderToApply };
+      break;
+    case "diagonal-up":
+      nextBorders.tr2bl = { ...borderToApply };
+      break;
+    default:
+      return nextBorders;
+  }
+
+  return nextBorders;
+}
+
+function resolveTableBorder(
+  tableBorders: TableBorderSet | undefined,
+  cellBorders: TableBorderSet | undefined,
+  side: TableBorderSide,
+  rowIndex: number,
+  rowCount: number,
+  startColumnIndex: number,
+  endColumnIndex: number,
+  columnCount: number
+): TableBorderStyle | undefined {
+  const directCellBorder = cellBorders?.[side];
+  if (directCellBorder) {
+    return directCellBorder;
+  }
+
+  const isTopRow = rowIndex === 0;
+  const isBottomRow = rowIndex >= rowCount - 1;
+  const isFirstColumn = startColumnIndex === 0;
+  const isLastColumn = endColumnIndex >= columnCount - 1;
+
+  if (side === "top") {
+    return isTopRow ? tableBorders?.top : tableBorders?.insideH;
+  }
+  if (side === "bottom") {
+    return isBottomRow ? tableBorders?.bottom : tableBorders?.insideH;
+  }
+  if (side === "left") {
+    return isFirstColumn ? tableBorders?.left : tableBorders?.insideV;
+  }
+
+  return isLastColumn ? tableBorders?.right : tableBorders?.insideV;
+}
+
+function resolveTableCellBorderCss(
+  tableBorders: TableBorderSet | undefined,
+  cellBorders: TableBorderSet | undefined,
+  rowIndex: number,
+  rowCount: number,
+  startColumnIndex: number,
+  endColumnIndex: number,
+  columnCount: number
+): React.CSSProperties {
+  const top = tableBorderToCss(
+    resolveTableBorder(
+      tableBorders,
+      cellBorders,
+      "top",
+      rowIndex,
+      rowCount,
+      startColumnIndex,
+      endColumnIndex,
+      columnCount
+    )
+  );
+  const right = tableBorderToCss(
+    resolveTableBorder(
+      tableBorders,
+      cellBorders,
+      "right",
+      rowIndex,
+      rowCount,
+      startColumnIndex,
+      endColumnIndex,
+      columnCount
+    )
+  );
+  const bottom = tableBorderToCss(
+    resolveTableBorder(
+      tableBorders,
+      cellBorders,
+      "bottom",
+      rowIndex,
+      rowCount,
+      startColumnIndex,
+      endColumnIndex,
+      columnCount
+    )
+  );
+  const left = tableBorderToCss(
+    resolveTableBorder(
+      tableBorders,
+      cellBorders,
+      "left",
+      rowIndex,
+      rowCount,
+      startColumnIndex,
+      endColumnIndex,
+      columnCount
+    )
+  );
+
+  return {
+    ...(top !== undefined ? { borderTop: top } : undefined),
+    ...(right !== undefined ? { borderRight: right } : undefined),
+    ...(bottom !== undefined ? { borderBottom: bottom } : undefined),
+    ...(left !== undefined ? { borderLeft: left } : undefined)
+  };
+}
+
+function resolveTableCellDiagonalOverlayCss(
+  tableBorders: TableBorderSet | undefined,
+  cellBorders: TableBorderSet | undefined
+): React.CSSProperties {
+  const diagonalDownBorder = cellBorders?.tl2br ?? tableBorders?.tl2br;
+  const diagonalUpBorder = cellBorders?.tr2bl ?? tableBorders?.tr2bl;
+  const layers: string[] = [];
+
+  const addLayer = (border: TableBorderStyle | undefined, direction: "to bottom right" | "to bottom left"): void => {
+    if (!tableBorderVisible(border)) {
+      return;
+    }
+
+    const color = border?.color ?? "#000000";
+    const widthPx =
+      Number.isFinite(border?.sizeEighthPt) && (border?.sizeEighthPt as number) > 0
+        ? Math.max(0.75, Number((((border?.sizeEighthPt as number) / 6)).toFixed(2)))
+        : 1;
+    const halfWidthPx = Number((widthPx / 2).toFixed(2));
+    layers.push(
+      `linear-gradient(${direction}, transparent calc(50% - ${halfWidthPx}px), ${color} calc(50% - ${halfWidthPx}px), ${color} calc(50% + ${halfWidthPx}px), transparent calc(50% + ${halfWidthPx}px))`
+    );
+  };
+
+  addLayer(diagonalDownBorder, "to bottom right");
+  addLayer(diagonalUpBorder, "to bottom left");
+
+  if (layers.length === 0) {
+    return {};
+  }
+
+  return {
+    backgroundImage: layers.join(", "),
+    backgroundRepeat: "no-repeat",
+    backgroundSize: "100% 100%"
+  };
+}
+
+function cloneTextStyle(style?: TextRunNode["style"]): TextRunNode["style"] | undefined {
+  return style ? { ...style } : undefined;
+}
+
+function cloneFormFieldWidget(
+  widget?: FormFieldRunNode["widget"]
+): FormFieldRunNode["widget"] | undefined {
+  if (!widget) {
+    return undefined;
+  }
+
+  return {
+    name: widget.name,
+    enabled: widget.enabled,
+    calcOnExit: widget.calcOnExit,
+    text: widget.text
+      ? {
+          inputType: widget.text.inputType,
+          defaultText: widget.text.defaultText,
+          maxLength: widget.text.maxLength,
+          textFormat: widget.text.textFormat
+        }
+      : undefined,
+    checkbox: widget.checkbox
+      ? {
+          defaultChecked: widget.checkbox.defaultChecked,
+          sizeMode: widget.checkbox.sizeMode,
+          sizePt: widget.checkbox.sizePt
+        }
+      : undefined,
+    dropdown: widget.dropdown
+      ? {
+          defaultValue: widget.dropdown.defaultValue
+        }
+      : undefined
+  };
+}
+
+function mergeFormFieldWidgetPatch(
+  current: FormFieldRunNode["widget"] | undefined,
+  patch: Partial<NonNullable<FormFieldRunNode["widget"]>>
+): FormFieldRunNode["widget"] | undefined {
+  const hasPatch =
+    patch.name !== undefined ||
+    patch.enabled !== undefined ||
+    patch.calcOnExit !== undefined ||
+    patch.text !== undefined ||
+    patch.checkbox !== undefined ||
+    patch.dropdown !== undefined;
+  if (!hasPatch) {
+    return cloneFormFieldWidget(current);
+  }
+
+  const mergedText =
+    patch.text === undefined
+      ? cloneFormFieldWidget(current)?.text
+      : {
+          ...(current?.text ?? {}),
+          ...patch.text
+        };
+  const mergedCheckbox =
+    patch.checkbox === undefined
+      ? cloneFormFieldWidget(current)?.checkbox
+      : {
+          ...(current?.checkbox ?? {}),
+          ...patch.checkbox
+        };
+  const mergedDropdown =
+    patch.dropdown === undefined
+      ? cloneFormFieldWidget(current)?.dropdown
+      : {
+          ...(current?.dropdown ?? {}),
+          ...patch.dropdown
+        };
+
+  return {
+    ...(current ?? {}),
+    ...(patch.name !== undefined ? { name: patch.name } : undefined),
+    ...(patch.enabled !== undefined ? { enabled: patch.enabled } : undefined),
+    ...(patch.calcOnExit !== undefined ? { calcOnExit: patch.calcOnExit } : undefined),
+    ...(mergedText ? { text: mergedText } : undefined),
+    ...(mergedCheckbox ? { checkbox: mergedCheckbox } : undefined),
+    ...(mergedDropdown ? { dropdown: mergedDropdown } : undefined)
+  };
+}
+
+function cloneFormFieldRun(field: FormFieldRunNode): FormFieldRunNode {
+  return {
+    type: "form-field",
+    fieldType: field.fieldType,
+    sourceKind: field.sourceKind,
+    id: field.id,
+    tag: field.tag,
+    title: field.title,
+    placeholder: field.placeholder,
+    checked: field.checked,
+    value: field.value,
+    options: field.options?.map((option) => ({
+      displayText: option.displayText,
+      value: option.value
+    })),
+    widget: cloneFormFieldWidget(field.widget),
+    checkedSymbol: field.checkedSymbol,
+    uncheckedSymbol: field.uncheckedSymbol,
+    style: cloneTextStyle(field.style),
+    link: field.link,
+    sourceXml: field.sourceXml
+  };
+}
+
+function textStylesEqual(a?: TextRunNode["style"], b?: TextRunNode["style"]): boolean {
+  return JSON.stringify(a ?? {}) === JSON.stringify(b ?? {});
+}
+
+function mergeAdjacentTextRuns(children: ParagraphNode["children"]): ParagraphNode["children"] {
+  const merged: ParagraphNode["children"] = [];
+
+  for (const child of children) {
+    const previous = merged[merged.length - 1];
+    if (
+      previous &&
+      previous.type === "text" &&
+      child.type === "text" &&
+      textStylesEqual(previous.style, child.style) &&
+      previous.link === child.link
+    ) {
+      previous.text += child.text;
+      continue;
+    }
+
+    merged.push(
+      child.type === "text"
+        ? {
+            type: "text",
+            text: child.text,
+            style: cloneTextStyle(child.style),
+            link: child.link
+          }
+        : child.type === "form-field"
+          ? cloneFormFieldRun(child)
+        : {
+            type: "image",
+            src: child.src,
+            alt: child.alt,
+            widthPx: child.widthPx,
+            heightPx: child.heightPx,
+            partName: child.partName,
+            contentType: child.contentType,
+            data: child.data ? new Uint8Array(child.data) : undefined,
+            floating: child.floating ? { ...child.floating } : undefined,
+            syntheticTextBox: child.syntheticTextBox
+          }
+    );
+  }
+
+  return merged;
+}
+
+function paragraphHasOnlyTextRuns(paragraph: ParagraphNode): boolean {
+  return paragraph.children.every((child): child is TextRunNode => child.type === "text");
+}
+
+function cloneTextRunWithMetadata(run: TextRunNode): TextRunNode {
+  return {
+    type: "text",
+    text: run.text,
+    style: cloneTextStyle(run.style),
+    link: run.link,
+    noteReference: run.noteReference ? { ...run.noteReference } : undefined
+  };
+}
+
+function splitTextRunsAtOffset(
+  runs: TextRunNode[],
+  offset: number
+): {
+  left: TextRunNode[];
+  right: TextRunNode[];
+} {
+  const safeOffset = Math.max(0, Math.round(offset));
+  const left: TextRunNode[] = [];
+  const right: TextRunNode[] = [];
+  let cursor = 0;
+
+  for (const run of runs) {
+    const runLength = run.text.length;
+    const runStart = cursor;
+    const runEnd = runStart + runLength;
+    cursor = runEnd;
+
+    if (runEnd <= safeOffset) {
+      left.push(cloneTextRunWithMetadata(run));
+      continue;
+    }
+
+    if (runStart >= safeOffset) {
+      right.push(cloneTextRunWithMetadata(run));
+      continue;
+    }
+
+    const localSplit = Math.max(0, Math.min(runLength, safeOffset - runStart));
+    const before = run.text.slice(0, localSplit);
+    const after = run.text.slice(localSplit);
+    if (before.length > 0) {
+      left.push({
+        ...cloneTextRunWithMetadata(run),
+        text: before
+      });
+    }
+    if (after.length > 0) {
+      right.push({
+        ...cloneTextRunWithMetadata(run),
+        text: after
+      });
+    }
+  }
+
+  return { left, right };
+}
+
+function firstTextStyleAtOffset(
+  paragraph: ParagraphNode,
+  offset: number,
+  preferPreviousAtBoundary: boolean
+): TextRunNode["style"] | undefined {
+  const textChildren = paragraph.children.filter((child): child is TextRunNode => child.type === "text");
+  if (textChildren.length === 0) {
+    return undefined;
+  }
+
+  const safeOffset = Math.max(0, offset);
+  let cursor = 0;
+
+  for (let index = 0; index < textChildren.length; index += 1) {
+    const run = textChildren[index];
+    const runLength = run.text.length;
+    const runStart = cursor;
+    const runEnd = runStart + runLength;
+    cursor = runEnd;
+
+    if (safeOffset < runEnd) {
+      return cloneTextStyle(run.style);
+    }
+
+    if (safeOffset === runEnd) {
+      if (preferPreviousAtBoundary || index === textChildren.length - 1) {
+        return cloneTextStyle(run.style);
+      }
+
+      return cloneTextStyle(textChildren[index + 1]?.style);
+    }
+  }
+
+  return cloneTextStyle(textChildren[textChildren.length - 1]?.style);
+}
+
+function linkAtOffset(
+  paragraph: ParagraphNode,
+  offset: number,
+  preferPreviousAtBoundary: boolean
+): string | undefined {
+  const textChildren = paragraph.children.filter((child): child is TextRunNode => child.type === "text");
+  if (textChildren.length === 0) {
+    return undefined;
+  }
+
+  const safeOffset = Math.max(0, offset);
+  let cursor = 0;
+
+  for (let index = 0; index < textChildren.length; index += 1) {
+    const run = textChildren[index];
+    const runLength = run.text.length;
+    const runStart = cursor;
+    const runEnd = runStart + runLength;
+    cursor = runEnd;
+
+    if (safeOffset < runEnd) {
+      return run.link;
+    }
+
+    if (safeOffset === runEnd) {
+      if (preferPreviousAtBoundary || index === textChildren.length - 1) {
+        return run.link;
+      }
+
+      return textChildren[index + 1]?.link;
+    }
+  }
+
+  return textChildren[textChildren.length - 1]?.link;
+}
+
+function uniformLinkInRange(
+  paragraph: ParagraphNode,
+  startOffset: number,
+  endOffset: number
+): string | undefined {
+  const safeStart = Math.max(0, Math.min(startOffset, endOffset));
+  const safeEnd = Math.max(safeStart, Math.max(startOffset, endOffset));
+  if (safeStart === safeEnd) {
+    return linkAtOffset(paragraph, safeStart, true);
+  }
+
+  let cursor = 0;
+  let candidateLink: string | undefined;
+
+  for (const child of paragraph.children) {
+    if (child.type !== "text") {
+      continue;
+    }
+
+    const runStart = cursor;
+    const runEnd = runStart + child.text.length;
+    cursor = runEnd;
+
+    if (runEnd <= safeStart || runStart >= safeEnd) {
+      continue;
+    }
+
+    if (!candidateLink) {
+      candidateLink = child.link;
+      continue;
+    }
+
+    if (candidateLink !== child.link) {
+      return undefined;
+    }
+  }
+
+  return candidateLink;
+}
+
+function linkRangeAtOffset(
+  paragraph: ParagraphNode,
+  offset: number
+): {
+  start: number;
+  end: number;
+  link: string;
+} | undefined {
+  const textChildren = paragraph.children.filter((child): child is TextRunNode => child.type === "text");
+  if (textChildren.length === 0) {
+    return undefined;
+  }
+
+  const safeOffset = Math.max(0, offset);
+  let cursor = 0;
+  let runIndex = -1;
+
+  for (let index = 0; index < textChildren.length; index += 1) {
+    const run = textChildren[index];
+    const runStart = cursor;
+    const runEnd = runStart + run.text.length;
+    cursor = runEnd;
+
+    if (safeOffset < runEnd || safeOffset === runEnd || index === textChildren.length - 1) {
+      runIndex = index;
+      break;
+    }
+  }
+
+  if (runIndex < 0) {
+    return undefined;
+  }
+
+  const currentRun = textChildren[runIndex];
+  const currentLink = currentRun.link;
+  if (!currentLink) {
+    return undefined;
+  }
+
+  const runStarts: number[] = [];
+  cursor = 0;
+  for (const run of textChildren) {
+    runStarts.push(cursor);
+    cursor += run.text.length;
+  }
+
+  let startIndex = runIndex;
+  while (startIndex > 0 && textChildren[startIndex - 1]?.link === currentLink) {
+    startIndex -= 1;
+  }
+
+  let endIndex = runIndex;
+  while (endIndex + 1 < textChildren.length && textChildren[endIndex + 1]?.link === currentLink) {
+    endIndex += 1;
+  }
+
+  const start = runStarts[startIndex] ?? 0;
+  const end = (runStarts[endIndex] ?? 0) + (textChildren[endIndex]?.text.length ?? 0);
+  if (end <= start) {
+    return undefined;
+  }
+
+  return {
+    start,
+    end,
+    link: currentLink
+  };
+}
+
+function mutateParagraphTextStyleInRange(
+  paragraph: ParagraphNode,
+  startOffset: number,
+  endOffset: number,
+  mutator: (currentStyle: TextRunNode["style"] | undefined) => TextRunNode["style"] | undefined
+): boolean {
+  const safeStart = Math.max(0, Math.min(startOffset, endOffset));
+  const safeEnd = Math.max(safeStart, Math.max(startOffset, endOffset));
+  if (safeStart === safeEnd) {
+    return false;
+  }
+
+  const nextChildren: ParagraphNode["children"] = [];
+  let cursor = 0;
+  let touched = false;
+
+  for (const child of paragraph.children) {
+    if (child.type !== "text") {
+      if (child.type === "form-field") {
+        nextChildren.push(cloneFormFieldRun(child));
+      } else {
+        nextChildren.push({
+          type: "image",
+          src: child.src,
+          alt: child.alt,
+          widthPx: child.widthPx,
+          heightPx: child.heightPx,
+          partName: child.partName,
+          contentType: child.contentType,
+          data: child.data ? new Uint8Array(child.data) : undefined,
+          floating: child.floating ? { ...child.floating } : undefined,
+          syntheticTextBox: child.syntheticTextBox
+        });
+      }
+      continue;
+    }
+
+    const text = child.text;
+    const runStart = cursor;
+    const runEnd = runStart + text.length;
+    cursor = runEnd;
+
+    if (runEnd <= safeStart || runStart >= safeEnd || text.length === 0) {
+      nextChildren.push({
+        type: "text",
+        text,
+        style: cloneTextStyle(child.style),
+        link: child.link
+      });
+      continue;
+    }
+
+    touched = true;
+    const localStart = Math.max(0, safeStart - runStart);
+    const localEnd = Math.min(text.length, safeEnd - runStart);
+
+    if (localStart > 0) {
+      nextChildren.push({
+        type: "text",
+        text: text.slice(0, localStart),
+        style: cloneTextStyle(child.style),
+        link: child.link
+      });
+    }
+
+    const selectedText = text.slice(localStart, localEnd);
+    if (selectedText.length > 0) {
+      nextChildren.push({
+        type: "text",
+        text: selectedText,
+        style: mutator(cloneTextStyle(child.style)),
+        link: child.link
+      });
+    }
+
+    if (localEnd < text.length) {
+      nextChildren.push({
+        type: "text",
+        text: text.slice(localEnd),
+        style: cloneTextStyle(child.style),
+        link: child.link
+      });
+    }
+  }
+
+  if (!touched) {
+    return false;
+  }
+
+  paragraph.children = mergeAdjacentTextRuns(nextChildren);
+  return true;
+}
+
+function mutateParagraphLinkInRange(
+  paragraph: ParagraphNode,
+  startOffset: number,
+  endOffset: number,
+  link?: string
+): boolean {
+  const safeStart = Math.max(0, Math.min(startOffset, endOffset));
+  const safeEnd = Math.max(safeStart, Math.max(startOffset, endOffset));
+  if (safeStart === safeEnd) {
+    return false;
+  }
+
+  const nextChildren: ParagraphNode["children"] = [];
+  let cursor = 0;
+  let touched = false;
+
+  for (const child of paragraph.children) {
+    if (child.type !== "text") {
+      if (child.type === "form-field") {
+        nextChildren.push(cloneFormFieldRun(child));
+      } else {
+        nextChildren.push({
+          type: "image",
+          src: child.src,
+          alt: child.alt,
+          widthPx: child.widthPx,
+          heightPx: child.heightPx,
+          partName: child.partName,
+          contentType: child.contentType,
+          data: child.data ? new Uint8Array(child.data) : undefined,
+          floating: child.floating ? { ...child.floating } : undefined,
+          syntheticTextBox: child.syntheticTextBox
+        });
+      }
+      continue;
+    }
+
+    const text = child.text;
+    const runStart = cursor;
+    const runEnd = runStart + text.length;
+    cursor = runEnd;
+
+    if (runEnd <= safeStart || runStart >= safeEnd || text.length === 0) {
+      nextChildren.push({
+        type: "text",
+        text,
+        style: cloneTextStyle(child.style),
+        link: child.link
+      });
+      continue;
+    }
+
+    touched = true;
+    const localStart = Math.max(0, safeStart - runStart);
+    const localEnd = Math.min(text.length, safeEnd - runStart);
+
+    if (localStart > 0) {
+      nextChildren.push({
+        type: "text",
+        text: text.slice(0, localStart),
+        style: cloneTextStyle(child.style),
+        link: child.link
+      });
+    }
+
+    const selectedText = text.slice(localStart, localEnd);
+    if (selectedText.length > 0) {
+      nextChildren.push({
+        type: "text",
+        text: selectedText,
+        style: cloneTextStyle(child.style),
+        link
+      });
+    }
+
+    if (localEnd < text.length) {
+      nextChildren.push({
+        type: "text",
+        text: text.slice(localEnd),
+        style: cloneTextStyle(child.style),
+        link: child.link
+      });
+    }
+  }
+
+  if (!touched) {
+    return false;
+  }
+
+  paragraph.children = mergeAdjacentTextRuns(nextChildren);
+  return true;
+}
+
+function toBase64(bytes: Uint8Array): string {
+  if (typeof Buffer !== "undefined") {
+    return Buffer.from(bytes).toString("base64");
+  }
+
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let index = 0; index < bytes.byteLength; index += chunkSize) {
+    const chunk = bytes.subarray(index, index + chunkSize);
+    binary += String.fromCharCode(...chunk);
+  }
+
+  if (typeof btoa === "function") {
+    return btoa(binary);
+  }
+
+  return "";
+}
+
+function isParagraphSelected(selection: DocxEditorSelection, nodeIndex: number): boolean {
+  return selection.kind === "paragraph" && selection.nodeIndex === nodeIndex;
+}
+
+function isCellSelected(
+  selection: DocxEditorSelection,
+  tableIndex: number,
+  rowIndex: number,
+  cellIndex: number
+): boolean {
+  return (
+    selection.kind === "table-cell" &&
+    selection.tableIndex === tableIndex &&
+    selection.rowIndex === rowIndex &&
+    selection.cellIndex === cellIndex
+  );
+}
+
+function paragraphLocationKey(location: ParagraphLocation): string {
+  if (location.kind === "paragraph") {
+    return `p:${location.nodeIndex}`;
+  }
+
+  return `t:${location.tableIndex}:${location.rowIndex}:${location.cellIndex}:${location.paragraphIndex}`;
+}
+
+function imageLocationKey(location: DocxImageLocation): string {
+  return `${paragraphLocationKey(location)}:${location.childIndex}`;
+}
+
+function dropTargetKey(target: DocxImageDropTarget): string {
+  return `${paragraphLocationKey(target)}:${target.childIndex}`;
+}
+
+function parseImageDropTargetFromDataset(dataset: DOMStringMap): DocxImageDropTarget | undefined {
+  const kind = dataset.docxTargetKind;
+  const childIndex = Number.parseInt(dataset.docxChildIndex ?? "", 10);
+  if (!Number.isFinite(childIndex) || childIndex < 0) {
+    return undefined;
+  }
+
+  if (kind === "paragraph") {
+    const nodeIndex = Number.parseInt(dataset.docxNodeIndex ?? "", 10);
+    if (!Number.isFinite(nodeIndex) || nodeIndex < 0) {
+      return undefined;
+    }
+
+    return {
+      kind: "paragraph",
+      nodeIndex,
+      childIndex
+    };
+  }
+
+  if (kind === "table-cell") {
+    const tableIndex = Number.parseInt(dataset.docxTableIndex ?? "", 10);
+    const rowIndex = Number.parseInt(dataset.docxRowIndex ?? "", 10);
+    const cellIndex = Number.parseInt(dataset.docxCellIndex ?? "", 10);
+    const paragraphIndex = Number.parseInt(dataset.docxParagraphIndex ?? "", 10);
+    if (
+      !Number.isFinite(tableIndex) ||
+      !Number.isFinite(rowIndex) ||
+      !Number.isFinite(cellIndex) ||
+      !Number.isFinite(paragraphIndex) ||
+      tableIndex < 0 ||
+      rowIndex < 0 ||
+      cellIndex < 0 ||
+      paragraphIndex < 0
+    ) {
+      return undefined;
+    }
+
+    return {
+      kind: "table-cell",
+      tableIndex,
+      rowIndex,
+      cellIndex,
+      paragraphIndex,
+      childIndex
+    };
+  }
+
+  return undefined;
+}
+
+function firstTableCellAnchorLocation(
+  table: TableNode,
+  tableIndex: number
+): Extract<DocxTextRangeLocation, { kind: "table-cell" }> | undefined {
+  for (let rowIndex = 0; rowIndex < table.rows.length; rowIndex += 1) {
+    const row = table.rows[rowIndex];
+    if (!row) {
+      continue;
+    }
+
+    for (let cellIndex = 0; cellIndex < row.cells.length; cellIndex += 1) {
+      const cell = row.cells[cellIndex];
+      if (!cell) {
+        continue;
+      }
+
+      return {
+        kind: "table-cell",
+        tableIndex,
+        rowIndex,
+        cellIndex,
+        paragraphIndex: 0
+      };
+    }
+  }
+
+  return undefined;
+}
+
+function collectTablePropertyTrackedChanges(
+  table: TableNode,
+  tableIndex: number
+): Array<{
+  stableId: string;
+  kind: DocxTrackedChangeKind;
+  author?: string;
+  date?: string;
+  text?: string;
+  location: DocxTextRangeLocation;
+}> {
+  const sourceXml = table.sourceXml ?? "";
+  if (!sourceXml) {
+    return [];
+  }
+
+  const anchorLocation = firstTableCellAnchorLocation(table, tableIndex);
+  if (!anchorLocation) {
+    return [];
+  }
+
+  const entries: Array<{
+    stableId: string;
+    kind: DocxTrackedChangeKind;
+    author?: string;
+    date?: string;
+    text?: string;
+    location: DocxTextRangeLocation;
+  }> = [];
+  const entryByKey = new Map<string, (typeof entries)[number]>();
+
+  const append = (
+    scope: "table" | "row" | "cell",
+    changeTag: XmlBalancedTagRange
+  ): void => {
+    const kind: DocxTrackedChangeKind = "paragraph-format-change";
+    const author = decodeXmlText(xmlAttribute(changeTag.openTag, "w:author") ?? "") || undefined;
+    const date = xmlAttribute(changeTag.openTag, "w:date")?.trim() || undefined;
+    const revisionId = xmlAttribute(changeTag.openTag, "w:id")?.trim() || undefined;
+    const changeXml = sourceXml.slice(changeTag.start, changeTag.end);
+    const text = summarizeTableFormattingChange(scope, changeXml);
+    const key = revisionId
+      ? `${scope}:${kind}:id:${revisionId}`
+      : `${scope}:${kind}:${author ?? ""}:${date ?? ""}:${text}`;
+    const existing = entryByKey.get(key);
+    if (existing) {
+      if (!existing.text && text) {
+        existing.text = text;
+      }
+      if (!existing.author && author) {
+        existing.author = author;
+      }
+      if (!existing.date && date) {
+        existing.date = date;
+      }
+      return;
+    }
+
+    const stableId = revisionId
+      ? `${scope}-${kind}-${revisionId}`
+      : `${scope}-${kind}-${entryByKey.size}`;
+    const next = {
+      stableId,
+      kind,
+      author,
+      date,
+      text,
+      location: {
+        kind: "table-cell" as const,
+        tableIndex,
+        rowIndex: anchorLocation.rowIndex,
+        cellIndex: anchorLocation.cellIndex,
+        paragraphIndex: anchorLocation.paragraphIndex
+      }
+    };
+    entries.push(next);
+    entryByKey.set(key, next);
+  };
+
+  extractBalancedTagRanges(sourceXml, "w:tblPrChange").forEach((range) => append("table", range));
+  extractBalancedTagRanges(sourceXml, "w:trPrChange").forEach((range) => append("row", range));
+  extractBalancedTagRanges(sourceXml, "w:tcPrChange").forEach((range) => append("cell", range));
+
+  return entries;
+}
+
+function collectTrackedChangesFromModel(model: DocModel): DocxTrackedChange[] {
+  const trackedChanges: DocxTrackedChange[] = [];
+
+  const appendParagraphChanges = (
+    paragraph: ParagraphNode,
+    nodeIndex: number,
+    location: ParagraphLocation
+  ): void => {
+    const trackedMarkup = resolveParagraphTrackedMarkup(paragraph);
+    if (!trackedMarkup) {
+      return;
+    }
+
+    trackedMarkup.changes.forEach((change, changeIndex) => {
+      trackedChanges.push({
+        id: `${paragraphLocationKey(location)}:${change.id}:${changeIndex}`,
+        kind: change.kind,
+        author: change.author,
+        date: change.date,
+        text: change.text,
+        nodeIndex,
+        location: location.kind === "paragraph"
+          ? { kind: "paragraph", nodeIndex: location.nodeIndex }
+          : {
+              kind: "table-cell",
+              tableIndex: location.tableIndex,
+              rowIndex: location.rowIndex,
+              cellIndex: location.cellIndex,
+              paragraphIndex: location.paragraphIndex
+            }
+      });
+    });
+  };
+
+  model.nodes.forEach((node, nodeIndex) => {
+    if (node.type === "paragraph") {
+      appendParagraphChanges(node, nodeIndex, {
+        kind: "paragraph",
+        nodeIndex
+      });
+      return;
+    }
+
+    node.rows.forEach((row, rowIndex) => {
+      row.cells.forEach((cell, cellIndex) => {
+        const directParagraphs = tableCellParagraphs(cell.nodes);
+        directParagraphs.forEach((paragraph, paragraphIndex) => {
+          appendParagraphChanges(paragraph, nodeIndex, {
+            kind: "table-cell",
+            tableIndex: nodeIndex,
+            rowIndex,
+            cellIndex,
+            paragraphIndex
+          });
+        });
+
+        // Nested tables inside a cell are rendered without per-paragraph location
+        // attributes, so anchor these changes to the owning cell via a negative
+        // paragraph index to avoid colliding with direct paragraph indexes.
+        const nestedParagraphs = tableCellParagraphsRecursively(cell.nodes).filter(
+          (paragraph) => !directParagraphs.includes(paragraph)
+        );
+        nestedParagraphs.forEach((paragraph, nestedParagraphIndex) => {
+          appendParagraphChanges(paragraph, nodeIndex, {
+            kind: "table-cell",
+            tableIndex: nodeIndex,
+            rowIndex,
+            cellIndex,
+            paragraphIndex: -(nestedParagraphIndex + 1)
+          });
+        });
+      });
+    });
+
+    collectTablePropertyTrackedChanges(node, nodeIndex).forEach((change, changeIndex) => {
+      trackedChanges.push({
+        id: `${paragraphLocationKey(change.location)}:${change.stableId}:${changeIndex}`,
+        kind: change.kind,
+        author: change.author,
+        date: change.date,
+        text: change.text,
+        nodeIndex,
+        location: change.location
+      });
+    });
+  });
+
+  return trackedChanges;
+}
+
+function trackedChangeKindLabel(kind: DocxTrackedChangeKind): string {
+  switch (kind) {
+    case "insertion":
+      return "Inserted";
+    case "deletion":
+      return "Deleted";
+    case "move-from":
+      return "Moved from";
+    case "move-to":
+      return "Moved to";
+    case "format-change":
+      return "Formatted";
+    case "paragraph-format-change":
+      return "Paragraph formatting";
+    default:
+      return kind;
+  }
+}
+
+function trackedChangeAccentColor(kind: DocxTrackedChangeKind, documentTheme: DocxDocumentTheme): string {
+  const palette =
+    documentTheme === "dark"
+      ? {
+          insertion: "#60a5fa",
+          deletion: "#f87171",
+          moveFrom: "#fbbf24",
+          moveTo: "#22d3ee",
+          format: "#c084fc"
+        }
+      : {
+          insertion: "#2563eb",
+          deletion: "#dc2626",
+          moveFrom: "#d97706",
+          moveTo: "#0891b2",
+          format: "#7c3aed"
+        };
+
+  switch (kind) {
+    case "insertion":
+      return palette.insertion;
+    case "deletion":
+      return palette.deletion;
+    case "move-from":
+      return palette.moveFrom;
+    case "move-to":
+      return palette.moveTo;
+    case "format-change":
+    case "paragraph-format-change":
+      return palette.format;
+    default:
+      return palette.format;
+  }
+}
+
+function trackedChangeSortTuple(change: DocxTrackedChange): [number, number, number, number] {
+  if (change.location.kind === "paragraph") {
+    return [change.location.nodeIndex, 0, 0, 0];
+  }
+
+  return [
+    change.location.tableIndex,
+    change.location.rowIndex,
+    change.location.cellIndex,
+    change.location.paragraphIndex
+  ];
+}
+
+function trackedChangeBelongsToPageSegments(
+  location: DocxTextRangeLocation,
+  pageSegments: DocumentPageNodeSegment[]
+): boolean {
+  if (location.kind === "paragraph") {
+    return pageSegments.some((segment) => segment.nodeIndex === location.nodeIndex);
+  }
+
+  return pageSegments.some((segment) => {
+    if (segment.nodeIndex !== location.tableIndex) {
+      return false;
+    }
+
+    if (!segment.tableRowRange) {
+      return true;
+    }
+
+    return (
+      location.rowIndex >= segment.tableRowRange.startRowIndex &&
+      location.rowIndex < segment.tableRowRange.endRowIndex
+    );
+  });
+}
+
+function resolveTrackedChangePageIndex(
+  change: DocxTrackedChange,
+  pageNodeSegmentsByPage: DocumentPageNodeSegment[][]
+): number {
+  for (let pageIndex = 0; pageIndex < pageNodeSegmentsByPage.length; pageIndex += 1) {
+    if (trackedChangeBelongsToPageSegments(change.location, pageNodeSegmentsByPage[pageIndex] ?? [])) {
+      return pageIndex;
+    }
+  }
+
+  return -1;
+}
+
+function findTrackedChangeAnchorElementInPage(
+  pageElement: HTMLElement,
+  location: DocxTextRangeLocation
+): HTMLElement | undefined {
+  if (location.kind === "paragraph") {
+    const paragraphElement = pageElement.querySelector(
+      `[data-docx-paragraph-kind="paragraph"][data-docx-paragraph-node-index="${location.nodeIndex}"]`
+    ) as HTMLElement | null;
+    return paragraphElement ?? undefined;
+  }
+
+  const paragraphElement = pageElement.querySelector(
+    `[data-docx-paragraph-kind="table-cell"][data-docx-table-index="${location.tableIndex}"][data-docx-row-index="${location.rowIndex}"][data-docx-cell-index="${location.cellIndex}"][data-docx-paragraph-index="${location.paragraphIndex}"]`
+  ) as HTMLElement | null;
+  if (paragraphElement) {
+    return paragraphElement;
+  }
+
+  const cellElement = pageElement.querySelector(
+    `[data-docx-table-cell="true"][data-docx-table-index="${location.tableIndex}"][data-docx-row-index="${location.rowIndex}"][data-docx-cell-index="${location.cellIndex}"]`
+  ) as HTMLElement | null;
+  return cellElement ?? undefined;
+}
+
+function elementRectWithinContainer(
+  element: HTMLElement,
+  container: HTMLElement
+): {
+  left: number;
+  width: number;
+  right: number;
+  top: number;
+  height: number;
+} | undefined {
+  const containerRect = container.getBoundingClientRect();
+  const elementRect = element.getBoundingClientRect();
+  if (containerRect.height <= 0 || containerRect.width <= 0) {
+    return undefined;
+  }
+
+  const scaleY = containerRect.height / Math.max(1, container.offsetHeight);
+  if (!Number.isFinite(scaleY) || scaleY <= 0) {
+    return undefined;
+  }
+
+  const scaleX = containerRect.width / Math.max(1, container.offsetWidth);
+  if (!Number.isFinite(scaleX) || scaleX <= 0) {
+    return undefined;
+  }
+
+  const left = (elementRect.left - containerRect.left) / scaleX;
+  const width = elementRect.width / scaleX;
+
+  return {
+    left,
+    width,
+    right: left + width,
+    top: (elementRect.top - containerRect.top) / scaleY,
+    height: elementRect.height / scaleY
+  };
+}
+
+interface TrackedChangeAnchorPoint {
+  x: number;
+  y: number;
+}
+
+interface PositionedTrackedChange {
+  change: DocxTrackedChange;
+  anchorX: number;
+  anchorY: number;
+  top: number;
+  heightPx: number;
+}
+
+function estimateTrackedChangeCardHeight(change: DocxTrackedChange): number {
+  const snippet = normalizeTrackedChangeSnippet(change.text) ?? trackedChangeKindLabel(change.kind);
+  const lines = Math.max(1, Math.ceil(snippet.length / 30));
+  return Math.max(TRACKED_CHANGE_GUTTER_CARD_MIN_HEIGHT_PX, 34 + lines * 14);
+}
+
+function layoutTrackedChangesForPage(
+  changes: DocxTrackedChange[],
+  anchorByChangeId: Map<string, TrackedChangeAnchorPoint>,
+  cardHeightsByChangeId: Map<string, number> | undefined,
+  pageWidthPx: number,
+  pageHeightPx: number
+): PositionedTrackedChange[] {
+  if (changes.length === 0) {
+    return [];
+  }
+
+  const fallbackStride = Math.max(18, pageHeightPx / Math.max(1, changes.length + 1));
+  const withAnchors = changes.map((change, index) => {
+    const defaultAnchor = Math.min(
+      Math.max(10, Math.round((index + 1) * fallbackStride)),
+      Math.max(10, pageHeightPx - 10)
+    );
+    const anchorPoint = anchorByChangeId.get(change.id);
+    const anchorY = anchorPoint?.y ?? defaultAnchor;
+    const anchorX = anchorPoint?.x ?? Math.max(10, pageWidthPx - 10);
+    const measuredHeightPx = cardHeightsByChangeId?.get(change.id);
+    const estimatedHeightPx = estimateTrackedChangeCardHeight(change);
+    const heightPx =
+      Number.isFinite(measuredHeightPx) && (measuredHeightPx as number) > 0
+        ? Math.max(
+            TRACKED_CHANGE_GUTTER_CARD_MIN_HEIGHT_PX,
+            Math.round(measuredHeightPx as number)
+          )
+        : estimatedHeightPx;
+    return {
+      change,
+      anchorX: clampNumber(Math.round(anchorX), 10, Math.max(10, pageWidthPx - 10)),
+      anchorY: clampNumber(Math.round(anchorY), 10, Math.max(10, pageHeightPx - 10)),
+      top: 0,
+      heightPx
+    };
+  });
+
+  withAnchors.sort((left, right) => left.anchorY - right.anchorY);
+
+  const minTopPx = 8;
+  let cursorTopPx = minTopPx;
+  withAnchors.forEach((entry) => {
+    const desiredTop = entry.anchorY - Math.round(entry.heightPx / 2);
+    entry.top = Math.max(desiredTop, cursorTopPx);
+    cursorTopPx = entry.top + entry.heightPx + TRACKED_CHANGE_GUTTER_CARD_GAP_PX;
+  });
+
+  const maxBottom = Math.max(0, pageHeightPx - minTopPx);
+  const bottomAfterInitialPlacement = cursorTopPx - TRACKED_CHANGE_GUTTER_CARD_GAP_PX;
+  const overflowPx = bottomAfterInitialPlacement - maxBottom;
+  if (overflowPx > 0) {
+    let shiftedCursorTopPx = minTopPx;
+    withAnchors.forEach((entry) => {
+      const desiredTop = entry.top - overflowPx;
+      entry.top = Math.max(desiredTop, shiftedCursorTopPx);
+      shiftedCursorTopPx = entry.top + entry.heightPx + TRACKED_CHANGE_GUTTER_CARD_GAP_PX;
+    });
+  }
+
+  return withAnchors;
+}
+
+function sameParagraphLocation(a: ParagraphLocation, b: ParagraphLocation): boolean {
+  if (a.kind === "paragraph") {
+    return b.kind === "paragraph" && a.nodeIndex === b.nodeIndex;
+  }
+
+  if (b.kind === "paragraph") {
+    return false;
+  }
+
+  return (
+    a.tableIndex === b.tableIndex &&
+    a.rowIndex === b.rowIndex &&
+    a.cellIndex === b.cellIndex &&
+    a.paragraphIndex === b.paragraphIndex
+  );
+}
+
+function firstParagraphLocationInTable(model: DocModel, tableIndex: number): ParagraphLocation | undefined {
+  const tableNode = model.nodes[tableIndex];
+  if (!tableNode || tableNode.type !== "table") {
+    return undefined;
+  }
+
+  for (let rowIndex = 0; rowIndex < tableNode.rows.length; rowIndex += 1) {
+    const row = tableNode.rows[rowIndex];
+    if (!row) {
+      continue;
+    }
+
+    for (let cellIndex = 0; cellIndex < row.cells.length; cellIndex += 1) {
+      const cell = row.cells[cellIndex];
+      if (!cell || cell.style?.vMergeContinuation) {
+        continue;
+      }
+
+      const cellParagraphs = tableCellParagraphs(cell.nodes);
+      if (cellParagraphs.length === 0) {
+        continue;
+      }
+
+      return {
+        kind: "table-cell",
+        tableIndex,
+        rowIndex,
+        cellIndex,
+        paragraphIndex: 0
+      };
+    }
+  }
+
+  return undefined;
+}
+
+function lastParagraphLocationInTable(model: DocModel, tableIndex: number): ParagraphLocation | undefined {
+  const tableNode = model.nodes[tableIndex];
+  if (!tableNode || tableNode.type !== "table") {
+    return undefined;
+  }
+
+  for (let rowIndex = tableNode.rows.length - 1; rowIndex >= 0; rowIndex -= 1) {
+    const row = tableNode.rows[rowIndex];
+    if (!row) {
+      continue;
+    }
+
+    for (let cellIndex = row.cells.length - 1; cellIndex >= 0; cellIndex -= 1) {
+      const cell = row.cells[cellIndex];
+      if (!cell || cell.style?.vMergeContinuation) {
+        continue;
+      }
+
+      const cellParagraphs = tableCellParagraphs(cell.nodes);
+      if (cellParagraphs.length === 0) {
+        continue;
+      }
+
+      return {
+        kind: "table-cell",
+        tableIndex,
+        rowIndex,
+        cellIndex,
+        paragraphIndex: cellParagraphs.length - 1
+      };
+    }
+  }
+
+  return undefined;
+}
+
+function nodeIndexFromParagraphLocation(location: ParagraphLocation): number {
+  return location.kind === "paragraph" ? location.nodeIndex : location.tableIndex;
+}
+
+function adjustLocationAfterRemovedNodeIndexes(
+  location: DocxTextRangeLocation,
+  removedNodeIndexes: number[]
+): DocxTextRangeLocation | undefined {
+  if (removedNodeIndexes.length === 0) {
+    return cloneTextRangeLocation(location);
+  }
+
+  const normalizedRemoved = [...removedNodeIndexes]
+    .filter((value) => Number.isFinite(value) && value >= 0)
+    .map((value) => Math.round(value))
+    .sort((left, right) => left - right);
+
+  const sourceNodeIndex = location.kind === "paragraph" ? location.nodeIndex : location.tableIndex;
+  let adjustedNodeIndex = sourceNodeIndex;
+  for (const removedIndex of normalizedRemoved) {
+    if (removedIndex === adjustedNodeIndex) {
+      return undefined;
+    }
+    if (removedIndex < adjustedNodeIndex) {
+      adjustedNodeIndex -= 1;
+    }
+  }
+
+  if (location.kind === "paragraph") {
+    return {
+      kind: "paragraph",
+      nodeIndex: Math.max(0, adjustedNodeIndex)
+    };
+  }
+
+  return {
+    kind: "table-cell",
+    tableIndex: Math.max(0, adjustedNodeIndex),
+    rowIndex: location.rowIndex,
+    cellIndex: location.cellIndex,
+    paragraphIndex: location.paragraphIndex
+  };
+}
+
+function tableCoverageBoundaries(
+  model: DocModel,
+  tableIndex: number
+): {
+  start: DocxTextRangeBoundary;
+  end: DocxTextRangeBoundary;
+} | undefined {
+  const firstLocation = firstParagraphLocationInTable(model, tableIndex);
+  const lastLocation = lastParagraphLocationInTable(model, tableIndex);
+  if (!firstLocation || !lastLocation) {
+    return undefined;
+  }
+
+  const firstParagraph = getParagraphAtLocation(model, firstLocation).paragraph;
+  const lastParagraph = getParagraphAtLocation(model, lastLocation).paragraph;
+  if (!firstParagraph || !lastParagraph) {
+    return undefined;
+  }
+
+  return {
+    start: {
+      location: cloneTextRangeLocation(firstLocation),
+      offset: 0
+    },
+    end: {
+      location: cloneTextRangeLocation(lastLocation),
+      offset: paragraphText(lastParagraph).length
+    }
+  };
+}
+
+function fullyCoveredTableNodeIndexesForRange(
+  model: DocModel,
+  normalizedRange: DocxTextRange
+): number[] {
+  const startNodeIndex = nodeIndexFromParagraphLocation(normalizedRange.start.location);
+  const endNodeIndex = nodeIndexFromParagraphLocation(normalizedRange.end.location);
+  const firstIndex = Math.min(startNodeIndex, endNodeIndex);
+  const lastIndex = Math.max(startNodeIndex, endNodeIndex);
+  const coveredTableIndexes: number[] = [];
+
+  for (let nodeIndex = firstIndex; nodeIndex <= lastIndex; nodeIndex += 1) {
+    const node = model.nodes[nodeIndex];
+    if (!node || node.type !== "table") {
+      continue;
+    }
+
+    const boundaries = tableCoverageBoundaries(model, nodeIndex);
+    if (!boundaries) {
+      continue;
+    }
+
+    const coversFromStart =
+      compareTextRangeBoundaries(normalizedRange.start, boundaries.start) <= 0;
+    const coversToEnd =
+      compareTextRangeBoundaries(normalizedRange.end, boundaries.end) >= 0;
+    if (!coversFromStart || !coversToEnd) {
+      continue;
+    }
+
+    coveredTableIndexes.push(nodeIndex);
+  }
+
+  return coveredTableIndexes;
+}
+
+function firstParagraphLocationFromNode(model: DocModel, nodeIndex: number): ParagraphLocation | undefined {
+  const node = model.nodes[nodeIndex];
+  if (!node) {
+    return undefined;
+  }
+
+  if (node.type === "paragraph") {
+    return {
+      kind: "paragraph",
+      nodeIndex
+    };
+  }
+
+  return firstParagraphLocationInTable(model, nodeIndex);
+}
+
+function lastParagraphLocationInNode(model: DocModel, nodeIndex: number): ParagraphLocation | undefined {
+  const node = model.nodes[nodeIndex];
+  if (!node) {
+    return undefined;
+  }
+
+  if (node.type === "paragraph") {
+    return {
+      kind: "paragraph",
+      nodeIndex
+    };
+  }
+
+  return lastParagraphLocationInTable(model, nodeIndex);
+}
+
+function nextParagraphLocation(model: DocModel, location: ParagraphLocation): ParagraphLocation | undefined {
+  if (location.kind === "paragraph") {
+    for (let nodeIndex = location.nodeIndex + 1; nodeIndex < model.nodes.length; nodeIndex += 1) {
+      const next = firstParagraphLocationFromNode(model, nodeIndex);
+      if (next) {
+        return next;
+      }
+    }
+    return undefined;
+  }
+
+  const tableNode = model.nodes[location.tableIndex];
+  if (!tableNode || tableNode.type !== "table") {
+    return undefined;
+  }
+
+  const currentCell = tableNode.rows[location.rowIndex]?.cells[location.cellIndex];
+  if (!currentCell) {
+    return undefined;
+  }
+
+  const cellParagraphs = tableCellParagraphs(currentCell.nodes);
+  if (location.paragraphIndex < cellParagraphs.length - 1) {
+    return {
+      kind: "table-cell",
+      tableIndex: location.tableIndex,
+      rowIndex: location.rowIndex,
+      cellIndex: location.cellIndex,
+      paragraphIndex: location.paragraphIndex + 1
+    };
+  }
+
+  for (let rowIndex = location.rowIndex; rowIndex < tableNode.rows.length; rowIndex += 1) {
+    const row = tableNode.rows[rowIndex];
+    if (!row) {
+      continue;
+    }
+
+    for (
+      let cellIndex = rowIndex === location.rowIndex ? location.cellIndex + 1 : 0;
+      cellIndex < row.cells.length;
+      cellIndex += 1
+    ) {
+      const cell = row.cells[cellIndex];
+      if (!cell || cell.style?.vMergeContinuation) {
+        continue;
+      }
+
+      if (tableCellParagraphs(cell.nodes).length === 0) {
+        continue;
+      }
+
+      return {
+        kind: "table-cell",
+        tableIndex: location.tableIndex,
+        rowIndex,
+        cellIndex,
+        paragraphIndex: 0
+      };
+    }
+  }
+
+  for (
+    let nodeIndex = location.tableIndex + 1;
+    nodeIndex < model.nodes.length;
+    nodeIndex += 1
+  ) {
+    const next = firstParagraphLocationFromNode(model, nodeIndex);
+    if (next) {
+      return next;
+    }
+  }
+
+  return undefined;
+}
+
+function firstParagraphLocationInDocument(model: DocModel): ParagraphLocation | undefined {
+  for (let nodeIndex = 0; nodeIndex < model.nodes.length; nodeIndex += 1) {
+    const first = firstParagraphLocationFromNode(model, nodeIndex);
+    if (first) {
+      return first;
+    }
+  }
+
+  return undefined;
+}
+
+function lastParagraphLocationInDocument(model: DocModel): ParagraphLocation | undefined {
+  for (let nodeIndex = model.nodes.length - 1; nodeIndex >= 0; nodeIndex -= 1) {
+    const node = model.nodes[nodeIndex];
+    if (!node) {
+      continue;
+    }
+
+    if (node.type === "paragraph") {
+      return {
+        kind: "paragraph",
+        nodeIndex
+      };
+    }
+
+    for (let rowIndex = node.rows.length - 1; rowIndex >= 0; rowIndex -= 1) {
+      const row = node.rows[rowIndex];
+      if (!row) {
+        continue;
+      }
+
+      for (let cellIndex = row.cells.length - 1; cellIndex >= 0; cellIndex -= 1) {
+        const cell = row.cells[cellIndex];
+        if (!cell || cell.style?.vMergeContinuation) {
+          continue;
+        }
+
+        const paragraphs = tableCellParagraphs(cell.nodes);
+        if (paragraphs.length === 0) {
+          continue;
+        }
+
+        return {
+          kind: "table-cell",
+          tableIndex: nodeIndex,
+          rowIndex,
+          cellIndex,
+          paragraphIndex: paragraphs.length - 1
+        };
+      }
+    }
+  }
+
+  return undefined;
+}
+
+function paragraphRangeForMutate(model: DocModel, start: ParagraphLocation, end: ParagraphLocation): {
+  location: ParagraphLocation;
+}[] {
+  const items: { location: ParagraphLocation }[] = [];
+
+  const ordered = compareParagraphLocations(start, end) <= 0 ? [start, end] : [end, start];
+  let current: ParagraphLocation | undefined = ordered[0];
+  const limit = ordered[1];
+  while (current) {
+    items.push({ location: current });
+    if (compareParagraphLocations(current, limit) >= 0) {
+      break;
+    }
+    current = nextParagraphLocation(model, current);
+  }
+
+  return items;
+}
+
+function normalizeRangeBoundaryParagraphOffset(paragraph: ParagraphNode, offset: number): number {
+  const length = paragraphText(paragraph).length;
+  return Math.max(0, Math.min(Math.max(0, length), Math.round(offset)));
+}
+
+function rangeCoversEntireDocument(model: DocModel, range: DocxTextRange): boolean {
+  const normalizedRange = normalizeTextRange(range);
+  const firstLocation = firstParagraphLocationInDocument(model);
+  const lastLocation = lastParagraphLocationInDocument(model);
+  if (!firstLocation || !lastLocation) {
+    return false;
+  }
+
+  if (!sameParagraphLocation(normalizedRange.start.location, firstLocation)) {
+    return false;
+  }
+
+  if (!sameParagraphLocation(normalizedRange.end.location, lastLocation)) {
+    return false;
+  }
+
+  const firstParagraph = getParagraphAtLocation(model, firstLocation).paragraph;
+  const lastParagraph = getParagraphAtLocation(model, lastLocation).paragraph;
+  if (!firstParagraph || !lastParagraph) {
+    return false;
+  }
+
+  const safeStart = normalizeRangeBoundaryParagraphOffset(firstParagraph, normalizedRange.start.offset);
+  const safeEnd = normalizeRangeBoundaryParagraphOffset(lastParagraph, normalizedRange.end.offset);
+  return safeStart <= 0 && safeEnd >= paragraphText(lastParagraph).length;
+}
+
+function resolveRangeBoundaryOffsetsForParagraph(
+  currentLocation: ParagraphLocation,
+  rangeStart: DocxTextRangeBoundary,
+  rangeEnd: DocxTextRangeBoundary,
+  paragraph: ParagraphNode
+): [number, number] {
+  const ordered = compareTextRangeBoundaries(rangeStart, rangeEnd) <= 0 ? [rangeStart, rangeEnd] : [rangeEnd, rangeStart];
+  const startBoundary = ordered[0];
+  const endBoundary = ordered[1];
+  const isStartBoundaryHere = sameParagraphLocation(currentLocation, startBoundary.location);
+  const isEndBoundaryHere = sameParagraphLocation(currentLocation, endBoundary.location);
+
+  const safeStart = isStartBoundaryHere
+    ? normalizeRangeBoundaryParagraphOffset(paragraph, startBoundary.offset)
+    : 0;
+  const safeEnd = isEndBoundaryHere
+    ? normalizeRangeBoundaryParagraphOffset(paragraph, endBoundary.offset)
+    : paragraphText(paragraph).length;
+
+  return [safeStart, safeEnd];
+}
+
+function cloneTextRangeLocation(location: DocxTextRangeLocation): DocxTextRangeLocation {
+  if (location.kind === "paragraph") {
+    return {
+      kind: "paragraph",
+      nodeIndex: location.nodeIndex
+    };
+  }
+
+  return {
+    kind: "table-cell",
+    tableIndex: location.tableIndex,
+    rowIndex: location.rowIndex,
+    cellIndex: location.cellIndex,
+    paragraphIndex: location.paragraphIndex
+  };
+}
+
+function cloneTextRange(range?: DocxTextRange): DocxTextRange | undefined {
+  if (!range) {
+    return undefined;
+  }
+
+  return {
+    start: {
+      location: cloneTextRangeLocation(range.start.location),
+      offset: range.start.offset
+    },
+    end: {
+      location: cloneTextRangeLocation(range.end.location),
+      offset: range.end.offset
+    }
+  };
+}
+
+function cloneEditorSelection(selection: DocxEditorSelection): DocxEditorSelection {
+  if (selection.kind === "paragraph") {
+    return {
+      kind: "paragraph",
+      nodeIndex: selection.nodeIndex
+    };
+  }
+
+  return {
+    kind: "table-cell",
+    tableIndex: selection.tableIndex,
+    rowIndex: selection.rowIndex,
+    cellIndex: selection.cellIndex
+  };
+}
+
+function sameEditorSelection(a: DocxEditorSelection, b: DocxEditorSelection): boolean {
+  if (a.kind !== b.kind) {
+    return false;
+  }
+
+  if (a.kind === "paragraph") {
+    return a.nodeIndex === (b as Extract<DocxEditorSelection, { kind: "paragraph" }>).nodeIndex;
+  }
+
+  const tableSelection = b as Extract<DocxEditorSelection, { kind: "table-cell" }>;
+  return (
+    a.tableIndex === tableSelection.tableIndex &&
+    a.rowIndex === tableSelection.rowIndex &&
+    a.cellIndex === tableSelection.cellIndex
+  );
+}
+
+function sameTextRangeBoundary(a: DocxTextRangeBoundary, b: DocxTextRangeBoundary): boolean {
+  return compareTextRangeBoundaries(a, b) === 0;
+}
+
+function sameTextRange(a?: DocxTextRange, b?: DocxTextRange): boolean {
+  if (!a && !b) {
+    return true;
+  }
+  if (!a || !b) {
+    return false;
+  }
+
+  const normalizedA = normalizeTextRange(a);
+  const normalizedB = normalizeTextRange(b);
+  return (
+    sameTextRangeBoundary(normalizedA.start, normalizedB.start) &&
+    sameTextRangeBoundary(normalizedA.end, normalizedB.end)
+  );
+}
+
+function imageLocationToParagraphLocation(location: DocxImageLocation): ParagraphLocation {
+  if (location.kind === "paragraph") {
+    return {
+      kind: "paragraph",
+      nodeIndex: location.nodeIndex
+    };
+  }
+
+  return {
+    kind: "table-cell",
+    tableIndex: location.tableIndex,
+    rowIndex: location.rowIndex,
+    cellIndex: location.cellIndex,
+    paragraphIndex: location.paragraphIndex
+  };
+}
+
+function getParagraphAtLocation(
+  model: DocModel,
+  location: ParagraphLocation
+): {
+  paragraph?: ParagraphNode;
+  tableNode?: TableNode;
+} {
+  if (location.kind === "paragraph") {
+    const node = model.nodes[location.nodeIndex];
+    if (!node || node.type !== "paragraph") {
+      return {};
+    }
+
+    return { paragraph: node };
+  }
+
+  const tableNode = model.nodes[location.tableIndex];
+  if (!tableNode || tableNode.type !== "table") {
+    return {};
+  }
+
+  const cell = tableNode.rows[location.rowIndex]?.cells[location.cellIndex];
+  if (!cell) {
+    return {};
+  }
+
+  const paragraph = tableCellParagraphs(cell.nodes)[location.paragraphIndex];
+  if (!paragraph) {
+    return {};
+  }
+
+  return { paragraph, tableNode };
+}
+
+function collectFormFieldsFromModel(model: DocModel): DocxSelectedFormField[] {
+  const collected: DocxSelectedFormField[] = [];
+
+  model.nodes.forEach((node, nodeIndex) => {
+    if (node.type === "paragraph") {
+      node.children.forEach((child, childIndex) => {
+        if (child.type !== "form-field") {
+          return;
+        }
+
+        collected.push({
+          location: {
+            kind: "paragraph",
+            nodeIndex,
+            childIndex
+          },
+          field: child
+        });
+      });
+      return;
+    }
+
+    node.rows.forEach((row, rowIndex) => {
+      row.cells.forEach((cell, cellIndex) => {
+        tableCellParagraphs(cell.nodes).forEach((paragraph, paragraphIndex) => {
+          paragraph.children.forEach((child, childIndex) => {
+            if (child.type !== "form-field") {
+              return;
+            }
+
+            collected.push({
+              location: {
+                kind: "table-cell",
+                tableIndex: nodeIndex,
+                rowIndex,
+                cellIndex,
+                paragraphIndex,
+                childIndex
+              },
+              field: child
+            });
+          });
+        });
+      });
+    });
+  });
+
+  return collected;
+}
+
+type ParagraphTextUpdateOptions = Parameters<typeof updateParagraphText>[3];
+
+function selectionFallbackParagraphLocation(selection: DocxEditorSelection): ParagraphLocation {
+  if (selection.kind === "paragraph") {
+    return {
+      kind: "paragraph",
+      nodeIndex: selection.nodeIndex
+    };
+  }
+
+  return {
+    kind: "table-cell",
+    tableIndex: selection.tableIndex,
+    rowIndex: selection.rowIndex,
+    cellIndex: selection.cellIndex,
+    paragraphIndex: 0
+  };
+}
+
+function selectionFromTextRangeLocation(location: DocxTextRangeLocation): DocxEditorSelection {
+  if (location.kind === "paragraph") {
+    return {
+      kind: "paragraph",
+      nodeIndex: location.nodeIndex
+    };
+  }
+
+  return {
+    kind: "table-cell",
+    tableIndex: location.tableIndex,
+    rowIndex: location.rowIndex,
+    cellIndex: location.cellIndex
+  };
+}
+
+function paragraphLocationFromTextRangeLocation(location: DocxTextRangeLocation): ParagraphLocation {
+  if (location.kind === "paragraph") {
+    return {
+      kind: "paragraph",
+      nodeIndex: location.nodeIndex
+    };
+  }
+
+  return {
+    kind: "table-cell",
+    tableIndex: location.tableIndex,
+    rowIndex: location.rowIndex,
+    cellIndex: location.cellIndex,
+    paragraphIndex: Math.max(0, Math.round(location.paragraphIndex))
+  };
+}
+
+function resolveSelectedParagraphLocation(
+  selection: DocxEditorSelection,
+  activeTextRange?: DocxTextRange
+): ParagraphLocation {
+  const activeLocation = activeTextRange?.start.location;
+  if (activeLocation) {
+    return paragraphLocationFromTextRangeLocation(activeLocation);
+  }
+
+  return selectionFallbackParagraphLocation(selection);
+}
+
+function normalizeParagraphLocationForModel(
+  model: DocModel,
+  location: ParagraphLocation
+): ParagraphLocation | undefined {
+  const exact = getParagraphAtLocation(model, location).paragraph;
+  if (exact) {
+    return cloneTextRangeLocation(location);
+  }
+
+  if (location.kind === "table-cell") {
+    const tableNode = model.nodes[location.tableIndex];
+    if (tableNode && tableNode.type === "table") {
+      const safeRowIndex = clampNumber(
+        location.rowIndex,
+        0,
+        Math.max(0, tableNode.rows.length - 1)
+      );
+      const row = tableNode.rows[safeRowIndex];
+      if (row) {
+        const safeCellIndex = clampNumber(
+          location.cellIndex,
+          0,
+          Math.max(0, row.cells.length - 1)
+        );
+        const candidateCell = row.cells[safeCellIndex];
+        if (candidateCell && !candidateCell.style?.vMergeContinuation) {
+          const paragraphs = tableCellParagraphs(candidateCell.nodes);
+          if (paragraphs.length > 0) {
+            return {
+              kind: "table-cell",
+              tableIndex: location.tableIndex,
+              rowIndex: safeRowIndex,
+              cellIndex: safeCellIndex,
+              paragraphIndex: clampNumber(
+                location.paragraphIndex,
+                0,
+                Math.max(0, paragraphs.length - 1)
+              )
+            };
+          }
+        }
+      }
+
+      const firstInTable = firstParagraphLocationInTable(model, location.tableIndex);
+      if (firstInTable) {
+        return firstInTable;
+      }
+    }
+  }
+
+  if (model.nodes.length === 0) {
+    return undefined;
+  }
+
+  const anchorNodeIndex =
+    location.kind === "paragraph" ? location.nodeIndex : location.tableIndex;
+  const clampedAnchorNodeIndex = clampNumber(
+    anchorNodeIndex,
+    0,
+    Math.max(0, model.nodes.length - 1)
+  );
+
+  const sameNodeFallback = firstParagraphLocationFromNode(model, clampedAnchorNodeIndex);
+  if (sameNodeFallback) {
+    return sameNodeFallback;
+  }
+
+  for (let nodeIndex = clampedAnchorNodeIndex + 1; nodeIndex < model.nodes.length; nodeIndex += 1) {
+    const forward = firstParagraphLocationFromNode(model, nodeIndex);
+    if (forward) {
+      return forward;
+    }
+  }
+
+  for (let nodeIndex = clampedAnchorNodeIndex - 1; nodeIndex >= 0; nodeIndex -= 1) {
+    const backward = firstParagraphLocationFromNode(model, nodeIndex);
+    if (backward) {
+      return backward;
+    }
+  }
+
+  return firstParagraphLocationInDocument(model);
+}
+
+function normalizeTextRangeForModel(model: DocModel, range?: DocxTextRange): DocxTextRange | undefined {
+  if (!range) {
+    return undefined;
+  }
+
+  const normalized = normalizeTextRange(range);
+  const startLocation = normalizeParagraphLocationForModel(
+    model,
+    paragraphLocationFromTextRangeLocation(normalized.start.location)
+  );
+  const endLocation = normalizeParagraphLocationForModel(
+    model,
+    paragraphLocationFromTextRangeLocation(normalized.end.location)
+  );
+  if (!startLocation || !endLocation) {
+    return undefined;
+  }
+
+  const startParagraph = getParagraphAtLocation(model, startLocation).paragraph;
+  const endParagraph = getParagraphAtLocation(model, endLocation).paragraph;
+  if (!startParagraph || !endParagraph) {
+    return undefined;
+  }
+
+  return normalizeTextRange({
+    start: {
+      location: cloneTextRangeLocation(startLocation),
+      offset: normalizeRangeBoundaryParagraphOffset(startParagraph, normalized.start.offset)
+    },
+    end: {
+      location: cloneTextRangeLocation(endLocation),
+      offset: normalizeRangeBoundaryParagraphOffset(endParagraph, normalized.end.offset)
+    }
+  });
+}
+
+function normalizeSelectionForModel(model: DocModel, selection: DocxEditorSelection): DocxEditorSelection {
+  const normalizedParagraphLocation = normalizeParagraphLocationForModel(
+    model,
+    selectionFallbackParagraphLocation(selection)
+  );
+  if (!normalizedParagraphLocation) {
+    return {
+      kind: "paragraph",
+      nodeIndex: 0
+    };
+  }
+
+  return selectionFromTextRangeLocation(normalizedParagraphLocation);
+}
+
+function normalizeEditorCursorStateForModel(
+  model: DocModel,
+  selection: DocxEditorSelection,
+  activeTextRange?: DocxTextRange
+): {
+  selection: DocxEditorSelection;
+  activeTextRange?: DocxTextRange;
+} {
+  const normalizedRange = normalizeTextRangeForModel(model, activeTextRange);
+  if (normalizedRange) {
+    return {
+      selection: normalizeSelectionForModel(
+        model,
+        selectionFromTextRangeLocation(normalizedRange.start.location)
+      ),
+      activeTextRange: normalizedRange
+    };
+  }
+
+  return {
+    selection: normalizeSelectionForModel(model, selection),
+    activeTextRange: undefined
+  };
+}
+
+function updateParagraphTextAtLocation(
+  model: DocModel,
+  location: ParagraphLocation,
+  text: string,
+  options?: ParagraphTextUpdateOptions
+): DocModel {
+  if (location.kind === "paragraph") {
+    return updateParagraphText(model, location.nodeIndex, text, options);
+  }
+
+  return updateTableCellParagraphText(
+    model,
+    location.tableIndex,
+    location.rowIndex,
+    location.cellIndex,
+    location.paragraphIndex,
+    text,
+    options
+  );
+}
+
+function sectionParagraphLocationKey(location: DocxSectionParagraphLocation): string {
+  return JSON.stringify({
+    region: location.region,
+    partName: location.partName,
+    nodeIndex: location.nodeIndex,
+    rowIndex: location.rowIndex ?? -1,
+    cellIndex: location.cellIndex ?? -1,
+    paragraphIndex: location.paragraphIndex ?? -1
+  });
+}
+
+function sectionImageLocationKey(location: DocxSectionImageLocation): string {
+  return JSON.stringify({
+    region: location.region,
+    partName: location.partName,
+    nodeIndex: location.nodeIndex,
+    rowIndex: location.rowIndex ?? -1,
+    cellIndex: location.cellIndex ?? -1,
+    paragraphIndex: location.paragraphIndex ?? -1,
+    childIndex: location.childIndex
+  });
+}
+
+function tableCellParagraphDraftKey(
+  tableIndex: number,
+  rowIndex: number,
+  cellIndex: number,
+  paragraphIndex: number
+): string {
+  return `${tableIndex}:${rowIndex}:${cellIndex}:${paragraphIndex}`;
+}
+
+function parseSectionParagraphLocationKey(raw: string): DocxSectionParagraphLocation | undefined {
+  try {
+    const parsed = JSON.parse(raw) as {
+      region?: string;
+      partName?: string;
+      nodeIndex?: number;
+      rowIndex?: number;
+      cellIndex?: number;
+      paragraphIndex?: number;
+    };
+
+    if (
+      !parsed ||
+      (parsed.region !== "header" && parsed.region !== "footer") ||
+      typeof parsed.partName !== "string" ||
+      !Number.isFinite(parsed.nodeIndex)
+    ) {
+      return undefined;
+    }
+
+    const rowIndex =
+      Number.isFinite(parsed.rowIndex) && (parsed.rowIndex as number) >= 0
+        ? Math.round(parsed.rowIndex as number)
+        : undefined;
+    const cellIndex =
+      Number.isFinite(parsed.cellIndex) && (parsed.cellIndex as number) >= 0
+        ? Math.round(parsed.cellIndex as number)
+        : undefined;
+    const paragraphIndex =
+      Number.isFinite(parsed.paragraphIndex) && (parsed.paragraphIndex as number) >= 0
+        ? Math.round(parsed.paragraphIndex as number)
+        : undefined;
+
+    return {
+      region: parsed.region,
+      partName: parsed.partName,
+      nodeIndex: Math.max(0, Math.round(parsed.nodeIndex as number)),
+      rowIndex,
+      cellIndex,
+      paragraphIndex
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function paragraphTextFromSectionLocation(
+  sectionNodes: DocModel["nodes"],
+  location: Omit<DocxSectionParagraphLocation, "region" | "partName">
+): string | undefined {
+  const rootNode = sectionNodes[location.nodeIndex];
+  if (!rootNode) {
+    return undefined;
+  }
+
+  if (
+    location.rowIndex === undefined ||
+    location.cellIndex === undefined
+  ) {
+    if (rootNode.type !== "paragraph") {
+      return undefined;
+    }
+    return paragraphText(rootNode);
+  }
+
+  if (rootNode.type !== "table") {
+    return undefined;
+  }
+
+  const paragraphIndex = Math.max(0, Math.round(location.paragraphIndex ?? 0));
+  const cell = rootNode.rows[location.rowIndex]?.cells[location.cellIndex];
+  if (!cell) {
+    return undefined;
+  }
+
+  const paragraph = tableCellParagraphs(cell.nodes)[paragraphIndex];
+  return paragraph ? paragraphText(paragraph) : undefined;
+}
+
+function sectionParagraphFromLocation(
+  sectionNodes: DocModel["nodes"],
+  location: Omit<DocxSectionParagraphLocation, "region" | "partName">
+): {
+  paragraph?: ParagraphNode;
+  tableNode?: TableNode;
+} {
+  const rootNode = sectionNodes[location.nodeIndex];
+  if (!rootNode) {
+    return {};
+  }
+
+  if (
+    location.rowIndex === undefined ||
+    location.cellIndex === undefined
+  ) {
+    if (rootNode.type !== "paragraph") {
+      return {};
+    }
+    return { paragraph: rootNode };
+  }
+
+  if (rootNode.type !== "table") {
+    return {};
+  }
+
+  const paragraphIndex = Math.max(0, Math.round(location.paragraphIndex ?? 0));
+  const cell = rootNode.rows[location.rowIndex]?.cells[location.cellIndex];
+  if (!cell) {
+    return {};
+  }
+
+  const paragraph = tableCellParagraphs(cell.nodes)[paragraphIndex];
+  if (!paragraph) {
+    return {};
+  }
+
+  return {
+    paragraph,
+    tableNode: rootNode
+  };
+}
+
+function updateSectionParagraphTextAtLocation(
+  model: DocModel,
+  location: DocxSectionParagraphLocation,
+  text: string,
+  options?: ParagraphTextUpdateOptions
+): DocModel {
+  const next = cloneDocModel(model);
+  const candidateSectionLists =
+    location.region === "header"
+      ? [
+          next.metadata.headerSections ?? [],
+          ...(next.metadata.sections?.map((section) => section.headerSections ?? []) ?? [])
+        ]
+      : [
+          next.metadata.footerSections ?? [],
+          ...(next.metadata.sections?.map((section) => section.footerSections ?? []) ?? [])
+        ];
+
+  const normalizedLocation = {
+    nodeIndex: Math.max(0, Math.round(location.nodeIndex)),
+    rowIndex:
+      Number.isFinite(location.rowIndex) && (location.rowIndex as number) >= 0
+        ? Math.round(location.rowIndex as number)
+        : undefined,
+    cellIndex:
+      Number.isFinite(location.cellIndex) && (location.cellIndex as number) >= 0
+        ? Math.round(location.cellIndex as number)
+        : undefined,
+    paragraphIndex:
+      Number.isFinite(location.paragraphIndex) && (location.paragraphIndex as number) >= 0
+        ? Math.round(location.paragraphIndex as number)
+        : undefined
+  };
+
+  let changed = false;
+  candidateSectionLists.forEach((sections) => {
+    sections.forEach((section) => {
+      if (section.partName !== location.partName) {
+        return;
+      }
+
+      const currentText = paragraphTextFromSectionLocation(section.nodes, normalizedLocation);
+      if (currentText === undefined || currentText === text) {
+        return;
+      }
+
+      const scopedModel: DocModel = {
+        ...next,
+        nodes: section.nodes
+      };
+      const updatedScopedModel =
+        normalizedLocation.rowIndex === undefined || normalizedLocation.cellIndex === undefined
+          ? updateParagraphText(
+              scopedModel,
+              normalizedLocation.nodeIndex,
+              text,
+              options
+            )
+          : updateTableCellParagraphText(
+              scopedModel,
+              normalizedLocation.nodeIndex,
+              normalizedLocation.rowIndex,
+              normalizedLocation.cellIndex,
+              normalizedLocation.paragraphIndex ?? 0,
+              text,
+              options
+            );
+
+      section.nodes = updatedScopedModel.nodes;
+      changed = true;
+    });
+  });
+
+  return changed ? next : model;
+}
+
+function updateSectionImageFloatingAtLocation(
+  model: DocModel,
+  location: DocxSectionImageLocation,
+  patch: Partial<NonNullable<ImageRunNode["floating"]>>
+): DocModel {
+  const next = cloneDocModel(model);
+  const candidateSectionLists =
+    location.region === "header"
+      ? [
+          next.metadata.headerSections ?? [],
+          ...(next.metadata.sections?.map((section) => section.headerSections ?? []) ?? [])
+        ]
+      : [
+          next.metadata.footerSections ?? [],
+          ...(next.metadata.sections?.map((section) => section.footerSections ?? []) ?? [])
+        ];
+
+  const normalizedLocation = {
+    nodeIndex: Math.max(0, Math.round(location.nodeIndex)),
+    rowIndex:
+      Number.isFinite(location.rowIndex) && (location.rowIndex as number) >= 0
+        ? Math.round(location.rowIndex as number)
+        : undefined,
+    cellIndex:
+      Number.isFinite(location.cellIndex) && (location.cellIndex as number) >= 0
+        ? Math.round(location.cellIndex as number)
+        : undefined,
+    paragraphIndex:
+      Number.isFinite(location.paragraphIndex) && (location.paragraphIndex as number) >= 0
+        ? Math.round(location.paragraphIndex as number)
+        : undefined,
+    childIndex: Math.max(0, Math.round(location.childIndex))
+  };
+
+  let changed = false;
+  candidateSectionLists.forEach((sections) => {
+    sections.forEach((section) => {
+      if (section.partName !== location.partName) {
+        return;
+      }
+
+      const lookup = sectionParagraphFromLocation(section.nodes, normalizedLocation);
+      const paragraph = lookup.paragraph;
+      if (!paragraph) {
+        return;
+      }
+
+      const child = paragraph.children[normalizedLocation.childIndex];
+      if (!child || child.type !== "image") {
+        return;
+      }
+
+      child.floating = {
+        ...(child.floating ?? {}),
+        ...patch
+      };
+      paragraph.sourceXml = undefined;
+      if (lookup.tableNode) {
+        lookup.tableNode.sourceXml = undefined;
+      }
+      changed = true;
+    });
+  });
+
+  return changed ? next : model;
+}
+
+export function useDocxEditor(options: UseDocxEditorOptions = {}): DocxEditorController {
+  const starterTemplateRef = React.useRef<DocModel>(
+    cloneDocModel(options.starterModel ?? defaultStarterModel)
+  );
+
+  const [model, setModel] = React.useState<DocModel>(() => cloneDocModel(starterTemplateRef.current));
+  const [basePackage, setBasePackage] = React.useState<OoxmlPackage | undefined>();
+  const [fileName, setFileName] = React.useState<string>(options.initialFileName ?? "(new document)");
+  const [selection, setSelection] = React.useState<DocxEditorSelection>({
+    kind: "paragraph",
+    nodeIndex: 0
+  });
+  const [selectedFormFieldLocation, setSelectedFormFieldLocation] = React.useState<
+    DocxFormFieldLocation | undefined
+  >();
+  const [status, setStatus] = React.useState<string>(options.initialStatus ?? "Ready");
+  const [documentTheme, setDocumentThemeState] = React.useState<DocxDocumentTheme>(
+    options.initialDocumentTheme ?? "light"
+  );
+  const [showTrackedChanges, setShowTrackedChangesState] = React.useState<boolean>(
+    options.initialShowTrackedChanges ?? false
+  );
+  const [history, setHistory] = React.useState<{
+    past: DocxHistorySnapshot[];
+    future: DocxHistorySnapshot[];
+  }>({
+    past: [],
+    future: []
+  });
+  const [activeTextRange, setActiveTextRangeState] = React.useState<DocxTextRange | undefined>();
+  const [pendingRunStyle, setPendingRunStyle] = React.useState<TextRunNode["style"] | undefined>();
+  const [historyRestoreRequest, setHistoryRestoreRequest] = React.useState<DocxHistoryRestoreRequest | undefined>();
+
+  const modelRef = React.useRef<DocModel>(model);
+  const selectionRef = React.useRef<DocxEditorSelection>(selection);
+  const activeTextRangeRef = React.useRef<DocxTextRange | undefined>(activeTextRange);
+  const pendingRunStyleRef = React.useRef<TextRunNode["style"] | undefined>(pendingRunStyle);
+  const lastInViewerActiveTextRangeRef = React.useRef<DocxTextRange | undefined>(undefined);
+  const suppressSelectionResetRef = React.useRef(false);
+  const historyRestoreNonceRef = React.useRef(0);
+  const embeddedFontLoadNonceRef = React.useRef(0);
+  const loadedEmbeddedFontFacesRef = React.useRef<FontFace[]>([]);
+
+  React.useEffect(() => {
+    modelRef.current = model;
+  }, [model]);
+
+  React.useEffect(() => {
+    selectionRef.current = selection;
+  }, [selection]);
+
+  const selectedFormField = React.useMemo<DocxSelectedFormField | undefined>(() => {
+    if (!selectedFormFieldLocation) {
+      return undefined;
+    }
+
+    const { paragraph } = getParagraphAtLocation(model, selectedFormFieldLocation);
+    if (!paragraph) {
+      return undefined;
+    }
+
+    const child = paragraph.children[selectedFormFieldLocation.childIndex];
+    if (!child || child.type !== "form-field") {
+      return undefined;
+    }
+
+    return {
+      location: {
+        ...selectedFormFieldLocation
+      },
+      field: child
+    };
+  }, [model, selectedFormFieldLocation]);
+
+  React.useEffect(() => {
+    activeTextRangeRef.current = activeTextRange;
+    if (activeTextRange) {
+      lastInViewerActiveTextRangeRef.current = cloneTextRange(activeTextRange);
+    }
+  }, [activeTextRange]);
+
+  React.useEffect(() => {
+    pendingRunStyleRef.current = pendingRunStyle;
+  }, [pendingRunStyle]);
+
+  React.useEffect(() => {
+    const normalizedCursorState = normalizeEditorCursorStateForModel(
+      model,
+      selection,
+      activeTextRange
+    );
+    const nextSelection = normalizedCursorState.selection;
+    const nextRange = normalizedCursorState.activeTextRange;
+    const selectionChanged = !sameEditorSelection(selection, nextSelection);
+    const rangeChanged = !sameTextRange(activeTextRange, nextRange);
+
+    if (!selectionChanged && !rangeChanged) {
+      // Model updates can tear down native DOM ranges even when the logical
+      // editor range is unchanged (for example, formatting an expanded
+      // selection). Re-issue a restore request so the visual selection remains.
+      if (!activeTextRange) {
+        return;
+      }
+
+      const nextNonce = historyRestoreNonceRef.current + 1;
+      historyRestoreNonceRef.current = nextNonce;
+      setHistoryRestoreRequest({
+        nonce: nextNonce,
+        selection: cloneEditorSelection(selection),
+        activeTextRange: cloneTextRange(activeTextRange)
+      });
+      return;
+    }
+
+    suppressSelectionResetRef.current = true;
+    if (selectionChanged) {
+      setSelection(cloneEditorSelection(nextSelection));
+    }
+    if (rangeChanged) {
+      setActiveTextRangeState(cloneTextRange(nextRange));
+    }
+
+    const nextNonce = historyRestoreNonceRef.current + 1;
+    historyRestoreNonceRef.current = nextNonce;
+    setHistoryRestoreRequest({
+      nonce: nextNonce,
+      selection: cloneEditorSelection(nextSelection),
+      activeTextRange: cloneTextRange(nextRange)
+    });
+  }, [model]);
+
+  React.useEffect(() => {
+    if (!selectedFormFieldLocation) {
+      return;
+    }
+
+    const { paragraph } = getParagraphAtLocation(model, selectedFormFieldLocation);
+    const formField = paragraph?.children[selectedFormFieldLocation.childIndex];
+    if (!formField || formField.type !== "form-field") {
+      setSelectedFormFieldLocation(undefined);
+    }
+  }, [model, selectedFormFieldLocation]);
+
+  const selectedParagraphLocation = React.useMemo(
+    () => resolveSelectedParagraphLocation(selection, activeTextRange),
+    [activeTextRange, selection]
+  );
+
+  const selectedParagraph = React.useMemo(() => {
+    return getParagraphAtLocation(model, selectedParagraphLocation).paragraph;
+  }, [model, selectedParagraphLocation]);
+
+  const availableParagraphStyles = React.useMemo(() => {
+    const embeddedStyles = model.metadata.paragraphStyles ?? [];
+    if (embeddedStyles.length > 0) {
+      return normalizeParagraphStyleDefinitionsForUi(embeddedStyles);
+    }
+
+    return normalizeParagraphStyleDefinitionsForUi(defaultStarterModel.metadata.paragraphStyles);
+  }, [model.metadata.paragraphStyles]);
+  const paragraphStyleById = React.useMemo(
+    () => new Map(availableParagraphStyles.map((style) => [style.id, style])),
+    [availableParagraphStyles]
+  );
+
+  const selectedParagraphStyleId = React.useMemo(() => {
+    if (!selectedParagraph) {
+      return model.metadata.defaultParagraphStyleId ?? availableParagraphStyles.find((style) => style.isDefault)?.id;
+    }
+
+    if (selectedParagraph.style?.styleId) {
+      return selectedParagraph.style.styleId;
+    }
+
+    if (selectedParagraph.style?.headingLevel) {
+      const headingStyleId = `Heading${selectedParagraph.style.headingLevel}`;
+      if (paragraphStyleById.has(headingStyleId)) {
+        return headingStyleId;
+      }
+    }
+
+    return model.metadata.defaultParagraphStyleId ?? availableParagraphStyles.find((style) => style.isDefault)?.id;
+  }, [
+    selectedParagraph,
+    model.metadata.defaultParagraphStyleId,
+    availableParagraphStyles,
+    paragraphStyleById
+  ]);
+
+  const selectedLineSpacing = React.useMemo<DocxLineSpacingInfo>(() => {
+    const lineTwipsRaw = selectedParagraph?.style?.spacing?.lineTwips;
+    const lineTwips = Number.isFinite(lineTwipsRaw)
+      ? Math.max(1, Math.round(lineTwipsRaw as number))
+      : undefined;
+    const lineRule = (selectedParagraph?.style?.spacing?.lineRule ?? "auto") as DocxLineSpacingRule;
+    const multiple =
+      lineTwips !== undefined
+        ? resolveAutoLineSpacingMultiple(lineTwips, DEFAULT_PARAGRAPH_LINE_MULTIPLE)
+        : DEFAULT_PARAGRAPH_LINE_MULTIPLE;
+
+    return {
+      lineRule,
+      lineTwips,
+      multiple: Number(multiple.toFixed(3))
+    };
+  }, [selectedParagraph]);
+
+  const selectedBorderContext: DocxBorderContext =
+    selectedParagraphLocation.kind === "table-cell" ? "table" : "paragraph";
+
+  const activeBorderPresets = React.useMemo<DocxBorderPresetState>(() => {
+    if (selectedParagraphLocation.kind === "table-cell") {
+      const node = model.nodes[selectedParagraphLocation.tableIndex];
+      if (!node || node.type !== "table") {
+        return tableBorderPresetState(undefined);
+      }
+
+      const cell = node.rows[selectedParagraphLocation.rowIndex]?.cells[selectedParagraphLocation.cellIndex];
+      return tableBorderPresetState(node.style?.borders, cell?.style?.borders);
+    }
+
+    return paragraphBorderPresetState(selectedParagraph?.style?.borders);
+  }, [model.nodes, selectedParagraph, selectedParagraphLocation]);
+
+  const selectedRunStyleFromSelection = React.useMemo(() => {
+    if (!selectedParagraph) {
+      return undefined;
+    }
+
+    if (!activeTextRange) {
+      return firstRunStyle(selectedParagraph);
+    }
+
+    const normalizedActiveRange = normalizeTextRange(activeTextRange);
+    const isExpandedRange = compareTextRangeBoundaries(normalizedActiveRange.start, normalizedActiveRange.end) < 0;
+    const offset =
+      isExpandedRange && !sameParagraphLocation(normalizedActiveRange.start.location, normalizedActiveRange.end.location)
+        ? 0
+        : !sameParagraphLocation(normalizedActiveRange.start.location, selectedParagraphLocation)
+          ? 0
+          : normalizedActiveRange.start.offset;
+
+    return (
+      // Toolbar state should match the style that newly typed text inherits at
+      // a caret boundary, which comes from the following run when available.
+      firstTextStyleAtOffset(selectedParagraph, offset, false) ??
+      firstRunStyle(selectedParagraph)
+    );
+  }, [activeTextRange, selectedParagraph, selectedParagraphLocation]);
+
+  const selectedRunStyle = React.useMemo(() => {
+    const hasExpandedRange = Boolean(
+      activeTextRange &&
+        compareTextRangeBoundaries(activeTextRange.start, activeTextRange.end) < 0
+    );
+    if (hasExpandedRange || !pendingRunStyle) {
+      return selectedRunStyleFromSelection;
+    }
+
+    return {
+      ...(selectedRunStyleFromSelection ?? {}),
+      ...pendingRunStyle
+    };
+  }, [activeTextRange, pendingRunStyle, selectedRunStyleFromSelection]);
+
+  const selectedLink = React.useMemo(() => {
+    if (!selectedParagraph || !activeTextRange) {
+      return undefined;
+    }
+
+    const normalizedActiveRange = normalizeTextRange(activeTextRange);
+
+    if (!sameParagraphLocation(normalizedActiveRange.start.location, normalizedActiveRange.end.location)) {
+      if (!sameParagraphLocation(normalizedActiveRange.start.location, selectedParagraphLocation)) {
+        return undefined;
+      }
+
+      return linkAtOffset(selectedParagraph, normalizedActiveRange.start.offset, false);
+    }
+
+    if (compareTextRangeBoundaries(normalizedActiveRange.start, normalizedActiveRange.end) < 0) {
+      return uniformLinkInRange(
+        selectedParagraph,
+        normalizedActiveRange.start.offset,
+        normalizedActiveRange.end.offset
+      );
+    }
+
+    return linkAtOffset(selectedParagraph, normalizedActiveRange.start.offset, true);
+  }, [activeTextRange, selectedParagraph, selectedParagraphLocation]);
+
+  const selectedListType = selectedParagraph
+    ? paragraphListType(selectedParagraph, model.metadata.numberingDefinitions)
+    : undefined;
+  const trackedChanges = React.useMemo(() => collectTrackedChangesFromModel(model), [model]);
+  const hasUnorderedList = selectedListType === "unordered";
+  const hasOrderedList = selectedListType === "ordered";
+  const canUndo = history.past.length > 0;
+  const canRedo = history.future.length > 0;
+  const pendingExportModelTransformerRef = React.useRef<((model: DocModel) => DocModel) | undefined>(
+    undefined
+  );
+  const setDocumentTheme = React.useCallback((theme: DocxDocumentTheme): void => {
+    setDocumentThemeState(theme);
+  }, []);
+  const setShowTrackedChanges = React.useCallback((nextShowTrackedChanges: boolean): void => {
+    setShowTrackedChangesState(nextShowTrackedChanges);
+  }, []);
+  const toggleShowTrackedChanges = React.useCallback((): void => {
+    setShowTrackedChangesState((current) => !current);
+  }, []);
+  const registerPendingExportModelTransformer = React.useCallback(
+    (transformer?: (model: DocModel) => DocModel): void => {
+      pendingExportModelTransformerRef.current = transformer;
+    },
+    []
+  );
+  const unloadEmbeddedFonts = React.useCallback((): void => {
+    if (typeof document !== "undefined" && "fonts" in document) {
+      loadedEmbeddedFontFacesRef.current.forEach((fontFace) => {
+        try {
+          document.fonts.delete(fontFace);
+        } catch {
+          // Ignore font cleanup failures and continue removing the rest.
+        }
+      });
+    }
+
+    loadedEmbeddedFontFacesRef.current = [];
+  }, []);
+  const loadEmbeddedFontsFromPackage = React.useCallback(
+    async (pkg?: OoxmlPackage): Promise<void> => {
+      embeddedFontLoadNonceRef.current += 1;
+      const requestNonce = embeddedFontLoadNonceRef.current;
+      unloadEmbeddedFonts();
+
+      if (
+        !pkg ||
+        typeof document === "undefined" ||
+        !("fonts" in document) ||
+        typeof FontFace === "undefined"
+      ) {
+        return;
+      }
+
+      const fontDescriptors = collectEmbeddedFontFaceDescriptors(pkg);
+      if (fontDescriptors.length === 0) {
+        return;
+      }
+
+      const loadedFontFaces = (
+        await Promise.all(
+          fontDescriptors.map(async (fontDescriptor) => {
+            try {
+              const fontFace = new FontFace(fontDescriptor.family, fontDescriptor.source, {
+                style: fontDescriptor.style,
+                weight: fontDescriptor.weight
+              });
+              await fontFace.load();
+              return fontFace;
+            } catch {
+              return undefined;
+            }
+          })
+        )
+      ).filter((fontFace): fontFace is FontFace => Boolean(fontFace));
+
+      if (embeddedFontLoadNonceRef.current !== requestNonce) {
+        return;
+      }
+
+      loadedFontFaces.forEach((fontFace) => {
+        document.fonts.add(fontFace);
+      });
+      loadedEmbeddedFontFacesRef.current = loadedFontFaces;
+
+      try {
+        await document.fonts.ready;
+      } catch {
+        // Font readiness is best-effort; continue once attempted.
+      }
+    },
+    [unloadEmbeddedFonts]
+  );
+
+  React.useEffect(() => {
+    return () => {
+      unloadEmbeddedFonts();
+    };
+  }, [unloadEmbeddedFonts]);
+
+  const dispatchEditorTransaction = React.useCallback(
+    (
+      resolver: (
+        current: DocxEditorTransactionContext
+      ) => DocxEditorTransactionPatch | undefined
+    ): boolean => {
+      const currentModel = modelRef.current;
+      const currentSelection = cloneEditorSelection(selectionRef.current);
+      const currentRange = cloneTextRange(activeTextRangeRef.current);
+      const currentPendingRunStyle = cloneTextStyle(pendingRunStyleRef.current);
+
+      const patch = resolver({
+        model: currentModel,
+        selection: currentSelection,
+        activeTextRange: currentRange,
+        pendingRunStyle: currentPendingRunStyle
+      });
+      if (!patch) {
+        return false;
+      }
+
+      const nextModel = patch.model ?? currentModel;
+      const hasExplicitRangePatch = Object.prototype.hasOwnProperty.call(patch, "activeTextRange");
+      const hasPendingRunStylePatch = Object.prototype.hasOwnProperty.call(
+        patch,
+        "pendingRunStyle"
+      );
+      const requestedSelection = patch.selection ?? currentSelection;
+      const requestedRange = hasExplicitRangePatch ? patch.activeTextRange : currentRange;
+      const normalizedCursorState = normalizeEditorCursorStateForModel(
+        nextModel,
+        requestedSelection,
+        requestedRange
+      );
+      const nextSelection = normalizedCursorState.selection;
+      const nextRange = normalizedCursorState.activeTextRange;
+      const nextPendingRunStyle = hasPendingRunStylePatch
+        ? cloneTextStyle(patch.pendingRunStyle)
+        : currentPendingRunStyle;
+
+      const modelChanged = nextModel !== currentModel;
+      const selectionChanged = !sameEditorSelection(currentSelection, nextSelection);
+      const rangeChanged = !sameTextRange(currentRange, nextRange);
+      const pendingRunStyleChanged =
+        hasPendingRunStylePatch &&
+        JSON.stringify(nextPendingRunStyle ?? null) !== JSON.stringify(currentPendingRunStyle ?? null);
+
+      if (
+        !modelChanged &&
+        !selectionChanged &&
+        !rangeChanged &&
+        !pendingRunStyleChanged &&
+        !patch.status &&
+        !patch.clearSelectedFormField
+      ) {
+        return false;
+      }
+
+      if (modelChanged && patch.pushHistory !== false) {
+        setHistory((currentHistory) => ({
+          past: [
+            ...currentHistory.past.slice(-99),
+            {
+              model: currentModel,
+              selection: cloneEditorSelection(currentSelection),
+              activeTextRange: cloneTextRange(currentRange)
+            }
+          ],
+          future: []
+        }));
+      }
+
+      if (modelChanged) {
+        setModel(nextModel);
+      }
+
+      if (selectionChanged) {
+        suppressSelectionResetRef.current = true;
+        setSelection(cloneEditorSelection(nextSelection));
+      }
+
+      if (rangeChanged) {
+        suppressSelectionResetRef.current = true;
+        setActiveTextRangeState(cloneTextRange(nextRange));
+      }
+
+      if (pendingRunStyleChanged) {
+        setPendingRunStyle(nextPendingRunStyle);
+      }
+
+      if (selectionChanged || rangeChanged) {
+        const nextNonce = historyRestoreNonceRef.current + 1;
+        historyRestoreNonceRef.current = nextNonce;
+        setHistoryRestoreRequest({
+          nonce: nextNonce,
+          selection: cloneEditorSelection(nextSelection),
+          activeTextRange: cloneTextRange(nextRange)
+        });
+      }
+
+      if (patch.clearSelectedFormField) {
+        setSelectedFormFieldLocation(undefined);
+      }
+
+      if (patch.status) {
+        setStatus(patch.status);
+      }
+
+      return true;
+    },
+    []
+  );
+
+  const applyModelChange = React.useCallback(
+    (updater: (current: DocModel) => DocModel, successStatus?: string) => {
+      dispatchEditorTransaction((current) => {
+        const nextModel = updater(current.model);
+        if (nextModel === current.model) {
+          return undefined;
+        }
+
+        return {
+          model: nextModel,
+          status: successStatus,
+          clearSelectedFormField: true
+        };
+      });
+    },
+    [dispatchEditorTransaction]
+  );
+
+  const importDocxFile = React.useCallback(async (file: File): Promise<void> => {
+    if (!/\.docx$/i.test(file.name)) {
+      setStatus("Only .docx files are supported");
+      return;
+    }
+
+    try {
+      const buffer = await file.arrayBuffer();
+      const pkg = await parseDocx(buffer);
+      await loadEmbeddedFontsFromPackage(pkg);
+      const nextModel = buildDocModel(pkg);
+
+      setModel(nextModel);
+      setHistory({ past: [], future: [] });
+      setHistoryRestoreRequest(undefined);
+      setBasePackage(pkg);
+      setFileName(file.name);
+      setSelection({ kind: "paragraph", nodeIndex: 0 });
+      setActiveTextRangeState(undefined);
+      setPendingRunStyle(undefined);
+      setSelectedFormFieldLocation(undefined);
+      setStatus(`Loaded ${file.name}`);
+    } catch (error) {
+      setStatus(`Failed to load file: ${error instanceof Error ? error.message : "Unknown error"}`);
+    }
+  }, [loadEmbeddedFontsFromPackage]);
+
+  const newDocument = React.useCallback((): void => {
+    unloadEmbeddedFonts();
+    setModel(cloneDocModel(starterTemplateRef.current));
+    setBasePackage(undefined);
+    setFileName("(new document)");
+    setSelection({ kind: "paragraph", nodeIndex: 0 });
+    setActiveTextRangeState(undefined);
+    setPendingRunStyle(undefined);
+    setSelectedFormFieldLocation(undefined);
+    setHistory({ past: [], future: [] });
+    setHistoryRestoreRequest(undefined);
+    setStatus("Created new document");
+  }, [unloadEmbeddedFonts]);
+
+  const exportDocx = React.useCallback((): void => {
+    const sourceModel = modelRef.current;
+    const transformedModel = pendingExportModelTransformerRef.current
+      ? pendingExportModelTransformerRef.current(sourceModel)
+      : sourceModel;
+    if (transformedModel !== sourceModel) {
+      setModel(transformedModel);
+    }
+
+    const output = serializeDocx(transformedModel, basePackage);
+    const blob = new Blob([output], {
+      type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    });
+
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = fileName.endsWith(".docx")
+      ? fileName.replace(/\.docx$/i, "") + "-edited.docx"
+      : "edited.docx";
+    anchor.click();
+    URL.revokeObjectURL(url);
+
+    setStatus("Exported DOCX");
+  }, [basePackage, fileName]);
+
+  const undo = React.useCallback((): void => {
+    setHistory((currentHistory) => {
+      const previousSnapshot = currentHistory.past[currentHistory.past.length - 1];
+      const previous = previousSnapshot?.model;
+      if (!previous) {
+        setStatus("Nothing to undo");
+        return currentHistory;
+      }
+
+      const currentSnapshot: DocxHistorySnapshot = {
+        model: modelRef.current,
+        selection: cloneEditorSelection(selectionRef.current),
+        activeTextRange: cloneTextRange(activeTextRangeRef.current)
+      };
+      const restoredSelection = cloneEditorSelection(previousSnapshot.selection);
+      const restoredTextRange = cloneTextRange(previousSnapshot.activeTextRange);
+      suppressSelectionResetRef.current = true;
+      setModel(previous);
+      setSelection(restoredSelection);
+      setActiveTextRangeState(restoredTextRange);
+      setSelectedFormFieldLocation(undefined);
+      setPendingRunStyle(undefined);
+      const nextNonce = historyRestoreNonceRef.current + 1;
+      historyRestoreNonceRef.current = nextNonce;
+      setHistoryRestoreRequest({
+        nonce: nextNonce,
+        selection: restoredSelection,
+        activeTextRange: restoredTextRange
+      });
+      setStatus("Undo");
+
+      return {
+        past: currentHistory.past.slice(0, -1),
+        future: [currentSnapshot, ...currentHistory.future].slice(0, 100)
+      };
+    });
+  }, []);
+
+  const redo = React.useCallback((): void => {
+    setHistory((currentHistory) => {
+      const nextSnapshot = currentHistory.future[0];
+      const next = nextSnapshot?.model;
+      if (!next) {
+        setStatus("Nothing to redo");
+        return currentHistory;
+      }
+
+      const currentSnapshot: DocxHistorySnapshot = {
+        model: modelRef.current,
+        selection: cloneEditorSelection(selectionRef.current),
+        activeTextRange: cloneTextRange(activeTextRangeRef.current)
+      };
+      const restoredSelection = cloneEditorSelection(nextSnapshot.selection);
+      const restoredTextRange = cloneTextRange(nextSnapshot.activeTextRange);
+      suppressSelectionResetRef.current = true;
+      setModel(next);
+      setSelection(restoredSelection);
+      setActiveTextRangeState(restoredTextRange);
+      setSelectedFormFieldLocation(undefined);
+      setPendingRunStyle(undefined);
+      const nextNonce = historyRestoreNonceRef.current + 1;
+      historyRestoreNonceRef.current = nextNonce;
+      setHistoryRestoreRequest({
+        nonce: nextNonce,
+        selection: restoredSelection,
+        activeTextRange: restoredTextRange
+      });
+      setStatus("Redo");
+
+      return {
+        past: [...currentHistory.past, currentSnapshot].slice(-100),
+        future: currentHistory.future.slice(1)
+      };
+    });
+  }, []);
+
+  React.useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.defaultPrevented) {
+        return;
+      }
+
+      if (!(event.metaKey || event.ctrlKey) || event.altKey) {
+        return;
+      }
+
+      const target = event.target;
+      if (target instanceof HTMLElement) {
+        const isContentEditableTarget =
+          target.isContentEditable || target.closest("[contenteditable='true']") !== null;
+        const isFormFieldTarget =
+          target instanceof HTMLTextAreaElement ||
+          target instanceof HTMLSelectElement ||
+          (target instanceof HTMLInputElement &&
+            !["button", "checkbox", "radio", "submit", "reset", "file", "range", "color"].includes(
+              target.type
+            ));
+
+        // Let native undo/redo handle actively edited content and form fields.
+        if (isContentEditableTarget || isFormFieldTarget) {
+          return;
+        }
+      }
+
+      const key = event.key.toLowerCase();
+      if (key === "z") {
+        event.preventDefault();
+        if (event.shiftKey) {
+          redo();
+        } else {
+          undo();
+        }
+        return;
+      }
+
+      if (key === "y") {
+        event.preventDefault();
+        redo();
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [redo, undo]);
+
+  const applyToSelectedParagraphNode = React.useCallback(
+    (mutate: (paragraph: ParagraphNode) => void): void => {
+      applyModelChange((current) => {
+        const next = cloneDocModel(current);
+        const { paragraph, tableNode } = getParagraphAtLocation(next, selectedParagraphLocation);
+        if (!paragraph) {
+          return current;
+        }
+
+        mutate(paragraph);
+        paragraph.sourceXml = undefined;
+        if (tableNode) {
+          tableNode.sourceXml = undefined;
+        }
+        return next;
+      });
+    },
+    [applyModelChange, selectedParagraphLocation]
+  );
+
+  const restoreSelectionAfterToolbarCommand = React.useCallback(
+    (selectionSnapshot: DocxEditorSelection, textRangeSnapshot?: DocxTextRange): void => {
+      dispatchEditorTransaction(() => ({
+        selection: cloneEditorSelection(selectionSnapshot),
+        activeTextRange: cloneTextRange(textRangeSnapshot),
+        pushHistory: false
+      }));
+    },
+    [dispatchEditorTransaction]
+  );
+
+  const setActiveTextRange = React.useCallback((range?: DocxTextRange): void => {
+    const currentRange = cloneTextRange(activeTextRangeRef.current);
+    if (!range) {
+      setActiveTextRangeState(undefined);
+      if (currentRange) {
+        setPendingRunStyle(undefined);
+      }
+      return;
+    }
+
+    const normalized = normalizeTextRange({
+      start: {
+        location: cloneTextRangeLocation(range.start.location),
+        offset: range.start.offset
+      },
+      end: {
+        location: cloneTextRangeLocation(range.end.location),
+        offset: range.end.offset
+      }
+    });
+
+    setActiveTextRangeState(normalized);
+    if (!sameTextRange(currentRange, normalized)) {
+      // Pending typing style should only survive while the caret stays in the
+      // same spot immediately after a toolbar style toggle.
+      setPendingRunStyle(undefined);
+    }
+  }, []);
+
+  const applySelectedStyleChange = React.useCallback(
+    (
+      mutator: (currentStyle: TextRunNode["style"] | undefined) => TextRunNode["style"] | undefined
+    ): void => {
+      const textRangeSnapshot = cloneTextRange(
+        activeTextRangeRef.current ?? lastInViewerActiveTextRangeRef.current
+      );
+      const selectionSnapshot = textRangeSnapshot
+        ? selectionFromTextRangeLocation(normalizeTextRange(textRangeSnapshot).start.location)
+        : cloneEditorSelection(selectionRef.current);
+      const hasExpandedRange = Boolean(
+        textRangeSnapshot &&
+          compareTextRangeBoundaries(textRangeSnapshot.start, textRangeSnapshot.end) < 0
+      );
+
+      if (
+        hasExpandedRange &&
+        textRangeSnapshot
+      ) {
+        applyModelChange((current) => {
+          const next = cloneDocModel(current);
+          const normalizedRange = normalizeTextRange(textRangeSnapshot);
+          const rangeParagraphs = paragraphRangeForMutate(
+            next,
+            normalizedRange.start.location,
+            normalizedRange.end.location
+          );
+
+          let changed = false;
+          for (const { location } of rangeParagraphs) {
+            const { paragraph, tableNode } = getParagraphAtLocation(next, location);
+            if (!paragraph) {
+              continue;
+            }
+
+            const [safeStart, safeEnd] = resolveRangeBoundaryOffsetsForParagraph(
+              location,
+              normalizedRange.start,
+              normalizedRange.end,
+              paragraph
+            );
+            const paragraphChanged = mutateParagraphTextStyleInRange(
+              paragraph,
+              safeStart,
+              safeEnd,
+              mutator
+            );
+            if (!paragraphChanged) {
+              continue;
+            }
+
+            paragraph.sourceXml = undefined;
+            if (tableNode) {
+              tableNode.sourceXml = undefined;
+            }
+            changed = true;
+          }
+
+          if (!changed) {
+            return current;
+          }
+
+          return next;
+        });
+        restoreSelectionAfterToolbarCommand(selectionSnapshot, textRangeSnapshot);
+        return;
+      }
+
+      setPendingRunStyle((currentPendingStyle) => {
+        const baselineStyle =
+          currentPendingStyle ?? selectedRunStyleFromSelection ?? selectedRunStyle ?? undefined;
+        return mutator(cloneTextStyle(baselineStyle));
+      });
+      restoreSelectionAfterToolbarCommand(selectionSnapshot, textRangeSnapshot);
+    },
+    [
+      applyModelChange,
+      selectedRunStyle,
+      selectedRunStyleFromSelection,
+      restoreSelectionAfterToolbarCommand,
+      lastInViewerActiveTextRangeRef
+    ]
+  );
+
+  const setParagraphStyle = React.useCallback(
+    (styleId?: string): void => {
+      const fallbackStyleId = modelRef.current.metadata.defaultParagraphStyleId;
+      const nextStyleId = styleId ?? fallbackStyleId;
+      const styleDefinition = nextStyleId ? paragraphStyleById.get(nextStyleId) : undefined;
+      const textRangeSnapshot = cloneTextRange(
+        activeTextRangeRef.current ?? lastInViewerActiveTextRangeRef.current
+      );
+      const selectionSnapshot = textRangeSnapshot
+        ? selectionFromTextRangeLocation(normalizeTextRange(textRangeSnapshot).start.location)
+        : cloneEditorSelection(selectionRef.current);
+
+      applyToSelectedParagraphNode((paragraph) => {
+        paragraph.style = {
+          ...(paragraph.style ?? {}),
+          align: styleDefinition?.align ?? paragraph.style?.align,
+          headingLevel: styleDefinition?.headingLevel,
+          styleId: nextStyleId,
+          styleName: styleDefinition?.name ?? nextStyleId
+        };
+      });
+      restoreSelectionAfterToolbarCommand(selectionSnapshot, textRangeSnapshot);
+    },
+    [
+      applyToSelectedParagraphNode,
+      paragraphStyleById,
+      restoreSelectionAfterToolbarCommand,
+      lastInViewerActiveTextRangeRef
+    ]
+  );
+
+  const setHeading = React.useCallback(
+    (heading?: HeadingLevel): void => {
+      const styleId = heading ? `Heading${heading}` : modelRef.current.metadata.defaultParagraphStyleId;
+      const styleDefinition = styleId ? paragraphStyleById.get(styleId) : undefined;
+      const textRangeSnapshot = cloneTextRange(
+        activeTextRangeRef.current ?? lastInViewerActiveTextRangeRef.current
+      );
+      const selectionSnapshot = textRangeSnapshot
+        ? selectionFromTextRangeLocation(normalizeTextRange(textRangeSnapshot).start.location)
+        : cloneEditorSelection(selectionRef.current);
+
+      applyToSelectedParagraphNode((paragraph) => {
+        paragraph.style = {
+          ...(paragraph.style ?? {}),
+          headingLevel: heading,
+          styleId,
+          styleName: styleDefinition?.name ?? (heading ? `Heading ${heading}` : paragraph.style?.styleName)
+        };
+      });
+      restoreSelectionAfterToolbarCommand(selectionSnapshot, textRangeSnapshot);
+    },
+    [
+      applyToSelectedParagraphNode,
+      paragraphStyleById,
+      restoreSelectionAfterToolbarCommand,
+      lastInViewerActiveTextRangeRef
+    ]
+  );
+
+  const setLineSpacing = React.useCallback(
+    (lineMultiple: number): void => {
+      if (!Number.isFinite(lineMultiple)) {
+        return;
+      }
+
+      const normalizedMultiple = Math.max(0.5, Math.min(6, lineMultiple));
+      const textRangeSnapshot = cloneTextRange(
+        activeTextRangeRef.current ?? lastInViewerActiveTextRangeRef.current
+      );
+      const selectionSnapshot = textRangeSnapshot
+        ? selectionFromTextRangeLocation(normalizeTextRange(textRangeSnapshot).start.location)
+        : cloneEditorSelection(selectionRef.current);
+      const targetLocation = resolveSelectedParagraphLocation(selectionSnapshot, textRangeSnapshot);
+
+      applyModelChange((current) => {
+        const next = cloneDocModel(current);
+        const { paragraph, tableNode } = getParagraphAtLocation(next, targetLocation);
+        if (!paragraph) {
+          return current;
+        }
+
+        const spacing = paragraph.style?.spacing;
+        paragraph.style = {
+          ...(paragraph.style ?? {}),
+          spacing: {
+            ...(spacing ?? {}),
+            lineTwips: Math.round(normalizedMultiple * 240),
+            lineRule: "auto"
+          }
+        };
+        paragraph.sourceXml = undefined;
+        if (tableNode) {
+          tableNode.sourceXml = undefined;
+        }
+        return next;
+      });
+      restoreSelectionAfterToolbarCommand(selectionSnapshot, textRangeSnapshot);
+    },
+    [applyModelChange, restoreSelectionAfterToolbarCommand, lastInViewerActiveTextRangeRef]
+  );
+
+  const setFontFamily = React.useCallback(
+    (fontFamily: string): void => {
+      applySelectedStyleChange((style) => ({
+        ...(style ?? {}),
+        fontFamily
+      }));
+    },
+    [applySelectedStyleChange]
+  );
+
+  const setFontSize = React.useCallback(
+    (fontSizePt: number): void => {
+      applySelectedStyleChange((style) => ({
+        ...(style ?? {}),
+        fontSizePt
+      }));
+    },
+    [applySelectedStyleChange]
+  );
+
+  const toggleBold = React.useCallback((): void => {
+    const nextBold = !Boolean(selectedRunStyle?.bold);
+    applySelectedStyleChange((style) => ({
+      ...(style ?? {}),
+      bold: nextBold
+    }));
+  }, [applySelectedStyleChange, selectedRunStyle?.bold]);
+
+  const toggleItalic = React.useCallback((): void => {
+    const nextItalic = !Boolean(selectedRunStyle?.italic);
+    applySelectedStyleChange((style) => ({
+      ...(style ?? {}),
+      italic: nextItalic
+    }));
+  }, [applySelectedStyleChange, selectedRunStyle?.italic]);
+
+  const toggleUnderline = React.useCallback((): void => {
+    const nextUnderline = !Boolean(selectedRunStyle?.underline);
+    applySelectedStyleChange((style) => ({
+      ...(style ?? {}),
+      underline: nextUnderline
+    }));
+  }, [applySelectedStyleChange, selectedRunStyle?.underline]);
+
+  const toggleStrike = React.useCallback((): void => {
+    const nextStrike = !Boolean(selectedRunStyle?.strike);
+    applySelectedStyleChange((style) => ({
+      ...(style ?? {}),
+      strike: nextStrike
+    }));
+  }, [applySelectedStyleChange, selectedRunStyle?.strike]);
+
+  const toggleSuperscript = React.useCallback((): void => {
+    const nextVerticalAlign =
+      selectedRunStyle?.verticalAlign === "superscript" ? undefined : "superscript";
+    applySelectedStyleChange((style) => ({
+      ...(style ?? {}),
+      verticalAlign: nextVerticalAlign
+    }));
+  }, [applySelectedStyleChange, selectedRunStyle?.verticalAlign]);
+
+  const toggleSubscript = React.useCallback((): void => {
+    const nextVerticalAlign =
+      selectedRunStyle?.verticalAlign === "subscript" ? undefined : "subscript";
+    applySelectedStyleChange((style) => ({
+      ...(style ?? {}),
+      verticalAlign: nextVerticalAlign
+    }));
+  }, [applySelectedStyleChange, selectedRunStyle?.verticalAlign]);
+
+  const setHighlight = React.useCallback(
+    (highlight?: string): void => {
+      applySelectedStyleChange((style) => ({
+        ...(style ?? {}),
+        highlight
+      }));
+    },
+    [applySelectedStyleChange]
+  );
+
+  const setTextColor = React.useCallback(
+    (color?: string): void => {
+      applySelectedStyleChange((style) => ({
+        ...(style ?? {}),
+        color
+      }));
+    },
+    [applySelectedStyleChange]
+  );
+
+  const setLink = React.useCallback(
+    (link?: string): void => {
+      const normalized = link?.trim();
+      const nextLink = normalized && normalized.length > 0 ? normalized : undefined;
+
+      if (!activeTextRange) {
+        setStatus("Select text to apply a link");
+        return;
+      }
+
+      applyModelChange((current) => {
+        const next = cloneDocModel(current);
+        const normalizedRange = normalizeTextRange(activeTextRange);
+        let changed = false;
+        const rangeParagraphs = paragraphRangeForMutate(
+          next,
+          normalizedRange.start.location,
+          normalizedRange.end.location
+        );
+
+        for (const { location } of rangeParagraphs) {
+          const { paragraph, tableNode } = getParagraphAtLocation(next, location);
+          if (!paragraph) {
+            continue;
+          }
+
+          let rangeStart = normalizedRange.start.offset;
+          let rangeEnd = normalizedRange.end.offset;
+          if (!sameParagraphLocation(location, normalizedRange.start.location)) {
+            rangeStart = 0;
+          }
+          if (!sameParagraphLocation(location, normalizedRange.end.location)) {
+            rangeEnd = paragraphText(paragraph).length;
+          }
+          if (compareParagraphLocations(location, normalizedRange.start.location) > 0) {
+            rangeStart = 0;
+          }
+          if (compareParagraphLocations(location, normalizedRange.end.location) < 0) {
+            rangeEnd = paragraphText(paragraph).length;
+          }
+
+          if (compareTextRangeBoundaries(normalizedRange.start, normalizedRange.end) >= 0) {
+            const linkRange = linkRangeAtOffset(
+              paragraph,
+              rangeStart
+            );
+            if (!linkRange) {
+              continue;
+            }
+
+            rangeStart = linkRange.start;
+            rangeEnd = linkRange.end;
+          }
+
+          const paragraphChanged = mutateParagraphLinkInRange(paragraph, rangeStart, rangeEnd, nextLink);
+          if (!paragraphChanged) {
+            continue;
+          }
+
+          paragraph.sourceXml = undefined;
+          if (tableNode) {
+            tableNode.sourceXml = undefined;
+          }
+          changed = true;
+        }
+
+        if (!changed) {
+          return current;
+        }
+
+        return next;
+      }, nextLink ? "Updated link" : "Removed link");
+    },
+    [activeTextRange, applyModelChange]
+  );
+
+  const replaceExpandedSelection = React.useCallback(
+    (text: string, range?: DocxTextRange): DocxTextRange | undefined => {
+      const sourceRange = range ?? activeTextRangeRef.current;
+      if (!sourceRange) {
+        return undefined;
+      }
+
+      const normalizedRange = normalizeTextRange({
+        start: {
+          location: cloneTextRangeLocation(sourceRange.start.location),
+          offset: sourceRange.start.offset
+        },
+        end: {
+          location: cloneTextRangeLocation(sourceRange.end.location),
+          offset: sourceRange.end.offset
+        }
+      });
+
+      if (compareTextRangeBoundaries(normalizedRange.start, normalizedRange.end) >= 0) {
+        return undefined;
+      }
+
+      const replacementText = text.replace(/\r\n?/g, "\n");
+      let collapsedLocation = cloneTextRangeLocation(normalizedRange.start.location);
+      let collapsedOffset = Math.max(0, Math.round(normalizedRange.start.offset));
+      let replaced = false;
+
+      applyModelChange((current) => {
+        let next = cloneDocModel(current);
+        const clearNumberingIfParagraphEmpty = (location: ParagraphLocation): void => {
+          const { paragraph, tableNode } = getParagraphAtLocation(next, location);
+          if (!paragraph || !paragraphIsEffectivelyEmpty(paragraph) || !paragraph.style?.numbering) {
+            return;
+          }
+
+          paragraph.style = {
+            ...(cloneParagraphStyle(paragraph.style) ?? {}),
+            numbering: undefined
+          };
+          paragraph.sourceXml = undefined;
+          if (tableNode) {
+            tableNode.sourceXml = undefined;
+          }
+        };
+        if (rangeCoversEntireDocument(current, normalizedRange)) {
+          const firstParagraphLocation = firstParagraphLocationInDocument(next);
+          const firstParagraph = firstParagraphLocation
+            ? getParagraphAtLocation(next, firstParagraphLocation).paragraph
+            : undefined;
+          const replacementRunStyle = cloneTextStyle(
+            pendingRunStyle ??
+              (firstParagraph
+                ? firstTextStyleAtOffset(firstParagraph, 0, true) ??
+                  firstRunStyle(firstParagraph)
+                : undefined)
+          );
+
+          next.nodes = [
+            {
+              type: "paragraph",
+              children: [
+                {
+                  type: "text",
+                  text: replacementText,
+                  ...(replacementRunStyle ? { style: replacementRunStyle } : undefined)
+                }
+              ]
+            }
+          ];
+          collapsedLocation = {
+            kind: "paragraph",
+            nodeIndex: 0
+          };
+          collapsedOffset = replacementText.length;
+          replaced = true;
+          return next;
+        }
+
+        const startLookup = getParagraphAtLocation(next, normalizedRange.start.location);
+        const endLookup = getParagraphAtLocation(next, normalizedRange.end.location);
+        const startParagraph = startLookup.paragraph;
+        const endParagraph = endLookup.paragraph;
+        if (!startParagraph || !endParagraph) {
+          return current;
+        }
+
+        const safeStart = normalizeRangeBoundaryParagraphOffset(startParagraph, normalizedRange.start.offset);
+        const safeEnd = normalizeRangeBoundaryParagraphOffset(endParagraph, normalizedRange.end.offset);
+        collapsedOffset = safeStart + replacementText.length;
+        const endParagraphStyleForMerge = cloneParagraphStyle(endParagraph.style);
+
+        const insertedStyle = cloneTextStyle(
+          pendingRunStyle ??
+            firstTextStyleAtOffset(startParagraph, safeStart, true) ??
+            firstRunStyle(startParagraph) ??
+            firstTextStyleAtOffset(endParagraph, safeEnd, false) ??
+            firstRunStyle(endParagraph)
+        );
+
+        if (sameParagraphLocation(normalizedRange.start.location, normalizedRange.end.location)) {
+          const text = paragraphText(startParagraph);
+          const nextText = `${text.slice(0, safeStart)}${replacementText}${text.slice(safeEnd)}`;
+          if (nextText === text) {
+            return current;
+          }
+
+          next = updateParagraphTextAtLocation(next, normalizedRange.start.location, nextText, {
+            insertedStyle
+          });
+          clearNumberingIfParagraphEmpty(normalizedRange.start.location);
+          replaced = true;
+          return next;
+        }
+
+        const startText = paragraphText(startParagraph);
+        const endText = paragraphText(endParagraph);
+        const carriesStartPrefix = safeStart > 0;
+        const carriesEndSuffix = safeEnd < endText.length;
+        const shouldAdoptEndParagraphStyleOnDelete =
+          replacementText.length === 0 &&
+          !carriesStartPrefix &&
+          carriesEndSuffix;
+        const canPreserveCrossParagraphRunStyles =
+          paragraphHasOnlyTextRuns(startParagraph) &&
+          paragraphHasOnlyTextRuns(endParagraph);
+        if (canPreserveCrossParagraphRunStyles) {
+          const startRuns = startParagraph.children
+            .filter((child): child is TextRunNode => child.type === "text")
+            .map(cloneTextRunWithMetadata);
+          const endRuns = endParagraph.children
+            .filter((child): child is TextRunNode => child.type === "text")
+            .map(cloneTextRunWithMetadata);
+          const splitStartRuns = splitTextRunsAtOffset(startRuns, safeStart);
+          const splitEndRuns = splitTextRunsAtOffset(endRuns, safeEnd);
+          const mergedRuns: TextRunNode[] = [...splitStartRuns.left];
+          if (replacementText.length > 0) {
+            const previousRun = mergedRuns[mergedRuns.length - 1];
+            const nextRun = splitEndRuns.right[0];
+            const inferredLink =
+              previousRun?.link && nextRun?.link && previousRun.link === nextRun.link
+                ? previousRun.link
+                : previousRun?.link ?? nextRun?.link;
+            mergedRuns.push({
+              type: "text",
+              text: replacementText,
+              style: cloneTextStyle(insertedStyle ?? previousRun?.style ?? nextRun?.style),
+              link: inferredLink
+            });
+          }
+          mergedRuns.push(...splitEndRuns.right);
+
+          startParagraph.children =
+            mergedRuns.length > 0
+              ? mergedRuns
+              : [
+                  {
+                    type: "text",
+                    text: "",
+                    style: cloneTextStyle(insertedStyle)
+                  }
+                ];
+          startParagraph.sourceXml = undefined;
+          if (startLookup.tableNode) {
+            startLookup.tableNode.sourceXml = undefined;
+          }
+        } else {
+          const mergedText = `${startText.slice(0, safeStart)}${replacementText}${endText.slice(safeEnd)}`;
+          next = updateParagraphTextAtLocation(next, normalizedRange.start.location, mergedText, {
+            insertedStyle
+          });
+        }
+        if (shouldAdoptEndParagraphStyleOnDelete) {
+          const mergedLookup = getParagraphAtLocation(next, normalizedRange.start.location);
+          if (mergedLookup.paragraph) {
+            mergedLookup.paragraph.style = endParagraphStyleForMerge
+              ? cloneParagraphStyle(endParagraphStyleForMerge)
+              : undefined;
+            mergedLookup.paragraph.sourceXml = undefined;
+            if (mergedLookup.tableNode) {
+              mergedLookup.tableNode.sourceXml = undefined;
+            }
+          }
+        }
+        clearNumberingIfParagraphEmpty(normalizedRange.start.location);
+
+        let compactedRemovedParagraphs = false;
+        if (
+          normalizedRange.start.location.kind === "paragraph" &&
+          normalizedRange.end.location.kind === "paragraph" &&
+          normalizedRange.end.location.nodeIndex > normalizedRange.start.location.nodeIndex
+        ) {
+          const removeStartIndex = normalizedRange.start.location.nodeIndex + 1;
+          const removeEndIndex = normalizedRange.end.location.nodeIndex;
+          const removeCount = removeEndIndex - removeStartIndex + 1;
+          if (removeCount > 0) {
+            next.nodes.splice(removeStartIndex, removeCount);
+            compactedRemovedParagraphs = true;
+          }
+        } else if (
+          normalizedRange.start.location.kind === "table-cell" &&
+          normalizedRange.end.location.kind === "table-cell" &&
+          normalizedRange.start.location.tableIndex === normalizedRange.end.location.tableIndex &&
+          normalizedRange.start.location.rowIndex === normalizedRange.end.location.rowIndex &&
+          normalizedRange.start.location.cellIndex === normalizedRange.end.location.cellIndex &&
+          normalizedRange.end.location.paragraphIndex > normalizedRange.start.location.paragraphIndex
+        ) {
+          const tableNode = next.nodes[normalizedRange.start.location.tableIndex];
+          if (tableNode && tableNode.type === "table") {
+            const cell =
+              tableNode.rows[normalizedRange.start.location.rowIndex]?.cells[
+                normalizedRange.start.location.cellIndex
+              ];
+            if (cell) {
+              const paragraphNodeIndexes = cell.nodes.reduce<number[]>(
+                (indexes, node, nodeIndex) => {
+                  if (node.type === "paragraph") {
+                    indexes.push(nodeIndex);
+                  }
+                  return indexes;
+                },
+                []
+              );
+              for (
+                let paragraphIndex = normalizedRange.end.location.paragraphIndex;
+                paragraphIndex > normalizedRange.start.location.paragraphIndex;
+                paragraphIndex -= 1
+              ) {
+                const nodeIndex = paragraphNodeIndexes[paragraphIndex];
+                if (nodeIndex !== undefined) {
+                  cell.nodes.splice(nodeIndex, 1);
+                  compactedRemovedParagraphs = true;
+                }
+              }
+
+              if (compactedRemovedParagraphs) {
+                tableNode.sourceXml = undefined;
+              }
+            }
+          }
+        }
+
+        const fullyCoveredTableIndexes =
+          replacementText.length === 0
+            ? fullyCoveredTableNodeIndexesForRange(next, normalizedRange)
+            : [];
+        if (fullyCoveredTableIndexes.length > 0) {
+          const uniqueDescendingIndexes = Array.from(new Set(fullyCoveredTableIndexes)).sort(
+            (left, right) => right - left
+          );
+          let removedAnyTable = false;
+          uniqueDescendingIndexes.forEach((tableIndex) => {
+            if (next.nodes[tableIndex]?.type !== "table") {
+              return;
+            }
+            next.nodes.splice(tableIndex, 1);
+            removedAnyTable = true;
+          });
+
+          if (removedAnyTable) {
+            compactedRemovedParagraphs = true;
+            const adjustedLocation = adjustLocationAfterRemovedNodeIndexes(
+              collapsedLocation,
+              [...uniqueDescendingIndexes].sort((left, right) => left - right)
+            );
+            if (adjustedLocation) {
+              collapsedLocation = adjustedLocation;
+            } else {
+              const firstLocation = firstParagraphLocationInDocument(next);
+              if (firstLocation) {
+                collapsedLocation = cloneTextRangeLocation(firstLocation);
+              } else {
+                next.nodes = [
+                  {
+                    type: "paragraph",
+                    children: [{ type: "text", text: "" }]
+                  }
+                ];
+                collapsedLocation = {
+                  kind: "paragraph",
+                  nodeIndex: 0
+                };
+              }
+              collapsedOffset = 0;
+            }
+          }
+        }
+
+        if (!compactedRemovedParagraphs) {
+          const rangeParagraphs = paragraphRangeForMutate(
+            next,
+            normalizedRange.start.location,
+            normalizedRange.end.location
+          );
+          for (const { location } of rangeParagraphs) {
+            if (sameParagraphLocation(location, normalizedRange.start.location)) {
+              continue;
+            }
+            next = updateParagraphTextAtLocation(next, location, "");
+            clearNumberingIfParagraphEmpty(location);
+          }
+        }
+
+        const collapsedParagraph = getParagraphAtLocation(next, collapsedLocation).paragraph;
+        if (!collapsedParagraph) {
+          const firstLocation = firstParagraphLocationInDocument(next);
+          if (firstLocation) {
+            collapsedLocation = cloneTextRangeLocation(firstLocation);
+            collapsedOffset = 0;
+          } else {
+            next.nodes = [
+              {
+                type: "paragraph",
+                children: [{ type: "text", text: "" }]
+              }
+            ];
+            collapsedLocation = {
+              kind: "paragraph",
+              nodeIndex: 0
+            };
+            collapsedOffset = 0;
+          }
+        } else {
+          collapsedOffset = normalizeRangeBoundaryParagraphOffset(collapsedParagraph, collapsedOffset);
+        }
+
+        replaced = true;
+        return next;
+      }, replacementText.length > 0 ? "Replaced selection" : "Deleted selection");
+
+      if (!replaced) {
+        return undefined;
+      }
+
+      const collapsedRange: DocxTextRange = {
+        start: {
+          location: cloneTextRangeLocation(collapsedLocation),
+          offset: collapsedOffset
+        },
+        end: {
+          location: cloneTextRangeLocation(collapsedLocation),
+          offset: collapsedOffset
+        }
+      };
+
+      suppressSelectionResetRef.current = true;
+      if (collapsedLocation.kind === "paragraph") {
+        setSelection({ kind: "paragraph", nodeIndex: collapsedLocation.nodeIndex });
+      } else {
+        setSelection({
+          kind: "table-cell",
+          tableIndex: collapsedLocation.tableIndex,
+          rowIndex: collapsedLocation.rowIndex,
+          cellIndex: collapsedLocation.cellIndex
+        });
+      }
+      setActiveTextRangeState(collapsedRange);
+      setPendingRunStyle(undefined);
+
+      return collapsedRange;
+    },
+    [applyModelChange, pendingRunStyle]
+  );
+
+  const deleteExpandedSelection = React.useCallback(
+    (range?: DocxTextRange): DocxTextRange | undefined => {
+      return replaceExpandedSelection("", range);
+    },
+    [replaceExpandedSelection]
+  );
+
+  const updateFormField = React.useCallback(
+    (
+      location: DocxFormFieldLocation,
+      updater: (field: FormFieldRunNode) => FormFieldRunNode,
+      successStatus?: string
+    ): void => {
+      applyModelChange((current) => {
+        const next = cloneDocModel(current);
+        const { paragraph, tableNode } = getParagraphAtLocation(next, location);
+        if (!paragraph) {
+          return current;
+        }
+
+        const child = paragraph.children[location.childIndex];
+        if (!child || child.type !== "form-field") {
+          return current;
+        }
+
+        const updated = updater(cloneFormFieldRun(child));
+        paragraph.children[location.childIndex] = {
+          ...updated,
+          type: "form-field",
+          sourceXml: undefined
+        };
+        paragraph.sourceXml = undefined;
+        if (tableNode) {
+          tableNode.sourceXml = undefined;
+        }
+
+        return next;
+      }, successStatus);
+    },
+    [applyModelChange]
+  );
+
+  const selectFormField = React.useCallback((location?: DocxFormFieldLocation): void => {
+    if (!location) {
+      setSelectedFormFieldLocation(undefined);
+      return;
+    }
+
+    if (location.kind === "paragraph") {
+      setSelection({
+        kind: "paragraph",
+        nodeIndex: location.nodeIndex
+      });
+    } else {
+      setSelection({
+        kind: "table-cell",
+        tableIndex: location.tableIndex,
+        rowIndex: location.rowIndex,
+        cellIndex: location.cellIndex
+      });
+    }
+
+    setSelectedFormFieldLocation({ ...location });
+    setActiveTextRangeState(undefined);
+    setPendingRunStyle(undefined);
+  }, []);
+
+  const toggleFormCheckbox = React.useCallback(
+    (location: DocxFormFieldLocation): void => {
+      updateFormField(
+        location,
+        (field) => {
+          if (field.fieldType !== "checkbox") {
+            return field;
+          }
+          return {
+            ...field,
+            checked: !Boolean(field.checked)
+          };
+        },
+        "Updated checkbox"
+      );
+    },
+    [updateFormField]
+  );
+
+  const setFormFieldValue = React.useCallback(
+    (location: DocxFormFieldLocation, value: string): void => {
+      updateFormField(
+        location,
+        (field) => {
+          if (field.fieldType === "checkbox") {
+            const normalized = value.trim().toLowerCase();
+            return {
+              ...field,
+              checked: ["1", "true", "yes", "on"].includes(normalized)
+            };
+          }
+
+          return {
+            ...field,
+            value
+          };
+        },
+        "Updated form field"
+      );
+    },
+    [updateFormField]
+  );
+
+  const updateFormFieldWidget = React.useCallback(
+    (
+      location: DocxFormFieldLocation,
+      patch: Partial<NonNullable<FormFieldRunNode["widget"]>>
+    ): void => {
+      updateFormField(
+        location,
+        (field) => ({
+          ...field,
+          widget: mergeFormFieldWidgetPatch(field.widget, patch)
+        }),
+        "Updated form field settings"
+      );
+    },
+    [updateFormField]
+  );
+
+  const applyBorderPreset = React.useCallback(
+    (preset: DocxBorderPreset): void => {
+      const textRangeSnapshot = cloneTextRange(
+        activeTextRangeRef.current ?? lastInViewerActiveTextRangeRef.current
+      );
+      const normalizedRange = textRangeSnapshot
+        ? normalizeTextRange(textRangeSnapshot)
+        : undefined;
+      const hasExpandedRange = Boolean(
+        normalizedRange &&
+          compareTextRangeBoundaries(normalizedRange.start, normalizedRange.end) < 0
+      );
+      const selectionSnapshot = textRangeSnapshot
+        ? selectionFromTextRangeLocation((normalizedRange ?? textRangeSnapshot).start.location)
+        : cloneEditorSelection(selectionRef.current);
+      const targetLocation = resolveSelectedParagraphLocation(
+        selectionSnapshot,
+        normalizedRange ?? textRangeSnapshot
+      );
+      let isUnsupportedPreset = false;
+
+      applyModelChange(
+        (current) => {
+          if (targetLocation.kind === "table-cell") {
+            const next = cloneDocModel(current);
+            const tableNode = next.nodes[targetLocation.tableIndex];
+            if (!tableNode || tableNode.type !== "table") {
+              return current;
+            }
+
+            const targetCell =
+              tableNode.rows[targetLocation.rowIndex]?.cells[targetLocation.cellIndex];
+            if (!targetCell) {
+              return current;
+            }
+
+            const presetState = tableBorderPresetState(tableNode.style?.borders, targetCell.style?.borders);
+            const removePreset = preset !== "none" && presetState[preset];
+
+            if (preset === "diagonal-down" || preset === "diagonal-up") {
+              const clonedCellStyle = cloneTableCellStyle(targetCell.style) ?? {};
+              const nextCellBorders = cloneTableBorderSet(clonedCellStyle.borders) ?? {};
+              const visibleBorder = removePreset
+                ? nilTableBorderStyle()
+                : toolbarTableBorderStyle(
+                    resolvePreferredTableBorder(nextCellBorders) ??
+                      resolvePreferredTableBorder(tableNode.style?.borders)
+                  );
+              if (preset === "diagonal-down") {
+                nextCellBorders.tl2br = { ...visibleBorder };
+              } else {
+                nextCellBorders.tr2bl = { ...visibleBorder };
+              }
+              targetCell.style = {
+                ...clonedCellStyle,
+                borders: nextCellBorders
+              };
+              tableNode.sourceXml = undefined;
+              return next;
+            }
+
+            const nextBorders = applyTableBorderPreset(tableNode.style?.borders, preset, removePreset);
+            if (!nextBorders) {
+              isUnsupportedPreset = true;
+              return current;
+            }
+
+            tableNode.style = {
+              ...(tableNode.style ?? {}),
+              borders: nextBorders
+            };
+            if (preset === "none" && targetCell.style?.borders) {
+              const nextCellBorders = cloneTableBorderSet(targetCell.style.borders) ?? {};
+              const nilBorder = nilTableBorderStyle();
+              nextCellBorders.tl2br = { ...nilBorder };
+              nextCellBorders.tr2bl = { ...nilBorder };
+              targetCell.style = {
+                ...(cloneTableCellStyle(targetCell.style) ?? {}),
+                borders: nextCellBorders
+              };
+            }
+            tableNode.sourceXml = undefined;
+            return next;
+          }
+
+          if (hasExpandedRange && normalizedRange) {
+            const rangeLocations = paragraphRangeForMutate(
+              current,
+              normalizedRange.start.location,
+              normalizedRange.end.location
+            ).map((entry) => entry.location);
+            if (rangeLocations.length === 0) {
+              return current;
+            }
+
+            const paragraphsWithLocation = rangeLocations
+              .map((location) => {
+                const lookup = getParagraphAtLocation(current, location);
+                if (!lookup.paragraph) {
+                  return undefined;
+                }
+                return {
+                  location,
+                  borders: lookup.paragraph.style?.borders
+                };
+              })
+              .filter(
+                (entry): entry is { location: ParagraphLocation; borders: ParagraphBorderSet | undefined } =>
+                  Boolean(entry)
+              );
+            if (paragraphsWithLocation.length === 0) {
+              return current;
+            }
+
+            const removePreset =
+              preset !== "none" &&
+              paragraphRangePresetActive(
+                preset,
+                paragraphsWithLocation.map((entry) => entry.borders)
+              );
+            const next = cloneDocModel(current);
+            let changed = false;
+
+            for (let index = 0; index < paragraphsWithLocation.length; index += 1) {
+              const target = paragraphsWithLocation[index];
+              const { paragraph, tableNode } = getParagraphAtLocation(next, target.location);
+              if (!paragraph) {
+                continue;
+              }
+
+              const clonedStyle = cloneParagraphStyle(paragraph.style) ?? {};
+              const nextBorders = applyParagraphBorderPresetForRangeEntry(
+                clonedStyle.borders,
+                preset,
+                removePreset,
+                index,
+                paragraphsWithLocation.length
+              );
+              if (!nextBorders) {
+                isUnsupportedPreset = true;
+                return current;
+              }
+
+              paragraph.style = {
+                ...clonedStyle,
+                borders: nextBorders
+              };
+              paragraph.sourceXml = undefined;
+              if (tableNode) {
+                tableNode.sourceXml = undefined;
+              }
+              changed = true;
+            }
+
+            return changed ? next : current;
+          }
+
+          const next = cloneDocModel(current);
+          const { paragraph, tableNode } = getParagraphAtLocation(next, targetLocation);
+          if (!paragraph) {
+            return current;
+          }
+          const clonedStyle = cloneParagraphStyle(paragraph.style) ?? {};
+          const presetState = paragraphBorderPresetState(clonedStyle.borders);
+          const removePreset = preset !== "none" && presetState[preset];
+          const nextBorders = applyParagraphBorderPreset(clonedStyle.borders, preset, removePreset);
+          if (!nextBorders) {
+            isUnsupportedPreset = true;
+            return current;
+          }
+
+          paragraph.style = {
+            ...clonedStyle,
+            borders: nextBorders
+          };
+          paragraph.sourceXml = undefined;
+          if (tableNode) {
+            tableNode.sourceXml = undefined;
+          }
+          return next;
+        },
+        "Updated borders"
+      );
+
+      if (isUnsupportedPreset) {
+        setStatus("This border option is not supported for the current selection.");
+      }
+
+      restoreSelectionAfterToolbarCommand(selectionSnapshot, textRangeSnapshot);
+    },
+    [applyModelChange, restoreSelectionAfterToolbarCommand, setStatus, lastInViewerActiveTextRangeRef]
+  );
+
+  const setAlignment = React.useCallback(
+    (align?: ParagraphAlignment): void => {
+      const textRangeSnapshot = cloneTextRange(
+        activeTextRangeRef.current ?? lastInViewerActiveTextRangeRef.current
+      );
+      const selectionSnapshot = textRangeSnapshot
+        ? selectionFromTextRangeLocation(normalizeTextRange(textRangeSnapshot).start.location)
+        : cloneEditorSelection(selectionRef.current);
+      const normalizedRange = textRangeSnapshot
+        ? normalizeTextRange(textRangeSnapshot)
+        : undefined;
+      const hasExpandedRange = Boolean(
+        normalizedRange &&
+          compareTextRangeBoundaries(normalizedRange.start, normalizedRange.end) < 0
+      );
+
+      applyModelChange((current) => {
+        const next = cloneDocModel(current);
+        const targetLocations = hasExpandedRange && normalizedRange
+          ? paragraphRangeForMutate(
+              next,
+              normalizedRange.start.location,
+              normalizedRange.end.location
+            ).map((entry) => entry.location)
+          : [resolveSelectedParagraphLocation(selectionSnapshot, normalizedRange)];
+
+        if (targetLocations.length === 0) {
+          return current;
+        }
+
+        let changed = false;
+        for (const location of targetLocations) {
+          const { paragraph, tableNode } = getParagraphAtLocation(next, location);
+          if (!paragraph || paragraph.style?.align === align) {
+            continue;
+          }
+
+          paragraph.style = {
+            ...(paragraph.style ?? {}),
+            align
+          };
+          paragraph.sourceXml = undefined;
+          if (tableNode) {
+            tableNode.sourceXml = undefined;
+          }
+          changed = true;
+        }
+
+        return changed ? next : current;
+      });
+      restoreSelectionAfterToolbarCommand(selectionSnapshot, textRangeSnapshot);
+    },
+    [applyModelChange, restoreSelectionAfterToolbarCommand, lastInViewerActiveTextRangeRef]
+  );
+
+  const toggleList = React.useCallback(
+    (listType: DocxListType): void => {
+      const textRangeSnapshot = cloneTextRange(
+        activeTextRangeRef.current ?? lastInViewerActiveTextRangeRef.current
+      );
+      const normalizedRange = textRangeSnapshot
+        ? normalizeTextRange(textRangeSnapshot)
+        : undefined;
+      const selectionSnapshot = normalizedRange
+        ? selectionFromTextRangeLocation(normalizedRange.start.location)
+        : cloneEditorSelection(selectionRef.current);
+      const hasExpandedRange = Boolean(
+        normalizedRange &&
+          compareTextRangeBoundaries(normalizedRange.start, normalizedRange.end) < 0
+      );
+      const collapsedTargetLocation = !hasExpandedRange
+        ? resolveSelectedParagraphLocation(selectionSnapshot, normalizedRange)
+        : undefined;
+      const collapsedTargetOffset = normalizedRange?.start.offset;
+      let postToggleRange: DocxTextRange | undefined;
+
+      applyModelChange((current) => {
+        const targetLocations = hasExpandedRange && normalizedRange
+          ? paragraphRangeForMutate(
+              current,
+              normalizedRange.start.location,
+              normalizedRange.end.location
+            ).map((entry) => entry.location)
+          : [resolveSelectedParagraphLocation(selectionSnapshot, normalizedRange)];
+
+        if (targetLocations.length === 0) {
+          return current;
+        }
+
+        const paragraphsWithLocation = targetLocations
+          .map((location) => {
+            const lookup = getParagraphAtLocation(current, location);
+            if (!lookup.paragraph) {
+              return undefined;
+            }
+            return {
+              location,
+              paragraph: lookup.paragraph
+            };
+          })
+          .filter((entry): entry is { location: ParagraphLocation; paragraph: ParagraphNode } =>
+            Boolean(entry)
+          );
+
+        if (paragraphsWithLocation.length === 0) {
+          return current;
+        }
+
+        const shouldRemove = paragraphsWithLocation.every(
+          ({ paragraph }) =>
+            paragraphListType(paragraph, current.metadata.numberingDefinitions) ===
+            listType
+        );
+
+        let next = cloneDocModel(current);
+        let changed = false;
+        for (const { location } of paragraphsWithLocation) {
+          const { paragraph, tableNode } = getParagraphAtLocation(next, location);
+          if (!paragraph) {
+            continue;
+          }
+
+          const currentText = paragraphText(paragraph);
+          if (shouldRemove) {
+            if (paragraphHasNumbering(paragraph)) {
+              const clonedStyle = cloneParagraphStyle(paragraph.style);
+              if (clonedStyle?.numbering) {
+                clonedStyle.numbering = undefined;
+                paragraph.style = clonedStyle;
+                paragraph.sourceXml = undefined;
+                if (tableNode) {
+                  tableNode.sourceXml = undefined;
+                }
+                changed = true;
+              }
+              continue;
+            }
+
+            const stripped = stripListPrefix(currentText);
+            if (stripped !== currentText) {
+              next = updateParagraphTextAtLocation(next, location, stripped);
+              const updatedParagraph = getParagraphAtLocation(next, location).paragraph;
+              if (updatedParagraph) {
+                clearAutoPrefixListIndent(updatedParagraph);
+              }
+              changed = true;
+            }
+            continue;
+          }
+
+          const nextText = textWithListType(currentText, listType);
+          if (nextText === currentText) {
+            continue;
+          }
+          next = updateParagraphTextAtLocation(next, location, nextText);
+          const updatedParagraph = getParagraphAtLocation(next, location).paragraph;
+          if (updatedParagraph && !paragraphHasNumbering(updatedParagraph)) {
+            ensurePrefixListIndent(updatedParagraph);
+          }
+          if (
+            collapsedTargetLocation &&
+            sameParagraphLocation(location, collapsedTargetLocation)
+          ) {
+            const updatedText = updatedParagraph ? paragraphText(updatedParagraph) : nextText;
+            const previousPrefixLength = listPrefixLength(currentText);
+            const nextPrefixLength = listPrefixLength(updatedText);
+            const nextOffset = Number.isFinite(collapsedTargetOffset)
+              ? Math.max(
+                  nextPrefixLength,
+                  Math.max(0, Math.round(collapsedTargetOffset as number)) +
+                    (nextPrefixLength - previousPrefixLength)
+                )
+              : nextPrefixLength;
+            postToggleRange = {
+              start: {
+                location: cloneTextRangeLocation(location),
+                offset: nextOffset
+              },
+              end: {
+                location: cloneTextRangeLocation(location),
+                offset: nextOffset
+              }
+            };
+          }
+          changed = true;
+        }
+
+        if (!changed) {
+          return current;
+        }
+
+        return next;
+      });
+      if (postToggleRange) {
+        restoreSelectionAfterToolbarCommand(
+          selectionFromTextRangeLocation(postToggleRange.start.location),
+          postToggleRange
+        );
+        return;
+      }
+
+      restoreSelectionAfterToolbarCommand(selectionSnapshot, textRangeSnapshot);
+    },
+    [applyModelChange, restoreSelectionAfterToolbarCommand, lastInViewerActiveTextRangeRef]
+  );
+
+  const adjustSelectedListDepth = React.useCallback(
+    (levelDelta: number, draftText?: string): boolean => {
+      const normalizedLevelDelta = Math.trunc(levelDelta);
+      if (!normalizedLevelDelta) {
+        return false;
+      }
+
+      const targetLocation = resolveSelectedParagraphLocation(selection, activeTextRangeRef.current);
+      let changed = false;
+      applyModelChange((current) => {
+        let next = cloneDocModel(current);
+        let { paragraph: paragraphNode, tableNode } = getParagraphAtLocation(next, targetLocation);
+        if (!paragraphNode) {
+          return current;
+        }
+
+        const textFromDraft = draftText ?? paragraphText(paragraphNode);
+        if (!paragraphIsList(paragraphNode, textFromDraft)) {
+          return current;
+        }
+
+        let didMutateText = false;
+        if (textFromDraft !== paragraphText(paragraphNode)) {
+          next = updateParagraphTextAtLocation(next, targetLocation, textFromDraft, {
+            insertedStyle: cloneTextStyle(pendingRunStyle)
+          });
+          ({ paragraph: paragraphNode, tableNode } = getParagraphAtLocation(next, targetLocation));
+          if (!paragraphNode) {
+            return current;
+          }
+          paragraphNode.sourceXml = undefined;
+          if (tableNode) {
+            tableNode.sourceXml = undefined;
+          }
+          didMutateText = true;
+        }
+
+        const numbering = paragraphNode.style?.numbering;
+        if (numbering && Number.isFinite(numbering.numId) && numbering.numId > 0) {
+          const currentLevel = Math.max(0, Math.round(numbering.ilvl ?? 0));
+          const maxLevel = resolveMaxNumberingLevel(current.metadata.numberingDefinitions, numbering.numId);
+          const nextLevel = clampNumber(currentLevel + normalizedLevelDelta, 0, maxLevel);
+          if (nextLevel === currentLevel) {
+            if (didMutateText) {
+              changed = true;
+              return next;
+            }
+            return current;
+          }
+
+          paragraphNode.style = {
+            ...(cloneParagraphStyle(paragraphNode.style) ?? {}),
+            numbering: {
+              ...numbering,
+              ilvl: nextLevel
+            },
+            indent: shiftListIndent(paragraphNode.style?.indent, nextLevel - currentLevel)
+          };
+          paragraphNode.sourceXml = undefined;
+          if (tableNode) {
+            tableNode.sourceXml = undefined;
+          }
+          changed = true;
+          return next;
+        }
+
+        const indentation = textFromDraft.match(/^\s*/)?.[0] ?? "";
+        const paragraphTextWithoutIndent = textFromDraft.slice(indentation.length);
+        const nextIndentation =
+          normalizedLevelDelta > 0
+            ? `${indentation}${"  ".repeat(normalizedLevelDelta)}`
+            : indentation.slice(0, Math.max(0, indentation.length + normalizedLevelDelta * 2));
+        const nextText = `${nextIndentation}${paragraphTextWithoutIndent}`;
+        if (nextText === textFromDraft) {
+          return didMutateText ? next : current;
+        }
+
+        next = updateParagraphTextAtLocation(next, targetLocation, nextText, {
+          insertedStyle: cloneTextStyle(pendingRunStyle)
+        });
+        ({ paragraph: paragraphNode, tableNode } = getParagraphAtLocation(next, targetLocation));
+        if (!paragraphNode) {
+          return current;
+        }
+        paragraphNode.sourceXml = undefined;
+        if (tableNode) {
+          tableNode.sourceXml = undefined;
+        }
+        changed = true;
+        return next;
+      }, "Updated list level");
+
+      return changed;
+    },
+    [applyModelChange, pendingRunStyle, selection]
+  );
+
+  const insertListItemAfterSelection = React.useCallback(
+    (
+      draftText: string,
+      startOffset: number,
+      endOffset?: number,
+      targetLocationOverride?: ParagraphLocation
+    ):
+      | {
+          paragraphIndex: number;
+          caretOffset: number;
+        }
+      | undefined => {
+      const targetLocation =
+        targetLocationOverride ??
+        resolveSelectedParagraphLocation(selection, activeTextRangeRef.current);
+      if (targetLocation.kind !== "paragraph") {
+        return undefined;
+      }
+
+      const insertionIndex = targetLocation.nodeIndex + 1;
+      let insertedParagraphResult:
+        | {
+            paragraphIndex: number;
+            caretOffset: number;
+          }
+        | undefined;
+      const normalizedDraftText = draftText ?? "";
+      const normalizedStartOffset = Math.max(0, Math.round(startOffset));
+      const normalizedEndOffset = Math.max(
+        normalizedStartOffset,
+        Math.round(endOffset ?? normalizedStartOffset)
+      );
+
+      applyModelChange((current) => {
+        let next = cloneDocModel(current);
+        let paragraphNode = next.nodes[targetLocation.nodeIndex];
+        if (!paragraphNode || paragraphNode.type !== "paragraph") {
+          return current;
+        }
+
+        if (!paragraphIsList(paragraphNode, normalizedDraftText)) {
+          return current;
+        }
+
+        const safeStart = Math.max(0, Math.min(normalizedStartOffset, normalizedDraftText.length));
+        const safeEnd = Math.max(safeStart, Math.min(normalizedEndOffset, normalizedDraftText.length));
+        const beforeText = normalizedDraftText.slice(0, safeStart);
+        const afterText = normalizedDraftText.slice(safeEnd);
+        const insertRunStyle =
+          cloneTextStyle(
+            pendingRunStyle ??
+              firstTextStyleAtOffset(paragraphNode, safeStart, true) ??
+              firstRunStyle(paragraphNode)
+          ) ?? {};
+
+        const paragraphListType: DocxListType | undefined = isUnorderedListText(normalizedDraftText)
+          ? "unordered"
+          : isOrderedListText(normalizedDraftText)
+            ? "ordered"
+            : undefined;
+        const hasDocxNumbering = paragraphHasNumbering(paragraphNode);
+        const textForInsertedParagraph =
+          hasDocxNumbering || !paragraphListType
+            ? afterText
+            : paragraphListType === "ordered"
+              ? nextOrderedListItemText(normalizedDraftText, afterText)
+              : textWithListType(afterText, paragraphListType);
+
+        const insertedCaretOffset = hasDocxNumbering
+          ? 0
+          : listPrefixLength(textForInsertedParagraph);
+
+        const textForCurrentParagraph =
+          hasDocxNumbering || !paragraphListType
+            ? beforeText
+            : paragraphListType === "ordered"
+              ? (() => {
+                  const currentMatch = normalizedDraftText.match(ORDERED_LIST_PREFIX_CAPTURE_PATTERN);
+                  if (!currentMatch) {
+                    return beforeText;
+                  }
+                  return `${currentMatch[1] ?? ""}${currentMatch[2] ?? "1"}. ${stripListPrefix(beforeText)}`;
+                })()
+            : textWithListType(beforeText, paragraphListType);
+
+        next = updateParagraphText(next, targetLocation.nodeIndex, textForCurrentParagraph, {
+          insertedStyle: cloneTextStyle(pendingRunStyle)
+        });
+        paragraphNode = next.nodes[targetLocation.nodeIndex];
+        if (!paragraphNode || paragraphNode.type !== "paragraph") {
+          return current;
+        }
+        paragraphNode.sourceXml = undefined;
+
+        next.nodes.splice(insertionIndex, 0, {
+          type: "paragraph",
+          style: cloneParagraphStyle(paragraphNode.style),
+          children: [
+            {
+              type: "text",
+              text: textForInsertedParagraph,
+              style: insertRunStyle
+            }
+          ]
+        });
+        insertedParagraphResult = {
+          paragraphIndex: insertionIndex,
+          caretOffset: insertedCaretOffset
+        };
+        return next;
+      }, "Inserted list item");
+
+      if (insertedParagraphResult === undefined) {
+        return undefined;
+      }
+
+      suppressSelectionResetRef.current = true;
+      setSelection({ kind: "paragraph", nodeIndex: insertedParagraphResult.paragraphIndex });
+      setActiveTextRangeState({
+        start: {
+          location: { kind: "paragraph", nodeIndex: insertedParagraphResult.paragraphIndex },
+          offset: insertedParagraphResult.caretOffset
+        },
+        end: {
+          location: { kind: "paragraph", nodeIndex: insertedParagraphResult.paragraphIndex },
+          offset: insertedParagraphResult.caretOffset
+        }
+      });
+      return insertedParagraphResult;
+    },
+    [applyModelChange, pendingRunStyle, selection]
+  );
+
+  const splitParagraphAtSelection = React.useCallback(
+    (
+      draftText: string,
+      startOffset: number,
+      endOffset?: number,
+      targetLocationOverride?: ParagraphLocation
+    ):
+      | {
+          paragraphIndex: number;
+          caretOffset: number;
+        }
+      | undefined => {
+      const targetLocation =
+        targetLocationOverride ??
+        resolveSelectedParagraphLocation(selection, activeTextRangeRef.current);
+      if (targetLocation.kind !== "paragraph") {
+        return undefined;
+      }
+
+      const normalizedDraftText = draftText ?? "";
+      const normalizedStartOffset = Math.max(0, Math.round(startOffset));
+      const normalizedEndOffset = Math.max(
+        normalizedStartOffset,
+        Math.round(endOffset ?? normalizedStartOffset)
+      );
+      const insertionIndex = targetLocation.nodeIndex + 1;
+
+      let splitResult:
+        | {
+            paragraphIndex: number;
+            caretOffset: number;
+          }
+        | undefined;
+
+      applyModelChange((current) => {
+        const next = cloneDocModel(current);
+        const paragraphNode = next.nodes[targetLocation.nodeIndex];
+        if (!paragraphNode || paragraphNode.type !== "paragraph") {
+          return current;
+        }
+
+        const safeStart = Math.max(0, Math.min(normalizedStartOffset, normalizedDraftText.length));
+        const safeEnd = Math.max(safeStart, Math.min(normalizedEndOffset, normalizedDraftText.length));
+        const beforeText = normalizedDraftText.slice(0, safeStart);
+        const afterText = normalizedDraftText.slice(safeEnd);
+        const splitParagraphStyle = splitParagraphStyleWithDefaultSpacing(
+          paragraphNode.style,
+          paragraphNode.sourceXml
+        );
+        const inheritedRunStyle =
+          cloneTextStyle(
+            pendingRunStyle ??
+              firstTextStyleAtOffset(paragraphNode, safeEnd, false) ??
+              firstRunStyle(paragraphNode)
+          ) ?? {};
+
+        paragraphNode.style = cloneParagraphStyle(splitParagraphStyle);
+        paragraphNode.children = [
+          {
+            type: "text",
+            text: beforeText,
+            style: cloneTextStyle(
+              pendingRunStyle ??
+                firstTextStyleAtOffset(paragraphNode, safeStart, true) ??
+                firstRunStyle(paragraphNode)
+            )
+          }
+        ];
+        paragraphNode.sourceXml = undefined;
+
+        next.nodes.splice(insertionIndex, 0, {
+          type: "paragraph",
+          style: cloneParagraphStyle(splitParagraphStyle),
+          children: [
+            {
+              type: "text",
+              text: afterText,
+              style: inheritedRunStyle
+            }
+          ]
+        });
+
+        splitResult = {
+          paragraphIndex: insertionIndex,
+          caretOffset: 0
+        };
+
+        return next;
+      }, "Split paragraph");
+
+      if (!splitResult) {
+        return undefined;
+      }
+
+      suppressSelectionResetRef.current = true;
+      setSelection({ kind: "paragraph", nodeIndex: splitResult.paragraphIndex });
+      setActiveTextRangeState({
+        start: {
+          location: { kind: "paragraph", nodeIndex: splitResult.paragraphIndex },
+          offset: splitResult.caretOffset
+        },
+        end: {
+          location: { kind: "paragraph", nodeIndex: splitResult.paragraphIndex },
+          offset: splitResult.caretOffset
+        }
+      });
+
+      return splitResult;
+    },
+    [applyModelChange, pendingRunStyle, selection]
+  );
+
+  const insertTable = React.useCallback((): void => {
+    applyModelChange((current) => {
+      const next = cloneDocModel(current);
+      const insertionIndex =
+        selection.kind === "paragraph" ? selection.nodeIndex + 1 : selection.tableIndex + 1;
+
+      next.nodes.splice(Math.max(0, Math.min(insertionIndex, next.nodes.length)), 0, {
+        type: "table",
+        style: {
+          borders: createDefaultEditorTableBorders()
+        },
+        rows: [
+          {
+            type: "table-row",
+            style: { backgroundColor: "#e5e7eb" },
+            cells: [
+              {
+                type: "table-cell",
+                nodes: [
+                  {
+                    type: "paragraph",
+                    children: [{ type: "text", text: "Header 1", style: { bold: true } }]
+                  }
+                ]
+              },
+              {
+                type: "table-cell",
+                nodes: [
+                  {
+                    type: "paragraph",
+                    children: [{ type: "text", text: "Header 2", style: { bold: true } }]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            type: "table-row",
+            cells: [
+              {
+                type: "table-cell",
+                nodes: [{ type: "paragraph", children: [{ type: "text", text: "Value 1" }] }]
+              },
+              {
+                type: "table-cell",
+                nodes: [{ type: "paragraph", children: [{ type: "text", text: "Value 2" }] }]
+              }
+            ]
+          }
+        ]
+      });
+
+      return next;
+    }, "Inserted table");
+  }, [applyModelChange, selection]);
+
+  const insertImageFile = React.useCallback(
+    async (file: File): Promise<void> => {
+      if (!file.type.startsWith("image/")) {
+        setStatus("Select an image file");
+        return;
+      }
+
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const src = `data:${file.type};base64,${toBase64(bytes)}`;
+
+      applyModelChange((current) => {
+        const next = cloneDocModel(current);
+
+        if (selection.kind === "paragraph") {
+          const paragraph = next.nodes[selection.nodeIndex];
+          if (!paragraph || paragraph.type !== "paragraph") {
+            return current;
+          }
+
+          paragraph.children.push({
+            type: "image",
+            src,
+            alt: file.name,
+            contentType: file.type,
+            data: new Uint8Array(bytes),
+            widthPx: 240
+          });
+          paragraph.sourceXml = undefined;
+          return next;
+        }
+
+        const table = next.nodes[selection.tableIndex];
+        if (!table || table.type !== "table") {
+          return current;
+        }
+
+        const cell = table.rows[selection.rowIndex]?.cells[selection.cellIndex];
+        const paragraph = tableCellParagraphs(cell?.nodes ?? [])[0];
+        if (!paragraph) {
+          return current;
+        }
+
+        paragraph.children.push({
+          type: "image",
+          src,
+          alt: file.name,
+          contentType: file.type,
+          data: new Uint8Array(bytes),
+          widthPx: 240
+        });
+        paragraph.sourceXml = undefined;
+        table.sourceXml = undefined;
+        return next;
+      }, `Inserted image: ${file.name}`);
+    },
+    [applyModelChange, selection]
+  );
+
+  const appendParagraph = React.useCallback(
+    (text = ""): number => {
+      const insertedIndex = modelRef.current.nodes.length;
+
+      applyModelChange((current) => {
+        const next = cloneDocModel(current);
+        next.nodes.push({
+          type: "paragraph",
+          children: [{ type: "text", text }]
+        });
+        return next;
+      }, "Inserted paragraph");
+
+      setSelection({ kind: "paragraph", nodeIndex: insertedIndex });
+      return insertedIndex;
+    },
+    [applyModelChange]
+  );
+
+  const resizeImage = React.useCallback(
+    (location: DocxImageLocation, widthPx: number, heightPx: number): void => {
+      const safeWidth = Math.max(24, Math.round(widthPx));
+      const safeHeight = Math.max(24, Math.round(heightPx));
+
+      applyModelChange((current) => {
+        const next = cloneDocModel(current);
+        const { paragraph, tableNode } = getParagraphAtLocation(
+          next,
+          imageLocationToParagraphLocation(location)
+        );
+        if (!paragraph) {
+          return current;
+        }
+
+        const child = paragraph.children[location.childIndex];
+        if (!child || child.type !== "image") {
+          return current;
+        }
+
+        if (child.widthPx === safeWidth && child.heightPx === safeHeight) {
+          return current;
+        }
+
+        child.widthPx = safeWidth;
+        child.heightPx = safeHeight;
+        paragraph.sourceXml = undefined;
+        if (tableNode) {
+          tableNode.sourceXml = undefined;
+        }
+
+        return next;
+      }, "Resized image");
+    },
+    [applyModelChange]
+  );
+
+  const moveFloatingImage = React.useCallback(
+    (
+      location: DocxImageLocation,
+      patch: Partial<NonNullable<ImageRunNode["floating"]>>
+    ): void => {
+      applyModelChange((current) => {
+        const next = cloneDocModel(current);
+        const { paragraph, tableNode } = getParagraphAtLocation(
+          next,
+          imageLocationToParagraphLocation(location)
+        );
+        if (!paragraph) {
+          return current;
+        }
+
+        const child = paragraph.children[location.childIndex];
+        if (!child || child.type !== "image") {
+          return current;
+        }
+
+        child.floating = {
+          ...(child.floating ?? {}),
+          ...patch
+        };
+        paragraph.sourceXml = undefined;
+        if (tableNode) {
+          tableNode.sourceXml = undefined;
+        }
+
+        return next;
+      }, "Moved floating image");
+    },
+    [applyModelChange]
+  );
+
+  const moveSectionFloatingImage = React.useCallback(
+    (
+      location: DocxSectionImageLocation,
+      patch: Partial<NonNullable<ImageRunNode["floating"]>>
+    ): void => {
+      applyModelChange((current) => {
+        return updateSectionImageFloatingAtLocation(current, location, patch);
+      }, "Moved floating image");
+    },
+    [applyModelChange]
+  );
+
+  const moveImage = React.useCallback(
+    (source: DocxImageLocation, target: DocxImageDropTarget): void => {
+      const sourceParagraphLocation = imageLocationToParagraphLocation(source);
+      const targetParagraphLocation: ParagraphLocation =
+        target.kind === "paragraph"
+          ? {
+              kind: "paragraph",
+              nodeIndex: target.nodeIndex
+            }
+          : {
+              kind: "table-cell",
+              tableIndex: target.tableIndex,
+              rowIndex: target.rowIndex,
+              cellIndex: target.cellIndex,
+              paragraphIndex: target.paragraphIndex
+            };
+
+      if (
+        sameParagraphLocation(sourceParagraphLocation, targetParagraphLocation) &&
+        (target.childIndex === source.childIndex || target.childIndex === source.childIndex + 1)
+      ) {
+        return;
+      }
+
+      applyModelChange((current) => {
+        const next = cloneDocModel(current);
+        const sourceLookup = getParagraphAtLocation(next, sourceParagraphLocation);
+        const targetLookup = getParagraphAtLocation(next, targetParagraphLocation);
+        const sourceParagraph = sourceLookup.paragraph;
+        const targetParagraph = targetLookup.paragraph;
+
+        if (!sourceParagraph || !targetParagraph) {
+          return current;
+        }
+
+        const sourceChild = sourceParagraph.children[source.childIndex];
+        if (!sourceChild || sourceChild.type !== "image") {
+          return current;
+        }
+
+        const movedImage = {
+          ...sourceChild,
+          data: sourceChild.data ? new Uint8Array(sourceChild.data) : undefined,
+          floating: sourceChild.floating ? { ...sourceChild.floating } : undefined
+        };
+        sourceParagraph.children.splice(source.childIndex, 1);
+
+        let insertionIndex = Math.max(0, Math.min(target.childIndex, targetParagraph.children.length));
+        if (sameParagraphLocation(sourceParagraphLocation, targetParagraphLocation) && source.childIndex < insertionIndex) {
+          insertionIndex -= 1;
+        }
+
+        targetParagraph.children.splice(insertionIndex, 0, movedImage);
+
+        if (sourceParagraph.children.length === 0) {
+          sourceParagraph.children.push({ type: "text", text: "" });
+        }
+
+        sourceParagraph.sourceXml = undefined;
+        targetParagraph.sourceXml = undefined;
+
+        if (sourceLookup.tableNode) {
+          sourceLookup.tableNode.sourceXml = undefined;
+        }
+        if (targetLookup.tableNode) {
+          targetLookup.tableNode.sourceXml = undefined;
+        }
+
+        return next;
+      }, "Moved image");
+    },
+    [applyModelChange]
+  );
+
+  const selectParagraph = React.useCallback((nodeIndex: number): void => {
+    dispatchEditorTransaction((current) => {
+      const nextSelection: DocxEditorSelection = { kind: "paragraph", nodeIndex };
+      if (sameEditorSelection(current.selection, nextSelection) && !current.activeTextRange) {
+        return undefined;
+      }
+
+      return {
+        selection: nextSelection,
+        activeTextRange: undefined,
+        clearSelectedFormField: true,
+        pushHistory: false
+      };
+    });
+  }, [dispatchEditorTransaction]);
+
+  const selectTableCell = React.useCallback(
+    (tableIndex: number, rowIndex: number, cellIndex: number): void => {
+      dispatchEditorTransaction((current) => {
+        const nextSelection: DocxEditorSelection = {
+          kind: "table-cell",
+          tableIndex,
+          rowIndex,
+          cellIndex
+        };
+        if (sameEditorSelection(current.selection, nextSelection) && !current.activeTextRange) {
+          return undefined;
+        }
+
+        return {
+          selection: nextSelection,
+          activeTextRange: undefined,
+          clearSelectedFormField: true,
+          pushHistory: false
+        };
+      });
+    },
+    [dispatchEditorTransaction]
+  );
+
+  const clearTableCellContents = React.useCallback(
+    (tableIndex: number, cells: Array<{ rowIndex: number; cellIndex: number }>): void => {
+      const dedupedCells = Array.from(
+        new Map(cells.map((cell) => [`${cell.rowIndex}:${cell.cellIndex}`, cell])).values()
+      );
+      if (dedupedCells.length === 0) {
+        return;
+      }
+
+      applyModelChange((current) => {
+        const tableNode = current.nodes[tableIndex];
+        if (!tableNode || tableNode.type !== "table") {
+          return current;
+        }
+
+        const next = cloneDocModel(current);
+        const table = next.nodes[tableIndex];
+        if (!table || table.type !== "table") {
+          return current;
+        }
+
+        let changed = false;
+        const insertedStyle = cloneTextStyle(pendingRunStyle);
+        for (const cellLocation of dedupedCells) {
+          const cell = table.rows[cellLocation.rowIndex]?.cells[cellLocation.cellIndex];
+          if (!cell || cell.style?.vMergeContinuation) {
+            continue;
+          }
+
+          const paragraphs = tableCellParagraphs(cell.nodes);
+          const firstParagraph = paragraphs[0];
+          const nextParagraph: ParagraphNode = {
+            type: "paragraph",
+            style: cloneParagraphStyle(firstParagraph?.style),
+            children: [
+              {
+                type: "text",
+                text: "",
+                style: cloneTextStyle(insertedStyle ?? firstRunStyle(firstParagraph))
+              }
+            ]
+          };
+          const hasContent =
+            cell.nodes.length !== 1 ||
+            paragraphs.length !== 1 ||
+            tableCellText(paragraphs).length > 0 ||
+            firstParagraph?.children.some((child) => child.type !== "text");
+          if (!hasContent) {
+            continue;
+          }
+
+          cell.nodes = [nextParagraph];
+          changed = true;
+        }
+
+        if (!changed) {
+          return current;
+        }
+
+        table.sourceXml = undefined;
+        return next;
+      }, "Cleared table cells");
+    },
+    [applyModelChange, pendingRunStyle]
+  );
+
+  const deleteTable = React.useCallback(
+    (tableIndex: number): void => {
+      const currentModel = modelRef.current;
+      const target = currentModel.nodes[tableIndex];
+      if (!target || target.type !== "table") {
+        return;
+      }
+
+      let nextSelection: DocxEditorSelection = { kind: "paragraph", nodeIndex: 0 };
+      if (tableIndex + 1 < currentModel.nodes.length) {
+        const nextNode = currentModel.nodes[tableIndex + 1];
+        if (nextNode?.type === "paragraph") {
+          nextSelection = {
+            kind: "paragraph",
+            nodeIndex: tableIndex
+          };
+        } else if (nextNode?.type === "table") {
+          const firstLocation = firstParagraphLocationInTable(currentModel, tableIndex + 1);
+          if (firstLocation?.kind === "table-cell") {
+            nextSelection = {
+              kind: "table-cell",
+              tableIndex,
+              rowIndex: firstLocation.rowIndex,
+              cellIndex: firstLocation.cellIndex
+            };
+          }
+        }
+      } else if (tableIndex > 0) {
+        const previousNode = currentModel.nodes[tableIndex - 1];
+        if (previousNode?.type === "paragraph") {
+          nextSelection = {
+            kind: "paragraph",
+            nodeIndex: tableIndex - 1
+          };
+        } else if (previousNode?.type === "table") {
+          const firstLocation = firstParagraphLocationInTable(currentModel, tableIndex - 1);
+          if (firstLocation?.kind === "table-cell") {
+            nextSelection = {
+              kind: "table-cell",
+              tableIndex: tableIndex - 1,
+              rowIndex: firstLocation.rowIndex,
+              cellIndex: firstLocation.cellIndex
+            };
+          }
+        }
+      }
+
+      applyModelChange((current) => {
+        const tableNode = current.nodes[tableIndex];
+        if (!tableNode || tableNode.type !== "table") {
+          return current;
+        }
+
+        const next = cloneDocModel(current);
+        next.nodes.splice(tableIndex, 1);
+        if (next.nodes.length === 0) {
+          next.nodes.push({
+            type: "paragraph",
+            children: [{ type: "text", text: "" }]
+          });
+          nextSelection = { kind: "paragraph", nodeIndex: 0 };
+        }
+
+        return next;
+      }, "Deleted table");
+
+      suppressSelectionResetRef.current = true;
+      setSelection(nextSelection);
+      setActiveTextRangeState(undefined);
+      setPendingRunStyle(undefined);
+    },
+    [applyModelChange]
+  );
+
+  const moveTable = React.useCallback(
+    (tableIndex: number, targetNodeIndex: number): void => {
+      let nextSelection: DocxEditorSelection | undefined;
+
+      applyModelChange((current) => {
+        const tableNode = current.nodes[tableIndex];
+        if (!tableNode || tableNode.type !== "table") {
+          return current;
+        }
+
+        const clampedTargetNodeIndex = clampNumber(targetNodeIndex, 0, current.nodes.length);
+        if (clampedTargetNodeIndex === tableIndex || clampedTargetNodeIndex === tableIndex + 1) {
+          return current;
+        }
+
+        const next = cloneDocModel(current);
+        const extracted = next.nodes.splice(tableIndex, 1)[0];
+        if (!extracted || extracted.type !== "table") {
+          return current;
+        }
+
+        const insertionIndex = clampNumber(
+          clampedTargetNodeIndex > tableIndex
+            ? clampedTargetNodeIndex - 1
+            : clampedTargetNodeIndex,
+          0,
+          next.nodes.length
+        );
+        next.nodes.splice(insertionIndex, 0, extracted);
+
+        const firstLocation = firstParagraphLocationInTable(next, insertionIndex);
+        if (firstLocation?.kind === "table-cell") {
+          nextSelection = {
+            kind: "table-cell",
+            tableIndex: insertionIndex,
+            rowIndex: firstLocation.rowIndex,
+            cellIndex: firstLocation.cellIndex
+          };
+        } else {
+          nextSelection = {
+            kind: "paragraph",
+            nodeIndex: Math.max(0, Math.min(insertionIndex, Math.max(0, next.nodes.length - 1)))
+          };
+        }
+
+        return next;
+      }, "Moved table");
+
+      if (nextSelection) {
+        suppressSelectionResetRef.current = true;
+        setSelection(nextSelection);
+        setActiveTextRangeState(undefined);
+        setPendingRunStyle(undefined);
+      }
+    },
+    [applyModelChange]
+  );
+
+  const moveEmbeddedTableToBody = React.useCallback(
+    (tableRuntimeKey: string, targetNodeIndex: number): void => {
+      const runtimeLocation = parseEmbeddedTableRuntimeKey(tableRuntimeKey);
+      if (!runtimeLocation) {
+        return;
+      }
+
+      let nextSelection: DocxEditorSelection | undefined;
+
+      applyModelChange((current) => {
+        const next = cloneDocModel(current);
+        const hostTable = next.nodes[runtimeLocation.hostTableIndex];
+        if (!hostTable || hostTable.type !== "table") {
+          return current;
+        }
+
+        const hostCell =
+          hostTable.rows[runtimeLocation.hostRowIndex]?.cells[runtimeLocation.hostCellIndex];
+        if (!hostCell) {
+          return current;
+        }
+
+        let parentCellNodes = hostCell.nodes;
+        let targetContentIndex = runtimeLocation.rootContentIndex;
+        let targetNode = parentCellNodes[targetContentIndex];
+        if (!targetNode || targetNode.type !== "table") {
+          return current;
+        }
+
+        const touchedTables: TableNode[] = [hostTable];
+        for (const segment of runtimeLocation.descendants) {
+          touchedTables.push(targetNode);
+          const nextCell = targetNode.rows[segment.rowIndex]?.cells[segment.cellIndex];
+          if (!nextCell) {
+            return current;
+          }
+
+          parentCellNodes = nextCell.nodes;
+          targetContentIndex = segment.contentIndex;
+          targetNode = parentCellNodes[targetContentIndex];
+          if (!targetNode || targetNode.type !== "table") {
+            return current;
+          }
+        }
+
+        const extractedNode = parentCellNodes.splice(targetContentIndex, 1)[0];
+        if (!extractedNode || extractedNode.type !== "table") {
+          return current;
+        }
+        const extractedTable = extractedNode;
+
+        if (parentCellNodes.length === 0) {
+          parentCellNodes.push(createEmptyParagraphFromTemplate(undefined));
+        }
+
+        touchedTables.forEach((table) => {
+          table.sourceXml = undefined;
+        });
+        extractedTable.sourceXml = undefined;
+
+        const insertionIndex = clampNumber(targetNodeIndex, 0, next.nodes.length);
+        next.nodes.splice(insertionIndex, 0, extractedTable);
+
+        const firstLocation = firstParagraphLocationInTable(next, insertionIndex);
+        if (firstLocation?.kind === "table-cell") {
+          nextSelection = {
+            kind: "table-cell",
+            tableIndex: insertionIndex,
+            rowIndex: firstLocation.rowIndex,
+            cellIndex: firstLocation.cellIndex
+          };
+        } else {
+          nextSelection = {
+            kind: "paragraph",
+            nodeIndex: Math.max(0, Math.min(insertionIndex, Math.max(0, next.nodes.length - 1)))
+          };
+        }
+
+        return next;
+      }, "Moved nested table");
+
+      if (nextSelection) {
+        suppressSelectionResetRef.current = true;
+        setSelection(nextSelection);
+        setActiveTextRangeState(undefined);
+        setPendingRunStyle(undefined);
+      }
+    },
+    [applyModelChange]
+  );
+
+  const insertTableRow = React.useCallback(
+    (tableIndex: number, rowIndex: number, direction: "above" | "below"): void => {
+      let nextSelection: DocxEditorSelection | undefined;
+      const currentSelection = selectionRef.current;
+
+      applyModelChange((current) => {
+        const tableNode = current.nodes[tableIndex];
+        if (!tableNode || tableNode.type !== "table") {
+          return current;
+        }
+
+        const next = cloneDocModel(current);
+        const table = next.nodes[tableIndex];
+        if (!table || table.type !== "table") {
+          return current;
+        }
+
+        const clampedRowIndex = clampNumber(rowIndex, 0, Math.max(0, table.rows.length - 1));
+        const templateRow = table.rows[clampedRowIndex] ?? table.rows[0];
+        const nextRowStyle = cloneTableRowStyle(templateRow?.style);
+        const nextCells =
+          templateRow?.cells.map((templateCell) => createEmptyTableCellFromTemplate(templateCell)) ??
+          [createEmptyTableCellFromTemplate(undefined)];
+        const insertionIndex =
+          direction === "above" ? clampedRowIndex : Math.min(table.rows.length, clampedRowIndex + 1);
+        table.rows.splice(insertionIndex, 0, {
+          type: "table-row",
+          style: nextRowStyle,
+          cells: nextCells
+        });
+        table.sourceXml = undefined;
+
+        const preferredCellIndex =
+          currentSelection.kind === "table-cell" && currentSelection.tableIndex === tableIndex
+            ? currentSelection.cellIndex
+            : 0;
+        const fallbackCellIndex = Math.max(0, Math.min(nextCells.length - 1, preferredCellIndex));
+        nextSelection = {
+          kind: "table-cell",
+          tableIndex,
+          rowIndex: insertionIndex,
+          cellIndex: fallbackCellIndex
+        };
+
+        return next;
+      }, direction === "above" ? "Inserted row above" : "Inserted row below");
+
+      if (nextSelection) {
+        suppressSelectionResetRef.current = true;
+        setSelection(nextSelection);
+        setActiveTextRangeState(undefined);
+      }
+    },
+    [applyModelChange]
+  );
+
+  const insertTableColumn = React.useCallback(
+    (
+      tableIndex: number,
+      cellIndex: number,
+      direction: "left" | "right",
+      rowIndex?: number
+    ): void => {
+      let nextSelection: DocxEditorSelection | undefined;
+
+      applyModelChange((current) => {
+        const tableNode = current.nodes[tableIndex];
+        if (!tableNode || tableNode.type !== "table") {
+          return current;
+        }
+
+        const next = cloneDocModel(current);
+        const table = next.nodes[tableIndex];
+        if (!table || table.type !== "table") {
+          return current;
+        }
+
+        const anchorRowIndex = clampNumber(rowIndex ?? 0, 0, Math.max(0, table.rows.length - 1));
+        const anchorRow = table.rows[anchorRowIndex];
+        if (!anchorRow) {
+          return current;
+        }
+        const clampedCellIndex = clampNumber(cellIndex, 0, Math.max(0, anchorRow.cells.length - 1));
+        const insertionIndex =
+          direction === "left"
+            ? clampedCellIndex
+            : Math.min(anchorRow.cells.length, clampedCellIndex + 1);
+
+        table.rows.forEach((row, currentRowIndex) => {
+          const referenceIndex = clampNumber(clampedCellIndex, 0, Math.max(0, row.cells.length - 1));
+          const referenceCell = row.cells[referenceIndex];
+          const targetInsertionIndex = Math.min(insertionIndex, row.cells.length);
+          row.cells.splice(
+            targetInsertionIndex,
+            0,
+            createEmptyTableCellFromTemplate(referenceCell)
+          );
+
+          if (currentRowIndex === anchorRowIndex) {
+            nextSelection = {
+              kind: "table-cell",
+              tableIndex,
+              rowIndex: anchorRowIndex,
+              cellIndex: targetInsertionIndex
+            };
+          }
+        });
+
+        if (table.style?.columnWidthsTwips && table.style.columnWidthsTwips.length > 0) {
+          const widths = [...table.style.columnWidthsTwips];
+          const fallbackWidthTwips =
+            widths[Math.max(0, Math.min(clampedCellIndex, widths.length - 1))] ??
+            Math.round((table.style.widthTwips ?? 3600) / Math.max(1, widths.length + 1));
+          widths.splice(Math.min(insertionIndex, widths.length), 0, fallbackWidthTwips);
+          table.style = {
+            ...(table.style ?? {}),
+            columnWidthsTwips: widths
+          };
+        }
+
+        table.sourceXml = undefined;
+        return next;
+      }, direction === "left" ? "Inserted column left" : "Inserted column right");
+
+      if (nextSelection) {
+        suppressSelectionResetRef.current = true;
+        setSelection(nextSelection);
+        setActiveTextRangeState(undefined);
+      }
+    },
+    [applyModelChange]
+  );
+
+  const deleteTableRow = React.useCallback(
+    (tableIndex: number, rowIndex: number): void => {
+      const tableNode = modelRef.current.nodes[tableIndex];
+      if (!tableNode || tableNode.type !== "table") {
+        return;
+      }
+      const currentSelection = selectionRef.current;
+
+      if (tableNode.rows.length <= 1) {
+        deleteTable(tableIndex);
+        return;
+      }
+
+      let nextSelection: DocxEditorSelection | undefined;
+      applyModelChange((current) => {
+        const currentTableNode = current.nodes[tableIndex];
+        if (!currentTableNode || currentTableNode.type !== "table") {
+          return current;
+        }
+
+        const next = cloneDocModel(current);
+        const table = next.nodes[tableIndex];
+        if (!table || table.type !== "table") {
+          return current;
+        }
+
+        const clampedRowIndex = clampNumber(rowIndex, 0, Math.max(0, table.rows.length - 1));
+        table.rows.splice(clampedRowIndex, 1);
+        if (table.rows.length === 0) {
+          return current;
+        }
+
+        table.sourceXml = undefined;
+        const targetRowIndex = Math.max(0, Math.min(clampedRowIndex, table.rows.length - 1));
+        const targetRow = table.rows[targetRowIndex];
+        const targetCellIndex = Math.max(
+          0,
+          Math.min(
+            currentSelection.kind === "table-cell" && currentSelection.tableIndex === tableIndex
+              ? currentSelection.cellIndex
+              : 0,
+            Math.max(0, targetRow?.cells.length ? targetRow.cells.length - 1 : 0)
+          )
+        );
+        nextSelection = {
+          kind: "table-cell",
+          tableIndex,
+          rowIndex: targetRowIndex,
+          cellIndex: targetCellIndex
+        };
+
+        return next;
+      }, "Deleted table row");
+
+      if (nextSelection) {
+        suppressSelectionResetRef.current = true;
+        setSelection(nextSelection);
+        setActiveTextRangeState(undefined);
+      }
+    },
+    [applyModelChange, deleteTable]
+  );
+
+  const deleteTableColumn = React.useCallback(
+    (tableIndex: number, cellIndex: number, rowIndex?: number): void => {
+      const tableNode = modelRef.current.nodes[tableIndex];
+      if (!tableNode || tableNode.type !== "table") {
+        return;
+      }
+
+      const maxColumnCount = Math.max(0, ...tableNode.rows.map((row) => row.cells.length));
+      if (maxColumnCount <= 1) {
+        deleteTable(tableIndex);
+        return;
+      }
+
+      let nextSelection: DocxEditorSelection | undefined;
+      applyModelChange((current) => {
+        const currentTableNode = current.nodes[tableIndex];
+        if (!currentTableNode || currentTableNode.type !== "table") {
+          return current;
+        }
+
+        const next = cloneDocModel(current);
+        const table = next.nodes[tableIndex];
+        if (!table || table.type !== "table") {
+          return current;
+        }
+
+        table.rows.forEach((row) => {
+          if (row.cells.length === 0) {
+            row.cells.push(createEmptyTableCellFromTemplate(undefined));
+            return;
+          }
+
+          const clampedCellIndex = clampNumber(cellIndex, 0, Math.max(0, row.cells.length - 1));
+          row.cells.splice(clampedCellIndex, 1);
+          if (row.cells.length === 0) {
+            row.cells.push(createEmptyTableCellFromTemplate(undefined));
+          }
+        });
+
+        if (table.style?.columnWidthsTwips && table.style.columnWidthsTwips.length > 0) {
+          const widths = [...table.style.columnWidthsTwips];
+          const clampedCellIndex = clampNumber(cellIndex, 0, Math.max(0, widths.length - 1));
+          widths.splice(clampedCellIndex, 1);
+          table.style = {
+            ...(table.style ?? {}),
+            columnWidthsTwips: widths
+          };
+        }
+
+        table.sourceXml = undefined;
+
+        const targetRowIndex = clampNumber(rowIndex ?? 0, 0, Math.max(0, table.rows.length - 1));
+        const targetRow = table.rows[targetRowIndex];
+        const targetCellIndex = Math.max(
+          0,
+          Math.min(cellIndex, Math.max(0, targetRow?.cells.length ? targetRow.cells.length - 1 : 0))
+        );
+        nextSelection = {
+          kind: "table-cell",
+          tableIndex,
+          rowIndex: targetRowIndex,
+          cellIndex: targetCellIndex
+        };
+
+        return next;
+      }, "Deleted table column");
+
+      if (nextSelection) {
+        suppressSelectionResetRef.current = true;
+        setSelection(nextSelection);
+        setActiveTextRangeState(undefined);
+      }
+    },
+    [applyModelChange, deleteTable]
+  );
+
+  const commitParagraphText = React.useCallback(
+    (nodeIndex: number, text: string): void => {
+      applyModelChange((current) =>
+        updateParagraphText(current, nodeIndex, text, {
+          insertedStyle: cloneTextStyle(pendingRunStyle)
+        })
+      );
+    },
+    [applyModelChange, pendingRunStyle]
+  );
+
+  const commitTableCellText = React.useCallback(
+    (tableIndex: number, rowIndex: number, cellIndex: number, text: string): void => {
+      applyModelChange((current) =>
+        updateTableCellText(current, tableIndex, rowIndex, cellIndex, text, {
+          insertedStyle: cloneTextStyle(pendingRunStyle)
+        })
+      );
+    },
+    [applyModelChange, pendingRunStyle]
+  );
+
+  const commitTableCellParagraphTextRecursive = React.useCallback(
+    (
+      tableIndex: number,
+      rowIndex: number,
+      cellIndex: number,
+      paragraphIndex: number,
+      text: string
+    ): void => {
+      applyModelChange((current) =>
+        updateTableCellParagraphTextRecursive(
+          current,
+          tableIndex,
+          rowIndex,
+          cellIndex,
+          paragraphIndex,
+          text,
+          {
+            insertedStyle: cloneTextStyle(pendingRunStyle)
+          }
+        )
+      );
+    },
+    [applyModelChange, pendingRunStyle]
+  );
+
+  const commitSectionParagraphText = React.useCallback(
+    (location: DocxSectionParagraphLocation, text: string): void => {
+      applyModelChange(
+        (current) =>
+          updateSectionParagraphTextAtLocation(current, location, text, {
+            insertedStyle: cloneTextStyle(pendingRunStyle)
+          }),
+        location.region === "header" ? "Updated header" : "Updated footer"
+      );
+    },
+    [applyModelChange, pendingRunStyle]
+  );
+
+  return {
+    model,
+    fileName,
+    status,
+    documentTheme,
+    trackedChanges,
+    showTrackedChanges,
+    selection,
+    activeTextRange,
+    historyRestoreRequest,
+    selectedFormField,
+    selectedParagraph,
+    selectedRunStyle,
+    selectedLink,
+    pendingRunStyle,
+    selectedParagraphStyleId,
+    selectedLineSpacing,
+    selectedBorderContext,
+    activeBorderPresets,
+    availableParagraphStyles,
+    hasUnorderedList,
+    hasOrderedList,
+    canUndo,
+    canRedo,
+    registerPendingExportModelTransformer,
+    setStatus,
+    setDocumentTheme,
+    setShowTrackedChanges,
+    toggleShowTrackedChanges,
+    importDocxFile,
+    newDocument,
+    exportDocx,
+    undo,
+    redo,
+    setHeading,
+    setParagraphStyle,
+    setLineSpacing,
+    setFontFamily,
+    setFontSize,
+    toggleBold,
+    toggleItalic,
+    toggleUnderline,
+    toggleStrike,
+    toggleSuperscript,
+    toggleSubscript,
+    setHighlight,
+    setTextColor,
+    setLink,
+    selectFormField,
+    toggleFormCheckbox,
+    setFormFieldValue,
+    updateFormFieldWidget,
+    applyBorderPreset,
+    setAlignment,
+    toggleList,
+    adjustSelectedListDepth,
+    insertListItemAfterSelection,
+    splitParagraphAtSelection,
+    insertTable,
+    insertImageFile,
+    appendParagraph,
+    resizeImage,
+    moveFloatingImage,
+    moveSectionFloatingImage,
+    moveImage,
+    setActiveTextRange,
+    selectParagraph,
+    selectTableCell,
+    clearTableCellContents,
+    insertTableRow,
+    insertTableColumn,
+    deleteTableRow,
+    deleteTableColumn,
+    deleteTable,
+    moveTable,
+    moveEmbeddedTableToBody,
+    replaceExpandedSelection,
+    deleteExpandedSelection,
+    commitParagraphText,
+    commitTableCellText,
+    commitTableCellParagraphTextRecursive,
+    commitSectionParagraphText
+  };
+}
+
+export function useDocxDocumentTheme(
+  editor: Pick<DocxEditorController, "documentTheme" | "setDocumentTheme">
+): UseDocxDocumentThemeResult {
+  const setDocumentTheme = React.useCallback(
+    (theme: DocxDocumentTheme): void => {
+      editor.setDocumentTheme(theme);
+    },
+    [editor.setDocumentTheme]
+  );
+
+  const toggleDocumentTheme = React.useCallback((): void => {
+    editor.setDocumentTheme(editor.documentTheme === "dark" ? "light" : "dark");
+  }, [editor.documentTheme, editor.setDocumentTheme]);
+
+  return React.useMemo(
+    () => ({
+      documentTheme: editor.documentTheme,
+      isDarkDocument: editor.documentTheme === "dark",
+      setDocumentTheme,
+      toggleDocumentTheme
+    }),
+    [editor.documentTheme, setDocumentTheme, toggleDocumentTheme]
+  );
+}
+
+export function useDocxParagraphStyles(
+  editor: Pick<
+    DocxEditorController,
+    "availableParagraphStyles" | "selectedParagraphStyleId" | "setParagraphStyle"
+  >
+): UseDocxParagraphStylesResult {
+  const setParagraphStyle = React.useCallback(
+    (styleId?: string): void => {
+      editor.setParagraphStyle(styleId);
+    },
+    [editor.setParagraphStyle]
+  );
+
+  return React.useMemo(
+    () => ({
+      paragraphStyles: editor.availableParagraphStyles,
+      selectedParagraphStyleId: editor.selectedParagraphStyleId,
+      setParagraphStyle
+    }),
+    [editor.availableParagraphStyles, editor.selectedParagraphStyleId, setParagraphStyle]
+  );
+}
+
+export function useDocxLineSpacing(
+  editor: Pick<DocxEditorController, "selectedLineSpacing" | "setLineSpacing">
+): UseDocxLineSpacingResult {
+  const setLineSpacing = React.useCallback(
+    (lineMultiple: number): void => {
+      editor.setLineSpacing(lineMultiple);
+    },
+    [editor.setLineSpacing]
+  );
+
+  return React.useMemo(
+    () => ({
+      lineSpacing: editor.selectedLineSpacing,
+      setLineSpacing
+    }),
+    [editor.selectedLineSpacing, setLineSpacing]
+  );
+}
+
+export function useDocxBorders(
+  editor: Pick<DocxEditorController, "selectedBorderContext" | "activeBorderPresets" | "applyBorderPreset">
+): UseDocxBordersResult {
+  const applyBorderPreset = React.useCallback(
+    (preset: DocxBorderPreset): void => {
+      editor.applyBorderPreset(preset);
+    },
+    [editor.applyBorderPreset]
+  );
+
+  return React.useMemo(
+    () => ({
+      borderContext: editor.selectedBorderContext,
+      activeBorderPresets: editor.activeBorderPresets,
+      applyBorderPreset
+    }),
+    [editor.activeBorderPresets, editor.selectedBorderContext, applyBorderPreset]
+  );
+}
+
+export function useDocxFormFields(
+  editor: Pick<
+    DocxEditorController,
+    | "model"
+    | "selectedFormField"
+    | "selectFormField"
+    | "setFormFieldValue"
+    | "toggleFormCheckbox"
+    | "updateFormFieldWidget"
+  >
+): UseDocxFormFieldsResult {
+  const formFields = React.useMemo(() => collectFormFieldsFromModel(editor.model), [editor.model]);
+
+  const updateSelectedFormFieldWidget = React.useCallback(
+    (patch: Partial<NonNullable<FormFieldRunNode["widget"]>>): void => {
+      if (!editor.selectedFormField) {
+        return;
+      }
+      editor.updateFormFieldWidget(editor.selectedFormField.location, patch);
+    },
+    [editor.selectedFormField, editor.updateFormFieldWidget]
+  );
+
+  return React.useMemo(
+    () => ({
+      formFields,
+      selectedFormField: editor.selectedFormField,
+      selectFormField: editor.selectFormField,
+      setFormFieldValue: editor.setFormFieldValue,
+      toggleFormCheckbox: editor.toggleFormCheckbox,
+      updateFormFieldWidget: editor.updateFormFieldWidget,
+      updateSelectedFormFieldWidget
+    }),
+    [
+      formFields,
+      editor.selectedFormField,
+      editor.selectFormField,
+      editor.setFormFieldValue,
+      editor.toggleFormCheckbox,
+      editor.updateFormFieldWidget,
+      updateSelectedFormFieldWidget
+    ]
+  );
+}
+
+export function useDocxTrackChanges(
+  editor: Pick<
+    DocxEditorController,
+    "trackedChanges" | "showTrackedChanges" | "setShowTrackedChanges" | "toggleShowTrackedChanges"
+  >
+): UseDocxTrackChangesResult {
+  const changesByLocation = React.useMemo(() => {
+    const grouped = new Map<string, DocxTrackedChange[]>();
+    editor.trackedChanges.forEach((change) => {
+      const key = paragraphLocationKey(change.location);
+      const bucket = grouped.get(key) ?? [];
+      bucket.push(change);
+      grouped.set(key, bucket);
+    });
+    return grouped;
+  }, [editor.trackedChanges]);
+
+  const getChangesForLocation = React.useCallback(
+    (location: DocxTextRangeLocation): DocxTrackedChange[] => {
+      return changesByLocation.get(paragraphLocationKey(location)) ?? [];
+    },
+    [changesByLocation]
+  );
+
+  return React.useMemo(
+    () => ({
+      trackedChanges: editor.trackedChanges,
+      showTrackedChanges: editor.showTrackedChanges,
+      setShowTrackedChanges: editor.setShowTrackedChanges,
+      toggleShowTrackedChanges: editor.toggleShowTrackedChanges,
+      changesByLocation,
+      getChangesForLocation
+    }),
+    [
+      editor.trackedChanges,
+      editor.showTrackedChanges,
+      editor.setShowTrackedChanges,
+      editor.toggleShowTrackedChanges,
+      changesByLocation,
+      getChangesForLocation
+    ]
+  );
+}
+
+export function useDocxPageLayout(
+  editor: Pick<DocxEditorController, "model">
+): UseDocxPageLayoutResult {
+  const primarySectionPropertiesXml =
+    editor.model.metadata.sections?.[0]?.sectionPropertiesXml ?? editor.model.metadata.sectionPropertiesXml;
+  const layout = React.useMemo<DocxPageLayoutInfo>(() => {
+    const sectionLayout = parseSectionLayout(primarySectionPropertiesXml);
+    const sectionColumns = parseSectionColumns(primarySectionPropertiesXml);
+    const pageNumberStart = parseSectionPageNumberStart(primarySectionPropertiesXml);
+    const contentWidthPx = Math.max(
+      120,
+      sectionLayout.pageWidthPx - sectionLayout.marginsPx.left - sectionLayout.marginsPx.right
+    );
+    const contentHeightPx = Math.max(
+      120,
+      sectionLayout.pageHeightPx - sectionLayout.marginsPx.top - sectionLayout.marginsPx.bottom
+    );
+
+    return {
+      pageWidthPx: sectionLayout.pageWidthPx,
+      pageHeightPx: sectionLayout.pageHeightPx,
+      contentWidthPx,
+      contentHeightPx,
+      marginsPx: { ...sectionLayout.marginsPx },
+      headerDistancePx: sectionLayout.headerDistancePx,
+      footerDistancePx: sectionLayout.footerDistancePx,
+      pageNumberStart,
+      columns: sectionColumns
+        ? {
+            count: sectionColumns.count,
+            gapPx: sectionColumns.gapPx
+          }
+        : undefined,
+      viewportDefaults: {
+        zoomPercent: 100,
+        pageGapPx: DOC_PAGE_BREAK_GAP
+      }
+    };
+  }, [primarySectionPropertiesXml]);
+
+  return React.useMemo(
+    () => ({
+      layout
+    }),
+    [layout]
+  );
+}
+
+interface HeaderFooterParagraphEditHandlers {
+  registerElement: (draftKey: string, element: HTMLDivElement | null) => void;
+  readDraftHtml: (draftKey: string) => string | undefined;
+  writeDraftHtml: (draftKey: string, html: string) => void;
+  clearDraftHtml: (draftKey: string) => void;
+  commitText: (location: DocxSectionParagraphLocation, text: string) => void;
+}
+
+interface HeaderFooterRenderEditScope {
+  region: DocxSectionRegion;
+  partName: string;
+  handlers?: HeaderFooterParagraphEditHandlers;
+}
+
+interface TableCellParagraphEditHandlers {
+  registerElement: (draftKey: string, element: HTMLDivElement | null) => void;
+  readDraftHtml: (draftKey: string) => string | undefined;
+  writeDraftHtml: (draftKey: string, html: string) => void;
+  clearDraftHtml: (draftKey: string) => void;
+  commitText: (paragraphIndex: number, text: string) => void;
+}
+
+interface TableCellParagraphEditScope {
+  isEditable: boolean;
+  draftKeyPrefix: string;
+  paragraphIndexesByNode: Map<ParagraphNode, number>;
+  handlers?: TableCellParagraphEditHandlers;
+}
+
+interface HeaderFooterImageInteraction {
+  isReadOnly: boolean;
+  selectedImageKey?: string;
+  floatingMovePreview?: {
+    imageKey: string;
+    deltaX: number;
+    deltaY: number;
+  };
+  imageLocationForChild?: (childIndex: number) => DocxSectionImageLocation | undefined;
+  onImagePointerDown?: (
+    event: React.PointerEvent<HTMLElement>,
+    location: DocxSectionImageLocation,
+    image: ImageRunNode,
+    isWrappedFloatingImage: boolean,
+    isAbsoluteFloatingImage: boolean
+  ) => void;
+  onImageClick?: (location: DocxSectionImageLocation) => void;
+}
+
+interface EmbeddedTableResizeController {
+  isReadOnly: boolean;
+  hoveredTableKey?: string;
+  focusedTableKey?: string;
+  hoveredHandle?: {
+    tableKey: string;
+    kind: "column" | "row";
+    boundaryIndex: number;
+  };
+  resolveColumnWidths: (tableKey: string, table: TableNode, tableWidthPx?: number) => number[];
+  resolveRowHeights: (tableKey: string, table: TableNode) => Array<number | undefined>;
+  isTableResizing: (tableKey: string) => boolean;
+  isColumnResizing: (tableKey: string, boundaryColumnIndex: number) => boolean;
+  isRowResizing: (tableKey: string, boundaryRowIndex: number) => boolean;
+  isCornerResizing: (tableKey: string) => boolean;
+  setHoveredTableKey: (tableKey: string | undefined) => void;
+  setFocusedTableKey: (tableKey: string | undefined) => void;
+  setHoveredHandle: (
+    handle:
+      | {
+          tableKey: string;
+          kind: "column" | "row";
+          boundaryIndex: number;
+        }
+      | undefined
+  ) => void;
+  beginColumnResize: (
+    event: React.PointerEvent<HTMLSpanElement>,
+    tableKey: string,
+    boundaryColumnIndex: number,
+    tableWidthPx: number,
+    columnWidths: number[]
+  ) => void;
+  beginRowResize: (
+    event: React.PointerEvent<HTMLSpanElement>,
+    tableKey: string,
+    boundaryRowIndex: number,
+    rowHeights: number[]
+  ) => void;
+  beginCornerResize: (
+    event: React.PointerEvent<HTMLSpanElement>,
+    tableKey: string,
+    tableWidthPx: number,
+    columnWidths: number[],
+    rowHeights: number[],
+    maxTableWidthPx?: number
+  ) => void;
+  beginTableMove: (event: React.PointerEvent<HTMLSpanElement>, tableKey: string) => void;
+}
+
+function renderHeaderNode(
+  node: DocModel["nodes"][number],
+  keyPrefix: string,
+  documentTheme: DocxDocumentTheme,
+  numberingDefinitions: NumberingDefinitionSet | undefined,
+  headingStyles?: DocxHeadingStyleMap,
+  maxContentWidthPx?: number,
+  onInternalLinkClick?: (bookmarkName: string) => void,
+  floatingPageOriginPx?: {
+    left: number;
+    top: number;
+    pageWidth?: number;
+  },
+  noteMarkerIndexes: {
+    footnote: Map<number, number>;
+    endnote: Map<number, number>;
+  } = {
+    footnote: new Map<number, number>(),
+    endnote: new Map<number, number>()
+  },
+  pageNumber?: number,
+  totalPages?: number,
+  runRenderOptions?: ParagraphRunRenderOptions,
+  editScope?: HeaderFooterRenderEditScope,
+  imageInteraction?: HeaderFooterImageInteraction,
+  tableCellEditScope?: TableCellParagraphEditScope,
+  sectionNodeIndex?: number,
+  embeddedTableResize?: EmbeddedTableResizeController
+): React.JSX.Element {
+  const renderHeaderParagraph = (
+    paragraphNode: ParagraphNode,
+    paragraphKeyPrefix: string,
+    paragraphStyle: React.CSSProperties,
+    location?: DocxSectionParagraphLocation
+  ): React.JSX.Element => {
+    const paragraphRunOptions: ParagraphRunRenderOptions = {
+      ...(runRenderOptions ?? {}),
+      withinHeaderFooter: true,
+      sectionImageInteraction:
+        location && imageInteraction
+          ? {
+              ...imageInteraction,
+              imageLocationForChild: (childIndex) => ({
+                ...location,
+                childIndex
+              })
+            }
+          : undefined
+    };
+    const sectionDraftKey = location ? sectionParagraphLocationKey(location) : undefined;
+    const isSectionEditable =
+      Boolean(location) &&
+      Boolean(editScope?.handlers) &&
+      Number.isFinite(sectionNodeIndex) &&
+      Number.isFinite(location?.nodeIndex);
+    const tableCellParagraphIndex = tableCellEditScope?.paragraphIndexesByNode.get(paragraphNode);
+    const tableCellDraftKey =
+      Number.isFinite(tableCellParagraphIndex) && tableCellEditScope
+        ? `${tableCellEditScope.draftKeyPrefix}:${tableCellParagraphIndex as number}`
+        : undefined;
+    const isTableCellParagraphEditable =
+      Boolean(tableCellEditScope?.handlers) &&
+      Boolean(tableCellEditScope?.isEditable) &&
+      Number.isFinite(tableCellParagraphIndex);
+
+    if (!isSectionEditable && !isTableCellParagraphEditable) {
+      return (
+        <div
+          key={`${paragraphKeyPrefix}-paragraph`}
+          data-docx-section-paragraph-key={sectionDraftKey}
+          style={paragraphStyle}
+        >
+          {renderParagraphRuns(
+            paragraphNode,
+            paragraphKeyPrefix,
+            documentTheme,
+            undefined,
+            onInternalLinkClick,
+            floatingPageOriginPx,
+            noteMarkerIndexes,
+            pageNumber,
+            totalPages,
+            paragraphRunOptions
+          )}
+        </div>
+      );
+    }
+
+    if (isSectionEditable && location && editScope?.handlers) {
+      const sectionEditHandlers = editScope.handlers;
+      const resolvedDraftKey = sectionDraftKey ?? sectionParagraphLocationKey(location);
+
+      return (
+        <div
+          key={`${paragraphKeyPrefix}-paragraph`}
+          data-docx-section-paragraph-host="true"
+          data-docx-section-paragraph-key={resolvedDraftKey}
+          data-docx-section-region={location.region}
+          data-docx-section-part-name={location.partName}
+          data-docx-section-node-index={location.nodeIndex}
+          data-docx-section-row-index={location.rowIndex}
+          data-docx-section-cell-index={location.cellIndex}
+          data-docx-section-paragraph-index={location.paragraphIndex}
+          style={{
+            ...paragraphStyle,
+            outline: "none"
+          }}
+          ref={(element) => {
+            sectionEditHandlers.registerElement(resolvedDraftKey, element);
+            if (!element) {
+              return;
+            }
+
+            const draftHtml = sectionEditHandlers.readDraftHtml(resolvedDraftKey);
+            if (typeof draftHtml !== "string") {
+              return;
+            }
+
+            scheduleDomWrite(() => {
+              if (!element.isConnected) {
+                return;
+              }
+              const latestDraftHtml = sectionEditHandlers.readDraftHtml(resolvedDraftKey);
+              if (latestDraftHtml !== draftHtml) {
+                return;
+              }
+              if (element.innerHTML !== draftHtml) {
+                const activeElement = document.activeElement;
+                const shouldRestoreSelection =
+                  activeElement === element ||
+                  (activeElement instanceof Element && element.contains(activeElement));
+                const selectionOffsets = shouldRestoreSelection
+                  ? selectionOffsetsWithinElementDom(element)
+                  : undefined;
+                element.innerHTML = draftHtml;
+                if (shouldRestoreSelection) {
+                  if (selectionOffsets) {
+                    const textLength = editableTextFromElement(element).length;
+                    const safeStart = Math.max(
+                      0,
+                      Math.min(selectionOffsets.start, textLength)
+                    );
+                    const safeEnd = Math.max(
+                      safeStart,
+                      Math.min(selectionOffsets.end, textLength)
+                    );
+                    setSelectionWithinElementByTextOffsetsDom(element, safeStart, safeEnd);
+                  } else {
+                    placeCaretInsideElementDom(element);
+                  }
+                }
+              }
+            });
+          }}
+        >
+          {renderParagraphRuns(
+            paragraphNode,
+            paragraphKeyPrefix,
+            documentTheme,
+            undefined,
+            onInternalLinkClick,
+            floatingPageOriginPx,
+            noteMarkerIndexes,
+            pageNumber,
+            totalPages,
+            paragraphRunOptions
+          )}
+        </div>
+      );
+    }
+
+    return (
+      <div
+        key={`${paragraphKeyPrefix}-paragraph`}
+        contentEditable
+        suppressContentEditableWarning
+        data-docx-table-cell-paragraph-host="true"
+        data-docx-table-cell-paragraph-key={tableCellDraftKey}
+        style={{
+          ...paragraphStyle,
+          outline: "none"
+        }}
+        ref={(element) => {
+          const tableCellEditHandlers = tableCellEditScope?.handlers;
+          if (!tableCellDraftKey || !tableCellEditHandlers) {
+            return;
+          }
+
+          tableCellEditHandlers.registerElement(tableCellDraftKey, element);
+          if (!element) {
+            return;
+          }
+
+          const draftHtml = tableCellEditHandlers.readDraftHtml(tableCellDraftKey);
+          if (typeof draftHtml !== "string") {
+            return;
+          }
+
+          scheduleDomWrite(() => {
+            if (!element.isConnected) {
+              return;
+            }
+            const latestDraftHtml = tableCellEditHandlers.readDraftHtml(tableCellDraftKey);
+            if (latestDraftHtml !== draftHtml) {
+              return;
+            }
+            if (element.innerHTML !== draftHtml) {
+              const activeElement = document.activeElement;
+              const shouldRestoreSelection =
+                activeElement === element ||
+                (activeElement instanceof Element && element.contains(activeElement));
+              const selectionOffsets = shouldRestoreSelection
+                ? selectionOffsetsWithinElementDom(element)
+                : undefined;
+              element.innerHTML = draftHtml;
+              if (shouldRestoreSelection) {
+                if (selectionOffsets) {
+                  const textLength = editableTextFromElement(element).length;
+                  const safeStart = Math.max(0, Math.min(selectionOffsets.start, textLength));
+                  const safeEnd = Math.max(safeStart, Math.min(selectionOffsets.end, textLength));
+                  setSelectionWithinElementByTextOffsetsDom(element, safeStart, safeEnd);
+                } else {
+                  placeCaretInsideElementDom(element);
+                }
+              }
+            }
+          });
+        }}
+        onInput={(event) => {
+          if (!tableCellDraftKey || !tableCellEditScope?.handlers) {
+            return;
+          }
+          tableCellEditScope.handlers.writeDraftHtml(tableCellDraftKey, event.currentTarget.innerHTML);
+        }}
+        onBlur={(event) => {
+          if (
+            !tableCellEditScope?.handlers ||
+            !tableCellDraftKey ||
+            !Number.isFinite(tableCellParagraphIndex)
+          ) {
+            return;
+          }
+
+          const nextText = editableTextFromElement(event.currentTarget);
+          const currentText = paragraphText(paragraphNode);
+          if (nextText === currentText) {
+            tableCellEditScope.handlers.clearDraftHtml(tableCellDraftKey);
+            return;
+          }
+          tableCellEditScope.handlers.commitText(tableCellParagraphIndex as number, nextText);
+        }}
+      >
+        {renderParagraphRuns(
+          paragraphNode,
+          paragraphKeyPrefix,
+          documentTheme,
+          undefined,
+          onInternalLinkClick,
+          floatingPageOriginPx,
+          noteMarkerIndexes,
+          pageNumber,
+          totalPages,
+          paragraphRunOptions
+        )}
+      </div>
+    );
+  };
+
+  if (node.type === "paragraph") {
+    const requiresPageAbsoluteContext = paragraphNeedsPageAnchoredAbsolutePositioningContext(node);
+    return renderHeaderParagraph(
+      node,
+      keyPrefix,
+      {
+        ...paragraphBlockStyle(node, numberingDefinitions, headingStyles),
+        ...(requiresPageAbsoluteContext ? { position: "static" } : undefined)
+      },
+      editScope && Number.isFinite(sectionNodeIndex)
+        ? {
+            region: editScope.region,
+            partName: editScope.partName,
+            nodeIndex: sectionNodeIndex as number
+          }
+        : undefined
+    );
+  }
+
+  const columnCount = tableColumnCount(node);
+  const tableIndentPx = twipsToPixels(node.style?.indentTwips) ?? 0;
+  const tableWidthPx = twipsToPixels(node.style?.widthTwips);
+  const tableRuntimeKey = keyPrefix;
+  const rawTableColumnWidthsPx = (() => {
+    if (embeddedTableResize) {
+      return embeddedTableResize.resolveColumnWidths(tableRuntimeKey, node, tableWidthPx);
+    }
+
+    const definedWidthsTwips = columnWidthsFromTableDefinition(node, columnCount);
+    if (!definedWidthsTwips || definedWidthsTwips.length === 0) {
+      return defaultColumnWidthsPx(columnCount, tableWidthPx);
+    }
+
+    const widthsPx = definedWidthsTwips.map((widthTwips) => twipsToPixels(widthTwips) ?? 0);
+    return normalizeColumnWidthsPx(widthsPx, columnCount, tableWidthPx, 1);
+  })();
+  const rawResolvedTableWidthPx =
+    tableWidthPx ?? rawTableColumnWidthsPx.reduce((sum, widthPx) => sum + widthPx, 0);
+  const maxTableWidthPx =
+    Number.isFinite(maxContentWidthPx) && (maxContentWidthPx as number) > 0
+      ? Math.max(120, (maxContentWidthPx as number) - tableIndentPx)
+      : undefined;
+  const resolvedTableWidthPx = clampTableWidthPx(rawResolvedTableWidthPx, maxTableWidthPx);
+  const { columnWidthsPx: tableColumnWidthsPx } = resolveFittedTableColumnWidths(
+    node,
+    rawTableColumnWidthsPx,
+    resolvedTableWidthPx
+  );
+  const tableRowHeightsPx = embeddedTableResize
+    ? embeddedTableResize.resolveRowHeights(tableRuntimeKey, node)
+    : node.rows.map((row) => twipsToPixels(row.style?.heightTwips));
+  const normalizedTableRowHeightsPx = tableRowHeightsPx.map((value) =>
+    Number.isFinite(value) && (value as number) > 0 ? Math.max(24, Math.round(value as number)) : 24
+  );
+  const tableColumnBoundaryOffsetsPx = tableColumnWidthsPx.reduce((offsets: number[], widthPx: number) => {
+    const previous = offsets[offsets.length - 1] ?? 0;
+    offsets.push(previous + widthPx);
+    return offsets;
+  }, [] as number[]);
+  const tableRowBoundaryOffsetsPx = normalizedTableRowHeightsPx.reduce((offsets: number[], heightPx: number) => {
+    const previous = offsets[offsets.length - 1] ?? 0;
+    offsets.push(previous + heightPx);
+    return offsets;
+  }, [] as number[]);
+  const maxBoundaryColumnIndex = Math.max(0, columnCount - 2);
+  const maxBoundaryRowIndex = Math.max(0, node.rows.length - 2);
+  const nestedColumnResizing = embeddedTableResize
+    ? (boundaryColumnIndex: number) =>
+        embeddedTableResize.isColumnResizing(tableRuntimeKey, boundaryColumnIndex)
+    : () => false;
+  const nestedRowResizing = embeddedTableResize
+    ? (boundaryRowIndex: number) =>
+        embeddedTableResize.isRowResizing(tableRuntimeKey, boundaryRowIndex)
+    : () => false;
+  const baseCellMarginTwips = node.style?.cellMarginTwips;
+  const tableBorders = node.style?.borders;
+  const applyWordTableDefaults = tableUsesWordLikeParagraphDefaults(node);
+  const nestedCornerResizing = embeddedTableResize
+    ? embeddedTableResize.isCornerResizing(tableRuntimeKey)
+    : false;
+  const nestedHandlesEnabled = Boolean(embeddedTableResize && !embeddedTableResize.isReadOnly);
+  const showNestedTableHandles =
+    nestedHandlesEnabled &&
+    Boolean(
+      embeddedTableResize?.hoveredTableKey === tableRuntimeKey ||
+        embeddedTableResize?.focusedTableKey === tableRuntimeKey ||
+        embeddedTableResize?.hoveredHandle?.tableKey === tableRuntimeKey ||
+        embeddedTableResize?.isTableResizing(tableRuntimeKey)
+    );
+  const showNestedTableMoveHandle = showNestedTableHandles;
+  const nestedTableMoveHandleToneStyle: React.CSSProperties =
+    documentTheme === "dark"
+      ? {
+          backgroundColor: "#111827",
+          border: "1px solid #374151",
+          color: "#cbd5e1",
+          boxShadow: "0 1px 2px rgba(2, 6, 23, 0.6)"
+        }
+      : {
+          backgroundColor: "#ffffff",
+          border: "1px solid #d4d4d8",
+          color: "#4b5563",
+          boxShadow: "0 1px 2px rgba(0, 0, 0, 0.14)"
+        };
+
+  return (
+    <div
+      key={`${keyPrefix}-table`}
+      style={tableWrapperStyle(node, tableIndentPx)}
+      onPointerEnter={() => {
+        if (!embeddedTableResize || embeddedTableResize.isReadOnly) {
+          return;
+        }
+        embeddedTableResize.setHoveredTableKey(tableRuntimeKey);
+      }}
+      onPointerLeave={(event) => {
+        if (!embeddedTableResize || embeddedTableResize.isReadOnly) {
+          return;
+        }
+        const nextTarget = event.relatedTarget;
+        if (nextTarget instanceof Node && event.currentTarget.contains(nextTarget)) {
+          return;
+        }
+        if (embeddedTableResize.focusedTableKey === tableRuntimeKey) {
+          return;
+        }
+        embeddedTableResize.setHoveredTableKey(undefined);
+      }}
+      onFocusCapture={() => {
+        if (!embeddedTableResize || embeddedTableResize.isReadOnly) {
+          return;
+        }
+        embeddedTableResize.setFocusedTableKey(tableRuntimeKey);
+        embeddedTableResize.setHoveredTableKey(tableRuntimeKey);
+      }}
+      onBlurCapture={(event) => {
+        if (!embeddedTableResize || embeddedTableResize.isReadOnly) {
+          return;
+        }
+        const nextTarget = event.relatedTarget;
+        if (nextTarget instanceof Node && event.currentTarget.contains(nextTarget)) {
+          return;
+        }
+        if (embeddedTableResize.focusedTableKey === tableRuntimeKey) {
+          embeddedTableResize.setFocusedTableKey(undefined);
+        }
+        embeddedTableResize.setHoveredTableKey(undefined);
+      }}
+    >
+      {showNestedTableHandles ? (
+        <>
+          <span
+            contentEditable={false}
+            style={{
+              position: "absolute",
+              top: -TABLE_HANDLE_SAFEZONE_TOP_PX,
+              left: -TABLE_HANDLE_SAFEZONE_LEFT_PX,
+              width: TABLE_HANDLE_SAFEZONE_LEFT_PX,
+              height: TABLE_HANDLE_SAFEZONE_TOP_PX,
+              backgroundColor: "transparent",
+              zIndex: 4
+            }}
+            onPointerEnter={() => embeddedTableResize?.setHoveredTableKey(tableRuntimeKey)}
+            onMouseEnter={() => embeddedTableResize?.setHoveredTableKey(tableRuntimeKey)}
+          />
+          <span
+            contentEditable={false}
+            style={{
+              position: "absolute",
+              right: -TABLE_HANDLE_SAFEZONE_RIGHT_PX,
+              bottom: -TABLE_HANDLE_SAFEZONE_BOTTOM_PX,
+              width: TABLE_RESIZE_HANDLE_HIT_SIZE + TABLE_HANDLE_SAFEZONE_RIGHT_PX,
+              height: TABLE_RESIZE_HANDLE_HIT_SIZE + TABLE_HANDLE_SAFEZONE_BOTTOM_PX,
+              backgroundColor: "transparent",
+              zIndex: 4
+            }}
+            onPointerEnter={() => embeddedTableResize?.setHoveredTableKey(tableRuntimeKey)}
+            onMouseEnter={() => embeddedTableResize?.setHoveredTableKey(tableRuntimeKey)}
+          />
+        </>
+      ) : null}
+      {showNestedTableMoveHandle ? (
+        <span
+          contentEditable={false}
+          data-docx-table-move-handle="true"
+          title="Nested table"
+          style={{
+            position: "absolute",
+            top: -TABLE_MOVE_HANDLE_HIT_SIZE - 4,
+            left: -TABLE_MOVE_HANDLE_HIT_SIZE - 4,
+            width: TABLE_MOVE_HANDLE_HIT_SIZE,
+            height: TABLE_MOVE_HANDLE_HIT_SIZE,
+            display: "grid",
+            placeItems: "center",
+            cursor: "move",
+            zIndex: 7,
+            touchAction: "none",
+            userSelect: "none"
+          }}
+          onPointerDown={(event) => {
+            embeddedTableResize?.beginTableMove(event, tableRuntimeKey);
+          }}
+        >
+          <span
+            style={{
+              ...TABLE_MOVE_HANDLE_STYLE,
+              ...nestedTableMoveHandleToneStyle
+            }}
+          >
+            <svg
+              width="11"
+              height="11"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M12 2v20" />
+              <path d="m7 7 5-5 5 5" />
+              <path d="m7 17 5 5 5-5" />
+              <path d="M2 12h20" />
+              <path d="m7 7-5 5 5 5" />
+              <path d="m17 7 5 5-5 5" />
+            </svg>
+          </span>
+        </span>
+      ) : null}
+      <table
+        style={{
+          width: resolvedTableWidthPx > 0 ? `${resolvedTableWidthPx}px` : "100%",
+          borderCollapse: "collapse",
+          tableLayout: node.style?.layout === "autofit" ? "auto" : "fixed"
+        }}
+      >
+        <colgroup>
+          {tableColumnWidthsPx.map((widthPx, columnIndex) => (
+            <col key={`${keyPrefix}-col-${columnIndex}`} style={{ width: `${widthPx}px` }} />
+          ))}
+        </colgroup>
+        <tbody>
+	          {node.rows.map((row, rowIndex) => {
+	            const rowHeightPx = twipsToPixels(row.style?.heightTwips);
+	            const resolvedRowHeightStyle =
+	              rowHeightPx && rowHeightPx > 0 ? { height: `${rowHeightPx}px` } : undefined;
+	            let columnCursor = 0;
+
+	            return (
+	              <tr key={`${keyPrefix}-row-${rowIndex}`} style={resolvedRowHeightStyle}>
+	                {row.cells.map((cell, cellIndex) => {
+                  const columnSpan = cell.style?.gridSpan && cell.style.gridSpan > 1 ? cell.style.gridSpan : 1;
+                  const rowSpanValue = cell.style?.rowSpan && cell.style.rowSpan > 1 ? cell.style.rowSpan : 1;
+                  const startColumnIndex = columnCursor;
+                  const endColumnIndex = startColumnIndex + columnSpan - 1;
+                  columnCursor += columnSpan;
+                  if (cell.style?.vMergeContinuation) {
+                    return null;
+                  }
+                  const cellWidthPx = twipsToPixels(cell.style?.widthTwips);
+
+                  return (
+                    <td
+                      key={`${keyPrefix}-cell-${rowIndex}-${cellIndex}`}
+                      colSpan={columnSpan > 1 ? columnSpan : undefined}
+                      rowSpan={rowSpanValue > 1 ? rowSpanValue : undefined}
+                      style={{
+                        ...resolveTableCellBorderCss(
+                          tableBorders,
+                          cell.style?.borders,
+                          rowIndex,
+                          node.rows.length,
+                          startColumnIndex,
+                          endColumnIndex,
+                          columnCount
+                        ),
+                        ...resolveTableCellDiagonalOverlayCss(
+                          tableBorders,
+                          cell.style?.borders
+                        ),
+                        ...tableSpacingPaddingStyle(
+                          mergeTableSpacing(baseCellMarginTwips, cell.style?.marginTwips)
+                        ),
+                        verticalAlign: cell.style?.verticalAlign ?? "top",
+                        backgroundColor: cell.style?.backgroundColor ?? row.style?.backgroundColor,
+	                        minWidth: cellWidthPx ? `${cellWidthPx}px` : 0,
+	                        width: cellWidthPx && columnSpan === 1 ? `${cellWidthPx}px` : undefined,
+	                        ...resolvedRowHeightStyle,
+	                        wordWrap: "break-word",
+	                        overflowWrap: "break-word",
+	                        wordBreak: "break-word"
+                      }}
+                    >
+                      <div style={{ display: "grid", gap: 4 }}>
+                        {(() => {
+                          let paragraphIndexInCell = 0;
+                          return cell.nodes.map((cellContent, contentIndex) => {
+                          if (cellContent.type === "paragraph") {
+                            const paragraphIndex = paragraphIndexInCell;
+                            paragraphIndexInCell += 1;
+                            return renderHeaderParagraph(
+                              cellContent,
+                              `${keyPrefix}-run-${rowIndex}-${cellIndex}-${contentIndex}`,
+                              tableCellParagraphBlockStyle(
+                                cellContent,
+                                numberingDefinitions,
+                                headingStyles,
+                                paragraphIndex,
+                                applyWordTableDefaults
+                              ),
+                              editScope && Number.isFinite(sectionNodeIndex)
+                                ? {
+                                    region: editScope.region,
+                                    partName: editScope.partName,
+                                    nodeIndex: sectionNodeIndex as number,
+                                    rowIndex,
+                                    cellIndex,
+                                    paragraphIndex
+                                  }
+                                : undefined
+                            );
+                          }
+
+                          return renderHeaderNode(
+                            cellContent,
+                            `${keyPrefix}-nested-table-${rowIndex}-${cellIndex}-${contentIndex}`,
+                            documentTheme,
+                            numberingDefinitions,
+                            headingStyles,
+                            maxContentWidthPx,
+                            onInternalLinkClick,
+                            floatingPageOriginPx,
+                            noteMarkerIndexes,
+                            pageNumber,
+                            totalPages,
+                            runRenderOptions,
+                            undefined,
+                            imageInteraction,
+                            tableCellEditScope,
+                            undefined,
+                            embeddedTableResize
+                          );
+                          });
+                        })()}
+                      </div>
+                    </td>
+                  );
+                })}
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      {showNestedTableHandles && embeddedTableResize && columnCount > 1
+        ? tableColumnWidthsPx.slice(0, maxBoundaryColumnIndex + 1).map((_, boundaryColumnIndex) => {
+            if (boundaryColumnIndex > maxBoundaryColumnIndex) {
+              return null;
+            }
+
+            const leftPx = tableColumnBoundaryOffsetsPx[boundaryColumnIndex] ?? 0;
+            const isResizing = nestedColumnResizing(boundaryColumnIndex);
+            const isHovered =
+              embeddedTableResize.hoveredHandle?.tableKey === tableRuntimeKey &&
+              embeddedTableResize.hoveredHandle.kind === "column" &&
+              embeddedTableResize.hoveredHandle.boundaryIndex === boundaryColumnIndex;
+            const isHot = isResizing || isHovered;
+
+            return (
+              <span
+                key={`${keyPrefix}-column-border-${boundaryColumnIndex}`}
+                contentEditable={false}
+                style={{
+                  position: "absolute",
+                  top: 0,
+                  bottom: 0,
+                  left: `${leftPx - TABLE_RESIZE_HANDLE_HIT_SIZE / 2 + TABLE_RESIZE_HANDLE_ALIGNMENT_OFFSET_PX}px`,
+                  width: TABLE_RESIZE_HANDLE_HIT_SIZE,
+                  cursor: "col-resize",
+                  zIndex: 5,
+                  touchAction: "none",
+                  userSelect: "none",
+                  backgroundColor: "transparent"
+                }}
+                onMouseEnter={() =>
+                  embeddedTableResize.setHoveredHandle({
+                    tableKey: tableRuntimeKey,
+                    kind: "column",
+                    boundaryIndex: boundaryColumnIndex
+                  })
+                }
+                onPointerEnter={() =>
+                  embeddedTableResize.setHoveredHandle({
+                    tableKey: tableRuntimeKey,
+                    kind: "column",
+                    boundaryIndex: boundaryColumnIndex
+                  })
+                }
+                onMouseLeave={() => {
+                  if (
+                    embeddedTableResize.hoveredHandle?.tableKey === tableRuntimeKey &&
+                    embeddedTableResize.hoveredHandle.kind === "column" &&
+                    embeddedTableResize.hoveredHandle.boundaryIndex === boundaryColumnIndex
+                  ) {
+                    embeddedTableResize.setHoveredHandle(undefined);
+                  }
+                }}
+                onPointerLeave={() => {
+                  if (
+                    embeddedTableResize.hoveredHandle?.tableKey === tableRuntimeKey &&
+                    embeddedTableResize.hoveredHandle.kind === "column" &&
+                    embeddedTableResize.hoveredHandle.boundaryIndex === boundaryColumnIndex
+                  ) {
+                    embeddedTableResize.setHoveredHandle(undefined);
+                  }
+                }}
+                onPointerDown={(event) => {
+                  const tableElement = event.currentTarget.parentElement?.querySelector("table");
+                  const tableElementWidthPx = tableElement ? tableElement.getBoundingClientRect().width : 0;
+                  embeddedTableResize.beginColumnResize(
+                    event,
+                    tableRuntimeKey,
+                    boundaryColumnIndex,
+                    tableElementWidthPx,
+                    tableColumnWidthsPx
+                  );
+                  embeddedTableResize.setHoveredHandle(undefined);
+                }}
+              >
+                <span
+                  style={{
+                    position: "absolute",
+                    left: "50%",
+                    top: 0,
+                    transform: "translateX(-50%)",
+                    width: TABLE_RESIZE_BORDER_SIZE,
+                    height: "100%",
+                    backgroundColor: isHot ? "#3b82f6" : "transparent"
+                  }}
+                />
+              </span>
+            );
+          })
+        : null}
+      {showNestedTableHandles && embeddedTableResize && node.rows.length > 1
+        ? tableRowHeightsPx.slice(0, maxBoundaryRowIndex + 1).map((_, boundaryRowIndex) => {
+            if (boundaryRowIndex > maxBoundaryRowIndex) {
+              return null;
+            }
+
+            const topPx = tableRowBoundaryOffsetsPx[boundaryRowIndex] ?? 0;
+            const isResizing = nestedRowResizing(boundaryRowIndex);
+            const isHovered =
+              embeddedTableResize.hoveredHandle?.tableKey === tableRuntimeKey &&
+              embeddedTableResize.hoveredHandle.kind === "row" &&
+              embeddedTableResize.hoveredHandle.boundaryIndex === boundaryRowIndex;
+            const isHot = isResizing || isHovered;
+
+            return (
+              <span
+                key={`${keyPrefix}-row-border-${boundaryRowIndex}`}
+                contentEditable={false}
+                style={{
+                  position: "absolute",
+                  left: 0,
+                  width: `${resolvedTableWidthPx}px`,
+                  top: `${topPx - TABLE_RESIZE_HANDLE_HIT_SIZE / 2 + TABLE_RESIZE_HANDLE_ALIGNMENT_OFFSET_PX}px`,
+                  height: TABLE_RESIZE_HANDLE_HIT_SIZE,
+                  cursor: "row-resize",
+                  zIndex: 5,
+                  touchAction: "none",
+                  userSelect: "none",
+                  backgroundColor: "transparent"
+                }}
+                onMouseEnter={() =>
+                  embeddedTableResize.setHoveredHandle({
+                    tableKey: tableRuntimeKey,
+                    kind: "row",
+                    boundaryIndex: boundaryRowIndex
+                  })
+                }
+                onPointerEnter={() =>
+                  embeddedTableResize.setHoveredHandle({
+                    tableKey: tableRuntimeKey,
+                    kind: "row",
+                    boundaryIndex: boundaryRowIndex
+                  })
+                }
+                onMouseLeave={() => {
+                  if (
+                    embeddedTableResize.hoveredHandle?.tableKey === tableRuntimeKey &&
+                    embeddedTableResize.hoveredHandle.kind === "row" &&
+                    embeddedTableResize.hoveredHandle.boundaryIndex === boundaryRowIndex
+                  ) {
+                    embeddedTableResize.setHoveredHandle(undefined);
+                  }
+                }}
+                onPointerLeave={() => {
+                  if (
+                    embeddedTableResize.hoveredHandle?.tableKey === tableRuntimeKey &&
+                    embeddedTableResize.hoveredHandle.kind === "row" &&
+                    embeddedTableResize.hoveredHandle.boundaryIndex === boundaryRowIndex
+                  ) {
+                    embeddedTableResize.setHoveredHandle(undefined);
+                  }
+                }}
+                onPointerDown={(event) => {
+                  const tableElement = event.currentTarget.parentElement?.querySelector("table");
+                  const measuredRows = tableElement
+                    ? Array.from(tableElement.querySelectorAll("tbody > tr")).map((rowElement) =>
+                        normalizeMeasuredTableRowHeightPx(
+                          (rowElement as HTMLTableRowElement).getBoundingClientRect().height
+                        )
+                      )
+                    : [];
+                  const startingHeights =
+                    measuredRows.length > 0
+                      ? measuredRows
+                      : tableRowHeightsPx.map((heightPx) => heightPx ?? 24);
+                  embeddedTableResize.beginRowResize(
+                    event,
+                    tableRuntimeKey,
+                    boundaryRowIndex,
+                    startingHeights
+                  );
+                  embeddedTableResize.setHoveredHandle(undefined);
+                }}
+              >
+                <span
+                  style={{
+                    position: "absolute",
+                    top: "50%",
+                    left: 0,
+                    right: 0,
+                    transform: "translateY(-50%)",
+                    width: "100%",
+                    height: TABLE_RESIZE_BORDER_SIZE,
+                    backgroundColor: isHot ? "#3b82f6" : "transparent"
+                  }}
+                />
+              </span>
+            );
+          })
+        : null}
+      {showNestedTableHandles && embeddedTableResize ? (
+        <span
+          contentEditable={false}
+          style={{
+            position: "absolute",
+            left: `${Math.max(
+              0,
+              resolvedTableWidthPx -
+                TABLE_RESIZE_HANDLE_HIT_SIZE / 2 +
+                TABLE_RESIZE_HANDLE_ALIGNMENT_OFFSET_PX
+            )}px`,
+            bottom: -8,
+            width: TABLE_RESIZE_HANDLE_HIT_SIZE,
+            height: TABLE_RESIZE_HANDLE_HIT_SIZE,
+            display: "flex",
+            alignItems: "flex-start",
+            justifyContent: "flex-start",
+            cursor: "nwse-resize",
+            opacity: nestedCornerResizing ? 1 : 1,
+            zIndex: 6,
+            touchAction: "none"
+          }}
+          onPointerDown={(event) => {
+            const tableElement = event.currentTarget.parentElement?.querySelector("table");
+            const handleTableWidthPx = tableElement ? tableElement.getBoundingClientRect().width : 0;
+            const measuredRows = tableElement
+              ? Array.from(tableElement.querySelectorAll("tbody > tr")).map((rowElement) =>
+                  normalizeMeasuredTableRowHeightPx(
+                    (rowElement as HTMLTableRowElement).getBoundingClientRect().height
+                  )
+                )
+              : [];
+            const currentHeights =
+              measuredRows.length > 0
+                ? measuredRows
+                : tableRowHeightsPx.map((rowHeightPx) => rowHeightPx ?? 24);
+
+            embeddedTableResize.beginCornerResize(
+              event,
+              tableRuntimeKey,
+              handleTableWidthPx,
+              tableColumnWidthsPx,
+              currentHeights,
+              maxTableWidthPx
+            );
+          }}
+        >
+          <span
+            style={{
+              ...TABLE_RESIZE_HANDLE_STYLE,
+              position: "absolute",
+              right: 0,
+              bottom: 0
+            }}
+          />
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
+export function DocxEditorViewer({
+  editor,
+  className,
+  style,
+  pageGapBackgroundColor,
+  visiblePageRange,
+  onPageCountChange,
+  onRequestPageReveal,
+  headingStyles,
+  showTrackedChanges,
+  renderTrackedChangeCard,
+  renderTableContextMenu,
+  renderContextMenu,
+  onFormFieldDoubleClick,
+  mode = "edit"
+}: DocxEditorViewerProps): React.JSX.Element {
+  const trackedChangesEnabled = showTrackedChanges ?? editor.showTrackedChanges;
+  const hasTrackedChanges = editor.trackedChanges.length > 0;
+  const showTrackedChangeGutter = trackedChangesEnabled;
+  const isReadOnly = mode === "read-only" || trackedChangesEnabled;
+  const canReplaceDocumentByDrop = mode !== "read-only";
+  const tocLinkColorByLevel = React.useMemo(
+    () => collectHeadingTextColorByLevel(editor.model),
+    [editor.model]
+  );
+  const paragraphRunRenderOptions = React.useMemo<ParagraphRunRenderOptions>(
+    () => ({
+      showTrackedChanges: trackedChangesEnabled,
+      numberingDefinitions: editor.model.metadata.numberingDefinitions,
+      tocLinkColorByLevel
+    }),
+    [editor.model.metadata.numberingDefinitions, tocLinkColorByLevel, trackedChangesEnabled]
+  );
+  const viewerRootRef = React.useRef<HTMLDivElement>(null);
+  const paragraphDraftsRef = React.useRef<Map<number, string>>(new Map());
+  const tableCellDraftsRef = React.useRef<Map<string, string>>(new Map());
+  const tableCellParagraphDraftsRef = React.useRef<Map<string, string>>(new Map());
+  const contextMenuClipboardTextRef = React.useRef("");
+  const sectionParagraphDraftsRef = React.useRef<Map<string, string>>(new Map());
+  const paragraphElementsRef = React.useRef<Map<number, HTMLDivElement>>(new Map());
+  const tableCellEditorElementsRef = React.useRef<Map<string, HTMLDivElement>>(new Map());
+  const tableCellParagraphElementsRef = React.useRef<Map<string, HTMLDivElement>>(new Map());
+  const sectionParagraphElementsRef = React.useRef<Map<string, HTMLDivElement>>(new Map());
+  const tableElementsRef = React.useRef<Map<number, HTMLDivElement>>(new Map());
+  const pageHeaderElementsRef = React.useRef<Map<number, HTMLDivElement>>(new Map());
+  const pageBodyElementsRef = React.useRef<Map<number, HTMLDivElement>>(new Map());
+  const pageFooterElementsRef = React.useRef<Map<number, HTMLDivElement>>(new Map());
+  const pageElementsRef = React.useRef<Map<number, HTMLDivElement>>(new Map());
+  const trackedChangeCardElementsRef = React.useRef<Map<string, HTMLDivElement>>(new Map());
+  const appliedHistoryRestoreNonceRef = React.useRef(0);
+  const pendingTableCellFocusRef = React.useRef<
+    | {
+        cellElementKey: string;
+        point?: {
+          x: number;
+          y: number;
+        };
+        boundary?: DocxTextRangeBoundary;
+        paragraphIndex?: number;
+      }
+    | undefined
+  >(undefined);
+  const pendingSectionParagraphFocusRef = React.useRef<
+    | {
+        draftKey: string;
+        point?: {
+          x: number;
+          y: number;
+        };
+      }
+    | undefined
+  >(undefined);
+  const draggedImageRef = React.useRef<DocxImageLocation | null>(null);
+  const previousBodyNodeCountRef = React.useRef<number>(editor.model.nodes.length);
+  const fileDragDepthRef = React.useRef(0);
+  const tableDraftLayoutRefreshRafRef = React.useRef<number | null>(null);
+
+  const [isDragOverCanvas, setIsDragOverCanvas] = React.useState(false);
+  const [isDraggingImage, setIsDraggingImage] = React.useState(false);
+  const [activeDropTarget, setActiveDropTarget] = React.useState<DocxImageDropTarget | undefined>();
+  const [selectedImage, setSelectedImage] = React.useState<DocxImageLocation | undefined>();
+  const [selectedSectionImageKey, setSelectedSectionImageKey] = React.useState<string | undefined>();
+  const [resizePreview, setResizePreview] = React.useState<{
+    imageKey: string;
+    widthPx: number;
+    heightPx: number;
+  } | undefined>();
+  const [floatingMovePreview, setFloatingMovePreview] = React.useState<
+    | {
+        imageKey: string;
+        deltaX: number;
+        deltaY: number;
+      }
+    | undefined
+  >();
+  const [tableColumnWidths, setTableColumnWidths] = React.useState<Record<number, number[]>>({});
+  const [embeddedTableColumnWidths, setEmbeddedTableColumnWidths] = React.useState<
+    Record<string, number[]>
+  >({});
+  const [activeColumnResize, setActiveColumnResize] = React.useState<
+    { tableIndex: number; boundaryColumnIndex: number } | undefined
+  >();
+  const [activeEmbeddedColumnResize, setActiveEmbeddedColumnResize] = React.useState<
+    { tableKey: string; boundaryColumnIndex: number } | undefined
+  >();
+  const [tableRowHeights, setTableRowHeights] = React.useState<Record<number, number[]>>({});
+  const [embeddedTableRowHeights, setEmbeddedTableRowHeights] = React.useState<Record<string, number[]>>({});
+  const [tableMeasuredRowHeights, setTableMeasuredRowHeights] = React.useState<Record<number, number[]>>({});
+  const [measuredPageContentHeightByIndex, setMeasuredPageContentHeightByIndex] = React.useState<
+    number[]
+  >([]);
+  const [activeRowResize, setActiveRowResize] = React.useState<
+    { tableIndex: number; boundaryRowIndex: number } | undefined
+  >();
+  const [activeEmbeddedRowResize, setActiveEmbeddedRowResize] = React.useState<
+    { tableKey: string; boundaryRowIndex: number } | undefined
+  >();
+  const [activeTableResize, setActiveTableResize] = React.useState<{ tableIndex: number } | undefined>();
+  const [activeEmbeddedTableResize, setActiveEmbeddedTableResize] = React.useState<
+    { tableKey: string } | undefined
+  >();
+  const [hoveredTableResizeHandle, setHoveredTableResizeHandle] = React.useState<
+    | {
+        tableIndex: number;
+        kind: "column" | "row";
+        boundaryIndex: number;
+      }
+    | undefined
+  >();
+  const [hoveredTableHandleTableIndex, setHoveredTableHandleTableIndex] = React.useState<number | undefined>();
+  const [hoveredEmbeddedTableResizeHandle, setHoveredEmbeddedTableResizeHandle] = React.useState<
+    | {
+        tableKey: string;
+        kind: "column" | "row";
+        boundaryIndex: number;
+      }
+    | undefined
+  >();
+  const [hoveredEmbeddedTableKey, setHoveredEmbeddedTableKey] = React.useState<string | undefined>();
+  const [focusedEmbeddedTableKey, setFocusedEmbeddedTableKey] = React.useState<string | undefined>();
+  const tableSelectionDragRef = React.useRef<
+    | {
+        pointerId: number;
+        startBoundary: DocxTextRangeBoundary;
+        startX: number;
+        startY: number;
+        hasMoved: boolean;
+      }
+    | undefined
+  >(undefined);
+  const tableCellSelectionDragRef = React.useRef<
+    | {
+        pointerId: number;
+        anchorCell: DocxTableCellLocation;
+        startBoundary?: DocxTextRangeBoundary;
+        startX: number;
+        startY: number;
+        isSelectingCells: boolean;
+        isSelectingAcrossNodes: boolean;
+      }
+    | undefined
+  >(undefined);
+  const tableMoveDragRef = React.useRef<
+    | {
+        pointerId: number;
+        tableIndex: number;
+        embeddedTableKey?: string;
+        startX: number;
+        startY: number;
+        hasMoved: boolean;
+      }
+    | undefined
+  >(undefined);
+  const suppressNextTableCellClickRef = React.useRef(false);
+  const [tableCellSelectionRange, setTableCellSelectionRange] = React.useState<
+    DocxTableCellSelectionRange | undefined
+  >();
+  const [tableMoveDropPreview, setTableMoveDropPreview] = React.useState<
+    | {
+        top: number;
+        left: number;
+        width: number;
+      }
+    | undefined
+  >();
+  const [tableContextMenuState, setTableContextMenuState] = React.useState<
+    | (DocxTableContextMenuContext & {
+        clientX: number;
+        clientY: number;
+      })
+    | undefined
+  >();
+  const [contextMenuState, setContextMenuState] = React.useState<
+    | (DocxContextMenuContext & {
+        clientX: number;
+        clientY: number;
+      })
+    | undefined
+  >();
+  const [activeHeaderFooterEdit, setActiveHeaderFooterEdit] = React.useState<
+    | {
+        region: DocxSectionRegion;
+        partName: string;
+        pageIndex: number;
+      }
+    | undefined
+  >();
+  const [tableDraftLayoutEpoch, bumpTableDraftLayoutEpoch] = React.useReducer(
+    (value: number) => value + 1,
+    0
+  );
+  const [paragraphStructureEpoch, bumpParagraphStructureEpoch] = React.useReducer(
+    (value: number) => value + 1,
+    0
+  );
+
+  const requestTableDraftLayoutRefresh = React.useCallback((): void => {
+    if (typeof window === "undefined" || typeof window.requestAnimationFrame !== "function") {
+      bumpTableDraftLayoutEpoch();
+      return;
+    }
+
+    if (tableDraftLayoutRefreshRafRef.current !== null) {
+      return;
+    }
+
+    tableDraftLayoutRefreshRafRef.current = window.requestAnimationFrame(() => {
+      tableDraftLayoutRefreshRafRef.current = null;
+      bumpTableDraftLayoutEpoch();
+    });
+  }, []);
+
+  React.useEffect(() => {
+    return () => {
+      if (
+        tableDraftLayoutRefreshRafRef.current !== null &&
+        typeof window !== "undefined" &&
+        typeof window.cancelAnimationFrame === "function"
+      ) {
+        window.cancelAnimationFrame(tableDraftLayoutRefreshRafRef.current);
+      }
+      tableDraftLayoutRefreshRafRef.current = null;
+    };
+  }, []);
+
+  React.useEffect(() => {
+    if (!isReadOnly) {
+      return;
+    }
+
+    setIsDragOverCanvas(false);
+    setIsDraggingImage(false);
+    setActiveDropTarget(undefined);
+    setSelectedImage(undefined);
+    setSelectedSectionImageKey(undefined);
+    setResizePreview(undefined);
+    setFloatingMovePreview(undefined);
+    setActiveColumnResize(undefined);
+    setActiveEmbeddedColumnResize(undefined);
+    setActiveRowResize(undefined);
+    setActiveEmbeddedRowResize(undefined);
+    setActiveTableResize(undefined);
+    setActiveEmbeddedTableResize(undefined);
+    setHoveredTableResizeHandle(undefined);
+    setHoveredTableHandleTableIndex(undefined);
+    setHoveredEmbeddedTableResizeHandle(undefined);
+    setHoveredEmbeddedTableKey(undefined);
+    setFocusedEmbeddedTableKey(undefined);
+    setTableMoveDropPreview(undefined);
+    tableMoveDragRef.current = undefined;
+    setTableContextMenuState(undefined);
+    setContextMenuState(undefined);
+    setActiveHeaderFooterEdit(undefined);
+    sectionParagraphDraftsRef.current.clear();
+    pendingSectionParagraphFocusRef.current = undefined;
+  }, [isReadOnly]);
+
+  React.useEffect(() => {
+    const previousNodeCount = previousBodyNodeCountRef.current;
+    const nextNodeCount = editor.model.nodes.length;
+    const structureChanged = previousNodeCount !== nextNodeCount;
+
+    if (structureChanged) {
+      paragraphDraftsRef.current.clear();
+      tableCellDraftsRef.current.clear();
+      tableCellParagraphDraftsRef.current.clear();
+      pendingTableCellFocusRef.current = undefined;
+      bumpParagraphStructureEpoch();
+    }
+
+    paragraphDraftsRef.current.forEach((_, nodeIndex) => {
+      const node = editor.model.nodes[nodeIndex];
+      if (!node || node.type !== "paragraph") {
+        paragraphDraftsRef.current.delete(nodeIndex);
+      }
+    });
+
+    tableCellDraftsRef.current.forEach((_, draftKey) => {
+      const [tableIndexRaw, rowIndexRaw, cellIndexRaw] = draftKey.split(":");
+      const tableIndex = Number.parseInt(tableIndexRaw ?? "", 10);
+      const rowIndex = Number.parseInt(rowIndexRaw ?? "", 10);
+      const cellIndex = Number.parseInt(cellIndexRaw ?? "", 10);
+      if (!Number.isFinite(tableIndex) || !Number.isFinite(rowIndex) || !Number.isFinite(cellIndex)) {
+        tableCellDraftsRef.current.delete(draftKey);
+        return;
+      }
+
+      const tableNode = editor.model.nodes[tableIndex];
+      const cell =
+        tableNode && tableNode.type === "table"
+          ? tableNode.rows[rowIndex]?.cells[cellIndex]
+          : undefined;
+      if (!cell) {
+        tableCellDraftsRef.current.delete(draftKey);
+      }
+    });
+
+    tableCellParagraphDraftsRef.current.forEach((_, draftKey) => {
+      const [tableIndexRaw, rowIndexRaw, cellIndexRaw, paragraphIndexRaw] = draftKey.split(":");
+      const tableIndex = Number.parseInt(tableIndexRaw ?? "", 10);
+      const rowIndex = Number.parseInt(rowIndexRaw ?? "", 10);
+      const cellIndex = Number.parseInt(cellIndexRaw ?? "", 10);
+      const paragraphIndex = Number.parseInt(paragraphIndexRaw ?? "", 10);
+      if (
+        !Number.isFinite(tableIndex) ||
+        !Number.isFinite(rowIndex) ||
+        !Number.isFinite(cellIndex) ||
+        !Number.isFinite(paragraphIndex)
+      ) {
+        tableCellParagraphDraftsRef.current.delete(draftKey);
+        return;
+      }
+
+      const tableNode = editor.model.nodes[tableIndex];
+      const cell =
+        tableNode && tableNode.type === "table"
+          ? tableNode.rows[rowIndex]?.cells[cellIndex]
+          : undefined;
+      if (!cell) {
+        tableCellParagraphDraftsRef.current.delete(draftKey);
+        return;
+      }
+
+      const paragraphs = tableCellParagraphsRecursively(cell.nodes);
+      if (!paragraphs[paragraphIndex]) {
+        tableCellParagraphDraftsRef.current.delete(draftKey);
+      }
+    });
+
+    previousBodyNodeCountRef.current = nextNodeCount;
+  }, [editor.model.nodes]);
+
+  const documentSections = React.useMemo(
+    () => resolveDocumentSectionsFromMetadata(editor.model.metadata),
+    [editor.model.metadata]
+  );
+  const primarySectionPropertiesXml =
+    documentSections[0]?.sectionPropertiesXml ?? editor.model.metadata.sectionPropertiesXml;
+  const finalSectionPropertiesXml =
+    documentSections[documentSections.length - 1]?.sectionPropertiesXml ??
+    editor.model.metadata.sectionPropertiesXml;
+  const documentLayout = React.useMemo(
+    () => parseSectionLayout(primarySectionPropertiesXml),
+    [primarySectionPropertiesXml]
+  );
+  const paginationSectionMetrics = React.useMemo(
+    () => buildPaginationSectionMetrics(documentSections, documentLayout),
+    [documentLayout, documentSections]
+  );
+  const docGridLinePitchPxByNodeIndex = React.useMemo(() => {
+    const pitchByNodeIndex = new Map<number, number | undefined>();
+    if (editor.model.nodes.length === 0 || paginationSectionMetrics.length === 0) {
+      return pitchByNodeIndex;
+    }
+
+    let currentMetricsIndex = 0;
+    for (let nodeIndex = 0; nodeIndex < editor.model.nodes.length; nodeIndex += 1) {
+      currentMetricsIndex = resolvePaginationSectionMetricsIndexForNodeIndex(
+        paginationSectionMetrics,
+        nodeIndex,
+        currentMetricsIndex
+      );
+      const docGridLinePitchPx = paginationSectionMetrics[currentMetricsIndex]?.docGridLinePitchPx;
+      if (Number.isFinite(docGridLinePitchPx) && (docGridLinePitchPx as number) > 0) {
+        pitchByNodeIndex.set(nodeIndex, Math.round(docGridLinePitchPx as number));
+      }
+    }
+
+    return pitchByNodeIndex;
+  }, [editor.model.nodes, paginationSectionMetrics]);
+  const finalSectionColumns = React.useMemo(
+    () => parseSectionColumns(finalSectionPropertiesXml),
+    [finalSectionPropertiesXml]
+  );
+  const finalSectionStartNodeIndex = React.useMemo(() => {
+    let lastSectionBreakParagraphIndex = -1;
+    editor.model.nodes.forEach((node, nodeIndex) => {
+      if (node.type !== "paragraph") {
+        return;
+      }
+
+      if (SECTION_PROPERTIES_XML_PATTERN.test(node.sourceXml ?? "")) {
+        lastSectionBreakParagraphIndex = nodeIndex;
+      }
+    });
+
+    if (!finalSectionColumns) {
+      return undefined;
+    }
+
+    return Math.max(0, lastSectionBreakParagraphIndex + 1);
+  }, [editor.model.nodes, finalSectionColumns]);
+  const paragraphNumberingLabels = React.useMemo(
+    () => buildParagraphNumberingLabels(editor.model),
+    [editor.model]
+  );
+  const bookmarkTargetNodeIndexByName = React.useMemo(() => {
+    const targets = new Map<string, number>();
+    editor.model.nodes.forEach((node, nodeIndex) => {
+      if (node.type === "paragraph") {
+        for (const bookmarkName of paragraphBookmarkNames(node)) {
+          if (!targets.has(bookmarkName)) {
+            targets.set(bookmarkName, nodeIndex);
+          }
+        }
+        return;
+      }
+
+      node.rows.forEach((row) => {
+        row.cells.forEach((cell) => {
+          tableCellParagraphsRecursively(cell.nodes).forEach((paragraph) => {
+            for (const bookmarkName of paragraphBookmarkNames(paragraph)) {
+              if (!targets.has(bookmarkName)) {
+                targets.set(bookmarkName, nodeIndex);
+              }
+            }
+          });
+        });
+      });
+    });
+    return targets;
+  }, [editor.model.nodes]);
+  const tableMeasuredRowHeightsForPagination = React.useMemo(() => {
+    const activeTableIndexes = new Set<number>();
+    const allowMeasuredImportPagination = !editor.canUndo && !editor.canRedo;
+
+    // Avoid re-paginating imported documents just because the caret lands in a
+    // table. Use live DOM row heights only when a table currently has draft edits.
+    tableCellDraftsRef.current.forEach((_, draftKey) => {
+      const [tableIndexText] = draftKey.split(":");
+      const tableIndex = Number.parseInt(tableIndexText ?? "", 10);
+      if (Number.isFinite(tableIndex) && tableIndex >= 0) {
+        activeTableIndexes.add(tableIndex);
+      }
+    });
+
+    tableCellParagraphDraftsRef.current.forEach((_, draftKey) => {
+      const [tableIndexText] = draftKey.split(":");
+      const tableIndex = Number.parseInt(tableIndexText ?? "", 10);
+      if (Number.isFinite(tableIndex) && tableIndex >= 0) {
+        activeTableIndexes.add(tableIndex);
+      }
+    });
+
+    if (activeTableIndexes.size === 0) {
+      if (!allowMeasuredImportPagination) {
+        return undefined;
+      }
+
+      const measuredByTableIndex: Record<number, number[]> = {};
+      Object.entries(tableMeasuredRowHeights).forEach(([tableIndexText, measuredRowHeights]) => {
+        const tableIndex = Number.parseInt(tableIndexText, 10);
+        const tableNode = editor.model.nodes[tableIndex];
+        if (
+          !Number.isFinite(tableIndex) ||
+          !tableNode ||
+          tableNode.type !== "table" ||
+          !Array.isArray(measuredRowHeights) ||
+          measuredRowHeights.length !== tableNode.rows.length
+        ) {
+          return;
+        }
+
+        measuredByTableIndex[tableIndex] = measuredRowHeights;
+      });
+
+      return Object.keys(measuredByTableIndex).length > 0 ? measuredByTableIndex : undefined;
+    }
+
+    const measuredByTableIndex: Record<number, number[]> = {};
+    activeTableIndexes.forEach((tableIndex) => {
+      const measuredRowHeights = tableMeasuredRowHeights[tableIndex];
+      if (Array.isArray(measuredRowHeights) && measuredRowHeights.length > 0) {
+        measuredByTableIndex[tableIndex] = measuredRowHeights;
+      }
+    });
+
+    return Object.keys(measuredByTableIndex).length > 0 ? measuredByTableIndex : undefined;
+  }, [editor.canRedo, editor.canUndo, editor.model.nodes, tableDraftLayoutEpoch, tableMeasuredRowHeights]);
+  const pageNodeSegmentsByPage = React.useMemo(() => {
+    const hasReferencedEndnotes =
+      (editor.model.metadata.endnotes?.length ?? 0) > 0 &&
+      editor.model.nodes.some((node) => nodeReferencedNoteIds(node, "endnote").length > 0);
+    const appendTrailingEndnotePage = (
+      pages: DocumentPageNodeSegment[][]
+    ): DocumentPageNodeSegment[][] => {
+      return hasReferencedEndnotes ? [...pages, []] : pages;
+    };
+    const pageContentHeightPx = Math.max(
+      120,
+      documentLayout.pageHeightPx - documentLayout.marginsPx.top - documentLayout.marginsPx.bottom
+    );
+    const pageContentWidthPx = Math.max(
+      120,
+      documentLayout.pageWidthPx - documentLayout.marginsPx.left - documentLayout.marginsPx.right
+    );
+    const suppressSpacingBeforeAfterPageBreak =
+      editor.model.metadata.compatibility?.suppressSpacingBeforeAfterPageBreak === true;
+    const estimatedPages = buildDocumentPageNodeSegments(
+      editor.model,
+      pageContentHeightPx,
+      pageContentWidthPx,
+      editor.model.metadata.numberingDefinitions,
+      paginationSectionMetrics,
+      {
+        // Partial paragraph segments are not contentEditable-safe in edit mode.
+        // Keep line-level splitting for read-only rendering paths.
+        allowParagraphLineSplitting: isReadOnly,
+        suppressSpacingBeforeAfterPageBreak,
+        measuredTableRowHeightsByNodeIndex: tableMeasuredRowHeightsForPagination,
+        measuredPageContentHeightsPxByPageIndex: measuredPageContentHeightByIndex
+      }
+    );
+    const allowStoredPageCountReconciliation = !editor.canUndo && !editor.canRedo;
+    if (!allowStoredPageCountReconciliation) {
+      return appendTrailingEndnotePage(estimatedPages);
+    }
+
+    const storedDocumentPageCount = editor.model.metadata.documentPageCount;
+    if (!Number.isFinite(storedDocumentPageCount) || (storedDocumentPageCount as number) <= 0) {
+      return appendTrailingEndnotePage(estimatedPages);
+    }
+
+    const hardBreakCount = collectDocxHardPageBreakStartNodeIndexes(editor.model).size;
+    const hasTableInternalPageBreaks = editor.model.nodes.some(
+      (node) =>
+        node.type === "table" &&
+        collectTableExplicitPageBreakInfo(node).startRowIndexes.some((rowIndex) => rowIndex > 0)
+    );
+    const minimumPageCount = Math.max(1, hardBreakCount + 1);
+    const targetPageCount = Math.max(
+      minimumPageCount,
+      Math.round(storedDocumentPageCount as number)
+    );
+    if (estimatedPages.length === targetPageCount) {
+      return appendTrailingEndnotePage(estimatedPages);
+    }
+
+    return appendTrailingEndnotePage(reconcilePagesToTargetCountByScalingHeight({
+      initialPages: estimatedPages,
+      targetPageCount,
+      maxDifference: hasTableInternalPageBreaks ? 2 : 3,
+      buildPagesAtScale: (heightScale) =>
+        buildDocumentPageNodeSegments(
+          editor.model,
+          Math.max(120, Math.round(pageContentHeightPx * heightScale)),
+          pageContentWidthPx,
+          editor.model.metadata.numberingDefinitions,
+          scalePaginationSectionMetricsHeights(
+            paginationSectionMetrics,
+            heightScale
+          ),
+          {
+            allowParagraphLineSplitting: isReadOnly,
+            suppressSpacingBeforeAfterPageBreak,
+            measuredTableRowHeightsByNodeIndex: tableMeasuredRowHeightsForPagination,
+            measuredPageContentHeightsPxByPageIndex: scaleMeasuredPageContentHeights(
+              measuredPageContentHeightByIndex,
+              heightScale
+            )
+          }
+        )
+    }));
+  }, [
+    editor.canRedo,
+    editor.canUndo,
+    editor.model,
+    editor.model.metadata.documentPageCount,
+    editor.model.metadata.endnotes,
+    documentLayout.pageHeightPx,
+    documentLayout.pageWidthPx,
+    documentLayout.marginsPx.bottom,
+    documentLayout.marginsPx.left,
+    documentLayout.marginsPx.right,
+    documentLayout.marginsPx.top,
+    editor.model.metadata.numberingDefinitions,
+    paginationSectionMetrics,
+    isReadOnly,
+    measuredPageContentHeightByIndex,
+    tableMeasuredRowHeightsForPagination
+  ]);
+  const pageSectionInfoByIndex = React.useMemo(() => {
+    if (pageNodeSegmentsByPage.length === 0) {
+      return [] as Array<{
+        section: ResolvedDocumentSection;
+        sectionIndex: number;
+        pageIndexWithinSection: number;
+        layout: DocumentLayoutMetrics;
+        pageNumber: number;
+      }>;
+    }
+
+    const sections = documentSections.length > 0
+      ? documentSections
+      : [
+          {
+            startNodeIndex: 0,
+            sectionPropertiesXml: editor.model.metadata.sectionPropertiesXml,
+            headerSections: editor.model.metadata.headerSections,
+            footerSections: editor.model.metadata.footerSections
+          }
+        ];
+    const sectionPageCounts = new Map<number, number>();
+    const pageInfo: Array<{
+      section: ResolvedDocumentSection;
+      sectionIndex: number;
+      pageIndexWithinSection: number;
+      layout: DocumentLayoutMetrics;
+      pageNumber: number;
+    }> = [];
+    let currentSectionIndex = 0;
+    let currentPageNumber = parseSectionPageNumberStart(sections[0]?.sectionPropertiesXml);
+
+    for (let pageIndex = 0; pageIndex < pageNodeSegmentsByPage.length; pageIndex += 1) {
+      const pageSegments = pageNodeSegmentsByPage[pageIndex];
+      const firstNodeIndex = pageSegments[0]?.nodeIndex;
+      if (firstNodeIndex !== undefined) {
+        currentSectionIndex = resolveSectionIndexForNodeIndex(
+          sections,
+          firstNodeIndex,
+          currentSectionIndex
+        );
+      }
+
+      const section = sections[currentSectionIndex] ?? sections[sections.length - 1];
+      const pageIndexWithinSection = sectionPageCounts.get(currentSectionIndex) ?? 0;
+      sectionPageCounts.set(currentSectionIndex, pageIndexWithinSection + 1);
+
+      if (pageIndex === 0) {
+        const firstOverride = parseSectionPageNumberStartOverride(section.sectionPropertiesXml);
+        currentPageNumber = firstOverride ?? parseSectionPageNumberStart(section.sectionPropertiesXml);
+      } else if (pageIndexWithinSection === 0) {
+        const sectionOverride = parseSectionPageNumberStartOverride(section.sectionPropertiesXml);
+        currentPageNumber = sectionOverride ?? currentPageNumber + 1;
+      } else {
+        currentPageNumber += 1;
+      }
+
+      pageInfo.push({
+        section,
+        sectionIndex: currentSectionIndex,
+        pageIndexWithinSection,
+        layout: parseSectionLayout(section.sectionPropertiesXml ?? primarySectionPropertiesXml),
+        pageNumber: currentPageNumber
+      });
+    }
+
+    return pageInfo;
+  }, [
+    documentSections,
+    editor.model.metadata.footerSections,
+    editor.model.metadata.headerSections,
+    editor.model.metadata.sectionPropertiesXml,
+    pageNodeSegmentsByPage,
+    primarySectionPropertiesXml
+  ]);
+  const pageIndexByNodeIndex = React.useMemo(() => {
+    const indexByNode = new Map<number, number>();
+    pageNodeSegmentsByPage.forEach((segments, pageIndex) => {
+      segments.forEach((segment) => {
+        if (!indexByNode.has(segment.nodeIndex)) {
+          indexByNode.set(segment.nodeIndex, pageIndex);
+        }
+      });
+    });
+    return indexByNode;
+  }, [pageNodeSegmentsByPage]);
+  const pageCount = pageNodeSegmentsByPage.length;
+  const normalizedVisiblePageRange = React.useMemo(() => {
+    if (pageCount <= 0) {
+      return {
+        startPageIndex: 0,
+        endPageIndex: -1
+      };
+    }
+
+    const rawStart = Number(visiblePageRange?.startPageIndex);
+    const rawEnd = Number(visiblePageRange?.endPageIndex);
+    const startCandidate = Number.isFinite(rawStart) ? Math.round(rawStart) : 0;
+    const endCandidate = Number.isFinite(rawEnd) ? Math.round(rawEnd) : pageCount - 1;
+    const startPageIndex = clampNumber(startCandidate, 0, pageCount - 1);
+    const endPageIndex = clampNumber(endCandidate, startPageIndex, pageCount - 1);
+
+    return {
+      startPageIndex,
+      endPageIndex
+    };
+  }, [pageCount, visiblePageRange?.endPageIndex, visiblePageRange?.startPageIndex]);
+  const visiblePageStartIndex = normalizedVisiblePageRange.startPageIndex;
+  const visiblePageEndIndex = normalizedVisiblePageRange.endPageIndex;
+  React.useEffect(() => {
+    if (!onPageCountChange) {
+      return;
+    }
+
+    onPageCountChange(pageCount);
+  }, [onPageCountChange, pageCount]);
+  const trackedChangesByPage = React.useMemo(() => {
+    const pageBuckets = pageNodeSegmentsByPage.map(() => [] as DocxTrackedChange[]);
+
+    editor.trackedChanges.forEach((change) => {
+      const pageIndex = resolveTrackedChangePageIndex(change, pageNodeSegmentsByPage);
+      if (pageIndex < 0 || pageIndex >= pageBuckets.length) {
+        return;
+      }
+      pageBuckets[pageIndex].push(change);
+    });
+
+    pageBuckets.forEach((pageChanges) => {
+      pageChanges.sort((left, right) => {
+        const leftKey = trackedChangeSortTuple(left);
+        const rightKey = trackedChangeSortTuple(right);
+        for (let index = 0; index < leftKey.length; index += 1) {
+          if (leftKey[index] === rightKey[index]) {
+            continue;
+          }
+          return leftKey[index] - rightKey[index];
+        }
+        return left.id.localeCompare(right.id);
+      });
+    });
+
+    return pageBuckets;
+  }, [editor.trackedChanges, pageNodeSegmentsByPage]);
+  const [trackedChangeAnchorByPage, setTrackedChangeAnchorByPage] = React.useState<
+    Array<Map<string, TrackedChangeAnchorPoint>>
+  >(
+    []
+  );
+  const [headerVisualOverflowByPage, setHeaderVisualOverflowByPage] = React.useState<
+    Record<number, number>
+  >({});
+  const [trackedChangeCardHeightsByPage, setTrackedChangeCardHeightsByPage] = React.useState<
+    Array<Map<string, number>>
+  >([]);
+  React.useLayoutEffect(() => {
+    if (!showTrackedChangeGutter || trackedChangesByPage.length === 0) {
+      setTrackedChangeAnchorByPage((current) => (current.length === 0 ? current : []));
+      return;
+    }
+
+    const nextAnchorMaps = trackedChangesByPage.map((changes, pageIndex) => {
+      const pageElement = pageElementsRef.current.get(pageIndex);
+      const anchorsByChangeId = new Map<string, TrackedChangeAnchorPoint>();
+      if (!pageElement || changes.length === 0) {
+        return anchorsByChangeId;
+      }
+
+      const pageHeightPx = Math.max(1, pageElement.offsetHeight);
+      const pageWidthPx = Math.max(1, pageElement.offsetWidth);
+      changes.forEach((change) => {
+        const anchorElement = findTrackedChangeAnchorElementInPage(pageElement, change.location);
+        if (!anchorElement) {
+          return;
+        }
+
+        const anchorRect = elementRectWithinContainer(anchorElement, pageElement);
+        if (!anchorRect) {
+          return;
+        }
+
+        const anchorY = clampNumber(
+          Math.round(anchorRect.top + anchorRect.height / 2),
+          10,
+          Math.max(10, pageHeightPx - 10)
+        );
+        const anchorX = clampNumber(
+          Math.round(anchorRect.left + Math.min(24, Math.max(8, anchorRect.width * 0.2))),
+          10,
+          Math.max(10, pageWidthPx - 10)
+        );
+        anchorsByChangeId.set(change.id, { x: anchorX, y: anchorY });
+      });
+
+      return anchorsByChangeId;
+    });
+
+    setTrackedChangeAnchorByPage(nextAnchorMaps);
+  }, [
+    trackedChangesByPage,
+    showTrackedChangeGutter,
+    visiblePageEndIndex,
+    visiblePageStartIndex
+  ]);
+  React.useLayoutEffect(() => {
+    if (!showTrackedChangeGutter || trackedChangesByPage.length === 0) {
+      setTrackedChangeCardHeightsByPage((current) => (current.length === 0 ? current : []));
+      return;
+    }
+
+    const nextHeightsByPage = trackedChangesByPage.map((changes, pageIndex) => {
+      const pageHeights = new Map<string, number>();
+      changes.forEach((change) => {
+        const cardElement = trackedChangeCardElementsRef.current.get(
+          `${pageIndex}:${change.id}`
+        );
+        if (!cardElement) {
+          return;
+        }
+
+        const measuredHeight = Math.round(cardElement.getBoundingClientRect().height);
+        if (!Number.isFinite(measuredHeight) || measuredHeight <= 0) {
+          return;
+        }
+
+        pageHeights.set(
+          change.id,
+          Math.max(TRACKED_CHANGE_GUTTER_CARD_MIN_HEIGHT_PX, measuredHeight)
+        );
+      });
+      return pageHeights;
+    });
+
+    setTrackedChangeCardHeightsByPage((current) => {
+      if (current.length === nextHeightsByPage.length) {
+        let equal = true;
+        for (let pageIndex = 0; pageIndex < nextHeightsByPage.length && equal; pageIndex += 1) {
+          const currentPage = current[pageIndex] ?? new Map<string, number>();
+          const nextPage = nextHeightsByPage[pageIndex] ?? new Map<string, number>();
+          if (currentPage.size !== nextPage.size) {
+            equal = false;
+            break;
+          }
+          for (const [changeId, nextHeight] of nextPage) {
+            const currentHeight = currentPage.get(changeId);
+            if (currentHeight !== nextHeight) {
+              equal = false;
+              break;
+            }
+          }
+        }
+        if (equal) {
+          return current;
+        }
+      }
+      return nextHeightsByPage;
+    });
+  }, [
+    showTrackedChangeGutter,
+    trackedChangesByPage,
+    visiblePageEndIndex,
+    visiblePageStartIndex
+  ]);
+  const positionedTrackedChangesByPage = React.useMemo(() => {
+    return trackedChangesByPage.map((changes, pageIndex) => {
+      const pageLayout = pageSectionInfoByIndex[pageIndex]?.layout ?? documentLayout;
+      const anchorsByChangeId =
+        trackedChangeAnchorByPage[pageIndex] ?? new Map<string, TrackedChangeAnchorPoint>();
+      const cardHeightsByChangeId =
+        trackedChangeCardHeightsByPage[pageIndex] ?? new Map<string, number>();
+      return layoutTrackedChangesForPage(
+        changes,
+        anchorsByChangeId,
+        cardHeightsByChangeId,
+        Math.max(1, pageLayout.pageWidthPx),
+        Math.max(1, pageLayout.pageHeightPx)
+      );
+    });
+  }, [
+    documentLayout,
+    pageSectionInfoByIndex,
+    trackedChangeAnchorByPage,
+    trackedChangeCardHeightsByPage,
+    trackedChangesByPage
+  ]);
+  const totalPagesForFieldResolution = React.useMemo(() => {
+    if (editor.canUndo || editor.canRedo) {
+      return pageCount;
+    }
+    const storedDocumentPageCount = editor.model.metadata.documentPageCount;
+    if (Number.isFinite(storedDocumentPageCount) && (storedDocumentPageCount as number) > 0) {
+      return Math.max(1, Math.round(storedDocumentPageCount as number));
+    }
+    return pageCount;
+  }, [editor.canRedo, editor.canUndo, editor.model.metadata.documentPageCount, pageCount]);
+  const isPageVisible = React.useCallback(
+    (pageIndex: number): boolean => {
+      return (
+        pageIndex >= visiblePageStartIndex &&
+        pageIndex <= visiblePageEndIndex
+      );
+    },
+    [visiblePageEndIndex, visiblePageStartIndex]
+  );
+  const scrollToBookmark = React.useCallback(
+    (bookmarkName: string): boolean => {
+      const normalized = bookmarkName.trim();
+      if (!normalized) {
+        return false;
+      }
+
+      const targetNodeIndex = bookmarkTargetNodeIndexByName.get(normalized);
+      if (targetNodeIndex === undefined) {
+        return false;
+      }
+
+      const targetElement =
+        paragraphElementsRef.current.get(targetNodeIndex) ?? tableElementsRef.current.get(targetNodeIndex);
+      if (targetElement) {
+        targetElement.scrollIntoView({
+          behavior: "smooth",
+          block: "center",
+          inline: "nearest"
+        });
+        if (editor.model.nodes[targetNodeIndex]?.type === "paragraph") {
+          editor.selectParagraph(targetNodeIndex);
+        }
+        return true;
+      }
+
+      const targetPageIndex = pageIndexByNodeIndex.get(targetNodeIndex);
+      if (targetPageIndex === undefined) {
+        return false;
+      }
+
+      const pageIsVisible =
+        targetPageIndex >= visiblePageStartIndex &&
+        targetPageIndex <= visiblePageEndIndex;
+      if (!pageIsVisible) {
+        onRequestPageReveal?.(targetPageIndex);
+      }
+
+      const scrollToResolvedTarget = (attempt = 0): void => {
+        const fallbackElement =
+          paragraphElementsRef.current.get(targetNodeIndex) ??
+          tableElementsRef.current.get(targetNodeIndex) ??
+          pageElementsRef.current.get(targetPageIndex);
+        if (fallbackElement) {
+          fallbackElement.scrollIntoView({
+            behavior: "smooth",
+            block: "center",
+            inline: "nearest"
+          });
+          return;
+        }
+
+        if (attempt < 6) {
+          window.requestAnimationFrame(() => {
+            scrollToResolvedTarget(attempt + 1);
+          });
+        }
+      };
+
+      window.requestAnimationFrame(() => {
+        scrollToResolvedTarget();
+      });
+
+      if (editor.model.nodes[targetNodeIndex]?.type === "paragraph") {
+        editor.selectParagraph(targetNodeIndex);
+      }
+      return true;
+    },
+    [
+      bookmarkTargetNodeIndexByName,
+      editor,
+      editor.model.nodes,
+      onRequestPageReveal,
+      pageIndexByNodeIndex,
+      visiblePageEndIndex,
+      visiblePageStartIndex
+    ]
+  );
+  const pageHeaderAndFooterNodes = React.useMemo(
+    () =>
+      pageNodeSegmentsByPage.map((_, pageIndex) => {
+        const sectionInfo = pageSectionInfoByIndex[pageIndex];
+        const sectionHeaderSections =
+          sectionInfo?.section.headerSections?.length
+            ? sectionInfo.section.headerSections
+            : editor.model.metadata.headerSections;
+        const sectionFooterSections =
+          sectionInfo?.section.footerSections?.length
+            ? sectionInfo.section.footerSections
+            : editor.model.metadata.footerSections;
+        const sectionPropertiesXml =
+          sectionInfo?.section.sectionPropertiesXml ?? editor.model.metadata.sectionPropertiesXml;
+        const sectionPageIndex = sectionInfo?.pageIndexWithinSection ?? pageIndex;
+        const headerSection = selectSectionVariantForPage(
+          sectionHeaderSections,
+          sectionPropertiesXml,
+          sectionPageIndex
+        );
+        const footerSection = selectSectionVariantForPage(
+          sectionFooterSections,
+          sectionPropertiesXml,
+          sectionPageIndex
+        );
+
+        const filterVisibleNodes = (nodes: DocModel["nodes"]): DocModel["nodes"] =>
+          nodes.filter((node) =>
+            node.type === "paragraph" ? paragraphHasImage(node) || paragraphHasVisibleText(node) : true
+          );
+
+        return {
+          headerPartName: headerSection?.partName,
+          footerPartName: footerSection?.partName,
+          headerNodes: filterVisibleNodes(headerSection?.nodes ?? []),
+          footerNodes: filterVisibleNodes(footerSection?.nodes ?? [])
+        };
+      }),
+    [
+      pageSectionInfoByIndex,
+      pageNodeSegmentsByPage,
+      editor.model.metadata.headerSections,
+      editor.model.metadata.footerSections,
+      editor.model.metadata.sectionPropertiesXml
+    ]
+  );
+  React.useLayoutEffect(() => {
+    const rootElement = viewerRootRef.current;
+    if (!rootElement || pageCount === 0) {
+      setHeaderVisualOverflowByPage((current) => (Object.keys(current).length === 0 ? current : {}));
+      return;
+    }
+
+    const zoomScale = resolveEffectiveZoomScale(rootElement);
+    const next: Record<number, number> = {};
+    for (let pageIndex = 0; pageIndex < pageCount; pageIndex += 1) {
+      if (!isPageVisible(pageIndex)) {
+        continue;
+      }
+
+      const headerNodes = pageHeaderAndFooterNodes[pageIndex]?.headerNodes;
+      if (!headerNodes || headerNodes.length === 0) {
+        continue;
+      }
+
+      const headerElement = pageHeaderElementsRef.current.get(pageIndex);
+      if (!headerElement) {
+        continue;
+      }
+
+      const pageLayout = pageSectionInfoByIndex[pageIndex]?.layout ?? documentLayout;
+      const headerRect = headerElement.getBoundingClientRect();
+      let visualBottom = headerRect.bottom;
+      const maxOverflowCapPx = Math.max(
+        16,
+        Math.min(
+          Math.round(pageLayout.pageHeightPx * 0.12),
+          Math.round(pageLayout.marginsPx.top + pageLayout.headerDistancePx + 24)
+        )
+      );
+      headerElement.querySelectorAll<HTMLElement>("*").forEach((element) => {
+        if (!element.isConnected) {
+          return;
+        }
+
+        const computedStyle = window.getComputedStyle(element);
+        if (computedStyle.position === "absolute" || computedStyle.position === "fixed") {
+          const zIndex = Number.parseInt(computedStyle.zIndex ?? "", 10);
+          if (Number.isFinite(zIndex) && (zIndex as number) <= 0) {
+            return;
+          }
+        }
+
+        const rect = element.getBoundingClientRect();
+        if (rect.width <= 0 && rect.height <= 0) {
+          return;
+        }
+
+        if (rect.bottom > headerRect.bottom + maxOverflowCapPx + 1) {
+          return;
+        }
+
+        visualBottom = Math.max(visualBottom, rect.bottom);
+      });
+
+      const overflowPx = Math.max(0, (visualBottom - headerRect.bottom) / zoomScale);
+      const boundedOverflowPx = clampNumber(
+        Math.round(overflowPx),
+        0,
+        maxOverflowCapPx
+      );
+      if (boundedOverflowPx > 0) {
+        next[pageIndex] = boundedOverflowPx;
+      }
+    }
+
+    setHeaderVisualOverflowByPage((current) => {
+      const currentKeys = Object.keys(current).map((key) => Number.parseInt(key, 10));
+      const nextKeys = Object.keys(next).map((key) => Number.parseInt(key, 10));
+      if (currentKeys.length === nextKeys.length) {
+        let equal = true;
+        for (const key of nextKeys) {
+          if ((current[key] ?? 0) !== (next[key] ?? 0)) {
+            equal = false;
+            break;
+          }
+        }
+        if (equal) {
+          return current;
+        }
+      }
+      return next;
+    });
+  }, [
+    documentLayout,
+    isPageVisible,
+    pageCount,
+    pageHeaderAndFooterNodes,
+    pageSectionInfoByIndex,
+    visiblePageEndIndex,
+    visiblePageStartIndex
+  ]);
+  React.useLayoutEffect(() => {
+    const rootElement = viewerRootRef.current;
+    if (!rootElement || pageCount === 0) {
+      setMeasuredPageContentHeightByIndex((current) => (current.length === 0 ? current : []));
+      return;
+    }
+
+    const zoomScale = resolveEffectiveZoomScale(rootElement);
+    const nextMeasuredHeights = pageNodeSegmentsByPage.map((_, pageIndex) => {
+      const pageLayout = pageSectionInfoByIndex[pageIndex]?.layout ?? documentLayout;
+      const pageElement = pageElementsRef.current.get(pageIndex);
+      const fallbackHeightPx = Math.max(
+        120,
+        pageLayout.pageHeightPx - pageLayout.marginsPx.top - pageLayout.marginsPx.bottom
+      );
+      if (!pageElement) {
+        return fallbackHeightPx;
+      }
+
+      const headerElement = pageHeaderElementsRef.current.get(pageIndex);
+      const bodyElement = pageBodyElementsRef.current.get(pageIndex);
+      const footerElement = pageFooterElementsRef.current.get(pageIndex);
+      const headerHeightPx = headerElement
+        ? Math.max(0, Math.round(headerElement.getBoundingClientRect().height / zoomScale))
+        : 0;
+
+      let footerOverlapPx = 0;
+      if (footerElement) {
+        const pageRect = pageElement.getBoundingClientRect();
+        const footerRect = footerElement.getBoundingClientRect();
+        const footerTopPx = (footerRect.top - pageRect.top) / zoomScale;
+        const bodyBottomPx = pageLayout.pageHeightPx - pageLayout.marginsPx.bottom;
+        footerOverlapPx = Math.max(0, Math.round(bodyBottomPx - footerTopPx));
+      }
+
+      const bodyBottomPx = pageLayout.pageHeightPx - pageLayout.marginsPx.bottom - footerOverlapPx;
+      if (bodyElement) {
+        const pageRect = pageElement.getBoundingClientRect();
+        const bodyRect = bodyElement.getBoundingClientRect();
+        const bodyTopPx = Math.max(0, Math.round((bodyRect.top - pageRect.top) / zoomScale));
+        if (bodyBottomPx > bodyTopPx) {
+          return Math.max(120, Math.round(bodyBottomPx - bodyTopPx));
+        }
+      }
+
+      return Math.max(120, fallbackHeightPx - headerHeightPx - footerOverlapPx);
+    });
+
+    setMeasuredPageContentHeightByIndex((current) => {
+      if (current.length === nextMeasuredHeights.length) {
+        let equal = true;
+        for (let pageIndex = 0; pageIndex < nextMeasuredHeights.length; pageIndex += 1) {
+          if (Math.abs((current[pageIndex] ?? 0) - nextMeasuredHeights[pageIndex]) > 1) {
+            equal = false;
+            break;
+          }
+        }
+        if (equal) {
+          return current;
+        }
+      }
+      return nextMeasuredHeights;
+    });
+  }, [
+    documentLayout,
+    pageCount,
+    pageNodeSegmentsByPage,
+    pageSectionInfoByIndex,
+    pageHeaderAndFooterNodes
+  ]);
+  const setSingleTableCellSelection = React.useCallback(
+    (tableIndex: number, rowIndex: number, cellIndex: number): void => {
+      const nextRange: DocxTableCellSelectionRange = {
+        tableIndex,
+        anchorRowIndex: rowIndex,
+        anchorCellIndex: cellIndex,
+        focusRowIndex: rowIndex,
+        focusCellIndex: cellIndex
+      };
+      setTableCellSelectionRange((current) => {
+        if (sameTableCellSelectionRange(current, nextRange)) {
+          return current;
+        }
+        return nextRange;
+      });
+    },
+    []
+  );
+  const clearTableCellSelection = React.useCallback((): void => {
+    setTableCellSelectionRange((current) => (current ? undefined : current));
+  }, []);
+  const isPointWithinTableHandleHoverZone = React.useCallback(
+    (tableIndex: number, x: number, y: number): boolean => {
+      const tableElement = tableElementsRef.current.get(tableIndex);
+      if (!tableElement || !tableElement.isConnected) {
+        return false;
+      }
+
+      const rect = tableElement.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) {
+        return false;
+      }
+
+      return (
+        x >= rect.left - TABLE_HANDLE_HOVER_OUTSET_PX &&
+        x <= rect.right + TABLE_HANDLE_HOVER_OUTSET_PX &&
+        y >= rect.top - TABLE_HANDLE_HOVER_OUTSET_PX &&
+        y <= rect.bottom + TABLE_HANDLE_HOVER_OUTSET_PX
+      );
+    },
+    []
+  );
+  const resolveHoveredTableHandleIndexFromPoint = React.useCallback(
+    (x: number, y: number): number | undefined => {
+      let nextHoveredTableIndex: number | undefined;
+      let bestDistance = Number.POSITIVE_INFINITY;
+
+      tableElementsRef.current.forEach((tableElement, tableIndex) => {
+        if (!tableElement || !tableElement.isConnected) {
+          return;
+        }
+
+        const rect = tableElement.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) {
+          return;
+        }
+
+        if (
+          x < rect.left - TABLE_HANDLE_HOVER_OUTSET_PX ||
+          x > rect.right + TABLE_HANDLE_HOVER_OUTSET_PX ||
+          y < rect.top - TABLE_HANDLE_HOVER_OUTSET_PX ||
+          y > rect.bottom + TABLE_HANDLE_HOVER_OUTSET_PX
+        ) {
+          return;
+        }
+
+        const dx =
+          x < rect.left ? rect.left - x : x > rect.right ? x - rect.right : 0;
+        const dy =
+          y < rect.top ? rect.top - y : y > rect.bottom ? y - rect.bottom : 0;
+        const distance = Math.hypot(dx, dy);
+
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          nextHoveredTableIndex = tableIndex;
+        }
+      });
+
+      return nextHoveredTableIndex;
+    },
+    []
+  );
+  const onViewerPointerMove = React.useCallback(
+    (event: React.PointerEvent<HTMLDivElement>): void => {
+      if (isReadOnly) {
+        return;
+      }
+      if (tableMoveDragRef.current) {
+        return;
+      }
+
+      const nextHoveredTableIndex = resolveHoveredTableHandleIndexFromPoint(
+        event.clientX,
+        event.clientY
+      );
+      setHoveredTableHandleTableIndex((current) =>
+        current === nextHoveredTableIndex ? current : nextHoveredTableIndex
+      );
+    },
+    [isReadOnly, resolveHoveredTableHandleIndexFromPoint]
+  );
+  const onViewerPointerLeave = React.useCallback((): void => {
+    if (isReadOnly) {
+      return;
+    }
+    if (tableMoveDragRef.current) {
+      return;
+    }
+    setHoveredTableHandleTableIndex(undefined);
+  }, [isReadOnly]);
+  const selectWholeTable = React.useCallback(
+    (tableIndex: number): void => {
+      const tableNode = editor.model.nodes[tableIndex];
+      if (!tableNode || tableNode.type !== "table") {
+        return;
+      }
+
+      const extents = tableSelectableCellExtents(tableNode);
+      if (!extents) {
+        return;
+      }
+
+      setTableCellSelectionRange({
+        tableIndex,
+        anchorRowIndex: extents.first.rowIndex,
+        anchorCellIndex: extents.first.cellIndex,
+        focusRowIndex: extents.last.rowIndex,
+        focusCellIndex: extents.last.cellIndex
+      });
+      editor.selectTableCell(tableIndex, extents.first.rowIndex, extents.first.cellIndex);
+      editor.setActiveTextRange(undefined);
+    },
+    [editor]
+  );
+  const resolveTableMoveDropTarget = React.useCallback(
+    (
+      tableIndex: number,
+      point: {
+        x: number;
+        y: number;
+      }
+    ):
+      | {
+          targetNodeIndex: number;
+          preview: {
+            top: number;
+            left: number;
+            width: number;
+          };
+        }
+      | undefined => {
+      const rootElement = viewerRootRef.current;
+      if (!rootElement) {
+        return undefined;
+      }
+
+      const nodeElements = new Map<number, HTMLElement>();
+      paragraphElementsRef.current.forEach((element, nodeIndex) => {
+        if (element.isConnected) {
+          nodeElements.set(nodeIndex, element);
+        }
+      });
+      tableElementsRef.current.forEach((element, nodeIndex) => {
+        if (element.isConnected) {
+          nodeElements.set(nodeIndex, element);
+        }
+      });
+
+      const orderedNodes = Array.from(nodeElements.entries())
+        .map(([nodeIndex, element]) => {
+          const rect = element.getBoundingClientRect();
+          return {
+            nodeIndex,
+            rect
+          };
+        })
+        .filter((entry) => entry.rect.height > 0 && entry.rect.width > 0)
+        .sort((left, right) => left.nodeIndex - right.nodeIndex);
+      if (orderedNodes.length === 0) {
+        return undefined;
+      }
+
+      const rootRect = rootElement.getBoundingClientRect();
+      let targetNodeIndex = orderedNodes[orderedNodes.length - 1].nodeIndex + 1;
+      let previewTop = orderedNodes[orderedNodes.length - 1].rect.bottom - rootRect.top;
+      let previewLeft = orderedNodes[orderedNodes.length - 1].rect.left - rootRect.left;
+      let previewWidth = orderedNodes[orderedNodes.length - 1].rect.width;
+
+      for (const entry of orderedNodes) {
+        const midpointY = entry.rect.top + entry.rect.height / 2;
+        if (point.y < midpointY) {
+          targetNodeIndex = entry.nodeIndex;
+          previewTop = entry.rect.top - rootRect.top;
+          previewLeft = entry.rect.left - rootRect.left;
+          previewWidth = entry.rect.width;
+          break;
+        }
+      }
+
+      if (!Number.isFinite(targetNodeIndex)) {
+        return undefined;
+      }
+
+      const clampedTargetNodeIndex = clampNumber(
+        targetNodeIndex,
+        0,
+        Math.max(0, editor.model.nodes.length)
+      );
+      return {
+        targetNodeIndex: clampedTargetNodeIndex,
+        preview: {
+          top: Math.max(0, Math.round(previewTop)),
+          left: Math.max(0, Math.round(previewLeft)),
+          width: Math.max(0, Math.round(previewWidth))
+        }
+      };
+    },
+    [editor.model.nodes.length]
+  );
+  const beginTableMoveDrag = React.useCallback(
+    (event: React.PointerEvent<HTMLElement>, tableIndex: number): void => {
+      if (isReadOnly) {
+        return;
+      }
+      if (event.button !== 0 && event.button !== undefined) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      selectWholeTable(tableIndex);
+      setHoveredTableHandleTableIndex(tableIndex);
+
+      tableMoveDragRef.current = {
+        pointerId: event.pointerId,
+        tableIndex,
+        startX: event.clientX,
+        startY: event.clientY,
+        hasMoved: false
+      };
+
+      const onPointerMove = (pointerMoveEvent: PointerEvent): void => {
+        const dragState = tableMoveDragRef.current;
+        if (!dragState || pointerMoveEvent.pointerId !== dragState.pointerId) {
+          return;
+        }
+
+        const deltaX = Math.abs(pointerMoveEvent.clientX - dragState.startX);
+        const deltaY = Math.abs(pointerMoveEvent.clientY - dragState.startY);
+        if (deltaX + deltaY < TABLE_MOVE_DRAG_THRESHOLD_PX) {
+          return;
+        }
+
+        dragState.hasMoved = true;
+        const target = resolveTableMoveDropTarget(dragState.tableIndex, {
+          x: pointerMoveEvent.clientX,
+          y: pointerMoveEvent.clientY
+        });
+        setTableMoveDropPreview(target?.preview);
+        pointerMoveEvent.preventDefault();
+      };
+
+      const onPointerUp = (pointerUpEvent: PointerEvent): void => {
+        const dragState = tableMoveDragRef.current;
+        if (!dragState || pointerUpEvent.pointerId !== dragState.pointerId) {
+          return;
+        }
+
+        window.removeEventListener("pointermove", onPointerMove);
+        window.removeEventListener("pointerup", onPointerUp);
+        window.removeEventListener("pointercancel", onPointerUp);
+        tableMoveDragRef.current = undefined;
+        const pointerTarget = document.elementFromPoint(pointerUpEvent.clientX, pointerUpEvent.clientY);
+        const tableElement = tableElementsRef.current.get(dragState.tableIndex);
+        const pointerStillOverTable = Boolean(pointerTarget && tableElement?.contains(pointerTarget));
+        setHoveredTableHandleTableIndex(pointerStillOverTable ? dragState.tableIndex : undefined);
+
+        const target = resolveTableMoveDropTarget(dragState.tableIndex, {
+          x: pointerUpEvent.clientX,
+          y: pointerUpEvent.clientY
+        });
+        setTableMoveDropPreview(undefined);
+        if (!dragState.hasMoved) {
+          return;
+        }
+
+        if (!target) {
+          return;
+        }
+
+        editor.moveTable(dragState.tableIndex, target.targetNodeIndex);
+      };
+
+      window.addEventListener("pointermove", onPointerMove);
+      window.addEventListener("pointerup", onPointerUp, { once: true });
+      window.addEventListener("pointercancel", onPointerUp, { once: true });
+    },
+    [editor, isReadOnly, resolveTableMoveDropTarget, selectWholeTable]
+  );
+  const closeTableContextMenu = React.useCallback((): void => {
+    setTableContextMenuState(undefined);
+  }, []);
+  const closeContextMenu = React.useCallback((): void => {
+    setContextMenuState(undefined);
+  }, []);
+  const openContextMenu = React.useCallback(
+    (
+      context: DocxContextMenuContext,
+      point: {
+        x: number;
+        y: number;
+      }
+    ): void => {
+      setTableContextMenuState(undefined);
+      setContextMenuState({
+        ...context,
+        clientX: point.x,
+        clientY: point.y
+      });
+    },
+    []
+  );
+  const openTableContextMenu = React.useCallback(
+    (
+      context: DocxTableContextMenuContext,
+      point: {
+        x: number;
+        y: number;
+      }
+    ): void => {
+      setContextMenuState(undefined);
+      setTableContextMenuState({
+        ...context,
+        clientX: point.x,
+        clientY: point.y
+      });
+    },
+    []
+  );
+  const runTableContextMenuAction = React.useCallback(
+    (
+      actionId: DocxTableContextMenuActionId,
+      providedContext?: DocxTableContextMenuContext
+    ): void => {
+      const context = providedContext ?? tableContextMenuState;
+      if (!context) {
+        return;
+      }
+
+      switch (actionId) {
+        case "insert-row-above":
+          editor.insertTableRow(context.tableIndex, context.rowIndex, "above");
+          break;
+        case "insert-row-below":
+          editor.insertTableRow(context.tableIndex, context.rowIndex, "below");
+          break;
+        case "insert-column-left":
+          editor.insertTableColumn(context.tableIndex, context.cellIndex, "left", context.rowIndex);
+          break;
+        case "insert-column-right":
+          editor.insertTableColumn(context.tableIndex, context.cellIndex, "right", context.rowIndex);
+          break;
+        case "delete-row":
+          editor.deleteTableRow(context.tableIndex, context.rowIndex);
+          break;
+        case "delete-column":
+          editor.deleteTableColumn(context.tableIndex, context.cellIndex, context.rowIndex);
+          break;
+        case "delete-table":
+          editor.deleteTable(context.tableIndex);
+          break;
+        default:
+          break;
+      }
+
+      closeTableContextMenu();
+    },
+    [closeTableContextMenu, editor, tableContextMenuState]
+  );
+  const tableContextMenuActions = React.useMemo(
+    () => [...DEFAULT_TABLE_CONTEXT_MENU_ACTIONS],
+    []
+  );
+  const resolveTableContextMenuLocation = React.useCallback(
+    (tableIndex: number, fallbackRowIndex = 0, fallbackCellIndex = 0): DocxTableContextMenuContext => {
+      const tableNode = editor.model.nodes[tableIndex];
+      if (!tableNode || tableNode.type !== "table") {
+        return {
+          tableIndex,
+          rowIndex: Math.max(0, fallbackRowIndex),
+          cellIndex: Math.max(0, fallbackCellIndex)
+        };
+      }
+
+      const selection = editor.selection;
+      const rowIndex = clampNumber(
+        selection.kind === "table-cell" && selection.tableIndex === tableIndex
+          ? selection.rowIndex
+          : fallbackRowIndex,
+        0,
+        Math.max(0, tableNode.rows.length - 1)
+      );
+      const row = tableNode.rows[rowIndex];
+      const cellIndex = clampNumber(
+        selection.kind === "table-cell" && selection.tableIndex === tableIndex
+          ? selection.cellIndex
+          : fallbackCellIndex,
+        0,
+        Math.max(0, (row?.cells.length ?? 1) - 1)
+      );
+
+      return {
+        tableIndex,
+        rowIndex,
+        cellIndex
+      };
+    },
+    [editor.model.nodes, editor.selection]
+  );
+
+  React.useEffect(() => {
+    if (!tableContextMenuState && !contextMenuState) {
+      return;
+    }
+
+    const onPointerDown = (event: PointerEvent): void => {
+      const target = event.target;
+      if (
+        target instanceof Element &&
+        target.closest("[data-docx-table-context-menu='true'],[data-docx-context-menu='true']")
+      ) {
+        return;
+      }
+      setTableContextMenuState(undefined);
+      setContextMenuState(undefined);
+    };
+
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key !== "Escape") {
+        return;
+      }
+      event.preventDefault();
+      setTableContextMenuState(undefined);
+      setContextMenuState(undefined);
+    };
+
+    window.addEventListener("pointerdown", onPointerDown, true);
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => {
+      window.removeEventListener("pointerdown", onPointerDown, true);
+      window.removeEventListener("keydown", onKeyDown, true);
+    };
+  }, [contextMenuState, tableContextMenuState]);
+
+  React.useEffect(() => {
+    if (!tableCellSelectionRange) {
+      return;
+    }
+
+    const tableNode = editor.model.nodes[tableCellSelectionRange.tableIndex];
+    if (!tableNode || tableNode.type !== "table") {
+      setTableCellSelectionRange(undefined);
+    }
+  }, [editor.model.nodes, tableCellSelectionRange]);
+  React.useEffect(() => {
+    if (!tableContextMenuState) {
+      return;
+    }
+
+    const tableNode = editor.model.nodes[tableContextMenuState.tableIndex];
+    if (!tableNode || tableNode.type !== "table") {
+      setTableContextMenuState(undefined);
+    }
+  }, [editor.model.nodes, tableContextMenuState]);
+  React.useEffect(() => {
+    if (!contextMenuState || contextMenuState.kind !== "image") {
+      return;
+    }
+
+    const imageLocation = contextMenuState.image?.location;
+    if (!imageLocation) {
+      setContextMenuState(undefined);
+      return;
+    }
+
+    const { paragraph } = getParagraphAtLocation(
+      editor.model,
+      imageLocationToParagraphLocation(imageLocation)
+    );
+    const child = paragraph?.children[imageLocation.childIndex];
+    if (!child || child.type !== "image") {
+      setContextMenuState(undefined);
+    }
+  }, [contextMenuState, editor.model]);
+
+  const placeCaretInsideElement = React.useCallback(
+    (
+      element: HTMLElement,
+      point?: {
+        x: number;
+        y: number;
+      }
+    ): void => {
+      const selection = window.getSelection();
+      if (!selection) {
+        return;
+      }
+
+      const collapseAtEnd = (): void => {
+        const range = document.createRange();
+        range.selectNodeContents(element);
+        range.collapse(false);
+        selection.removeAllRanges();
+        selection.addRange(range);
+      };
+
+      if (!point) {
+        collapseAtEnd();
+        return;
+      }
+
+      let range: Range | undefined;
+      const documentWithCaret = document as Document & {
+        caretPositionFromPoint?: (
+          x: number,
+          y: number
+        ) => {
+          offsetNode: Node;
+          offset: number;
+        } | null;
+        caretRangeFromPoint?: (x: number, y: number) => Range | null;
+      };
+
+      if (typeof documentWithCaret.caretPositionFromPoint === "function") {
+        const position = documentWithCaret.caretPositionFromPoint(point.x, point.y);
+        if (position) {
+          range = document.createRange();
+          range.setStart(position.offsetNode, position.offset);
+          range.collapse(true);
+        }
+      } else if (typeof documentWithCaret.caretRangeFromPoint === "function") {
+        const pointRange = documentWithCaret.caretRangeFromPoint(point.x, point.y);
+        if (pointRange) {
+          range = pointRange;
+          range.collapse(true);
+        }
+      }
+
+      if (!range || !element.contains(range.startContainer)) {
+        collapseAtEnd();
+        return;
+      }
+
+      selection.removeAllRanges();
+      selection.addRange(range);
+    },
+    []
+  );
+
+  React.useEffect(() => {
+    const pendingFocus = pendingSectionParagraphFocusRef.current;
+    if (!pendingFocus) {
+      return;
+    }
+
+    window.requestAnimationFrame(() => {
+      const latestPendingFocus = pendingSectionParagraphFocusRef.current;
+      if (!latestPendingFocus) {
+        return;
+      }
+
+      const element = sectionParagraphElementsRef.current.get(latestPendingFocus.draftKey);
+      if (!element) {
+        return;
+      }
+
+      element.focus();
+      placeCaretInsideElement(element, latestPendingFocus.point);
+      pendingSectionParagraphFocusRef.current = undefined;
+    });
+  }, [activeHeaderFooterEdit, placeCaretInsideElement]);
+
+  const setSelectionWithinElementByTextOffsets = React.useCallback(
+    (element: HTMLElement, startOffset: number, endOffset: number): void => {
+      const selection = window.getSelection();
+      if (!selection) {
+        return;
+      }
+
+      const resolveDomPosition = (
+        container: HTMLElement,
+        targetOffset: number
+      ): {
+        node: Node;
+        offset: number;
+      } => {
+        const safeOffset = Math.max(0, Math.round(targetOffset));
+        const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+        let traversed = 0;
+        let currentTextNode: Node | null = walker.nextNode();
+
+        while (currentTextNode) {
+          if (
+            currentTextNode instanceof Text &&
+            currentTextNode.parentElement?.closest("[data-docx-numbering-label='true']")
+          ) {
+            currentTextNode = walker.nextNode();
+            continue;
+          }
+
+          const textLength = currentTextNode.textContent?.length ?? 0;
+          if (traversed + textLength >= safeOffset) {
+            return {
+              node: currentTextNode,
+              offset: Math.max(0, safeOffset - traversed)
+            };
+          }
+
+          traversed += textLength;
+          currentTextNode = walker.nextNode();
+        }
+
+        return {
+          node: container,
+          offset: container.childNodes.length
+        };
+      };
+
+      try {
+        const range = document.createRange();
+        const normalizedStart = Math.max(0, Math.min(startOffset, endOffset));
+        const normalizedEnd = Math.max(normalizedStart, Math.max(startOffset, endOffset));
+        const start = resolveDomPosition(element, normalizedStart);
+        const end = resolveDomPosition(element, normalizedEnd);
+        range.setStart(start.node, start.offset);
+        range.setEnd(end.node, end.offset);
+        selection.removeAllRanges();
+        selection.addRange(range);
+      } catch {
+        placeCaretInsideElement(element);
+      }
+    },
+    [placeCaretInsideElement]
+  );
+
+  const paragraphTextLengthFromElement = React.useCallback((element: HTMLElement): number => {
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    return textLengthFromRange(range);
+  }, []);
+
+  const resolveParagraphHostElement = React.useCallback(
+    (location: DocxTextRangeLocation): HTMLElement | undefined => {
+      if (location.kind === "paragraph") {
+        return (
+          paragraphElementsRef.current.get(location.nodeIndex) ??
+          viewerRootRef.current?.querySelector<HTMLElement>(
+            `[data-docx-paragraph-kind="paragraph"][data-docx-paragraph-node-index="${location.nodeIndex}"]`
+          ) ??
+          undefined
+        );
+      }
+
+      if (!viewerRootRef.current) {
+        return undefined;
+      }
+
+      return viewerRootRef.current.querySelector<HTMLElement>(
+        `[data-docx-paragraph-kind="table-cell"]` +
+          `[data-docx-table-index="${location.tableIndex}"]` +
+          `[data-docx-row-index="${location.rowIndex}"]` +
+          `[data-docx-cell-index="${location.cellIndex}"]` +
+          `[data-docx-paragraph-index="${location.paragraphIndex}"]`
+      ) ?? undefined;
+    },
+    [paragraphElementsRef]
+  );
+
+  const resolveDomPositionFromTextOffset = React.useCallback(
+    (element: HTMLElement, targetOffset: number): { node: Node; offset: number } => {
+      const safeOffset = Math.max(0, Math.round(targetOffset));
+      const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+      let traversed = 0;
+      let currentTextNode: Node | null = walker.nextNode();
+
+      while (currentTextNode) {
+        if (
+          currentTextNode instanceof Text &&
+          currentTextNode.parentElement?.closest("[data-docx-numbering-label='true']")
+        ) {
+          currentTextNode = walker.nextNode();
+          continue;
+        }
+
+        const textLength = currentTextNode.textContent?.length ?? 0;
+        if (traversed + textLength >= safeOffset) {
+          return {
+            node: currentTextNode,
+            offset: Math.max(0, safeOffset - traversed)
+          };
+        }
+        traversed += textLength;
+        currentTextNode = walker.nextNode();
+      }
+
+      return {
+        node: element,
+        offset: element.childNodes.length
+      };
+    },
+    []
+  );
+
+  const resolveDomPositionFromBoundary = React.useCallback(
+    (boundary: DocxTextRangeBoundary): { node: Node; offset: number } | undefined => {
+      const location = boundary.location;
+      const hostElement = resolveParagraphHostElement(location);
+      if (!hostElement) {
+        return undefined;
+      }
+
+      const textLength = paragraphTextLengthFromElement(hostElement);
+      return resolveDomPositionFromTextOffset(hostElement, Math.max(0, Math.min(boundary.offset, textLength)));
+    },
+    [resolveParagraphHostElement, resolveDomPositionFromTextOffset, paragraphTextLengthFromElement]
+  );
+
+  const setSelectionFromDocxBoundaries = React.useCallback(
+    (rawStartBoundary: DocxTextRangeBoundary, rawEndBoundary: DocxTextRangeBoundary): void => {
+      const selection = window.getSelection();
+      if (!selection) {
+        return;
+      }
+
+      const normalizedRange = normalizeTextRange({
+        start: {
+          location: cloneTextRangeLocation(rawStartBoundary.location),
+          offset: rawStartBoundary.offset
+        },
+        end: {
+          location: cloneTextRangeLocation(rawEndBoundary.location),
+          offset: rawEndBoundary.offset
+        }
+      });
+
+      const rawStartPosition = resolveDomPositionFromBoundary(rawStartBoundary);
+      const rawEndPosition = resolveDomPositionFromBoundary(rawEndBoundary);
+      if (!rawStartPosition || !rawEndPosition) {
+        const fallbackElement =
+          resolveParagraphHostElement(normalizedRange.start.location) ??
+          resolveParagraphHostElement(normalizedRange.end.location);
+        if (!fallbackElement) {
+          editor.setActiveTextRange(undefined);
+          return;
+        }
+
+        const fallbackPosition = resolveDomPositionFromTextOffset(
+          fallbackElement,
+          normalizedRange.start.offset
+        );
+        const fallbackRange = document.createRange();
+        fallbackRange.setStart(fallbackPosition.node, fallbackPosition.offset);
+        fallbackRange.collapse(true);
+        selection.removeAllRanges();
+        selection.addRange(fallbackRange);
+        editor.setActiveTextRange({
+          start: {
+            location: cloneTextRangeLocation(normalizedRange.start.location),
+            offset: normalizedRange.start.offset
+          },
+          end: {
+            location: cloneTextRangeLocation(normalizedRange.start.location),
+            offset: normalizedRange.start.offset
+          }
+        });
+        return;
+      }
+
+      try {
+        const isForwardSelection = compareTextRangeBoundaries(rawStartBoundary, rawEndBoundary) <= 0;
+        const startPosition = isForwardSelection ? rawStartPosition : rawEndPosition;
+        const endPosition = isForwardSelection ? rawEndPosition : rawStartPosition;
+        const alreadyMatchesAnchorFocus =
+          selection.anchorNode === rawStartPosition.node &&
+          selection.anchorOffset === rawStartPosition.offset &&
+          selection.focusNode === rawEndPosition.node &&
+          selection.focusOffset === rawEndPosition.offset;
+
+        if (!alreadyMatchesAnchorFocus) {
+          if (typeof selection.setBaseAndExtent === "function") {
+            selection.setBaseAndExtent(
+              rawStartPosition.node,
+              rawStartPosition.offset,
+              rawEndPosition.node,
+              rawEndPosition.offset
+            );
+          } else {
+            const range = document.createRange();
+            range.setStart(startPosition.node, startPosition.offset);
+            range.setEnd(endPosition.node, endPosition.offset);
+            selection.removeAllRanges();
+            selection.addRange(range);
+          }
+        }
+
+        editor.setActiveTextRange(normalizedRange);
+      } catch {
+        const fallbackElement = resolveParagraphHostElement(normalizedRange.start.location);
+        if (!fallbackElement) {
+          editor.setActiveTextRange(undefined);
+          return;
+        }
+
+        placeCaretInsideElement(fallbackElement);
+        editor.setActiveTextRange({
+          start: {
+            location: cloneTextRangeLocation(normalizedRange.start.location),
+            offset: normalizedRange.start.offset
+          },
+          end: {
+            location: cloneTextRangeLocation(normalizedRange.start.location),
+            offset: normalizedRange.start.offset
+          }
+        });
+      }
+    },
+    [
+      editor,
+      resolveDomPositionFromBoundary,
+      resolveDomPositionFromTextOffset,
+      resolveParagraphHostElement,
+      placeCaretInsideElement
+    ]
+  );
+
+  const syncSelectionFromDocxRange = React.useCallback(
+    (range: DocxTextRange): void => {
+      const normalizedRange = normalizeTextRange({
+        start: {
+          location: cloneTextRangeLocation(range.start.location),
+          offset: range.start.offset
+        },
+        end: {
+          location: cloneTextRangeLocation(range.end.location),
+          offset: range.end.offset
+        }
+      });
+      const isCollapsed =
+        compareTextRangeBoundaries(normalizedRange.start, normalizedRange.end) === 0;
+
+      const applySelection = (attempt: number): void => {
+        if (isCollapsed) {
+          if (attempt === 0) {
+            window.getSelection()?.removeAllRanges();
+          }
+
+          setSelectionFromDocxBoundaries(
+            normalizedRange.start,
+            normalizedRange.start
+          );
+
+          const selection = window.getSelection();
+          const collapsedSelectionReady = Boolean(
+            selection &&
+              selection.rangeCount > 0 &&
+              selection.isCollapsed
+          );
+          if (!collapsedSelectionReady && attempt < 4) {
+            selection?.removeAllRanges();
+            window.requestAnimationFrame(() => {
+              applySelection(attempt + 1);
+            });
+          }
+          return;
+        }
+
+        setSelectionFromDocxBoundaries(
+          normalizedRange.start,
+          normalizedRange.end
+        );
+        if (attempt === 0) {
+          window.requestAnimationFrame(() => {
+            setSelectionFromDocxBoundaries(
+              normalizedRange.start,
+              normalizedRange.end
+            );
+          });
+        }
+      };
+
+      applySelection(0);
+    },
+    [setSelectionFromDocxBoundaries]
+  );
+
+  const selectAllDocumentText = React.useCallback((): void => {
+    const rootElement = viewerRootRef.current;
+    if (!rootElement) {
+      return;
+    }
+
+    clearTableCellSelection();
+
+    const paragraphHosts = Array.from(
+      rootElement.querySelectorAll<HTMLElement>("[data-docx-paragraph-host='true']")
+    );
+    if (paragraphHosts.length === 0) {
+      return;
+    }
+
+    const firstHost = paragraphHosts[0];
+    const lastHost = paragraphHosts[paragraphHosts.length - 1];
+    const firstLocation = parseParagraphLocationFromElement(firstHost);
+    const lastLocation = parseParagraphLocationFromElement(lastHost);
+    if (!firstLocation || !lastLocation) {
+      return;
+    }
+
+    const startBoundary: DocxTextRangeBoundary = {
+      location: firstLocation,
+      offset: 0
+    };
+    const endBoundary: DocxTextRangeBoundary = {
+      location: lastLocation,
+      offset: paragraphTextLengthFromElement(lastHost)
+    };
+
+    setSelectionFromDocxBoundaries(startBoundary, endBoundary);
+  }, [clearTableCellSelection, paragraphTextLengthFromElement, setSelectionFromDocxBoundaries]);
+
+  const resolveParagraphBoundaryFromSelectionPoint = React.useCallback(
+    (container: Node | null, offset: number): DocxTextRangeBoundary | undefined => {
+      if (!container) {
+        return undefined;
+      }
+
+      const referenceElement =
+        container instanceof Element ? container : container.parentElement;
+      const paragraphElement = referenceElement?.closest<HTMLElement>("[data-docx-paragraph-kind]");
+      if (!paragraphElement) {
+        return undefined;
+      }
+
+      const location = parseParagraphLocationFromElement(paragraphElement);
+      if (!location) {
+        return undefined;
+      }
+
+      try {
+        const boundaryRange = document.createRange();
+        boundaryRange.setStart(paragraphElement, 0);
+        const normalizedOffset = Math.max(
+          0,
+          Number.isFinite(offset) ? Math.round(offset) : 0
+        );
+        boundaryRange.setEnd(container, normalizedOffset);
+        const boundaryTextLength = textLengthFromRange(boundaryRange);
+        return {
+          location,
+          offset: Math.max(0, Math.round(boundaryTextLength))
+        };
+      } catch {
+        return undefined;
+      }
+    },
+    []
+  );
+
+  const resolveBoundaryFromPoint = React.useCallback(
+    (
+      point: { x: number; y: number },
+      fallbackBias?: "start" | "end"
+    ): DocxTextRangeBoundary | undefined => {
+      const documentWithCaret = document as Document & {
+        caretPositionFromPoint?: (
+          x: number,
+          y: number
+        ) => {
+          offsetNode: Node;
+          offset: number;
+        } | null;
+        caretRangeFromPoint?: (x: number, y: number) => Range | null;
+      };
+
+      let offsetNode: Node | null = null;
+      let offset = 0;
+
+      if (typeof documentWithCaret.caretPositionFromPoint === "function") {
+        const caretPosition = documentWithCaret.caretPositionFromPoint(point.x, point.y);
+        if (caretPosition) {
+          offsetNode = caretPosition.offsetNode;
+          offset = caretPosition.offset;
+        }
+      } else if (typeof documentWithCaret.caretRangeFromPoint === "function") {
+        const caretRange = documentWithCaret.caretRangeFromPoint(point.x, point.y);
+        if (caretRange) {
+          offsetNode = caretRange.startContainer;
+          offset = caretRange.startOffset;
+        }
+      }
+
+      if (offsetNode) {
+        const caretBoundary = resolveParagraphBoundaryFromSelectionPoint(offsetNode, offset);
+        if (caretBoundary) {
+          if (!fallbackBias) {
+            return caretBoundary;
+          }
+
+          const caretParagraphElement = resolveParagraphHostElement(caretBoundary.location);
+          if (!caretParagraphElement) {
+            return caretBoundary;
+          }
+
+          const caretRect = caretParagraphElement.getBoundingClientRect();
+          const verticalTolerancePx = 1;
+          const pointIsVerticallyOutsideCaretParagraph =
+            point.y < caretRect.top - verticalTolerancePx ||
+            point.y > caretRect.bottom + verticalTolerancePx;
+          if (!pointIsVerticallyOutsideCaretParagraph) {
+            return caretBoundary;
+          }
+        }
+      }
+
+      const pickBoundaryFromParagraphElement = (
+        paragraphElement: HTMLElement | undefined
+      ): DocxTextRangeBoundary | undefined => {
+        if (!paragraphElement) {
+          return undefined;
+        }
+
+        const location = parseParagraphLocationFromElement(paragraphElement);
+        if (!location) {
+          return undefined;
+        }
+
+        if (fallbackBias === "start") {
+          return {
+            location,
+            offset: 0
+          };
+        }
+
+        if (fallbackBias === "end") {
+          return {
+            location,
+            offset: paragraphTextLengthFromElement(paragraphElement)
+          };
+        }
+
+        const paragraphRect = paragraphElement.getBoundingClientRect();
+        const shouldUseTrailingEdge = point.y >= paragraphRect.top + paragraphRect.height / 2;
+        return {
+          location,
+          offset: shouldUseTrailingEdge ? paragraphTextLengthFromElement(paragraphElement) : 0
+        };
+      };
+
+      const elementAtPoint = document.elementFromPoint(point.x, point.y);
+      if (elementAtPoint instanceof Element) {
+        const directParagraphElement =
+          elementAtPoint.closest<HTMLElement>("[data-docx-paragraph-kind]") ?? undefined;
+        const directBoundary = pickBoundaryFromParagraphElement(directParagraphElement);
+        if (directBoundary) {
+          return directBoundary;
+        }
+
+        const tableCellElement =
+          elementAtPoint.closest<HTMLElement>("[data-docx-table-cell='true']") ?? undefined;
+        if (tableCellElement) {
+          const paragraphElements = Array.from(
+            tableCellElement.querySelectorAll<HTMLElement>(
+              "[data-docx-paragraph-kind='table-cell'][data-docx-table-paragraph-index]"
+            )
+          ).sort((left, right) => {
+            const leftIndex = Number.parseInt(
+              left.getAttribute("data-docx-table-paragraph-index") ?? "",
+              10
+            );
+            const rightIndex = Number.parseInt(
+              right.getAttribute("data-docx-table-paragraph-index") ?? "",
+              10
+            );
+            const safeLeft = Number.isFinite(leftIndex) ? leftIndex : 0;
+            const safeRight = Number.isFinite(rightIndex) ? rightIndex : 0;
+            return safeLeft - safeRight;
+          });
+          if (paragraphElements.length > 0) {
+            if (fallbackBias === "start") {
+              return pickBoundaryFromParagraphElement(paragraphElements[0]);
+            }
+            if (fallbackBias === "end") {
+              return pickBoundaryFromParagraphElement(paragraphElements[paragraphElements.length - 1]);
+            }
+            const nearestParagraph = paragraphElements.reduce<HTMLElement>((closest, candidate) => {
+              const closestRect = closest.getBoundingClientRect();
+              const candidateRect = candidate.getBoundingClientRect();
+              const closestDistance = Math.abs(
+                point.y - (closestRect.top + closestRect.height / 2)
+              );
+              const candidateDistance = Math.abs(
+                point.y - (candidateRect.top + candidateRect.height / 2)
+              );
+              return candidateDistance < closestDistance ? candidate : closest;
+            }, paragraphElements[0]);
+            return pickBoundaryFromParagraphElement(nearestParagraph);
+          }
+        }
+      }
+
+      const rootElement = viewerRootRef.current;
+      if (!rootElement) {
+        return undefined;
+      }
+      const paragraphHosts = Array.from(
+        rootElement.querySelectorAll<HTMLElement>("[data-docx-paragraph-host='true']")
+      );
+      if (paragraphHosts.length === 0) {
+        return undefined;
+      }
+
+      let previousHost: HTMLElement | undefined;
+      let nextHost: HTMLElement | undefined;
+
+      for (const host of paragraphHosts) {
+        const hostRect = host.getBoundingClientRect();
+        if (point.y < hostRect.top) {
+          nextHost = host;
+          break;
+        }
+        previousHost = host;
+      }
+
+      if (previousHost && nextHost) {
+        return fallbackBias === "start"
+          ? pickBoundaryFromParagraphElement(previousHost)
+          : pickBoundaryFromParagraphElement(nextHost);
+      }
+
+      if (previousHost) {
+        return pickBoundaryFromParagraphElement(previousHost);
+      }
+
+      if (nextHost) {
+        return pickBoundaryFromParagraphElement(nextHost);
+      }
+
+      return undefined;
+    },
+    [paragraphTextLengthFromElement, resolveParagraphBoundaryFromSelectionPoint, resolveParagraphHostElement]
+  );
+
+  const resolveActiveRangeFromDomSelection = React.useCallback((): DocxTextRange | undefined => {
+    const rootElement = viewerRootRef.current;
+    const selection = window.getSelection();
+    if (!rootElement || !selection || selection.rangeCount === 0) {
+      return undefined;
+    }
+
+    const selectionRange = selection.getRangeAt(0);
+    if (!rootElement.contains(selectionRange.startContainer) || !rootElement.contains(selectionRange.endContainer)) {
+      return undefined;
+    }
+
+    const startBoundary = resolveParagraphBoundaryFromSelectionPoint(
+      selectionRange.startContainer,
+      selectionRange.startOffset
+    );
+    const endBoundary = resolveParagraphBoundaryFromSelectionPoint(
+      selectionRange.endContainer,
+      selectionRange.endOffset
+    );
+    if (!startBoundary || !endBoundary) {
+      return undefined;
+    }
+
+    return normalizeTextRange({
+      start: startBoundary,
+      end: endBoundary
+    });
+  }, [resolveParagraphBoundaryFromSelectionPoint]);
+
+  const setActiveRangeFromSelection = React.useCallback((): void => {
+    const range = resolveActiveRangeFromDomSelection();
+    if (!range) {
+      editor.setActiveTextRange(undefined);
+      return;
+    }
+
+    clearTableCellSelection();
+    editor.setActiveTextRange(range);
+  }, [clearTableCellSelection, editor, resolveActiveRangeFromDomSelection]);
+
+  const flushActiveRangeFromSelection = React.useCallback((): void => {
+    window.requestAnimationFrame(() => {
+      setActiveRangeFromSelection();
+    });
+  }, [setActiveRangeFromSelection]);
+
+  React.useEffect(() => {
+    const restoreRequest = editor.historyRestoreRequest;
+    if (!restoreRequest) {
+      return;
+    }
+    if (restoreRequest.nonce === appliedHistoryRestoreNonceRef.current) {
+      return;
+    }
+
+    appliedHistoryRestoreNonceRef.current = restoreRequest.nonce;
+    // History restore must reflect canonical model state, not transient in-DOM drafts.
+    paragraphDraftsRef.current.clear();
+    tableCellDraftsRef.current.clear();
+    tableCellParagraphDraftsRef.current.clear();
+    sectionParagraphDraftsRef.current.clear();
+    pendingTableCellFocusRef.current = undefined;
+    const normalizedTargetRange = restoreRequest.activeTextRange
+      ? normalizeTextRange(restoreRequest.activeTextRange)
+      : undefined;
+    const resolveSelectionElement = (): HTMLElement | undefined => {
+      if (normalizedTargetRange) {
+        const paragraphHostElement = resolveParagraphHostElement(normalizedTargetRange.start.location);
+        if (paragraphHostElement) {
+          return paragraphHostElement;
+        }
+      }
+
+      if (restoreRequest.selection.kind === "paragraph") {
+        return paragraphElementsRef.current.get(restoreRequest.selection.nodeIndex);
+      }
+
+      const cellEditorKey = `${restoreRequest.selection.tableIndex}:${restoreRequest.selection.rowIndex}:${restoreRequest.selection.cellIndex}`;
+      return tableCellEditorElementsRef.current.get(cellEditorKey);
+    };
+    const applyRestore = (attempt = 0): void => {
+      const element = resolveSelectionElement();
+      if (!element) {
+        if (attempt < 6) {
+          window.requestAnimationFrame(() => {
+            applyRestore(attempt + 1);
+          });
+        }
+        return;
+      }
+
+      try {
+        element.focus({ preventScroll: true });
+      } catch {
+        element.focus();
+      }
+      if (normalizedTargetRange) {
+        setSelectionFromDocxBoundaries(normalizedTargetRange.start, normalizedTargetRange.end);
+        return;
+      }
+
+      if (restoreRequest.selection.kind === "table-cell") {
+        const selection = window.getSelection();
+        const selectionAlreadyInCell = Boolean(
+          selection &&
+            selection.rangeCount > 0 &&
+            element.contains(selection.getRangeAt(0).startContainer) &&
+            element.contains(selection.getRangeAt(0).endContainer)
+        );
+        if (selectionAlreadyInCell) {
+          return;
+        }
+
+        const pendingCellElementKey =
+          `cell-${restoreRequest.selection.tableIndex}` +
+          `-${restoreRequest.selection.rowIndex}` +
+          `-${restoreRequest.selection.cellIndex}`;
+        const pendingFocus = pendingTableCellFocusRef.current;
+        const pendingFocusMatchesCell = pendingFocus?.cellElementKey === pendingCellElementKey;
+        const pendingFocusPoint = pendingFocusMatchesCell ? pendingFocus.point : undefined;
+        const paragraphSelector =
+          `[data-docx-paragraph-kind='table-cell']` +
+          `[data-docx-table-index='${restoreRequest.selection.tableIndex}']` +
+          `[data-docx-row-index='${restoreRequest.selection.rowIndex}']` +
+          `[data-docx-cell-index='${restoreRequest.selection.cellIndex}']` +
+          `[data-docx-table-paragraph-index]`;
+        const paragraphElements = Array.from(
+          element.querySelectorAll<HTMLElement>(paragraphSelector)
+        );
+        const paragraphElementByIndex =
+          pendingFocusMatchesCell && Number.isFinite(pendingFocus?.paragraphIndex)
+            ? (element.querySelector<HTMLElement>(
+                `[data-docx-paragraph-kind='table-cell']` +
+                  `[data-docx-table-index='${restoreRequest.selection.tableIndex}']` +
+                  `[data-docx-row-index='${restoreRequest.selection.rowIndex}']` +
+                  `[data-docx-cell-index='${restoreRequest.selection.cellIndex}']` +
+                  `[data-docx-table-paragraph-index='${pendingFocus?.paragraphIndex}']`
+              ) ?? undefined)
+            : undefined;
+        const paragraphElementByPoint =
+          pendingFocusPoint && paragraphElements.length > 0
+            ? paragraphElements.reduce<HTMLElement>((closest, candidate) => {
+                const closestRect = closest.getBoundingClientRect();
+                const candidateRect = candidate.getBoundingClientRect();
+                const closestDistance = Math.abs(
+                  pendingFocusPoint.y - (closestRect.top + closestRect.height / 2)
+                );
+                const candidateDistance = Math.abs(
+                  pendingFocusPoint.y - (candidateRect.top + candidateRect.height / 2)
+                );
+                return candidateDistance < closestDistance ? candidate : closest;
+              }, paragraphElements[0])
+            : undefined;
+        const paragraphElementAtPoint =
+          pendingFocusPoint
+            ? (document
+                .elementFromPoint(pendingFocusPoint.x, pendingFocusPoint.y)
+                ?.closest<HTMLElement>(paragraphSelector) ?? undefined)
+            : undefined;
+        const fallbackParagraphElement = paragraphElements[0];
+        const paragraphElement =
+          paragraphElementByIndex ??
+          paragraphElementAtPoint ??
+          paragraphElementByPoint ??
+          fallbackParagraphElement;
+        if (paragraphElement) {
+          placeCaretInsideElement(paragraphElement, pendingFocusPoint);
+        } else if (pendingFocusPoint) {
+          placeCaretInsideElement(element, pendingFocusPoint);
+        }
+
+        if (pendingFocusMatchesCell) {
+          pendingTableCellFocusRef.current = undefined;
+        }
+        return;
+      }
+
+      placeCaretInsideElement(element);
+    };
+
+    window.requestAnimationFrame(() => {
+      applyRestore();
+    });
+  }, [editor.historyRestoreRequest, placeCaretInsideElement, resolveParagraphHostElement, setSelectionFromDocxBoundaries]);
+
+  React.useEffect(() => {
+    const handleSelectionChange = (): void => {
+      const selection = window.getSelection();
+      if (!selection) {
+        return;
+      }
+
+      if (selection.rangeCount === 0) {
+        return;
+      }
+
+      const selectionRange = selection.getRangeAt(0);
+      const rootElement = viewerRootRef.current;
+      if (
+        !rootElement ||
+        !rootElement.contains(selectionRange.startContainer) ||
+        !rootElement.contains(selectionRange.endContainer)
+      ) {
+        return;
+      }
+
+      // Cross-node and table-cell drag selection paths manage DOM + model
+      // selection explicitly. Syncing from native selectionchange while dragging
+      // can race those updates and cause transient flicker.
+      const crossNodeDrag = tableSelectionDragRef.current;
+      if (crossNodeDrag?.hasMoved) {
+        return;
+      }
+
+      const tableCellDrag = tableCellSelectionDragRef.current;
+      if (tableCellDrag?.isSelectingAcrossNodes || tableCellDrag?.isSelectingCells) {
+        return;
+      }
+
+      flushActiveRangeFromSelection();
+    };
+
+    document.addEventListener("selectionchange", handleSelectionChange);
+    return () => {
+      document.removeEventListener("selectionchange", handleSelectionChange);
+    };
+  }, [editor, flushActiveRangeFromSelection]);
+
+  const beginCrossNodeSelectionDrag = React.useCallback(
+    (startBoundary: DocxTextRangeBoundary, pointerId: number, startX: number, startY: number): void => {
+      tableSelectionDragRef.current = {
+        pointerId,
+        startBoundary,
+        startX,
+        startY,
+        hasMoved: false
+      };
+
+      const onPointerMove = (pointerMoveEvent: PointerEvent): void => {
+        const dragState = tableSelectionDragRef.current;
+        if (!dragState || pointerMoveEvent.pointerId !== dragState.pointerId) {
+          return;
+        }
+
+        const deltaX = Math.abs(pointerMoveEvent.clientX - dragState.startX);
+        const deltaY = Math.abs(pointerMoveEvent.clientY - dragState.startY);
+        if (deltaX + deltaY >= 3) {
+          dragState.hasMoved = true;
+        }
+        if (dragState.hasMoved) {
+          pointerMoveEvent.preventDefault();
+        }
+
+        const fallbackBias: "start" | "end" =
+          pointerMoveEvent.clientY < dragState.startY ||
+          (pointerMoveEvent.clientY === dragState.startY &&
+            pointerMoveEvent.clientX < dragState.startX)
+            ? "start"
+            : "end";
+        const endBoundary = resolveBoundaryFromPoint(
+          {
+            x: pointerMoveEvent.clientX,
+            y: pointerMoveEvent.clientY
+          },
+          fallbackBias
+        );
+        if (!endBoundary) {
+          return;
+        }
+
+        setSelectionFromDocxBoundaries(dragState.startBoundary, endBoundary);
+      };
+
+      const onPointerUp = (pointerUpEvent: PointerEvent): void => {
+        const dragState = tableSelectionDragRef.current;
+        if (!dragState || pointerUpEvent.pointerId !== dragState.pointerId) {
+          return;
+        }
+
+        if (dragState.hasMoved) {
+          const fallbackBias: "start" | "end" =
+            pointerUpEvent.clientY < dragState.startY ||
+            (pointerUpEvent.clientY === dragState.startY &&
+              pointerUpEvent.clientX < dragState.startX)
+              ? "start"
+              : "end";
+          const endBoundary = resolveBoundaryFromPoint(
+            {
+              x: pointerUpEvent.clientX,
+              y: pointerUpEvent.clientY
+            },
+            fallbackBias
+          );
+          if (endBoundary) {
+            setSelectionFromDocxBoundaries(dragState.startBoundary, endBoundary);
+          }
+        }
+
+        tableSelectionDragRef.current = undefined;
+        window.removeEventListener("pointermove", onPointerMove);
+        window.removeEventListener("pointerup", onPointerUp);
+        window.removeEventListener("pointercancel", onPointerUp);
+      };
+
+      window.addEventListener("pointermove", onPointerMove);
+      window.addEventListener("pointerup", onPointerUp, { once: true });
+      window.addEventListener("pointercancel", onPointerUp, { once: true });
+    },
+    [resolveBoundaryFromPoint, setSelectionFromDocxBoundaries]
+  );
+
+  const resolveTableCellLocationFromPoint = React.useCallback(
+    (point: { x: number; y: number }): DocxTableCellLocation | undefined => {
+      const element = document.elementFromPoint(point.x, point.y);
+      return parseTableCellLocationFromElement(element);
+    },
+    []
+  );
+
+  const beginTableCellSelectionDrag = React.useCallback(
+    (
+      pointerId: number,
+      anchorCell: DocxTableCellLocation,
+      startX: number,
+      startY: number,
+      startBoundary?: DocxTextRangeBoundary
+    ): void => {
+      tableCellSelectionDragRef.current = {
+        pointerId,
+        anchorCell,
+        startBoundary,
+        startX,
+        startY,
+        isSelectingCells: false,
+        isSelectingAcrossNodes: false
+      };
+
+      const onPointerMove = (pointerMoveEvent: PointerEvent): void => {
+        const dragState = tableCellSelectionDragRef.current;
+        if (!dragState || pointerMoveEvent.pointerId !== dragState.pointerId) {
+          return;
+        }
+
+        if (!dragState.isSelectingCells && !dragState.isSelectingAcrossNodes) {
+          const deltaX = Math.abs(pointerMoveEvent.clientX - dragState.startX);
+          const deltaY = Math.abs(pointerMoveEvent.clientY - dragState.startY);
+          if (deltaX + deltaY < 3) {
+            return;
+          }
+        }
+
+        const fallbackBias: "start" | "end" =
+          pointerMoveEvent.clientY < dragState.startY ||
+          (pointerMoveEvent.clientY === dragState.startY &&
+            pointerMoveEvent.clientX < dragState.startX)
+            ? "start"
+            : "end";
+
+        if (dragState.isSelectingAcrossNodes) {
+          const endBoundary = resolveBoundaryFromPoint(
+            {
+              x: pointerMoveEvent.clientX,
+              y: pointerMoveEvent.clientY
+            },
+            fallbackBias
+          );
+          if (!dragState.startBoundary || !endBoundary) {
+            return;
+          }
+
+          clearTableCellSelection();
+          setSelectionFromDocxBoundaries(dragState.startBoundary, endBoundary);
+          pointerMoveEvent.preventDefault();
+          return;
+        }
+
+        const hoveredCell = resolveTableCellLocationFromPoint({
+          x: pointerMoveEvent.clientX,
+          y: pointerMoveEvent.clientY
+        });
+        if (hoveredCell && hoveredCell.tableIndex === dragState.anchorCell.tableIndex) {
+          const movedToDifferentCell =
+            hoveredCell.rowIndex !== dragState.anchorCell.rowIndex ||
+            hoveredCell.cellIndex !== dragState.anchorCell.cellIndex;
+          if (!movedToDifferentCell) {
+            return;
+          }
+
+          if (!dragState.isSelectingCells) {
+            dragState.isSelectingCells = true;
+            pendingTableCellFocusRef.current = undefined;
+            const selection = window.getSelection();
+            selection?.removeAllRanges();
+          }
+
+          setTableCellSelectionRange({
+            tableIndex: dragState.anchorCell.tableIndex,
+            anchorRowIndex: dragState.anchorCell.rowIndex,
+            anchorCellIndex: dragState.anchorCell.cellIndex,
+            focusRowIndex: hoveredCell.rowIndex,
+            focusCellIndex: hoveredCell.cellIndex
+          });
+          editor.selectTableCell(
+            hoveredCell.tableIndex,
+            hoveredCell.rowIndex,
+            hoveredCell.cellIndex
+          );
+          editor.setActiveTextRange(undefined);
+          pointerMoveEvent.preventDefault();
+          return;
+        }
+
+        if (!dragState.startBoundary) {
+          return;
+        }
+
+        const endBoundary = resolveBoundaryFromPoint(
+          {
+            x: pointerMoveEvent.clientX,
+            y: pointerMoveEvent.clientY
+          },
+          fallbackBias
+        );
+        if (!endBoundary) {
+          return;
+        }
+
+        dragState.isSelectingAcrossNodes = true;
+        dragState.isSelectingCells = false;
+        pendingTableCellFocusRef.current = undefined;
+        clearTableCellSelection();
+        setSelectionFromDocxBoundaries(dragState.startBoundary, endBoundary);
+        pointerMoveEvent.preventDefault();
+      };
+
+      const onPointerUp = (pointerUpEvent: PointerEvent): void => {
+        const dragState = tableCellSelectionDragRef.current;
+        if (!dragState || pointerUpEvent.pointerId !== dragState.pointerId) {
+          return;
+        }
+
+        if (dragState.isSelectingCells || dragState.isSelectingAcrossNodes) {
+          suppressNextTableCellClickRef.current = true;
+        }
+
+        tableCellSelectionDragRef.current = undefined;
+        window.removeEventListener("pointermove", onPointerMove);
+        window.removeEventListener("pointerup", onPointerUp);
+        window.removeEventListener("pointercancel", onPointerUp);
+      };
+
+      window.addEventListener("pointermove", onPointerMove);
+      window.addEventListener("pointerup", onPointerUp, { once: true });
+      window.addEventListener("pointercancel", onPointerUp, { once: true });
+    },
+    [
+      clearTableCellSelection,
+      editor,
+      resolveBoundaryFromPoint,
+      resolveTableCellLocationFromPoint,
+      setSelectionFromDocxBoundaries
+    ]
+  );
+
+  const onViewerPointerDown = React.useCallback(
+    (event: React.PointerEvent<HTMLDivElement>): void => {
+      if (tableContextMenuState || contextMenuState) {
+        const target = event.target;
+        if (
+          target instanceof Element &&
+          !target.closest("[data-docx-table-context-menu='true'],[data-docx-context-menu='true']")
+        ) {
+          closeTableContextMenu();
+          closeContextMenu();
+        }
+      }
+
+      if (event.button !== 0 && event.button !== undefined) {
+        return;
+      }
+
+      if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) {
+        return;
+      }
+
+      const target = event.target;
+      if (!(target instanceof Element)) {
+        return;
+      }
+
+      if (
+        activeHeaderFooterEdit &&
+        !target.closest("[data-docx-header-footer-region='header']") &&
+        !target.closest("[data-docx-header-footer-region='footer']")
+      ) {
+        setActiveHeaderFooterEdit(undefined);
+        setSelectedSectionImageKey(undefined);
+        setFloatingMovePreview(undefined);
+      }
+
+      if (eventTargetIsInteractiveControl(target)) {
+        return;
+      }
+
+      if (target.closest("[data-docx-table-cell='true']")) {
+        return;
+      }
+
+      const paragraphHost = target.closest<HTMLElement>("[data-docx-paragraph-host='true']");
+      if (!paragraphHost || !paragraphHost.isContentEditable) {
+        return;
+      }
+
+      const startBoundary = resolveBoundaryFromPoint({
+        x: event.clientX,
+        y: event.clientY
+      });
+      if (!startBoundary) {
+        return;
+      }
+
+      beginCrossNodeSelectionDrag(
+        startBoundary,
+        event.pointerId,
+        event.clientX,
+        event.clientY
+      );
+    },
+    [
+      activeHeaderFooterEdit,
+      beginCrossNodeSelectionDrag,
+      closeContextMenu,
+      closeTableContextMenu,
+      contextMenuState,
+      resolveBoundaryFromPoint,
+      setActiveHeaderFooterEdit,
+      setFloatingMovePreview,
+      setSelectedSectionImageKey,
+      tableContextMenuState
+    ]
+  );
+
+  const onViewerContextMenu = React.useCallback(
+    (event: React.MouseEvent<HTMLDivElement>): void => {
+      if (isReadOnly || event.defaultPrevented) {
+        return;
+      }
+
+      const target = event.target;
+      if (!(target instanceof Element)) {
+        return;
+      }
+
+      if (
+        target.closest("[data-docx-table-context-menu='true']") ||
+        target.closest("[data-docx-context-menu='true']")
+      ) {
+        return;
+      }
+
+      if (eventTargetIsInteractiveControl(target)) {
+        return;
+      }
+
+      const selection = window.getSelection();
+      const domRange = selection && selection.rangeCount > 0 ? selection.getRangeAt(0) : undefined;
+      const isExpandedSelection = Boolean(selection && !selection.isCollapsed && domRange);
+      const pointIsWithinSelection = isExpandedSelection
+        ? Array.from(domRange?.getClientRects() ?? []).some(
+            (rect) =>
+              event.clientX >= rect.left &&
+              event.clientX <= rect.right &&
+              event.clientY >= rect.top &&
+              event.clientY <= rect.bottom
+          )
+        : false;
+
+      let resolvedRange = resolveActiveRangeFromDomSelection();
+      if (!pointIsWithinSelection) {
+        const boundary = resolveBoundaryFromPoint({
+          x: event.clientX,
+          y: event.clientY
+        });
+        if (!boundary) {
+          return;
+        }
+
+        clearTableCellSelection();
+        setSelectionFromDocxBoundaries(boundary, boundary);
+        resolvedRange = {
+          start: {
+            location: cloneTextRangeLocation(boundary.location),
+            offset: boundary.offset
+          },
+          end: {
+            location: cloneTextRangeLocation(boundary.location),
+            offset: boundary.offset
+          }
+        };
+      } else if (resolvedRange) {
+        clearTableCellSelection();
+        editor.setActiveTextRange(resolvedRange);
+      }
+
+      const location = resolvedRange
+        ? cloneTextRangeLocation(normalizeTextRange(resolvedRange).start.location)
+        : undefined;
+
+      event.preventDefault();
+      event.stopPropagation();
+      openContextMenu(
+        {
+          kind: "text",
+          activeTextRange: resolvedRange ? normalizeTextRange(resolvedRange) : undefined,
+          location
+        },
+        {
+          x: event.clientX,
+          y: event.clientY
+        }
+      );
+    },
+    [
+      clearTableCellSelection,
+      editor,
+      isReadOnly,
+      openContextMenu,
+      resolveActiveRangeFromDomSelection,
+      resolveBoundaryFromPoint,
+      setSelectionFromDocxBoundaries
+    ]
+  );
+
+  const handleDeleteAcrossTableCellSelection = React.useCallback(
+    (event: React.KeyboardEvent<HTMLElement>): boolean => {
+      if (isReadOnly) {
+        return false;
+      }
+
+      if (event.defaultPrevented) {
+        return false;
+      }
+
+      if (event.key !== "Backspace" && event.key !== "Delete") {
+        return false;
+      }
+
+      if (!tableCellSelectionRange) {
+        return false;
+      }
+      if (isSingleTableCellSelectionRange(tableCellSelectionRange)) {
+        return false;
+      }
+
+      const tableNode = editor.model.nodes[tableCellSelectionRange.tableIndex];
+      if (!tableNode || tableNode.type !== "table") {
+        return false;
+      }
+
+      const selectedCells = selectedTableCellLocations(
+        tableNode,
+        tableCellSelectionRange
+      );
+      if (selectedCells.length === 0) {
+        return false;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+
+      pendingTableCellFocusRef.current = undefined;
+      editor.setActiveTextRange(undefined);
+
+      if (tableSelectionCoversWholeTable(tableNode, tableCellSelectionRange)) {
+        tableCellDraftsRef.current.forEach((_, draftKey) => {
+          if (draftKey.startsWith(`${tableCellSelectionRange.tableIndex}:`)) {
+            tableCellDraftsRef.current.delete(draftKey);
+          }
+        });
+        clearTableCellSelection();
+        editor.deleteTable(tableCellSelectionRange.tableIndex);
+        return true;
+      }
+
+      selectedCells.forEach((cellLocation) => {
+        tableCellDraftsRef.current.delete(
+          `${tableCellSelectionRange.tableIndex}:${cellLocation.rowIndex}:${cellLocation.cellIndex}`
+        );
+      });
+      editor.clearTableCellContents(tableCellSelectionRange.tableIndex, selectedCells);
+      const focusCell = selectedCells[0];
+      if (focusCell) {
+        editor.selectTableCell(
+          tableCellSelectionRange.tableIndex,
+          focusCell.rowIndex,
+          focusCell.cellIndex
+        );
+        setSingleTableCellSelection(
+          tableCellSelectionRange.tableIndex,
+          focusCell.rowIndex,
+          focusCell.cellIndex
+        );
+      } else {
+        clearTableCellSelection();
+      }
+
+      return true;
+    },
+    [
+      clearTableCellSelection,
+      editor,
+      isReadOnly,
+      setSingleTableCellSelection,
+      tableCellSelectionRange
+    ]
+  );
+
+  const onViewerKeyDown = React.useCallback(
+    (event: React.KeyboardEvent<HTMLDivElement>): void => {
+      if (!isReadOnly && handleDeleteAcrossTableCellSelection(event)) {
+        return;
+      }
+
+      const isPlainBackspaceOrDelete =
+        (event.key === "Backspace" || event.key === "Delete") &&
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.altKey &&
+        !event.shiftKey;
+      if (!isReadOnly && isPlainBackspaceOrDelete && !event.defaultPrevented) {
+        const target = event.target;
+        if (!(target instanceof Element) || !eventTargetIsInteractiveControl(target)) {
+          let activeRange = editor.activeTextRange;
+          if (!activeRange || compareTextRangeBoundaries(activeRange.start, activeRange.end) >= 0) {
+            const selection = window.getSelection();
+            if (selection && selection.rangeCount > 0) {
+              const domRange = selection.getRangeAt(0);
+              const startBoundary = resolveParagraphBoundaryFromSelectionPoint(
+                domRange.startContainer,
+                domRange.startOffset
+              );
+              const endBoundary = resolveParagraphBoundaryFromSelectionPoint(
+                domRange.endContainer,
+                domRange.endOffset
+              );
+              if (startBoundary && endBoundary) {
+                activeRange = normalizeTextRange({
+                  start: startBoundary,
+                  end: endBoundary
+                });
+              }
+            }
+          }
+
+          if (activeRange && compareTextRangeBoundaries(activeRange.start, activeRange.end) < 0) {
+            const normalizedActiveRange = normalizeTextRange(activeRange);
+            event.preventDefault();
+            event.stopPropagation();
+
+            syncSelectionFromDocxRange({
+              start: {
+                location: cloneTextRangeLocation(normalizedActiveRange.start.location),
+                offset: normalizedActiveRange.start.offset
+              },
+              end: {
+                location: cloneTextRangeLocation(normalizedActiveRange.start.location),
+                offset: normalizedActiveRange.start.offset
+              }
+            });
+
+            const collapsedRange = editor.deleteExpandedSelection(normalizedActiveRange);
+            if (collapsedRange) {
+              paragraphDraftsRef.current.clear();
+              tableCellDraftsRef.current.clear();
+              tableCellParagraphDraftsRef.current.clear();
+              syncSelectionFromDocxRange(collapsedRange);
+            }
+            return;
+          }
+        }
+      }
+
+      const isSelectAll = (event.key === "a" || event.key === "A") && (event.ctrlKey || event.metaKey);
+      if (!isSelectAll || event.shiftKey || event.altKey) {
+        return;
+      }
+
+      const target = event.target;
+      if (!(target instanceof Element)) {
+        return;
+      }
+
+      if (eventTargetIsInteractiveControl(target)) {
+        return;
+      }
+
+      if (!viewerRootRef.current?.contains(target)) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      selectAllDocumentText();
+    },
+    [
+      editor,
+      handleDeleteAcrossTableCellSelection,
+      isReadOnly,
+      resolveParagraphBoundaryFromSelectionPoint,
+      selectAllDocumentText,
+      syncSelectionFromDocxRange
+    ]
+  );
+
+  const handleDeleteAcrossSelection = React.useCallback(
+    (event: React.KeyboardEvent<HTMLElement>): boolean => {
+      if (isReadOnly) {
+        return false;
+      }
+
+      if (event.defaultPrevented) {
+        return false;
+      }
+
+      if (event.key !== "Backspace" && event.key !== "Delete") {
+        return false;
+      }
+
+      let activeRange = editor.activeTextRange;
+      if (!activeRange || compareTextRangeBoundaries(activeRange.start, activeRange.end) >= 0) {
+        const selection = window.getSelection();
+        if (selection && selection.rangeCount > 0) {
+          const domRange = selection.getRangeAt(0);
+          const startBoundary = resolveParagraphBoundaryFromSelectionPoint(
+            domRange.startContainer,
+            domRange.startOffset
+          );
+          const endBoundary = resolveParagraphBoundaryFromSelectionPoint(
+            domRange.endContainer,
+            domRange.endOffset
+          );
+          if (startBoundary && endBoundary) {
+            activeRange = normalizeTextRange({
+              start: startBoundary,
+              end: endBoundary
+            });
+          }
+        }
+      }
+
+      if (!activeRange || compareTextRangeBoundaries(activeRange.start, activeRange.end) >= 0) {
+        return false;
+      }
+      const normalizedActiveRange = normalizeTextRange(activeRange);
+
+      event.preventDefault();
+      event.stopPropagation();
+
+      // Collapse the native DOM selection immediately so deleted ranges do not
+      // remain visibly selected while model updates reconcile.
+      syncSelectionFromDocxRange({
+        start: {
+          location: cloneTextRangeLocation(normalizedActiveRange.start.location),
+          offset: normalizedActiveRange.start.offset
+        },
+        end: {
+          location: cloneTextRangeLocation(normalizedActiveRange.start.location),
+          offset: normalizedActiveRange.start.offset
+        }
+      });
+
+      const collapsedRange = editor.deleteExpandedSelection(normalizedActiveRange);
+      if (collapsedRange) {
+        paragraphDraftsRef.current.clear();
+        tableCellDraftsRef.current.clear();
+        tableCellParagraphDraftsRef.current.clear();
+        syncSelectionFromDocxRange(collapsedRange);
+      }
+
+      return true;
+    },
+    [editor, isReadOnly, resolveParagraphBoundaryFromSelectionPoint, syncSelectionFromDocxRange]
+  );
+
+  const replaceExpandedSelectionWithText = React.useCallback(
+    (rawText: string): boolean => {
+      if (isReadOnly) {
+        return false;
+      }
+
+      let activeRange = editor.activeTextRange;
+      if (!activeRange) {
+        const selection = window.getSelection();
+        if (selection && selection.rangeCount > 0) {
+          const domRange = selection.getRangeAt(0);
+          const startBoundary = resolveParagraphBoundaryFromSelectionPoint(
+            domRange.startContainer,
+            domRange.startOffset
+          );
+          const endBoundary = resolveParagraphBoundaryFromSelectionPoint(
+            domRange.endContainer,
+            domRange.endOffset
+          );
+          if (startBoundary && endBoundary) {
+            activeRange = normalizeTextRange({
+              start: startBoundary,
+              end: endBoundary
+            });
+          }
+        }
+      }
+      if (!activeRange) {
+        return false;
+      }
+
+      const normalizedRange = normalizeTextRange(activeRange);
+      if (compareTextRangeBoundaries(normalizedRange.start, normalizedRange.end) >= 0) {
+        return false;
+      }
+
+      if (sameParagraphLocation(normalizedRange.start.location, normalizedRange.end.location)) {
+        return false;
+      }
+
+      const replacementText = rawText.replace(/\r\n?/g, "\n");
+      const collapsedRange = editor.replaceExpandedSelection(replacementText, normalizedRange);
+      if (!collapsedRange) {
+        return false;
+      }
+
+      paragraphDraftsRef.current.clear();
+      tableCellDraftsRef.current.clear();
+      tableCellParagraphDraftsRef.current.clear();
+      syncSelectionFromDocxRange(collapsedRange);
+      return true;
+    },
+    [
+      editor,
+      isReadOnly,
+      resolveParagraphBoundaryFromSelectionPoint,
+      syncSelectionFromDocxRange
+    ]
+  );
+
+  const resolveContextMenuActions = React.useCallback(
+    (context: DocxContextMenuContext): DocxContextMenuAction[] => {
+      if (context.kind === "table") {
+        return tableContextMenuActions.map((action) => ({
+          id: action.id,
+          label: action.label,
+          destructive: action.destructive
+        }));
+      }
+
+      const normalizedRange = context.activeTextRange ? normalizeTextRange(context.activeTextRange) : undefined;
+      const hasExpandedRange = Boolean(
+        normalizedRange && compareTextRangeBoundaries(normalizedRange.start, normalizedRange.end) < 0
+      );
+      const clipboardActions = DEFAULT_CONTEXT_MENU_CLIPBOARD_ACTIONS.map((action) => ({
+        ...action,
+        disabled: (action.id === "cut" || action.id === "copy") && !hasExpandedRange
+      }));
+
+      if (context.kind !== "image") {
+        return clipboardActions;
+      }
+
+      const floating = context.image?.floating;
+      const hasFloatingImage = Boolean(floating);
+      const normalizedZIndex = Number.isFinite(floating?.zIndex)
+        ? clampNumber(Math.round(floating?.zIndex as number), WORD_IMAGE_Z_INDEX_MIN, WORD_IMAGE_Z_INDEX_MAX)
+        : WORD_IMAGE_Z_INDEX_DEFAULT;
+      const bringForwardDisabled = !hasFloatingImage || normalizedZIndex >= WORD_IMAGE_Z_INDEX_MAX;
+      const sendBackwardDisabled = !hasFloatingImage || normalizedZIndex <= WORD_IMAGE_Z_INDEX_MIN;
+      const inFrontOfTextDisabled = !hasFloatingImage && context.kind === "image";
+      const behindTextDisabled = !hasFloatingImage && context.kind === "image";
+
+      const layerActionDisabledById = (
+        actionId: DocxContextMenuActionId | (string & {})
+      ): boolean => {
+        switch (actionId) {
+          case "image-bring-to-front":
+            return !hasFloatingImage || normalizedZIndex >= WORD_IMAGE_Z_INDEX_MAX;
+          case "image-bring-forward":
+            return bringForwardDisabled;
+          case "image-in-front-of-text":
+            return inFrontOfTextDisabled;
+          case "image-send-to-back":
+            return !hasFloatingImage || normalizedZIndex <= WORD_IMAGE_Z_INDEX_MIN;
+          case "image-send-backward":
+            return sendBackwardDisabled;
+          case "image-behind-text":
+            return behindTextDisabled;
+          default:
+            return false;
+        }
+      };
+
+      const layerActions = DEFAULT_CONTEXT_MENU_IMAGE_LAYER_ACTIONS.map((action) => {
+        const children = action.children?.map((child) => ({
+          ...child,
+          disabled: layerActionDisabledById(child.id)
+        }));
+        return {
+          ...action,
+          disabled: children ? children.every((child) => Boolean(child.disabled)) : layerActionDisabledById(action.id),
+          children
+        };
+      });
+
+      return [...clipboardActions, ...layerActions];
+    },
+    [tableContextMenuActions]
+  );
+
+  const runContextMenuAction = React.useCallback(
+    (
+      actionId: DocxContextMenuActionId | (string & {}),
+      providedContext?: DocxContextMenuContext
+    ): void => {
+      const isTableAction = (
+        value: DocxContextMenuActionId | (string & {})
+      ): value is DocxTableContextMenuActionId =>
+        value === "insert-row-above" ||
+        value === "insert-row-below" ||
+        value === "insert-column-left" ||
+        value === "insert-column-right" ||
+        value === "delete-row" ||
+        value === "delete-column" ||
+        value === "delete-table";
+      if (isTableAction(actionId)) {
+        const providedTableContext =
+          providedContext?.kind === "table"
+            ? providedContext.tableContext
+            : undefined;
+        runTableContextMenuAction(actionId, providedTableContext);
+        return;
+      }
+
+      const context = providedContext ?? contextMenuState;
+      if (!context) {
+        return;
+      }
+
+      const currentRange = context.activeTextRange
+        ? normalizeTextRange(context.activeTextRange)
+        : resolveActiveRangeFromDomSelection();
+      const hasExpandedRange = Boolean(
+        currentRange && compareTextRangeBoundaries(currentRange.start, currentRange.end) < 0
+      );
+
+      const restoreDomSelectionFromRange = (range: DocxTextRange): boolean => {
+        const normalizedRange = normalizeTextRange(range);
+        const paragraphHost = resolveParagraphHostElement(normalizedRange.start.location);
+        if (!paragraphHost) {
+          return false;
+        }
+
+        const focusTarget =
+          normalizedRange.start.location.kind === "table-cell"
+            ? (paragraphHost.closest<HTMLElement>("[data-docx-cell-key]") ?? paragraphHost)
+            : paragraphHost;
+        try {
+          focusTarget.focus({ preventScroll: true });
+        } catch {
+          focusTarget.focus();
+        }
+        setSelectionFromDocxBoundaries(normalizedRange.start, normalizedRange.end);
+        return true;
+      };
+
+      const clearDraftsAndSetSelection = (range: DocxTextRange): void => {
+        paragraphDraftsRef.current.clear();
+        tableCellDraftsRef.current.clear();
+        tableCellParagraphDraftsRef.current.clear();
+        syncSelectionFromDocxRange(range);
+      };
+
+      const resolveSelectedTextForRange = (range: DocxTextRange | undefined): string => {
+        const domSelectedText = window.getSelection()?.toString() ?? "";
+        if (domSelectedText.length > 0) {
+          return domSelectedText;
+        }
+        if (!range) {
+          return "";
+        }
+
+        const normalizedRange = normalizeTextRange(range);
+        if (compareTextRangeBoundaries(normalizedRange.start, normalizedRange.end) >= 0) {
+          return "";
+        }
+
+        const textSegments = paragraphRangeForMutate(
+          editor.model,
+          normalizedRange.start.location,
+          normalizedRange.end.location
+        ).map(({ location }) => {
+          const { paragraph } = getParagraphAtLocation(editor.model, location);
+          if (!paragraph) {
+            return "";
+          }
+          const [safeStart, safeEnd] = resolveRangeBoundaryOffsetsForParagraph(
+            location,
+            normalizedRange.start,
+            normalizedRange.end,
+            paragraph
+          );
+          return paragraphText(paragraph).slice(safeStart, safeEnd);
+        });
+        return textSegments.join("\n");
+      };
+
+      const deleteExpandedRange = (): boolean => {
+        if (!currentRange || !hasExpandedRange) {
+          return false;
+        }
+        syncSelectionFromDocxRange({
+          start: {
+            location: cloneTextRangeLocation(currentRange.start.location),
+            offset: currentRange.start.offset
+          },
+          end: {
+            location: cloneTextRangeLocation(currentRange.start.location),
+            offset: currentRange.start.offset
+          }
+        });
+        const collapsedRange = editor.deleteExpandedSelection(currentRange);
+        if (!collapsedRange) {
+          return false;
+        }
+        clearDraftsAndSetSelection(collapsedRange);
+        return true;
+      };
+
+      const insertTextAtCollapsedRange = (rawText: string): boolean => {
+        if (!currentRange) {
+          return false;
+        }
+
+        const normalizedRange = normalizeTextRange(currentRange);
+        if (compareTextRangeBoundaries(normalizedRange.start, normalizedRange.end) !== 0) {
+          return false;
+        }
+
+        const { paragraph } = getParagraphAtLocation(editor.model, normalizedRange.start.location);
+        if (!paragraph) {
+          return false;
+        }
+
+        const replacementText = rawText.replace(/\r\n?/g, "\n");
+        const safeOffset = normalizeRangeBoundaryParagraphOffset(paragraph, normalizedRange.start.offset);
+        const existingText = paragraphText(paragraph);
+        const nextText = `${existingText.slice(0, safeOffset)}${replacementText}${existingText.slice(safeOffset)}`;
+        if (normalizedRange.start.location.kind === "paragraph") {
+          editor.commitParagraphText(normalizedRange.start.location.nodeIndex, nextText);
+        } else {
+          editor.commitTableCellParagraphTextRecursive(
+            normalizedRange.start.location.tableIndex,
+            normalizedRange.start.location.rowIndex,
+            normalizedRange.start.location.cellIndex,
+            normalizedRange.start.location.paragraphIndex,
+            nextText
+          );
+        }
+
+        const insertedRange: DocxTextRange = {
+          start: {
+            location: cloneTextRangeLocation(normalizedRange.start.location),
+            offset: safeOffset + replacementText.length
+          },
+          end: {
+            location: cloneTextRangeLocation(normalizedRange.start.location),
+            offset: safeOffset + replacementText.length
+          }
+        };
+        clearDraftsAndSetSelection(insertedRange);
+        return true;
+      };
+
+      const resolveContextImage = (): { location: DocxImageLocation; image: ImageRunNode } | undefined => {
+        const imageLocation = context.image?.location;
+        if (!imageLocation) {
+          return undefined;
+        }
+
+        const { paragraph } = getParagraphAtLocation(
+          editor.model,
+          imageLocationToParagraphLocation(imageLocation)
+        );
+        const child = paragraph?.children[imageLocation.childIndex];
+        if (!child || child.type !== "image") {
+          return undefined;
+        }
+
+        return {
+          location: imageLocation,
+          image: child
+        };
+      };
+
+      const tryCopySelectionWithLegacyCommand = (): boolean => {
+        if (typeof document.execCommand !== "function") {
+          return false;
+        }
+        try {
+          return document.execCommand("copy");
+        } catch {
+          return false;
+        }
+      };
+
+      const copyTextToClipboard = async (text: string): Promise<boolean> => {
+        if (!text) {
+          return false;
+        }
+        contextMenuClipboardTextRef.current = text;
+        if (typeof navigator === "undefined" || !navigator.clipboard?.writeText) {
+          return false;
+        }
+        try {
+          await navigator.clipboard.writeText(text);
+          return true;
+        } catch {
+          return false;
+        }
+      };
+
+      const readTextFromClipboard = async (): Promise<string> => {
+        if (typeof navigator !== "undefined" && navigator.clipboard?.readText) {
+          try {
+            const text = await navigator.clipboard.readText();
+            if (text.length > 0) {
+              contextMenuClipboardTextRef.current = text;
+              return text;
+            }
+          } catch {
+            // Fall through to the in-app clipboard fallback.
+          }
+        }
+        return contextMenuClipboardTextRef.current;
+      };
+
+      void (async (): Promise<void> => {
+        switch (actionId) {
+          case "copy": {
+            if (!hasExpandedRange) {
+              break;
+            }
+            if (currentRange) {
+              restoreDomSelectionFromRange(currentRange);
+            }
+            const selectedText = resolveSelectedTextForRange(currentRange);
+            if (!selectedText) {
+              break;
+            }
+            tryCopySelectionWithLegacyCommand();
+            await copyTextToClipboard(selectedText);
+            break;
+          }
+          case "cut": {
+            if (!hasExpandedRange) {
+              break;
+            }
+            if (currentRange) {
+              restoreDomSelectionFromRange(currentRange);
+            }
+            const selectedText = resolveSelectedTextForRange(currentRange);
+            if (selectedText) {
+              tryCopySelectionWithLegacyCommand();
+              await copyTextToClipboard(selectedText);
+            }
+            deleteExpandedRange();
+            break;
+          }
+          case "paste": {
+            const pastedText = await readTextFromClipboard();
+            if (!pastedText) {
+              break;
+            }
+
+            if (currentRange && hasExpandedRange) {
+              const collapsedRange = editor.replaceExpandedSelection(pastedText, currentRange);
+              if (collapsedRange) {
+                clearDraftsAndSetSelection(collapsedRange);
+                break;
+              }
+            }
+
+            if (currentRange) {
+              restoreDomSelectionFromRange(currentRange);
+            }
+            if (typeof document.execCommand === "function") {
+              try {
+                if (document.execCommand("insertText", false, pastedText)) {
+                  setActiveRangeFromSelection();
+                  break;
+                }
+              } catch {
+                // Ignore insertText failures in unsupported browsers.
+              }
+            }
+            insertTextAtCollapsedRange(pastedText);
+            break;
+          }
+          case "image-bring-to-front":
+          case "image-bring-forward":
+          case "image-in-front-of-text":
+          case "image-send-to-back":
+          case "image-send-backward":
+          case "image-behind-text": {
+            const resolvedImage = resolveContextImage();
+            if (!resolvedImage || !resolvedImage.image.floating) {
+              break;
+            }
+
+            const floating = resolvedImage.image.floating;
+            const currentZIndex = Number.isFinite(floating.zIndex)
+              ? clampNumber(Math.round(floating.zIndex as number), WORD_IMAGE_Z_INDEX_MIN, WORD_IMAGE_Z_INDEX_MAX)
+              : WORD_IMAGE_Z_INDEX_DEFAULT;
+            let patch: Partial<NonNullable<ImageRunNode["floating"]>> | undefined;
+
+            switch (actionId) {
+              case "image-bring-to-front":
+                patch = {
+                  behindDocument: false,
+                  zIndex: WORD_IMAGE_Z_INDEX_MAX
+                };
+                break;
+              case "image-bring-forward":
+                patch = {
+                  behindDocument: false,
+                  zIndex: clampNumber(
+                    currentZIndex + WORD_IMAGE_Z_INDEX_STEP,
+                    WORD_IMAGE_Z_INDEX_MIN,
+                    WORD_IMAGE_Z_INDEX_MAX
+                  )
+                };
+                break;
+              case "image-in-front-of-text":
+                patch = {
+                  behindDocument: false,
+                  wrapType: "none",
+                  zIndex: Math.max(WORD_IMAGE_Z_INDEX_STEP, currentZIndex)
+                };
+                break;
+              case "image-send-to-back":
+                patch = {
+                  behindDocument: false,
+                  zIndex: WORD_IMAGE_Z_INDEX_MIN
+                };
+                break;
+              case "image-send-backward":
+                patch = {
+                  behindDocument: false,
+                  zIndex: clampNumber(
+                    currentZIndex - WORD_IMAGE_Z_INDEX_STEP,
+                    WORD_IMAGE_Z_INDEX_MIN,
+                    WORD_IMAGE_Z_INDEX_MAX
+                  )
+                };
+                break;
+              case "image-behind-text":
+                patch = {
+                  behindDocument: true,
+                  wrapType: "none",
+                  zIndex: WORD_IMAGE_Z_INDEX_MIN
+                };
+                break;
+              default:
+                patch = undefined;
+                break;
+            }
+
+            if (patch) {
+              editor.moveFloatingImage(resolvedImage.location, patch);
+            }
+            break;
+          }
+          default:
+            break;
+        }
+
+        closeContextMenu();
+      })();
+    },
+    [
+      closeContextMenu,
+      contextMenuState,
+      editor,
+      replaceExpandedSelectionWithText,
+      resolveActiveRangeFromDomSelection,
+      runTableContextMenuAction,
+      setActiveRangeFromSelection,
+      syncSelectionFromDocxRange
+    ]
+  );
+
+  React.useEffect(() => {
+    const onWindowKeyDown = (event: KeyboardEvent): void => {
+      if (isReadOnly || event.defaultPrevented) {
+        return;
+      }
+
+      const isPlainBackspaceOrDelete =
+        (event.key === "Backspace" || event.key === "Delete") &&
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.altKey &&
+        !event.shiftKey;
+      if (!isPlainBackspaceOrDelete) {
+        return;
+      }
+
+      const target = event.target;
+      if (target instanceof Element && eventTargetIsInteractiveControl(target)) {
+        return;
+      }
+
+      const rootElement = viewerRootRef.current;
+      const selection = window.getSelection();
+      if (!rootElement || !selection || selection.rangeCount === 0) {
+        return;
+      }
+
+      const domRange = selection.getRangeAt(0);
+      if (!rootElement.contains(domRange.startContainer) || !rootElement.contains(domRange.endContainer)) {
+        return;
+      }
+
+      const startBoundary = resolveParagraphBoundaryFromSelectionPoint(
+        domRange.startContainer,
+        domRange.startOffset
+      );
+      const endBoundary = resolveParagraphBoundaryFromSelectionPoint(
+        domRange.endContainer,
+        domRange.endOffset
+      );
+      if (!startBoundary || !endBoundary) {
+        return;
+      }
+
+      const normalizedRange = normalizeTextRange({
+        start: startBoundary,
+        end: endBoundary
+      });
+      if (compareTextRangeBoundaries(normalizedRange.start, normalizedRange.end) >= 0) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+
+      syncSelectionFromDocxRange({
+        start: {
+          location: cloneTextRangeLocation(normalizedRange.start.location),
+          offset: normalizedRange.start.offset
+        },
+        end: {
+          location: cloneTextRangeLocation(normalizedRange.start.location),
+          offset: normalizedRange.start.offset
+        }
+      });
+      const collapsedRange = editor.deleteExpandedSelection(normalizedRange);
+      if (!collapsedRange) {
+        return;
+      }
+
+      paragraphDraftsRef.current.clear();
+      tableCellDraftsRef.current.clear();
+      tableCellParagraphDraftsRef.current.clear();
+      syncSelectionFromDocxRange(collapsedRange);
+    };
+
+    window.addEventListener("keydown", onWindowKeyDown, true);
+    return () => {
+      window.removeEventListener("keydown", onWindowKeyDown, true);
+    };
+  }, [editor, isReadOnly, resolveParagraphBoundaryFromSelectionPoint, syncSelectionFromDocxRange]);
+
+  React.useEffect(() => {
+    if (!selectedImage) {
+      return;
+    }
+
+    const { paragraph } = getParagraphAtLocation(
+      editor.model,
+      imageLocationToParagraphLocation(selectedImage)
+    );
+    const child = paragraph?.children[selectedImage.childIndex];
+    if (!child || child.type !== "image") {
+      setSelectedImage(undefined);
+      setResizePreview(undefined);
+    }
+  }, [editor.model, selectedImage]);
+
+  const focusParagraphAtOffset = React.useCallback(
+    (paragraphIndex: number, offset: number): void => {
+      const focusAttempt = (attempt: number): void => {
+        const element = paragraphElementsRef.current.get(paragraphIndex);
+        if (!element || !element.isConnected) {
+          if (attempt < 6) {
+            window.requestAnimationFrame(() => {
+              focusAttempt(attempt + 1);
+            });
+          }
+          return;
+        }
+
+        try {
+          element.focus({ preventScroll: true });
+        } catch {
+          element.focus();
+        }
+        const safeOffset = Math.max(0, Math.min(Math.round(offset), element.textContent?.length ?? 0));
+        setSelectionWithinElementByTextOffsets(element, safeOffset, safeOffset);
+        const selection = window.getSelection();
+        const range = selection && selection.rangeCount > 0 ? selection.getRangeAt(0) : undefined;
+        const selectionInsideElement = Boolean(
+          range &&
+            element.contains(range.startContainer) &&
+            element.contains(range.endContainer)
+        );
+        if (!selectionInsideElement && attempt < 6) {
+          window.requestAnimationFrame(() => {
+            focusAttempt(attempt + 1);
+          });
+        }
+      };
+
+      window.requestAnimationFrame(() => {
+        focusAttempt(0);
+      });
+    },
+    [setSelectionWithinElementByTextOffsets]
+  );
+
+  const focusTableCellParagraphAtOffset = React.useCallback(
+    (cellDraftKey: string, paragraphIndex: number, offset: number): void => {
+      window.requestAnimationFrame(() => {
+        const cellElement = tableCellEditorElementsRef.current.get(cellDraftKey);
+        if (!cellElement) {
+          return;
+        }
+
+        const paragraphElement = cellElement.querySelector(
+          `[data-docx-table-paragraph-index="${paragraphIndex}"]`
+        ) as HTMLElement | null;
+        if (!paragraphElement) {
+          cellElement.focus();
+          return;
+        }
+
+        cellElement.focus();
+        const safeOffset = Math.max(0, Math.min(Math.round(offset), paragraphElement.textContent?.length ?? 0));
+        setSelectionWithinElementByTextOffsets(paragraphElement, safeOffset, safeOffset);
+      });
+    },
+    [setSelectionWithinElementByTextOffsets]
+  );
+
+  const focusParagraphLocationAtOffset = React.useCallback(
+    (location: ParagraphLocation, offset: number): void => {
+      if (location.kind === "paragraph") {
+        focusParagraphAtOffset(location.nodeIndex, offset);
+        return;
+      }
+
+      const cellDraftKey = `${location.tableIndex}:${location.rowIndex}:${location.cellIndex}`;
+      focusTableCellParagraphAtOffset(cellDraftKey, location.paragraphIndex, offset);
+    },
+    [focusParagraphAtOffset, focusTableCellParagraphAtOffset]
+  );
+
+  const focusParagraphLocationAtClientPoint = React.useCallback(
+    (
+      location: ParagraphLocation,
+      preferredPoint: { x: number; y: number },
+      fallbackOffset: number
+    ): boolean => {
+      const targetElement = resolveParagraphHostElement(location);
+      if (!targetElement) {
+        return false;
+      }
+
+      const rect = targetElement.getBoundingClientRect();
+      if (
+        !Number.isFinite(rect.left) ||
+        !Number.isFinite(rect.right) ||
+        !Number.isFinite(rect.top) ||
+        !Number.isFinite(rect.bottom) ||
+        rect.width <= 0 ||
+        rect.height <= 0
+      ) {
+        return false;
+      }
+
+      const clampedPoint = {
+        x: Math.max(rect.left + 1, Math.min(preferredPoint.x, rect.right - 1)),
+        y: Math.max(rect.top + 1, Math.min(preferredPoint.y, rect.bottom - 1))
+      };
+      const boundary = resolveBoundaryFromPoint(clampedPoint);
+      if (
+        boundary &&
+        sameParagraphLocation(location, paragraphLocationFromTextRangeLocation(boundary.location))
+      ) {
+        setSelectionFromDocxBoundaries(boundary, boundary);
+        return true;
+      }
+
+      const targetParagraph = getParagraphAtLocation(editor.model, location).paragraph;
+      const maxOffset = targetParagraph
+        ? paragraphText(targetParagraph).length
+        : paragraphTextLengthFromElement(targetElement);
+      const safeOffset = Math.max(0, Math.min(Math.round(fallbackOffset), maxOffset));
+      const fallbackBoundary: DocxTextRangeBoundary = {
+        location: cloneTextRangeLocation(location),
+        offset: safeOffset
+      };
+      setSelectionFromDocxBoundaries(fallbackBoundary, fallbackBoundary);
+      return true;
+    },
+    [
+      editor.model,
+      paragraphTextLengthFromElement,
+      resolveBoundaryFromPoint,
+      resolveParagraphHostElement,
+      setSelectionFromDocxBoundaries
+    ]
+  );
+
+  const focusParagraphAtEnd = React.useCallback((paragraphIndex: number): void => {
+    window.requestAnimationFrame(() => {
+      const element = paragraphElementsRef.current.get(paragraphIndex);
+      if (!element) {
+        return;
+      }
+
+      element.focus();
+      const selection = window.getSelection();
+      if (!selection) {
+        return;
+      }
+
+      const range = document.createRange();
+      range.selectNodeContents(element);
+      range.collapse(false);
+      selection.removeAllRanges();
+      selection.addRange(range);
+    });
+  }, []);
+
+  const selectionOffsetsWithinElement = React.useCallback(
+    (element: HTMLElement): { start: number; end: number } | undefined => {
+      const selection = window.getSelection();
+      if (!selection || selection.rangeCount === 0) {
+        return undefined;
+      }
+
+      const selectedRange = selection.getRangeAt(0);
+      if (
+        !element.contains(selectedRange.startContainer) ||
+        !element.contains(selectedRange.endContainer)
+      ) {
+        return undefined;
+      }
+
+      try {
+        const textLengthWithoutNumberingLabels = (range: Range): number => {
+          const fragment = range.cloneContents();
+          fragment.querySelectorAll("[data-docx-numbering-label='true']").forEach((label) => {
+            label.remove();
+          });
+          return fragment.textContent?.length ?? 0;
+        };
+
+        const startRange = document.createRange();
+        startRange.setStart(element, 0);
+        startRange.setEnd(selectedRange.startContainer, selectedRange.startOffset);
+
+        const endRange = document.createRange();
+        endRange.setStart(element, 0);
+        endRange.setEnd(selectedRange.endContainer, selectedRange.endOffset);
+
+        const startOffset = textLengthWithoutNumberingLabels(startRange);
+        const endOffset = textLengthWithoutNumberingLabels(endRange);
+
+        return {
+          start: Math.min(startOffset, endOffset),
+          end: Math.max(startOffset, endOffset)
+        };
+      } catch {
+        return undefined;
+      }
+    },
+    []
+  );
+
+  const collapsedCaretClientPointWithinElement = React.useCallback(
+    (element: HTMLElement): { x: number; y: number } | undefined => {
+      const selection = window.getSelection();
+      if (!selection || selection.rangeCount === 0 || !selection.isCollapsed) {
+        return undefined;
+      }
+
+      const range = selection.getRangeAt(0).cloneRange();
+      range.collapse(true);
+      const rectFromClientRects = range.getClientRects().item(0);
+      const caretRect = rectFromClientRects ?? range.getBoundingClientRect();
+      if (
+        Number.isFinite(caretRect.left) &&
+        Number.isFinite(caretRect.top) &&
+        Number.isFinite(caretRect.width) &&
+        Number.isFinite(caretRect.height) &&
+        ((caretRect.width ?? 0) > 0 || (caretRect.height ?? 0) > 0)
+      ) {
+        return {
+          x: caretRect.left + Math.max(1, Math.min(2, caretRect.width || 1)),
+          y: caretRect.top + Math.max(1, (caretRect.height || 0) / 2)
+        };
+      }
+
+      const elementRect = element.getBoundingClientRect();
+      if (
+        !Number.isFinite(elementRect.left) ||
+        !Number.isFinite(elementRect.top) ||
+        elementRect.width <= 0 ||
+        elementRect.height <= 0
+      ) {
+        return undefined;
+      }
+
+      return {
+        x: elementRect.left + 1,
+        y: elementRect.top + Math.max(1, Math.min(elementRect.height - 1, elementRect.height / 2))
+      };
+    },
+    []
+  );
+
+  const activeTableCellParagraphContext = React.useCallback(
+    (
+      cellElement: HTMLElement
+    ):
+      | {
+          paragraphElement: HTMLElement;
+          paragraphIndex: number;
+        }
+      | undefined => {
+      const selection = window.getSelection();
+      if (!selection) {
+        return undefined;
+      }
+
+      const candidateNodes: Array<Node | null> = [selection.anchorNode, selection.focusNode];
+      for (const candidateNode of candidateNodes) {
+        if (!candidateNode) {
+          continue;
+        }
+
+        const element = candidateNode instanceof Element ? candidateNode : candidateNode.parentElement;
+        const paragraphElement = element?.closest(
+          "[data-docx-table-paragraph-index]"
+        ) as HTMLElement | null;
+        if (!paragraphElement || !cellElement.contains(paragraphElement)) {
+          continue;
+        }
+
+        const rawIndex = paragraphElement.getAttribute("data-docx-table-paragraph-index");
+        const parsedIndex = rawIndex ? Number.parseInt(rawIndex, 10) : Number.NaN;
+        if (!Number.isFinite(parsedIndex) || parsedIndex < 0) {
+          continue;
+        }
+
+        return {
+          paragraphElement,
+          paragraphIndex: Math.max(0, Math.round(parsedIndex))
+        };
+      }
+
+      return undefined;
+    },
+    []
+  );
+
+  const updateActiveTextRangeFromTableCell = React.useCallback(
+    (cellElement: HTMLElement, tableIndex: number, rowIndex: number, cellIndex: number): void => {
+      const selection = window.getSelection();
+      if (!selection || selection.rangeCount === 0) {
+        editor.setActiveTextRange(undefined);
+        return;
+      }
+
+      const selectedRange = selection.getRangeAt(0);
+      if (!cellElement.contains(selectedRange.startContainer) && !cellElement.contains(selectedRange.endContainer)) {
+        editor.setActiveTextRange(undefined);
+        return;
+      }
+
+      const startBoundary = resolveParagraphBoundaryFromSelectionPoint(
+        selectedRange.startContainer,
+        selectedRange.startOffset
+      );
+      const endBoundary = resolveParagraphBoundaryFromSelectionPoint(
+        selectedRange.endContainer,
+        selectedRange.endOffset
+      );
+      if (!startBoundary || !endBoundary) {
+        return;
+      }
+
+      const isSameCell =
+        startBoundary.location.kind === "table-cell" &&
+        endBoundary.location.kind === "table-cell" &&
+        startBoundary.location.tableIndex === tableIndex &&
+        startBoundary.location.rowIndex === rowIndex &&
+        startBoundary.location.cellIndex === cellIndex &&
+        endBoundary.location.tableIndex === tableIndex &&
+        endBoundary.location.rowIndex === rowIndex &&
+        endBoundary.location.cellIndex === cellIndex;
+      if (!isSameCell) {
+        return;
+      }
+
+      clearTableCellSelection();
+      editor.setActiveTextRange({
+        start: startBoundary,
+        end: endBoundary
+      });
+    },
+    [clearTableCellSelection, editor, resolveParagraphBoundaryFromSelectionPoint]
+  );
+
+  const updateActiveTextRangeFromElement = React.useCallback(
+    (element: HTMLElement, location: ParagraphLocation): void => {
+      const selection = window.getSelection();
+      if (!selection || selection.rangeCount === 0) {
+        editor.setActiveTextRange(undefined);
+        return;
+      }
+
+      const selectedRange = selection.getRangeAt(0);
+      if (!element.contains(selectedRange.startContainer) || !element.contains(selectedRange.endContainer)) {
+        if (!element.contains(selectedRange.startContainer) && !element.contains(selectedRange.endContainer)) {
+          editor.setActiveTextRange(undefined);
+        }
+        return;
+      }
+
+      const offsets = selectionOffsetsWithinElement(element);
+      if (!offsets) {
+        return;
+      }
+
+      clearTableCellSelection();
+      editor.setActiveTextRange({
+        start: {
+          location,
+          offset: offsets.start
+        },
+        end: {
+          location,
+          offset: offsets.end
+        }
+      });
+    },
+    [clearTableCellSelection, editor, selectionOffsetsWithinElement]
+  );
+
+  const commitParagraphDraftFromElement = React.useCallback(
+    (nodeIndex: number, paragraph: ParagraphNode, element: HTMLElement): void => {
+      const nextText = editableTextFromElement(element);
+      const nextHtml = element.innerHTML;
+
+      if (nextText === paragraphText(paragraph)) {
+        paragraphDraftsRef.current.delete(nodeIndex);
+        return;
+      }
+
+      // Keep the draft until model state catches up so immediate export after blur
+      // cannot serialize a stale model snapshot.
+      paragraphDraftsRef.current.set(nodeIndex, nextHtml);
+      editor.commitParagraphText(nodeIndex, nextText);
+    },
+    [editor]
+  );
+
+  const commitTableCellDraftFromElement = React.useCallback(
+    (
+      tableIndex: number,
+      rowIndex: number,
+      cellIndex: number,
+      cellParagraphs: ParagraphNode[],
+      draftKey: string,
+      element: HTMLElement
+    ): void => {
+      const nextText = editableTextFromTableCellElement(element);
+      const nextHtml = element.innerHTML;
+
+      if (nextText === tableCellText(cellParagraphs)) {
+        tableCellDraftsRef.current.delete(draftKey);
+        return;
+      }
+
+      // Keep the draft until model state catches up so immediate export after blur
+      // cannot serialize a stale model snapshot.
+      tableCellDraftsRef.current.set(draftKey, nextHtml);
+      editor.commitTableCellText(tableIndex, rowIndex, cellIndex, nextText);
+    },
+    [editor]
+  );
+
+  const registerTableCellParagraphElement = React.useCallback(
+    (draftKey: string, element: HTMLDivElement | null): void => {
+      if (element) {
+        tableCellParagraphElementsRef.current.set(draftKey, element);
+      } else {
+        tableCellParagraphElementsRef.current.delete(draftKey);
+      }
+    },
+    []
+  );
+
+  const readTableCellParagraphDraft = React.useCallback((draftKey: string): string | undefined => {
+    return tableCellParagraphDraftsRef.current.get(draftKey);
+  }, []);
+
+  const writeTableCellParagraphDraft = React.useCallback((draftKey: string, html: string): void => {
+    tableCellParagraphDraftsRef.current.set(draftKey, html);
+    requestTableDraftLayoutRefresh();
+  }, [requestTableDraftLayoutRefresh]);
+
+  const clearTableCellParagraphDraft = React.useCallback((draftKey: string): void => {
+    tableCellParagraphDraftsRef.current.delete(draftKey);
+    requestTableDraftLayoutRefresh();
+  }, [requestTableDraftLayoutRefresh]);
+
+  const commitTableCellParagraphDraft = React.useCallback(
+    (
+      tableIndex: number,
+      rowIndex: number,
+      cellIndex: number,
+      paragraphIndex: number,
+      text: string
+    ): void => {
+      const draftKey = tableCellParagraphDraftKey(tableIndex, rowIndex, cellIndex, paragraphIndex);
+      const tableNode = editor.model.nodes[tableIndex];
+      if (!tableNode || tableNode.type !== "table") {
+        return;
+      }
+
+      const cell = tableNode.rows[rowIndex]?.cells[cellIndex];
+      if (!cell) {
+        return;
+      }
+
+      const currentParagraph = tableCellParagraphsRecursively(cell.nodes)[paragraphIndex];
+      if (currentParagraph && paragraphText(currentParagraph) === text) {
+        tableCellParagraphDraftsRef.current.delete(draftKey);
+        return;
+      }
+
+      editor.commitTableCellParagraphTextRecursive(
+        tableIndex,
+        rowIndex,
+        cellIndex,
+        paragraphIndex,
+        text
+      );
+    },
+    [editor]
+  );
+
+  const registerSectionParagraphElement = React.useCallback(
+    (draftKey: string, element: HTMLDivElement | null): void => {
+      if (element) {
+        sectionParagraphElementsRef.current.set(draftKey, element);
+      } else {
+        sectionParagraphElementsRef.current.delete(draftKey);
+      }
+    },
+    []
+  );
+
+  const readSectionParagraphDraft = React.useCallback((draftKey: string): string | undefined => {
+    return sectionParagraphDraftsRef.current.get(draftKey);
+  }, []);
+
+  const writeSectionParagraphDraft = React.useCallback((draftKey: string, html: string): void => {
+    sectionParagraphDraftsRef.current.set(draftKey, html);
+  }, []);
+
+  const clearSectionParagraphDraft = React.useCallback((draftKey: string): void => {
+    sectionParagraphDraftsRef.current.delete(draftKey);
+  }, []);
+
+  const commitSectionParagraphDraft = React.useCallback(
+    (location: DocxSectionParagraphLocation, text: string): void => {
+      const draftKey = sectionParagraphLocationKey(location);
+      const currentSectionLists =
+        location.region === "header"
+          ? [
+              editor.model.metadata.headerSections ?? [],
+              ...(editor.model.metadata.sections?.map((section) => section.headerSections ?? []) ?? [])
+            ]
+          : [
+              editor.model.metadata.footerSections ?? [],
+              ...(editor.model.metadata.sections?.map((section) => section.footerSections ?? []) ?? [])
+            ];
+
+      const currentText = currentSectionLists
+        .flat()
+        .filter((section) => section.partName === location.partName)
+        .map((section) =>
+          paragraphTextFromSectionLocation(section.nodes, {
+            nodeIndex: location.nodeIndex,
+            rowIndex: location.rowIndex,
+            cellIndex: location.cellIndex,
+            paragraphIndex: location.paragraphIndex
+          })
+        )
+        .find((value): value is string => typeof value === "string");
+
+      if (currentText === text) {
+        sectionParagraphDraftsRef.current.delete(draftKey);
+        return;
+      }
+
+      editor.commitSectionParagraphText(location, text);
+    },
+    [editor]
+  );
+
+  const updateSectionParagraphDraftFromTarget = React.useCallback((target: EventTarget | null): void => {
+    if (!(target instanceof Element)) {
+      return;
+    }
+
+    const paragraphHost = target.closest<HTMLElement>("[data-docx-section-paragraph-key]");
+    if (!paragraphHost) {
+      return;
+    }
+
+    const draftKey = paragraphHost.getAttribute("data-docx-section-paragraph-key");
+    if (!draftKey) {
+      return;
+    }
+
+    sectionParagraphDraftsRef.current.set(draftKey, paragraphHost.innerHTML);
+  }, []);
+
+  const commitSectionRegionDraftsFromContainer = React.useCallback(
+    (
+      container: HTMLElement,
+      region: DocxSectionRegion,
+      partName: string
+    ): void => {
+      const paragraphHosts = Array.from(
+        container.querySelectorAll<HTMLElement>("[data-docx-section-paragraph-key]")
+      );
+      paragraphHosts.forEach((paragraphHost) => {
+        const draftKey = paragraphHost.getAttribute("data-docx-section-paragraph-key");
+        if (!draftKey) {
+          return;
+        }
+
+        const location = parseSectionParagraphLocationKey(draftKey);
+        if (!location || location.region !== region || location.partName !== partName) {
+          return;
+        }
+
+        const nextText = editableTextFromElement(paragraphHost);
+        sectionParagraphDraftsRef.current.set(draftKey, paragraphHost.innerHTML);
+        commitSectionParagraphDraft(location, nextText);
+      });
+    },
+    [commitSectionParagraphDraft]
+  );
+
+  React.useEffect(() => {
+    const flushPendingDraftsForExport = (currentModel: DocModel): DocModel => {
+      if (
+        paragraphDraftsRef.current.size === 0 &&
+        tableCellDraftsRef.current.size === 0 &&
+        tableCellParagraphDraftsRef.current.size === 0 &&
+        sectionParagraphDraftsRef.current.size === 0
+      ) {
+        return currentModel;
+      }
+
+      let nextModel = currentModel;
+      const insertedStyle = cloneTextStyle(editor.pendingRunStyle);
+      const consumedParagraphDraftIndexes: number[] = [];
+      const consumedTableDraftKeys: string[] = [];
+      const consumedTableParagraphDraftKeys: string[] = [];
+      const consumedSectionDraftKeys: string[] = [];
+
+      paragraphDraftsRef.current.forEach((draftHtml, nodeIndex) => {
+        const element = paragraphElementsRef.current.get(nodeIndex);
+        if (!element && typeof draftHtml !== "string") {
+          return;
+        }
+
+        consumedParagraphDraftIndexes.push(nodeIndex);
+        const paragraph = nextModel.nodes[nodeIndex];
+        if (!paragraph || paragraph.type !== "paragraph") {
+          return;
+        }
+
+        const nextText = element
+          ? editableTextFromElement(element)
+          : editableTextFromDraftHtml(draftHtml);
+        if (nextText === paragraphText(paragraph)) {
+          return;
+        }
+
+        nextModel = updateParagraphText(nextModel, nodeIndex, nextText, {
+          insertedStyle
+        });
+      });
+
+      tableCellParagraphDraftsRef.current.forEach((draftHtml, draftKey) => {
+        const element = tableCellParagraphElementsRef.current.get(draftKey);
+        if (!element && typeof draftHtml !== "string") {
+          return;
+        }
+
+        consumedTableParagraphDraftKeys.push(draftKey);
+        const [tableIndexRaw, rowIndexRaw, cellIndexRaw, paragraphIndexRaw] = draftKey.split(":");
+        const tableIndex = Number.parseInt(tableIndexRaw ?? "", 10);
+        const rowIndex = Number.parseInt(rowIndexRaw ?? "", 10);
+        const cellIndex = Number.parseInt(cellIndexRaw ?? "", 10);
+        const paragraphIndex = Number.parseInt(paragraphIndexRaw ?? "", 10);
+        if (
+          !Number.isFinite(tableIndex) ||
+          !Number.isFinite(rowIndex) ||
+          !Number.isFinite(cellIndex) ||
+          !Number.isFinite(paragraphIndex)
+        ) {
+          return;
+        }
+
+        const table = nextModel.nodes[tableIndex];
+        if (!table || table.type !== "table") {
+          return;
+        }
+
+        const cell = table.rows[rowIndex]?.cells[cellIndex];
+        if (!cell) {
+          return;
+        }
+
+        const paragraph = tableCellParagraphsRecursively(cell.nodes)[paragraphIndex];
+        if (!paragraph) {
+          return;
+        }
+
+        const nextText = element
+          ? editableTextFromElement(element)
+          : editableTextFromDraftHtml(draftHtml);
+        if (nextText === paragraphText(paragraph)) {
+          return;
+        }
+
+        nextModel = updateTableCellParagraphTextRecursive(
+          nextModel,
+          tableIndex,
+          rowIndex,
+          cellIndex,
+          paragraphIndex,
+          nextText,
+          {
+            insertedStyle
+          }
+        );
+      });
+
+      // Apply whole-cell drafts after recursive paragraph drafts to keep recursive
+      // paragraph indexes stable during this flush pass.
+      tableCellDraftsRef.current.forEach((draftHtml, draftKey) => {
+        const element = tableCellEditorElementsRef.current.get(draftKey);
+        if (!element && typeof draftHtml !== "string") {
+          return;
+        }
+
+        consumedTableDraftKeys.push(draftKey);
+        const [tableIndexRaw, rowIndexRaw, cellIndexRaw] = draftKey.split(":");
+        const tableIndex = Number.parseInt(tableIndexRaw ?? "", 10);
+        const rowIndex = Number.parseInt(rowIndexRaw ?? "", 10);
+        const cellIndex = Number.parseInt(cellIndexRaw ?? "", 10);
+        if (
+          !Number.isFinite(tableIndex) ||
+          !Number.isFinite(rowIndex) ||
+          !Number.isFinite(cellIndex)
+        ) {
+          return;
+        }
+
+        const table = nextModel.nodes[tableIndex];
+        if (!table || table.type !== "table") {
+          return;
+        }
+
+        const cell = table.rows[rowIndex]?.cells[cellIndex];
+        if (!cell) {
+          return;
+        }
+
+        const nextText = element
+          ? editableTextFromTableCellElement(element)
+          : editableTextFromTableCellDraftHtml(draftHtml);
+        const currentText = tableCellText(tableCellParagraphs(cell.nodes));
+        if (nextText === currentText) {
+          return;
+        }
+
+        nextModel = updateTableCellText(nextModel, tableIndex, rowIndex, cellIndex, nextText, {
+          insertedStyle
+        });
+      });
+
+      sectionParagraphDraftsRef.current.forEach((draftHtml, draftKey) => {
+        const element = sectionParagraphElementsRef.current.get(draftKey);
+        const location = parseSectionParagraphLocationKey(draftKey);
+        if (!location || (!element && typeof draftHtml !== "string")) {
+          return;
+        }
+
+        consumedSectionDraftKeys.push(draftKey);
+        const nextText = element
+          ? editableTextFromElement(element)
+          : editableTextFromDraftHtml(draftHtml);
+        nextModel = updateSectionParagraphTextAtLocation(nextModel, location, nextText, {
+          insertedStyle
+        });
+      });
+
+      consumedParagraphDraftIndexes.forEach((nodeIndex) => {
+        paragraphDraftsRef.current.delete(nodeIndex);
+      });
+      consumedTableDraftKeys.forEach((draftKey) => {
+        tableCellDraftsRef.current.delete(draftKey);
+      });
+      consumedTableParagraphDraftKeys.forEach((draftKey) => {
+        tableCellParagraphDraftsRef.current.delete(draftKey);
+      });
+      consumedSectionDraftKeys.forEach((draftKey) => {
+        sectionParagraphDraftsRef.current.delete(draftKey);
+      });
+
+      return nextModel;
+    };
+
+    editor.registerPendingExportModelTransformer(flushPendingDraftsForExport);
+    return () => {
+      editor.registerPendingExportModelTransformer(undefined);
+    };
+  }, [editor, editor.pendingRunStyle]);
+
+  const handleEditorHistoryShortcut = React.useCallback(
+    (event: React.KeyboardEvent<HTMLElement>, commitDraft: () => void): boolean => {
+      if (event.defaultPrevented || !(event.metaKey || event.ctrlKey) || event.altKey) {
+        return false;
+      }
+
+      const key = event.key.toLowerCase();
+      const isUndo = key === "z" && !event.shiftKey;
+      const isRedo = key === "y" || (key === "z" && event.shiftKey);
+      if (!isUndo && !isRedo) {
+        return false;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+
+      flushSync(() => {
+        commitDraft();
+      });
+
+      if (isRedo) {
+        editor.redo();
+      } else {
+        editor.undo();
+      }
+
+      return true;
+    },
+    [editor]
+  );
+
+  const resolveTableColumnWidths = React.useCallback(
+    (tableIndex: number, table: TableNode, tableWidthPx?: number): number[] => {
+      const columnCount = tableColumnCount(table);
+      const storedWidths = tableColumnWidths[tableIndex];
+      if (storedWidths && storedWidths.length === columnCount) {
+        return normalizeColumnWidthsPx(storedWidths, columnCount, tableWidthPx, 1);
+      }
+
+      const definedWidthsTwips = columnWidthsFromTableDefinition(table, columnCount);
+      if (definedWidthsTwips && definedWidthsTwips.length > 0) {
+        const definedWidthsPx = definedWidthsTwips.map((widthTwips) => twipsToPixels(widthTwips) ?? 0);
+        return normalizeColumnWidthsPx(definedWidthsPx, columnCount, tableWidthPx, 1);
+      }
+
+      return defaultColumnWidthsPx(columnCount, tableWidthPx);
+    },
+    [tableColumnWidths]
+  );
+
+  const resolveTableRowHeights = React.useCallback(
+    (tableIndex: number, table: TableNode): Array<number | undefined> => {
+      const storedHeights = tableRowHeights[tableIndex];
+      return table.rows.map((row, rowIndex) => {
+        const stored = storedHeights?.[rowIndex];
+        if (Number.isFinite(stored) && (stored as number) > 0) {
+          return Math.max(24, Math.round(stored as number));
+        }
+
+        const fromDoc = twipsToPixels(row.style?.heightTwips);
+        if (Number.isFinite(fromDoc) && (fromDoc as number) > 0) {
+          return Math.max(24, fromDoc as number);
+        }
+
+        return undefined;
+      });
+    },
+    [tableRowHeights]
+  );
+
+  const resolveEmbeddedTableColumnWidths = React.useCallback(
+    (tableKey: string, table: TableNode, tableWidthPx?: number): number[] => {
+      const columnCount = tableColumnCount(table);
+      const storedWidths = embeddedTableColumnWidths[tableKey];
+      if (storedWidths && storedWidths.length === columnCount) {
+        return normalizeColumnWidthsPx(storedWidths, columnCount, tableWidthPx, 1);
+      }
+
+      const definedWidthsTwips = columnWidthsFromTableDefinition(table, columnCount);
+      if (definedWidthsTwips && definedWidthsTwips.length > 0) {
+        const definedWidthsPx = definedWidthsTwips.map((widthTwips) => twipsToPixels(widthTwips) ?? 0);
+        return normalizeColumnWidthsPx(definedWidthsPx, columnCount, tableWidthPx, 1);
+      }
+
+      return defaultColumnWidthsPx(columnCount, tableWidthPx);
+    },
+    [embeddedTableColumnWidths]
+  );
+
+  const resolveEmbeddedTableRowHeights = React.useCallback(
+    (tableKey: string, table: TableNode): Array<number | undefined> => {
+      const storedHeights = embeddedTableRowHeights[tableKey];
+      return table.rows.map((row, rowIndex) => {
+        const stored = storedHeights?.[rowIndex];
+        if (Number.isFinite(stored) && (stored as number) > 0) {
+          return Math.max(24, Math.round(stored as number));
+        }
+
+        const fromDoc = twipsToPixels(row.style?.heightTwips);
+        if (Number.isFinite(fromDoc) && (fromDoc as number) > 0) {
+          return Math.max(24, fromDoc as number);
+        }
+
+        return undefined;
+      });
+    },
+    [embeddedTableRowHeights]
+  );
+
+  React.useLayoutEffect(() => {
+    const nextMeasuredHeights: Record<number, number[]> = {};
+    tableElementsRef.current.forEach((tableContainer, tableIndex) => {
+      const tableNode = editor.model.nodes[tableIndex];
+      if (!tableNode || tableNode.type !== "table") {
+        return;
+      }
+
+      const tableElement = tableContainer.querySelector("table");
+      if (!tableElement) {
+        return;
+      }
+
+      const measuredHeights = Array.from(tableElement.querySelectorAll("tbody > tr")).map((rowElement) =>
+        normalizeMeasuredTableRowHeightPx(
+          (rowElement as HTMLTableRowElement).getBoundingClientRect().height
+        )
+      );
+      if (measuredHeights.length === 0 || measuredHeights.length !== tableNode.rows.length) {
+        return;
+      }
+
+      nextMeasuredHeights[tableIndex] = measuredHeights;
+    });
+
+    setTableMeasuredRowHeights((current) => {
+      let changed = false;
+      const next: Record<number, number[]> = {};
+
+      Object.entries(current).forEach(([tableIndexText, heights]) => {
+        const tableIndex = Number.parseInt(tableIndexText, 10);
+        const tableNode = editor.model.nodes[tableIndex];
+        if (!tableNode || tableNode.type !== "table") {
+          changed = true;
+          return;
+        }
+
+        if (!Array.isArray(heights) || heights.length !== tableNode.rows.length) {
+          changed = true;
+          return;
+        }
+
+        next[tableIndex] = heights;
+      });
+
+      Object.entries(nextMeasuredHeights).forEach(([tableIndexText, measuredHeights]) => {
+        const tableIndex = Number.parseInt(tableIndexText, 10);
+        const currentHeights = next[tableIndex] ?? [];
+        if (currentHeights.length !== measuredHeights.length) {
+          next[tableIndex] = measuredHeights;
+          changed = true;
+          return;
+        }
+
+        for (let index = 0; index < measuredHeights.length; index += 1) {
+          if (currentHeights[index] !== measuredHeights[index]) {
+            next[tableIndex] = measuredHeights;
+            changed = true;
+            return;
+          }
+        }
+      });
+
+      return changed ? next : current;
+    });
+  }, [
+    editor.model.nodes,
+    tableColumnWidths,
+    tableRowHeights,
+    tableDraftLayoutEpoch,
+    visiblePageEndIndex,
+    visiblePageStartIndex
+  ]);
+
+  const normalizeResizableHeights = React.useCallback((rowHeights: Array<number | undefined>): number[] => {
+    return rowHeights.map((height) => {
+      if (typeof height !== "number" || !Number.isFinite(height) || height <= 0) {
+        return 24;
+      }
+
+      return Math.max(24, Math.round(height));
+    });
+  }, []);
+
+  const distributeHeightByTotal = React.useCallback((rowHeights: number[], totalHeightPx: number): number[] => {
+    const safeCount = rowHeights.length;
+    if (safeCount === 0) {
+      return [];
+    }
+
+    const minimumHeightPx = 24;
+    const minimumTotalHeight = minimumHeightPx * safeCount;
+    const targetHeight = Math.max(minimumTotalHeight, Math.round(totalHeightPx));
+    const sourceTotalHeight = rowHeights.reduce((sum, value) => sum + Math.max(minimumHeightPx, value), 0);
+    if (!Number.isFinite(sourceTotalHeight) || sourceTotalHeight <= 0) {
+      const fallback = Math.floor(targetHeight / safeCount);
+      return Array.from({ length: safeCount }, () => fallback);
+    }
+
+    const scaledHeights = rowHeights.map((height) =>
+      Math.max(minimumHeightPx, Math.round((height / sourceTotalHeight) * targetHeight))
+    );
+
+    let remaining = targetHeight - scaledHeights.reduce((sum, value) => sum + value, 0);
+    if (remaining !== 0) {
+      let safetyGuard = 0;
+      while (remaining !== 0 && safetyGuard < safeCount * 4) {
+        for (let rowIndex = 0; rowIndex < scaledHeights.length && remaining !== 0; rowIndex += 1) {
+          if (remaining > 0) {
+            scaledHeights[rowIndex] += 1;
+            remaining -= 1;
+            continue;
+          }
+
+          const candidate = scaledHeights[rowIndex];
+          if (candidate > minimumHeightPx) {
+            scaledHeights[rowIndex] -= 1;
+            remaining += 1;
+          }
+        }
+
+        safetyGuard += 1;
+      }
+    }
+
+    return scaledHeights;
+  }, []);
+
+  const beginTableColumnResize = React.useCallback(
+    (
+      event: React.PointerEvent<HTMLSpanElement>,
+      tableIndex: number,
+      boundaryColumnIndex: number,
+      tableWidthPx: number,
+      columnWidths: number[]
+    ): void => {
+      if (isReadOnly) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      if (!Number.isFinite(tableWidthPx) || tableWidthPx <= 0) {
+        return;
+      }
+
+      const resizeHandle = event.currentTarget;
+      const pointerId = event.pointerId;
+
+      if (resizeHandle.setPointerCapture) {
+        try {
+          resizeHandle.setPointerCapture(pointerId);
+        } catch {
+          // ignore pointer capture failures from detached handles
+        }
+      }
+
+      const safeBoundary = Math.max(0, Math.min(boundaryColumnIndex, columnWidths.length - 2));
+      const startingWidths = normalizeColumnWidthsPx(columnWidths, columnWidths.length, tableWidthPx, 1);
+      const leftStart = startingWidths[safeBoundary] ?? 0;
+      const rightStart = startingWidths[safeBoundary + 1] ?? 0;
+      const combined = leftStart + rightStart;
+      if (combined <= 0) {
+        return;
+      }
+
+      const minimumWidthPx = 8;
+      const startX = event.clientX;
+      let latestWidths = startingWidths;
+      let frameId: number | undefined;
+
+      setActiveColumnResize({ tableIndex, boundaryColumnIndex: safeBoundary });
+
+      const commitWidths = (): void => {
+        setTableColumnWidths((current) => ({
+          ...current,
+          [tableIndex]: latestWidths
+        }));
+      };
+
+      const onPointerMove = (pointerEvent: PointerEvent): void => {
+        const deltaPx = pointerEvent.clientX - startX;
+        const nextLeft = Math.max(
+          minimumWidthPx,
+          Math.min(leftStart + deltaPx, combined - minimumWidthPx)
+        );
+        const nextRight = combined - nextLeft;
+
+        latestWidths = startingWidths.map((value: number, index: number) => {
+          if (index === safeBoundary) {
+            return nextLeft;
+          }
+          if (index === safeBoundary + 1) {
+            return nextRight;
+          }
+          return value;
+        });
+
+        if (frameId !== undefined) {
+          window.cancelAnimationFrame(frameId);
+        }
+
+        frameId = window.requestAnimationFrame(commitWidths);
+      };
+
+      const onPointerUp = (pointerUpEvent: PointerEvent): void => {
+        window.removeEventListener("pointermove", onPointerMove);
+        window.removeEventListener("pointerup", onPointerUp);
+        window.removeEventListener("pointercancel", onPointerUp);
+
+        if (frameId !== undefined) {
+          window.cancelAnimationFrame(frameId);
+        }
+
+        commitWidths();
+        if (resizeHandle.releasePointerCapture) {
+          try {
+            resizeHandle.releasePointerCapture(pointerUpEvent.pointerId ?? pointerId);
+          } catch {
+            // ignore pointer capture failures from detached handles
+          }
+        }
+        setActiveColumnResize(undefined);
+      };
+
+      window.addEventListener("pointermove", onPointerMove);
+      window.addEventListener("pointerup", onPointerUp, { once: true });
+      window.addEventListener("pointercancel", onPointerUp, { once: true });
+    },
+    [isReadOnly]
+  );
+
+  const beginTableRowResize = React.useCallback(
+    (
+      event: React.PointerEvent<HTMLSpanElement>,
+      tableIndex: number,
+      boundaryRowIndex: number,
+      rowHeights: number[]
+    ): void => {
+      if (isReadOnly) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      if (rowHeights.length < 2) {
+        return;
+      }
+
+      const resizeHandle = event.currentTarget;
+      const pointerId = event.pointerId;
+
+      if (resizeHandle.setPointerCapture) {
+        try {
+          resizeHandle.setPointerCapture(pointerId);
+        } catch {
+          // ignore pointer capture failures from detached handles
+        }
+      }
+
+      const safeBoundary = Math.max(0, Math.min(boundaryRowIndex, rowHeights.length - 2));
+      const startingHeights = rowHeights.map((height) =>
+        Number.isFinite(height) && height > 0 ? Math.max(24, Math.round(height)) : 24
+      );
+      const topStart = startingHeights[safeBoundary] ?? 0;
+      if (topStart <= 0) {
+        return;
+      }
+
+      const minimumHeightPx = 24;
+      const startY = event.clientY;
+      let latestHeights = startingHeights;
+      let frameId: number | undefined;
+
+      setActiveRowResize({ tableIndex, boundaryRowIndex: safeBoundary });
+
+      const commitHeights = (): void => {
+        setTableRowHeights((current) => ({
+          ...current,
+          [tableIndex]: latestHeights
+        }));
+      };
+
+      const onPointerMove = (pointerEvent: PointerEvent): void => {
+        const deltaPx = pointerEvent.clientY - startY;
+        const nextTop = Math.max(minimumHeightPx, Math.round(topStart + deltaPx));
+
+        latestHeights = startingHeights.map((value, index) => {
+          if (index === safeBoundary) {
+            return nextTop;
+          }
+          return value;
+        });
+
+        if (frameId !== undefined) {
+          window.cancelAnimationFrame(frameId);
+        }
+
+        frameId = window.requestAnimationFrame(commitHeights);
+      };
+
+      const onPointerUp = (pointerUpEvent: PointerEvent): void => {
+        window.removeEventListener("pointermove", onPointerMove);
+        window.removeEventListener("pointerup", onPointerUp);
+        window.removeEventListener("pointercancel", onPointerUp);
+
+        if (frameId !== undefined) {
+          window.cancelAnimationFrame(frameId);
+        }
+
+        commitHeights();
+        if (resizeHandle.releasePointerCapture) {
+          try {
+            resizeHandle.releasePointerCapture(pointerUpEvent.pointerId ?? pointerId);
+          } catch {
+            // ignore pointer capture failures from detached handles
+          }
+        }
+        setActiveRowResize(undefined);
+      };
+
+      window.addEventListener("pointermove", onPointerMove);
+      window.addEventListener("pointerup", onPointerUp, { once: true });
+      window.addEventListener("pointercancel", onPointerUp, { once: true });
+    },
+    [isReadOnly]
+  );
+
+  const beginEmbeddedTableColumnResize = React.useCallback(
+    (
+      event: React.PointerEvent<HTMLSpanElement>,
+      tableKey: string,
+      boundaryColumnIndex: number,
+      tableWidthPx: number,
+      columnWidths: number[]
+    ): void => {
+      if (isReadOnly) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      if (!Number.isFinite(tableWidthPx) || tableWidthPx <= 0) {
+        return;
+      }
+
+      const resizeHandle = event.currentTarget;
+      const pointerId = event.pointerId;
+
+      if (resizeHandle.setPointerCapture) {
+        try {
+          resizeHandle.setPointerCapture(pointerId);
+        } catch {
+          // ignore pointer capture failures from detached handles
+        }
+      }
+
+      const safeBoundary = Math.max(0, Math.min(boundaryColumnIndex, columnWidths.length - 2));
+      const startingWidths = normalizeColumnWidthsPx(columnWidths, columnWidths.length, tableWidthPx, 1);
+      const leftStart = startingWidths[safeBoundary] ?? 0;
+      const rightStart = startingWidths[safeBoundary + 1] ?? 0;
+      const combined = leftStart + rightStart;
+      if (combined <= 0) {
+        return;
+      }
+
+      const minimumWidthPx = 8;
+      const startX = event.clientX;
+      let latestWidths = startingWidths;
+      let frameId: number | undefined;
+
+      setActiveEmbeddedColumnResize({ tableKey, boundaryColumnIndex: safeBoundary });
+
+      const commitWidths = (): void => {
+        setEmbeddedTableColumnWidths((current) => ({
+          ...current,
+          [tableKey]: latestWidths
+        }));
+      };
+
+      const onPointerMove = (pointerEvent: PointerEvent): void => {
+        const deltaPx = pointerEvent.clientX - startX;
+        const nextLeft = Math.max(
+          minimumWidthPx,
+          Math.min(leftStart + deltaPx, combined - minimumWidthPx)
+        );
+        const nextRight = combined - nextLeft;
+
+        latestWidths = startingWidths.map((value: number, index: number) => {
+          if (index === safeBoundary) {
+            return nextLeft;
+          }
+          if (index === safeBoundary + 1) {
+            return nextRight;
+          }
+          return value;
+        });
+
+        if (frameId !== undefined) {
+          window.cancelAnimationFrame(frameId);
+        }
+
+        frameId = window.requestAnimationFrame(commitWidths);
+      };
+
+      const onPointerUp = (pointerUpEvent: PointerEvent): void => {
+        window.removeEventListener("pointermove", onPointerMove);
+        window.removeEventListener("pointerup", onPointerUp);
+        window.removeEventListener("pointercancel", onPointerUp);
+
+        if (frameId !== undefined) {
+          window.cancelAnimationFrame(frameId);
+        }
+
+        commitWidths();
+        if (resizeHandle.releasePointerCapture) {
+          try {
+            resizeHandle.releasePointerCapture(pointerUpEvent.pointerId ?? pointerId);
+          } catch {
+            // ignore pointer capture failures from detached handles
+          }
+        }
+        setActiveEmbeddedColumnResize(undefined);
+      };
+
+      window.addEventListener("pointermove", onPointerMove);
+      window.addEventListener("pointerup", onPointerUp, { once: true });
+      window.addEventListener("pointercancel", onPointerUp, { once: true });
+    },
+    [isReadOnly]
+  );
+
+  const beginEmbeddedTableRowResize = React.useCallback(
+    (
+      event: React.PointerEvent<HTMLSpanElement>,
+      tableKey: string,
+      boundaryRowIndex: number,
+      rowHeights: number[]
+    ): void => {
+      if (isReadOnly) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      if (rowHeights.length < 2) {
+        return;
+      }
+
+      const resizeHandle = event.currentTarget;
+      const pointerId = event.pointerId;
+
+      if (resizeHandle.setPointerCapture) {
+        try {
+          resizeHandle.setPointerCapture(pointerId);
+        } catch {
+          // ignore pointer capture failures from detached handles
+        }
+      }
+
+      const safeBoundary = Math.max(0, Math.min(boundaryRowIndex, rowHeights.length - 2));
+      const startingHeights = rowHeights.map((height) =>
+        Number.isFinite(height) && height > 0 ? Math.max(24, Math.round(height)) : 24
+      );
+      const topStart = startingHeights[safeBoundary] ?? 0;
+      if (topStart <= 0) {
+        return;
+      }
+
+      const minimumHeightPx = 24;
+      const startY = event.clientY;
+      let latestHeights = startingHeights;
+      let frameId: number | undefined;
+
+      setActiveEmbeddedRowResize({ tableKey, boundaryRowIndex: safeBoundary });
+
+      const commitHeights = (): void => {
+        setEmbeddedTableRowHeights((current) => ({
+          ...current,
+          [tableKey]: latestHeights
+        }));
+      };
+
+      const onPointerMove = (pointerEvent: PointerEvent): void => {
+        const deltaPx = pointerEvent.clientY - startY;
+        const nextTop = Math.max(minimumHeightPx, Math.round(topStart + deltaPx));
+
+        latestHeights = startingHeights.map((value, index) => {
+          if (index === safeBoundary) {
+            return nextTop;
+          }
+          return value;
+        });
+
+        if (frameId !== undefined) {
+          window.cancelAnimationFrame(frameId);
+        }
+
+        frameId = window.requestAnimationFrame(commitHeights);
+      };
+
+      const onPointerUp = (pointerUpEvent: PointerEvent): void => {
+        window.removeEventListener("pointermove", onPointerMove);
+        window.removeEventListener("pointerup", onPointerUp);
+        window.removeEventListener("pointercancel", onPointerUp);
+
+        if (frameId !== undefined) {
+          window.cancelAnimationFrame(frameId);
+        }
+
+        commitHeights();
+        if (resizeHandle.releasePointerCapture) {
+          try {
+            resizeHandle.releasePointerCapture(pointerUpEvent.pointerId ?? pointerId);
+          } catch {
+            // ignore pointer capture failures from detached handles
+          }
+        }
+        setActiveEmbeddedRowResize(undefined);
+      };
+
+      window.addEventListener("pointermove", onPointerMove);
+      window.addEventListener("pointerup", onPointerUp, { once: true });
+      window.addEventListener("pointercancel", onPointerUp, { once: true });
+    },
+    [isReadOnly]
+  );
+
+  const beginImageResize = React.useCallback(
+    (
+      event: React.PointerEvent<HTMLSpanElement>,
+      location: DocxImageLocation,
+      startWidthPx: number,
+      startHeightPx: number,
+      xDirection: -1 | 1,
+      yDirection: -1 | 1
+    ): void => {
+      if (isReadOnly) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+
+      setSelectedImage(location);
+
+      const minimumSize = 24;
+      const safeStartWidth = Math.max(minimumSize, Math.round(startWidthPx));
+      const safeStartHeight = Math.max(minimumSize, Math.round(startHeightPx));
+      const aspectRatio = safeStartWidth / Math.max(1, safeStartHeight);
+      const startX = event.clientX;
+      const startY = event.clientY;
+      const currentImageKey = imageLocationKey(location);
+
+      let latestWidth = safeStartWidth;
+      let latestHeight = safeStartHeight;
+      let frameId: number | undefined;
+
+      const onPointerMove = (pointerMoveEvent: PointerEvent): void => {
+        const deltaX = (pointerMoveEvent.clientX - startX) * xDirection;
+        const deltaY = (pointerMoveEvent.clientY - startY) * yDirection;
+        const dominantDelta = Math.abs(deltaX) > Math.abs(deltaY) ? deltaX : deltaY;
+
+        latestWidth = Math.max(minimumSize, Math.round(safeStartWidth + dominantDelta));
+        latestHeight = Math.max(minimumSize, Math.round(latestWidth / aspectRatio));
+
+        if (frameId !== undefined) {
+          window.cancelAnimationFrame(frameId);
+        }
+
+        frameId = window.requestAnimationFrame(() => {
+          setResizePreview({
+            imageKey: currentImageKey,
+            widthPx: latestWidth,
+            heightPx: latestHeight
+          });
+        });
+      };
+
+      const onPointerUp = (): void => {
+        window.removeEventListener("pointermove", onPointerMove);
+
+        if (frameId !== undefined) {
+          window.cancelAnimationFrame(frameId);
+        }
+
+        setResizePreview(undefined);
+        editor.resizeImage(location, latestWidth, latestHeight);
+      };
+
+      window.addEventListener("pointermove", onPointerMove);
+      window.addEventListener("pointerup", onPointerUp, { once: true });
+    },
+    [editor, isReadOnly]
+  );
+
+  const beginFloatingImageMove = React.useCallback(
+    (
+      event: React.PointerEvent<HTMLElement>,
+      location: DocxImageLocation,
+      image: ImageRunNode,
+      isWrappedFloatingImage: boolean,
+      isAbsoluteFloatingImage: boolean
+    ): void => {
+      if (isReadOnly) {
+        return;
+      }
+
+      if (event.button !== 0) {
+        return;
+      }
+      if ((event.target as HTMLElement).closest("[data-image-resize-handle='true']")) {
+        return;
+      }
+
+      const isInlineImage = !isWrappedFloatingImage && !isAbsoluteFloatingImage;
+      event.preventDefault();
+      event.stopPropagation();
+      setSelectedImage(location);
+      if (isInlineImage) {
+        draggedImageRef.current = location;
+        setIsDraggingImage(true);
+        setActiveDropTarget(undefined);
+      }
+
+      const imageKey = imageLocationKey(location);
+      const startX = event.clientX;
+      const startY = event.clientY;
+      const wrapperElement = event.currentTarget;
+      const wrapperRect = wrapperElement.getBoundingClientRect();
+      const paragraphHost = wrapperElement.closest("[data-docx-paragraph-host='true']") as HTMLElement | null;
+      const paragraphRect = paragraphHost?.getBoundingClientRect();
+      const baseFloating = image.floating ? { ...image.floating } : {};
+
+      let latestDeltaX = 0;
+      let latestDeltaY = 0;
+      let frameId: number | undefined;
+      let latestInlineDropTarget: DocxImageDropTarget | undefined;
+      let latestInlineDropTargetKey: string | undefined;
+
+      const updatePreview = (): void => {
+        setFloatingMovePreview({
+          imageKey,
+          deltaX: latestDeltaX,
+          deltaY: latestDeltaY
+        });
+      };
+
+      const onPointerMove = (pointerEvent: PointerEvent): void => {
+        latestDeltaX = pointerEvent.clientX - startX;
+        latestDeltaY = pointerEvent.clientY - startY;
+
+        if (isInlineImage) {
+          const candidate = (document
+            .elementFromPoint(pointerEvent.clientX, pointerEvent.clientY)
+            ?.closest("[data-docx-image-drop-zone='true']") as HTMLElement | null);
+          const parsedTarget = candidate
+            ? parseImageDropTargetFromDataset(candidate.dataset)
+            : undefined;
+          const parsedTargetKey = parsedTarget ? dropTargetKey(parsedTarget) : undefined;
+
+          if (parsedTargetKey !== latestInlineDropTargetKey) {
+            latestInlineDropTarget = parsedTarget;
+            latestInlineDropTargetKey = parsedTargetKey;
+            setActiveDropTarget(parsedTarget);
+          }
+        }
+
+        if (frameId !== undefined) {
+          window.cancelAnimationFrame(frameId);
+        }
+        frameId = window.requestAnimationFrame(updatePreview);
+      };
+
+      const onPointerUp = (): void => {
+        window.removeEventListener("pointermove", onPointerMove);
+        window.removeEventListener("pointerup", onPointerUp);
+        window.removeEventListener("pointercancel", onPointerUp);
+
+        if (frameId !== undefined) {
+          window.cancelAnimationFrame(frameId);
+        }
+
+        setFloatingMovePreview(undefined);
+
+        if (isInlineImage) {
+          setIsDraggingImage(false);
+          draggedImageRef.current = null;
+          setActiveDropTarget(undefined);
+
+          if (Math.abs(latestDeltaX) < 1 && Math.abs(latestDeltaY) < 1) {
+            return;
+          }
+
+          if (!latestInlineDropTarget) {
+            return;
+          }
+
+          editor.moveImage(location, latestInlineDropTarget);
+          const sourceParagraphLocation = imageLocationToParagraphLocation(location);
+          const targetParagraphLocation: ParagraphLocation =
+            latestInlineDropTarget.kind === "paragraph"
+              ? {
+                  kind: "paragraph",
+                  nodeIndex: latestInlineDropTarget.nodeIndex
+                }
+              : {
+                  kind: "table-cell",
+                  tableIndex: latestInlineDropTarget.tableIndex,
+                  rowIndex: latestInlineDropTarget.rowIndex,
+                  cellIndex: latestInlineDropTarget.cellIndex,
+                  paragraphIndex: latestInlineDropTarget.paragraphIndex
+                };
+          const nextChildIndex =
+            sameParagraphLocation(sourceParagraphLocation, targetParagraphLocation) &&
+            location.childIndex < latestInlineDropTarget.childIndex
+              ? latestInlineDropTarget.childIndex - 1
+              : latestInlineDropTarget.childIndex;
+          setSelectedImage({
+            ...latestInlineDropTarget,
+            childIndex: Math.max(0, nextChildIndex)
+          });
+          return;
+        }
+
+        if (Math.abs(latestDeltaX) < 1 && Math.abs(latestDeltaY) < 1) {
+          return;
+        }
+
+        if (isWrappedFloatingImage) {
+          const hostWidth = paragraphRect?.width ?? DEFAULT_DOC_PAGE_WIDTH;
+          const imageWidth = image.widthPx ?? Math.max(24, Math.round(wrapperRect.width));
+          const imageHeight = image.heightPx ?? Math.max(24, Math.round(wrapperRect.height));
+          const pointerX = startX + latestDeltaX;
+          const pointerY = startY + latestDeltaY;
+          const leftInHost = paragraphRect
+            ? pointerX - paragraphRect.left - imageWidth / 2
+            : (baseFloating.xPx ?? 0) + latestDeltaX;
+          const topInHost = paragraphRect
+            ? pointerY - paragraphRect.top - imageHeight / 2
+            : (baseFloating.distTPx ?? 2) + latestDeltaY;
+          const clampedLeft = Math.max(0, Math.min(leftInHost, Math.max(0, hostWidth - imageWidth)));
+          const clampedTop = Math.max(0, topInHost);
+          const side: "left" | "right" =
+            clampedLeft + imageWidth / 2 <= hostWidth / 2 ? "left" : "right";
+          const wrapText = baseFloating.wrapText ?? "bothSides";
+          const keepFreeHorizontalPlacement =
+            wrapText === "bothSides" || wrapText === "largest";
+
+          editor.moveFloatingImage(location, {
+            wrapType: baseFloating.wrapType ?? "square",
+            wrapText,
+            horizontalAlign: keepFreeHorizontalPlacement ? undefined : side,
+            xPx: Math.round(clampedLeft),
+            yPx: Math.round(clampedTop),
+            distLPx: Math.max(4, Math.round(baseFloating.distLPx ?? 8)),
+            distRPx: Math.max(4, Math.round(baseFloating.distRPx ?? 8)),
+            distTPx: Math.max(0, Math.round(baseFloating.distTPx ?? 2)),
+            distBPx: Math.max(0, Math.round(baseFloating.distBPx ?? 4)),
+            horizontalRelativeTo: baseFloating.horizontalRelativeTo ?? "column",
+            verticalRelativeTo: baseFloating.verticalRelativeTo ?? "paragraph",
+            behindDocument: false
+          });
+          return;
+        }
+
+        if (isAbsoluteFloatingImage) {
+          editor.moveFloatingImage(location, {
+            xPx: Math.max(0, Math.round((baseFloating.xPx ?? 0) + latestDeltaX)),
+            yPx: Math.max(0, Math.round((baseFloating.yPx ?? 0) + latestDeltaY))
+          });
+          return;
+        }
+      };
+
+      window.addEventListener("pointermove", onPointerMove);
+      window.addEventListener("pointerup", onPointerUp, { once: true });
+      window.addEventListener("pointercancel", onPointerUp, { once: true });
+    },
+    [editor, isReadOnly]
+  );
+
+  const beginSectionFloatingImageMove = React.useCallback(
+    (
+      event: React.PointerEvent<HTMLElement>,
+      location: DocxSectionImageLocation,
+      image: ImageRunNode,
+      isWrappedFloatingImage: boolean,
+      isAbsoluteFloatingImage: boolean
+    ): void => {
+      if (isReadOnly) {
+        return;
+      }
+
+      if (
+        !activeHeaderFooterEdit ||
+        activeHeaderFooterEdit.region !== location.region ||
+        activeHeaderFooterEdit.partName !== location.partName
+      ) {
+        return;
+      }
+
+      if (event.button !== 0) {
+        return;
+      }
+
+      if ((event.target as HTMLElement).closest("[data-image-resize-handle='true']")) {
+        return;
+      }
+
+      const isInlineImage = !isWrappedFloatingImage && !isAbsoluteFloatingImage;
+      if (isInlineImage) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+
+      const imageKey = sectionImageLocationKey(location);
+      setSelectedImage(undefined);
+      setSelectedSectionImageKey(imageKey);
+
+      const startX = event.clientX;
+      const startY = event.clientY;
+      const wrapperElement = event.currentTarget;
+      const wrapperRect = wrapperElement.getBoundingClientRect();
+      const paragraphHost = wrapperElement.closest(
+        "[data-docx-section-paragraph-host='true']"
+      ) as HTMLElement | null;
+      const paragraphRect = paragraphHost?.getBoundingClientRect();
+      const baseFloating = image.floating ? { ...image.floating } : {};
+
+      let latestDeltaX = 0;
+      let latestDeltaY = 0;
+      let frameId: number | undefined;
+
+      const updatePreview = (): void => {
+        setFloatingMovePreview({
+          imageKey,
+          deltaX: latestDeltaX,
+          deltaY: latestDeltaY
+        });
+      };
+
+      const onPointerMove = (pointerEvent: PointerEvent): void => {
+        latestDeltaX = pointerEvent.clientX - startX;
+        latestDeltaY = pointerEvent.clientY - startY;
+
+        if (frameId !== undefined) {
+          window.cancelAnimationFrame(frameId);
+        }
+        frameId = window.requestAnimationFrame(updatePreview);
+      };
+
+      const onPointerUp = (): void => {
+        window.removeEventListener("pointermove", onPointerMove);
+        window.removeEventListener("pointerup", onPointerUp);
+        window.removeEventListener("pointercancel", onPointerUp);
+
+        if (frameId !== undefined) {
+          window.cancelAnimationFrame(frameId);
+        }
+
+        setFloatingMovePreview(undefined);
+
+        if (Math.abs(latestDeltaX) < 1 && Math.abs(latestDeltaY) < 1) {
+          return;
+        }
+
+        if (isWrappedFloatingImage) {
+          const hostWidth = paragraphRect?.width ?? documentLayout.pageWidthPx;
+          const imageWidth = image.widthPx ?? Math.max(24, Math.round(wrapperRect.width));
+          const imageHeight = image.heightPx ?? Math.max(24, Math.round(wrapperRect.height));
+          const pointerX = startX + latestDeltaX;
+          const pointerY = startY + latestDeltaY;
+          const leftInHost = paragraphRect
+            ? pointerX - paragraphRect.left - imageWidth / 2
+            : (baseFloating.xPx ?? 0) + latestDeltaX;
+          const topInHost = paragraphRect
+            ? pointerY - paragraphRect.top - imageHeight / 2
+            : (baseFloating.distTPx ?? 2) + latestDeltaY;
+          const movedLeft = Math.round(leftInHost);
+          const movedTop = Math.round(topInHost);
+          const side: "left" | "right" =
+            movedLeft + imageWidth / 2 <= hostWidth / 2 ? "left" : "right";
+          const wrapText = baseFloating.wrapText ?? "bothSides";
+          const keepFreeHorizontalPlacement =
+            wrapText === "bothSides" || wrapText === "largest";
+
+          editor.moveSectionFloatingImage(location, {
+            wrapType: baseFloating.wrapType ?? "square",
+            wrapText,
+            horizontalAlign: keepFreeHorizontalPlacement ? undefined : side,
+            xPx: movedLeft,
+            yPx: movedTop,
+            distLPx: Math.max(4, Math.round(baseFloating.distLPx ?? 8)),
+            distRPx: Math.max(4, Math.round(baseFloating.distRPx ?? 8)),
+            distTPx: Math.max(0, Math.round(baseFloating.distTPx ?? 2)),
+            distBPx: Math.max(0, Math.round(baseFloating.distBPx ?? 4)),
+            horizontalRelativeTo: baseFloating.horizontalRelativeTo ?? "column",
+            verticalRelativeTo: baseFloating.verticalRelativeTo ?? "paragraph",
+            behindDocument: false
+          });
+          return;
+        }
+
+        if (isAbsoluteFloatingImage) {
+          editor.moveSectionFloatingImage(location, {
+            xPx: Math.round((baseFloating.xPx ?? 0) + latestDeltaX),
+            yPx: Math.round((baseFloating.yPx ?? 0) + latestDeltaY)
+          });
+        }
+      };
+
+      window.addEventListener("pointermove", onPointerMove);
+      window.addEventListener("pointerup", onPointerUp, { once: true });
+      window.addEventListener("pointercancel", onPointerUp, { once: true });
+    },
+    [activeHeaderFooterEdit, documentLayout.pageWidthPx, editor, isReadOnly]
+  );
+
+  const onSectionImageClick = React.useCallback(
+    (location: DocxSectionImageLocation): void => {
+      if (isReadOnly) {
+        return;
+      }
+
+      if (
+        !activeHeaderFooterEdit ||
+        activeHeaderFooterEdit.region !== location.region ||
+        activeHeaderFooterEdit.partName !== location.partName
+      ) {
+        return;
+      }
+
+      setSelectedImage(undefined);
+      setSelectedSectionImageKey(sectionImageLocationKey(location));
+    },
+    [activeHeaderFooterEdit, isReadOnly]
+  );
+
+  const onImageDragStart = React.useCallback(
+    (event: React.DragEvent<HTMLImageElement>, location: DocxImageLocation): void => {
+      if (isReadOnly) {
+        event.preventDefault();
+        return;
+      }
+
+      draggedImageRef.current = location;
+      setIsDraggingImage(true);
+      setSelectedImage(location);
+      setActiveDropTarget(undefined);
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData("text/plain", imageLocationKey(location));
+    },
+    [isReadOnly]
+  );
+
+  const onImageDragEnd = React.useCallback((): void => {
+    draggedImageRef.current = null;
+    setIsDraggingImage(false);
+    setActiveDropTarget(undefined);
+  }, []);
+
+  const beginTableCornerResize = React.useCallback(
+    (
+      event: React.PointerEvent<HTMLSpanElement>,
+      tableIndex: number,
+      tableWidthPx: number,
+      columnWidths: number[],
+      rowHeights: number[],
+      maxTableWidthPx?: number
+    ): void => {
+      if (isReadOnly) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      if (!Number.isFinite(tableWidthPx) || tableWidthPx <= 0) {
+        return;
+      }
+
+      const resizeHandle = event.currentTarget;
+      const pointerId = event.pointerId;
+
+      if (resizeHandle.setPointerCapture) {
+        try {
+          resizeHandle.setPointerCapture(pointerId);
+        } catch {
+          // ignore pointer capture failures from detached handles
+        }
+      }
+
+      const safeStartingColumnWidths = normalizeColumnWidthsPx(
+        columnWidths,
+        columnWidths.length,
+        tableWidthPx,
+        1
+      );
+      const startingHeights = normalizeResizableHeights(rowHeights);
+      const minimumTableHeight = Math.max(24 * Math.max(1, startingHeights.length), 1);
+      const startHeight = startingHeights.reduce((sum, value) => sum + value, 0);
+      if (!Number.isFinite(startHeight) || startHeight <= 0) {
+        return;
+      }
+
+      const startingWidth = fitColumnWidthsToWidth(safeStartingColumnWidths, tableWidthPx).reduce(
+        (sum, widthPx) => sum + widthPx,
+        0
+      );
+      const startY = event.clientY;
+      const startX = event.clientX;
+
+      let latestWidths = safeStartingColumnWidths;
+      let latestHeights = startingHeights;
+      const minimumTableWidth = 120;
+      let frameId: number | undefined;
+
+      setActiveTableResize({ tableIndex });
+
+      const commitWidths = (): void => {
+        setTableColumnWidths((current) => ({
+          ...current,
+          [tableIndex]: latestWidths
+        }));
+        setTableRowHeights((current) => ({
+          ...current,
+          [tableIndex]: latestHeights
+        }));
+      };
+
+      const onPointerMove = (pointerEvent: PointerEvent): void => {
+        const deltaX = pointerEvent.clientX - startX;
+        const deltaY = pointerEvent.clientY - startY;
+        const nextWidth = Math.max(
+          minimumTableWidth,
+          clampNumber(startingWidth + deltaX, 0, Number.isFinite(maxTableWidthPx) ? (maxTableWidthPx as number) : Number.POSITIVE_INFINITY)
+        );
+        const nextHeight = Math.max(
+          minimumTableHeight,
+          startHeight + deltaY
+        );
+
+        latestWidths = fitColumnWidthsToWidth(safeStartingColumnWidths, nextWidth);
+        latestHeights = distributeHeightByTotal(startingHeights, nextHeight);
+
+        if (frameId !== undefined) {
+          window.cancelAnimationFrame(frameId);
+        }
+
+        frameId = window.requestAnimationFrame(commitWidths);
+      };
+
+      const onPointerUp = (pointerUpEvent: PointerEvent): void => {
+        window.removeEventListener("pointermove", onPointerMove);
+        window.removeEventListener("pointerup", onPointerUp);
+        window.removeEventListener("pointercancel", onPointerUp);
+
+        if (frameId !== undefined) {
+          window.cancelAnimationFrame(frameId);
+        }
+
+        commitWidths();
+        if (resizeHandle.releasePointerCapture) {
+          try {
+            resizeHandle.releasePointerCapture(pointerUpEvent.pointerId ?? pointerId);
+          } catch {
+            // ignore pointer capture failures
+          }
+        }
+        setActiveTableResize(undefined);
+      };
+
+      window.addEventListener("pointermove", onPointerMove);
+      window.addEventListener("pointerup", onPointerUp, { once: true });
+      window.addEventListener("pointercancel", onPointerUp, { once: true });
+    },
+    [isReadOnly]
+  );
+
+  const beginEmbeddedTableCornerResize = React.useCallback(
+    (
+      event: React.PointerEvent<HTMLSpanElement>,
+      tableKey: string,
+      tableWidthPx: number,
+      columnWidths: number[],
+      rowHeights: number[],
+      maxTableWidthPx?: number
+    ): void => {
+      if (isReadOnly) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      if (!Number.isFinite(tableWidthPx) || tableWidthPx <= 0) {
+        return;
+      }
+
+      const resizeHandle = event.currentTarget;
+      const pointerId = event.pointerId;
+
+      if (resizeHandle.setPointerCapture) {
+        try {
+          resizeHandle.setPointerCapture(pointerId);
+        } catch {
+          // ignore pointer capture failures from detached handles
+        }
+      }
+
+      const safeStartingColumnWidths = normalizeColumnWidthsPx(
+        columnWidths,
+        columnWidths.length,
+        tableWidthPx,
+        1
+      );
+      const startingHeights = normalizeResizableHeights(rowHeights);
+      const minimumTableHeight = Math.max(24 * Math.max(1, startingHeights.length), 1);
+      const startHeight = startingHeights.reduce((sum, value) => sum + value, 0);
+      if (!Number.isFinite(startHeight) || startHeight <= 0) {
+        return;
+      }
+
+      const startingWidth = fitColumnWidthsToWidth(safeStartingColumnWidths, tableWidthPx).reduce(
+        (sum, widthPx) => sum + widthPx,
+        0
+      );
+      const startY = event.clientY;
+      const startX = event.clientX;
+
+      let latestWidths = safeStartingColumnWidths;
+      let latestHeights = startingHeights;
+      const minimumTableWidth = 120;
+      let frameId: number | undefined;
+
+      setActiveEmbeddedTableResize({ tableKey });
+
+      const commitWidths = (): void => {
+        setEmbeddedTableColumnWidths((current) => ({
+          ...current,
+          [tableKey]: latestWidths
+        }));
+        setEmbeddedTableRowHeights((current) => ({
+          ...current,
+          [tableKey]: latestHeights
+        }));
+      };
+
+      const onPointerMove = (pointerEvent: PointerEvent): void => {
+        const deltaX = pointerEvent.clientX - startX;
+        const deltaY = pointerEvent.clientY - startY;
+        const nextWidth = Math.max(
+          minimumTableWidth,
+          clampNumber(
+            startingWidth + deltaX,
+            0,
+            Number.isFinite(maxTableWidthPx) ? (maxTableWidthPx as number) : Number.POSITIVE_INFINITY
+          )
+        );
+        const nextHeight = Math.max(minimumTableHeight, startHeight + deltaY);
+
+        latestWidths = fitColumnWidthsToWidth(safeStartingColumnWidths, nextWidth);
+        latestHeights = distributeHeightByTotal(startingHeights, nextHeight);
+
+        if (frameId !== undefined) {
+          window.cancelAnimationFrame(frameId);
+        }
+
+        frameId = window.requestAnimationFrame(commitWidths);
+      };
+
+      const onPointerUp = (pointerUpEvent: PointerEvent): void => {
+        window.removeEventListener("pointermove", onPointerMove);
+        window.removeEventListener("pointerup", onPointerUp);
+        window.removeEventListener("pointercancel", onPointerUp);
+
+        if (frameId !== undefined) {
+          window.cancelAnimationFrame(frameId);
+        }
+
+        commitWidths();
+        if (resizeHandle.releasePointerCapture) {
+          try {
+            resizeHandle.releasePointerCapture(pointerUpEvent.pointerId ?? pointerId);
+          } catch {
+            // ignore pointer capture failures
+          }
+        }
+        setActiveEmbeddedTableResize(undefined);
+      };
+
+      window.addEventListener("pointermove", onPointerMove);
+      window.addEventListener("pointerup", onPointerUp, { once: true });
+      window.addEventListener("pointercancel", onPointerUp, { once: true });
+    },
+    [distributeHeightByTotal, isReadOnly, normalizeResizableHeights]
+  );
+
+  const beginEmbeddedTableMove = React.useCallback(
+    (event: React.PointerEvent<HTMLSpanElement>, tableKey: string): void => {
+      if (isReadOnly) {
+        return;
+      }
+      if (event.button !== 0 && event.button !== undefined) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      setFocusedEmbeddedTableKey(tableKey);
+      setHoveredEmbeddedTableKey(tableKey);
+
+      const runtimeLocation = parseEmbeddedTableRuntimeKey(tableKey);
+      if (!runtimeLocation) {
+        return;
+      }
+
+      setHoveredTableHandleTableIndex(runtimeLocation.hostTableIndex);
+      tableMoveDragRef.current = {
+        pointerId: event.pointerId,
+        tableIndex: runtimeLocation.hostTableIndex,
+        embeddedTableKey: tableKey,
+        startX: event.clientX,
+        startY: event.clientY,
+        hasMoved: false
+      };
+
+      const onPointerMove = (pointerMoveEvent: PointerEvent): void => {
+        const dragState = tableMoveDragRef.current;
+        if (
+          !dragState ||
+          dragState.embeddedTableKey !== tableKey ||
+          pointerMoveEvent.pointerId !== dragState.pointerId
+        ) {
+          return;
+        }
+
+        const deltaX = Math.abs(pointerMoveEvent.clientX - dragState.startX);
+        const deltaY = Math.abs(pointerMoveEvent.clientY - dragState.startY);
+        if (deltaX + deltaY < TABLE_MOVE_DRAG_THRESHOLD_PX) {
+          return;
+        }
+
+        dragState.hasMoved = true;
+        const target = resolveTableMoveDropTarget(dragState.tableIndex, {
+          x: pointerMoveEvent.clientX,
+          y: pointerMoveEvent.clientY
+        });
+        setTableMoveDropPreview(target?.preview);
+        pointerMoveEvent.preventDefault();
+      };
+
+      const onPointerUp = (pointerUpEvent: PointerEvent): void => {
+        const dragState = tableMoveDragRef.current;
+        if (
+          !dragState ||
+          dragState.embeddedTableKey !== tableKey ||
+          pointerUpEvent.pointerId !== dragState.pointerId
+        ) {
+          return;
+        }
+
+        window.removeEventListener("pointermove", onPointerMove);
+        window.removeEventListener("pointerup", onPointerUp);
+        window.removeEventListener("pointercancel", onPointerUp);
+        tableMoveDragRef.current = undefined;
+        setTableMoveDropPreview(undefined);
+
+        const pointerTarget = document.elementFromPoint(pointerUpEvent.clientX, pointerUpEvent.clientY);
+        const hostTableElement = tableElementsRef.current.get(dragState.tableIndex);
+        const pointerStillOverHostTable = Boolean(pointerTarget && hostTableElement?.contains(pointerTarget));
+        setHoveredTableHandleTableIndex(pointerStillOverHostTable ? dragState.tableIndex : undefined);
+
+        if (!dragState.hasMoved) {
+          return;
+        }
+
+        const target = resolveTableMoveDropTarget(dragState.tableIndex, {
+          x: pointerUpEvent.clientX,
+          y: pointerUpEvent.clientY
+        });
+        if (!target) {
+          return;
+        }
+
+        setHoveredEmbeddedTableKey(undefined);
+        setFocusedEmbeddedTableKey(undefined);
+        editor.moveEmbeddedTableToBody(tableKey, target.targetNodeIndex);
+      };
+
+      window.addEventListener("pointermove", onPointerMove);
+      window.addEventListener("pointerup", onPointerUp, { once: true });
+      window.addEventListener("pointercancel", onPointerUp, { once: true });
+    },
+    [editor, isReadOnly, resolveTableMoveDropTarget]
+  );
+
+  const embeddedTableResizeController = React.useMemo<EmbeddedTableResizeController>(
+    () => ({
+      isReadOnly,
+      hoveredTableKey: hoveredEmbeddedTableKey,
+      focusedTableKey: focusedEmbeddedTableKey,
+      hoveredHandle: hoveredEmbeddedTableResizeHandle,
+      resolveColumnWidths: (tableKey, table, tableWidthPx) =>
+        resolveEmbeddedTableColumnWidths(tableKey, table, tableWidthPx),
+      resolveRowHeights: (tableKey, table) => resolveEmbeddedTableRowHeights(tableKey, table),
+      isTableResizing: (tableKey) =>
+        activeEmbeddedColumnResize?.tableKey === tableKey ||
+        activeEmbeddedRowResize?.tableKey === tableKey ||
+        activeEmbeddedTableResize?.tableKey === tableKey,
+      isColumnResizing: (tableKey, boundaryColumnIndex) =>
+        activeEmbeddedColumnResize?.tableKey === tableKey &&
+        activeEmbeddedColumnResize.boundaryColumnIndex === boundaryColumnIndex,
+      isRowResizing: (tableKey, boundaryRowIndex) =>
+        activeEmbeddedRowResize?.tableKey === tableKey &&
+        activeEmbeddedRowResize.boundaryRowIndex === boundaryRowIndex,
+      isCornerResizing: (tableKey) => activeEmbeddedTableResize?.tableKey === tableKey,
+      setHoveredTableKey: setHoveredEmbeddedTableKey,
+      setFocusedTableKey: setFocusedEmbeddedTableKey,
+      setHoveredHandle: setHoveredEmbeddedTableResizeHandle,
+      beginColumnResize: (event, tableKey, boundaryColumnIndex, tableWidthPx, columnWidths) => {
+        beginEmbeddedTableColumnResize(
+          event,
+          tableKey,
+          boundaryColumnIndex,
+          tableWidthPx,
+          columnWidths
+        );
+      },
+      beginRowResize: (event, tableKey, boundaryRowIndex, rowHeights) => {
+        beginEmbeddedTableRowResize(event, tableKey, boundaryRowIndex, rowHeights);
+      },
+      beginCornerResize: (event, tableKey, tableWidthPx, columnWidths, rowHeights, maxTableWidthPx) => {
+        beginEmbeddedTableCornerResize(
+          event,
+          tableKey,
+          tableWidthPx,
+          columnWidths,
+          rowHeights,
+          maxTableWidthPx
+        );
+      },
+      beginTableMove: (event, tableKey) => {
+        beginEmbeddedTableMove(event, tableKey);
+      }
+    }),
+    [
+      activeEmbeddedColumnResize,
+      activeEmbeddedRowResize,
+      activeEmbeddedTableResize,
+      beginEmbeddedTableColumnResize,
+      beginEmbeddedTableCornerResize,
+      beginEmbeddedTableMove,
+      beginEmbeddedTableRowResize,
+      focusedEmbeddedTableKey,
+      hoveredEmbeddedTableKey,
+      hoveredEmbeddedTableResizeHandle,
+      isReadOnly,
+      resolveEmbeddedTableColumnWidths,
+      resolveEmbeddedTableRowHeights
+    ]
+  );
+
+  const onDropImageAtTarget = React.useCallback(
+    (target: DocxImageDropTarget): void => {
+      if (isReadOnly) {
+        return;
+      }
+
+      const source = draggedImageRef.current;
+      if (!source) {
+        return;
+      }
+
+      editor.moveImage(source, target);
+
+      const sourceParagraphLocation = imageLocationToParagraphLocation(source);
+      const targetParagraphLocation: ParagraphLocation =
+        target.kind === "paragraph"
+          ? {
+              kind: "paragraph",
+              nodeIndex: target.nodeIndex
+            }
+          : {
+              kind: "table-cell",
+              tableIndex: target.tableIndex,
+              rowIndex: target.rowIndex,
+              cellIndex: target.cellIndex,
+              paragraphIndex: target.paragraphIndex
+            };
+
+      const nextChildIndex =
+        sameParagraphLocation(sourceParagraphLocation, targetParagraphLocation) &&
+        source.childIndex < target.childIndex
+          ? target.childIndex - 1
+          : target.childIndex;
+
+      setSelectedImage({ ...target, childIndex: Math.max(0, nextChildIndex) });
+      setActiveDropTarget(undefined);
+      setIsDraggingImage(false);
+      draggedImageRef.current = null;
+    },
+    [editor, isReadOnly]
+  );
+
+  const renderImageDropZone = React.useCallback(
+    (target: DocxImageDropTarget, key: string): React.JSX.Element | null => {
+      if (isReadOnly || !isDraggingImage) {
+        return null;
+      }
+
+      const isActive = activeDropTarget ? dropTargetKey(activeDropTarget) === dropTargetKey(target) : false;
+
+      return (
+        <span
+          key={key}
+          contentEditable={false}
+          data-docx-image-drop-zone="true"
+          data-docx-target-kind={target.kind}
+          data-docx-child-index={target.childIndex}
+          data-docx-node-index={target.kind === "paragraph" ? target.nodeIndex : undefined}
+          data-docx-table-index={target.kind === "table-cell" ? target.tableIndex : undefined}
+          data-docx-row-index={target.kind === "table-cell" ? target.rowIndex : undefined}
+          data-docx-cell-index={target.kind === "table-cell" ? target.cellIndex : undefined}
+          data-docx-paragraph-index={target.kind === "table-cell" ? target.paragraphIndex : undefined}
+          style={{
+            display: "inline-block",
+            width: 8,
+            minHeight: 22,
+            marginInline: 1,
+            verticalAlign: "middle",
+            borderLeft: isActive ? "2px solid #0f172a" : "2px solid transparent",
+            borderRadius: 999
+          }}
+          onDragOver={(event) => {
+            if (!draggedImageRef.current) {
+              return;
+            }
+
+            event.preventDefault();
+            event.dataTransfer.dropEffect = "move";
+            setActiveDropTarget(target);
+          }}
+          onDrop={(event) => {
+            event.preventDefault();
+            onDropImageAtTarget(target);
+          }}
+        />
+      );
+    },
+    [activeDropTarget, isDraggingImage, isReadOnly, onDropImageAtTarget]
+  );
+
+  const renderInteractiveParagraphRuns = React.useCallback(
+    (paragraph: ParagraphNode, keyPrefix: string, location: ParagraphLocation): React.ReactNode => {
+      const nodes: React.ReactNode[] = [];
+      const checkboxChoiceRow = paragraphLooksLikeCheckboxChoiceRow(paragraph);
+      const fallbackTabWidthPx = checkboxChoiceRow ? checkboxChoiceRowTabWidthPx(paragraph) : 56;
+      const tabStopPositionsPx = (paragraph.style?.tabStops ?? [])
+        .map((tabStopEntry) => twipsToPixels(tabStopEntry.positionTwips))
+        .filter((value): value is number => Number.isFinite(value) && (value as number) > 0)
+        .sort((left, right) => left - right);
+      const compactTabStopFieldLayout = tabStopPositionsPx.length > 0;
+      let approximateLineWidthPx = 0;
+      const trackTextAdvance = (
+        text: string,
+        style?: TextRunNode["style"] | FormFieldRunNode["style"]
+      ): void => {
+        approximateLineWidthPx = updateEstimatedLineWidthPxForText(approximateLineWidthPx, text, style);
+      };
+      const trackInlineAdvance = (widthPx: number): void => {
+        approximateLineWidthPx += Math.max(0, Math.round(widthPx));
+      };
+      const resolveNextTabWidthPx = (): number =>
+        resolveTabSpacerWidthPx(tabStopPositionsPx, approximateLineWidthPx, fallbackTabWidthPx);
+      const appendInteractiveTextWithSoftBreakControl = (
+        keySeed: string,
+        text: string,
+        style: React.CSSProperties,
+        measureStyle?: TextRunNode["style"] | FormFieldRunNode["style"]
+      ): void => {
+        const shouldControlSoftBreakStretch =
+          paragraph.style?.align === "justify" && text.includes("\n");
+        if (!shouldControlSoftBreakStretch) {
+          nodes.push(
+            <span key={keySeed} style={style}>
+              {text}
+            </span>
+          );
+          trackTextAdvance(text, measureStyle);
+          return;
+        }
+
+        const segments = text.split("\n");
+        segments.forEach((segment, segmentIndex) => {
+          const isLastSegment = segmentIndex === segments.length - 1;
+          if (segmentIndex > 0) {
+            nodes.push(<br key={`${keySeed}-soft-break-${segmentIndex}`} />);
+          }
+
+          if (segment.length > 0) {
+            nodes.push(
+              <span
+                key={`${keySeed}-segment-${segmentIndex}`}
+                style={
+                  isLastSegment
+                    ? {
+                        ...style,
+                        display: "inline-block",
+                        maxWidth: "100%",
+                        whiteSpace: "pre-wrap",
+                        verticalAlign: "baseline"
+                      }
+                    : style
+                }
+              >
+                {segment}
+              </span>
+            );
+          }
+
+          trackTextAdvance(segment, measureStyle);
+          if (!isLastSegment) {
+            approximateLineWidthPx = 0;
+          }
+        });
+      };
+      const noteMarkerIndexes = {
+        footnote: new Map<number, number>(),
+        endnote: new Map<number, number>()
+      };
+      editor.model.metadata.footnotes?.forEach((note, index) => {
+        noteMarkerIndexes.footnote.set(note.id, index + 1);
+      });
+      editor.model.metadata.endnotes?.forEach((note, index) => {
+        noteMarkerIndexes.endnote.set(note.id, index + 1);
+      });
+
+      const numberingLabel = paragraphNumberingLabels.get(paragraphLocationKey(location));
+      if (trackedChangesEnabled) {
+        return renderParagraphRuns(
+          paragraph,
+          keyPrefix,
+          editor.documentTheme,
+          numberingLabel,
+          scrollToBookmark,
+          undefined,
+          noteMarkerIndexes,
+          undefined,
+          undefined,
+          {
+            showTrackedChanges: true,
+            numberingDefinitions: editor.model.metadata.numberingDefinitions,
+            tocLinkColorByLevel
+          }
+        );
+      }
+
+      if (paragraphUsesTabLeaders(paragraph)) {
+        return renderParagraphRuns(
+          paragraph,
+          keyPrefix,
+          editor.documentTheme,
+          numberingLabel,
+          scrollToBookmark,
+          undefined,
+          noteMarkerIndexes,
+          undefined,
+          undefined,
+          {
+            showTrackedChanges: trackedChangesEnabled,
+            numberingDefinitions: editor.model.metadata.numberingDefinitions,
+            tocLinkColorByLevel
+          }
+        );
+      }
+
+      if (numberingLabel) {
+        const numberingTextStyle = numberingLabel.style ? runStyleToCss(numberingLabel.style, editor.documentTheme) : undefined;
+        nodes.push(
+          <span
+            key={`${keyPrefix}-numbering`}
+            contentEditable={false}
+            data-docx-numbering-label="true"
+            style={numberingMarkerStyle(
+              paragraph,
+              editor.model.metadata.numberingDefinitions,
+              numberingLabel,
+              numberingTextStyle,
+              editor.documentTheme
+            )}
+          >
+            {numberingLabel.imageSrc ? (
+              <>
+                <img
+                  src={numberingLabel.imageSrc}
+                  alt=""
+                  aria-hidden="true"
+                  draggable={false}
+                  style={{
+                    display: "inline-block",
+                    verticalAlign: "text-bottom",
+                    width: numberingLabel.imageWidthPx ?? 12,
+                    height: numberingLabel.imageHeightPx ?? 12,
+                    marginRight: 2
+                  }}
+                />
+                {numberingLabel.trailingText ?? ""}
+              </>
+            ) : (
+              numberingLabel.text ?? ""
+            )}
+          </span>
+        );
+        if (numberingLabel.imageSrc) {
+          trackInlineAdvance(numberingLabel.imageWidthPx ?? 12);
+          trackTextAdvance(numberingLabel.trailingText ?? "", numberingLabel.style);
+        } else {
+          trackTextAdvance(numberingLabel.text ?? "", numberingLabel.style);
+        }
+      }
+      nodes.push(renderImageDropZone({ ...location, childIndex: 0 }, `${keyPrefix}-drop-0`));
+      let hasDualWrapSpacer = false;
+
+      paragraph.children.forEach((child, childIndex) => {
+        const runKey = `${keyPrefix}-run-${childIndex}`;
+
+        if (child.type === "image") {
+          const imageLocation: DocxImageLocation = { ...location, childIndex };
+          const imageKey = imageLocationKey(imageLocation);
+          const isSelectedImage = selectedImage ? imageLocationKey(selectedImage) === imageKey : false;
+          const preview = resizePreview?.imageKey === imageKey ? resizePreview : undefined;
+          const movePreview = floatingMovePreview?.imageKey === imageKey ? floatingMovePreview : undefined;
+          const isWrappedFloatingImage = shouldRenderWrappedFloatingImage(child);
+          const isAbsoluteFloatingImage = shouldRenderAbsoluteFloatingImage(child);
+          const dualWrapExclusionLayout = isWrappedFloatingImage
+            ? wrappedFloatingImageDualExclusionLayout(child, {
+                containerWidthPx: documentContentWidthPx,
+                deltaX: movePreview?.deltaX ?? 0,
+                deltaY: movePreview?.deltaY ?? 0
+              })
+            : undefined;
+          const floatingStyle: React.CSSProperties = isWrappedFloatingImage
+            ? dualWrapExclusionLayout?.imageStyle ?? wrappedFloatingImageStyle(child, {
+                containerWidthPx: documentContentWidthPx,
+                deltaX: movePreview?.deltaX ?? 0,
+                deltaY: movePreview?.deltaY ?? 0
+              })
+            : isAbsoluteFloatingImage
+              ? absoluteFloatingImageStyle(child, {
+                  pageOriginLeft: documentLayout.marginsPx.left,
+                  pageOriginTop: documentLayout.marginsPx.top,
+                  deltaX: movePreview?.deltaX ?? 0,
+                  deltaY: movePreview?.deltaY ?? 0
+                })
+              : movePreview
+                ? {
+                    transform: `translate(${movePreview.deltaX}px, ${movePreview.deltaY}px)`,
+                    position: "relative",
+                    zIndex: 4
+                  }
+              : {};
+
+          const widthPx = preview?.widthPx ?? child.widthPx;
+          const heightPx = preview?.heightPx ?? child.heightPx;
+
+          if (dualWrapExclusionLayout) {
+            hasDualWrapSpacer = true;
+            nodes.push(
+              <span
+                key={`${runKey}-dual-left-wrap`}
+                contentEditable={false}
+                aria-hidden="true"
+                style={dualWrapExclusionLayout.leftSpacerStyle}
+              />
+            );
+            nodes.push(
+              <span
+                key={`${runKey}-dual-right-wrap`}
+                contentEditable={false}
+                aria-hidden="true"
+                style={dualWrapExclusionLayout.rightSpacerStyle}
+              />
+            );
+          }
+
+          nodes.push(
+            <span
+              key={runKey}
+              contentEditable={false}
+              data-docx-image-location={imageKey}
+              style={{
+                display: "inline-block",
+                position: isAbsoluteFloatingImage || Boolean(dualWrapExclusionLayout) ? "absolute" : "relative",
+                verticalAlign: "middle",
+                marginInline: 0,
+                ...floatingStyle
+              }}
+              onPointerDown={(event) =>
+                isReadOnly
+                  ? undefined
+                  : beginFloatingImageMove(
+                      event,
+                      imageLocation,
+                      child,
+                      isWrappedFloatingImage,
+                      isAbsoluteFloatingImage
+                    )
+              }
+              onClick={(event) => {
+                event.stopPropagation();
+                if (!isReadOnly) {
+                  setSelectedImage(imageLocation);
+                }
+              }}
+              onContextMenu={(event) => {
+                if (isReadOnly) {
+                  return;
+                }
+
+                event.preventDefault();
+                event.stopPropagation();
+                clearTableCellSelection();
+                setSelectedSectionImageKey(undefined);
+                setSelectedImage(imageLocation);
+                openContextMenu(
+                  {
+                    kind: "image",
+                    activeTextRange: resolveActiveRangeFromDomSelection(),
+                    location: cloneTextRangeLocation(imageLocationToParagraphLocation(imageLocation)),
+                    image: {
+                      location: imageLocation,
+                      floating: child.floating ? { ...child.floating } : undefined
+                    }
+                  },
+                  {
+                    x: event.clientX,
+                    y: event.clientY
+                  }
+                );
+              }}
+            >
+              {child.src ? (
+                <img
+                  src={child.src}
+                  alt={child.alt ?? "DOCX image"}
+                  draggable={!isReadOnly && !isWrappedFloatingImage && !isAbsoluteFloatingImage}
+                  onDragStart={
+                    !isReadOnly && !isWrappedFloatingImage && !isAbsoluteFloatingImage
+                      ? (event) => onImageDragStart(event, imageLocation)
+                      : undefined
+                  }
+                  onDragEnd={
+                    !isReadOnly && !isWrappedFloatingImage && !isAbsoluteFloatingImage
+                      ? onImageDragEnd
+                      : undefined
+                  }
+                  style={{
+                    width: widthPx ? `${widthPx}px` : undefined,
+                    height: heightPx ? `${heightPx}px` : undefined,
+                    maxWidth: isWrappedFloatingImage || isAbsoluteFloatingImage ? undefined : "100%",
+                    verticalAlign: "middle",
+                    display: "block",
+                    cursor:
+                      isReadOnly
+                        ? "default"
+                        : isWrappedFloatingImage || isAbsoluteFloatingImage
+                        ? "move"
+                        : isDraggingImage
+                          ? "grabbing"
+                          : "grab"
+                  }}
+                />
+              ) : (
+                <span
+                  style={{
+                    display: "inline-flex",
+                    minWidth: 112,
+                    minHeight: 80,
+                    alignItems: "center",
+                    justifyContent: "center",
+                    border: "1px dashed #d1d5db",
+                    borderRadius: 4,
+                    color: "#6b7280",
+                    fontSize: 12,
+                    paddingInline: 8
+                  }}
+                >
+                  Missing image
+                </span>
+              )}
+
+              {!isReadOnly && isSelectedImage ? (
+                <>
+                  {[
+                    { key: "top-left", left: -5, top: -5, cursor: "nwse-resize", xDirection: -1, yDirection: -1 },
+                    { key: "top-right", right: -5, top: -5, cursor: "nesw-resize", xDirection: 1, yDirection: -1 },
+                    { key: "bottom-left", left: -5, bottom: -5, cursor: "nesw-resize", xDirection: -1, yDirection: 1 },
+                    { key: "bottom-right", right: -5, bottom: -5, cursor: "nwse-resize", xDirection: 1, yDirection: 1 }
+                  ].map((handle) => (
+                    <span
+                      key={`${runKey}-${handle.key}`}
+                      contentEditable={false}
+                      data-image-resize-handle="true"
+                      style={{
+                        position: "absolute",
+                        width: 10,
+                        height: 10,
+                        borderRadius: 3,
+                        border: "1px solid #d4d4d8",
+                        backgroundColor: "#ffffff",
+                        boxShadow: "0 1px 2px rgba(0, 0, 0, 0.14)",
+                        cursor: handle.cursor,
+                        ...(handle.left !== undefined ? { left: handle.left } : undefined),
+                        ...(handle.right !== undefined ? { right: handle.right } : undefined),
+                        ...(handle.top !== undefined ? { top: handle.top } : undefined),
+                        ...(handle.bottom !== undefined ? { bottom: handle.bottom } : undefined)
+                      }}
+                      onPointerDown={(event) => {
+                        const wrapper = event.currentTarget.parentElement;
+                        const imageElement = wrapper?.querySelector("img");
+                        const width = imageElement
+                          ? Math.round(imageElement.getBoundingClientRect().width)
+                          : child.widthPx ?? 240;
+                        const height = imageElement
+                          ? Math.round(imageElement.getBoundingClientRect().height)
+                          : child.heightPx ?? Math.round((child.widthPx ?? 240) * 0.62);
+
+                        beginImageResize(
+                          event,
+                          imageLocation,
+                          width,
+                          height,
+                          handle.xDirection as -1 | 1,
+                          handle.yDirection as -1 | 1
+                        );
+                      }}
+                    />
+                  ))}
+                </>
+              ) : null}
+            </span>
+          );
+          if (!isWrappedFloatingImage && !isAbsoluteFloatingImage) {
+            trackInlineAdvance(widthPx ?? 0);
+          }
+        } else if (child.type === "form-field") {
+          const formFieldLocation: DocxFormFieldLocation = { ...location, childIndex };
+          const compactFieldWidthPx = estimateInteractiveFieldWidthPx(child);
+          const compactFieldLayout = compactTabStopFieldLayout || child.sourceKind === "legacy";
+          const isTextLikeFormField = child.fieldType === "text" || child.fieldType === "date";
+          const inputStyle: React.CSSProperties = {
+            ...runStyleToCss(child.style, editor.documentTheme),
+            fontFamily: cssFontFamily(child.style?.fontFamily) ?? "inherit",
+            fontSize: child.style?.fontSizePt ? `${child.style.fontSizePt}pt` : "inherit",
+            color: themedRunColor(child.style?.color, editor.documentTheme) ?? "inherit",
+            backgroundColor: isTextLikeFormField
+              ? "rgba(148, 163, 184, 0.16)"
+              : compactFieldLayout
+                ? "transparent"
+                : "#ffffff",
+            border: isTextLikeFormField
+              ? "1px solid rgba(148, 163, 184, 0.6)"
+              : compactFieldLayout
+                ? "none"
+                : "1px solid #d4d4d8",
+            borderRadius: isTextLikeFormField ? 4 : compactFieldLayout ? 0 : 6,
+            paddingInline: compactFieldLayout ? (isTextLikeFormField ? 2 : 0) : 6,
+            paddingBlock: 0,
+            lineHeight: "inherit",
+            minHeight: compactFieldLayout ? undefined : 24,
+            height: compactFieldLayout ? "1.1em" : undefined,
+            margin: 0,
+            verticalAlign: "baseline",
+            minWidth: compactFieldLayout
+              ? `${compactFieldWidthPx}px`
+              : child.fieldType === "text"
+                ? 120
+                : undefined,
+            width: compactFieldLayout
+              ? `${compactFieldWidthPx}px`
+              : undefined,
+            boxSizing: "border-box"
+          };
+
+          if (child.fieldType === "checkbox") {
+            const checkboxSymbol = child.checked ?? child.widget?.checkbox?.defaultChecked
+              ? child.checkedSymbol ?? "☒"
+              : child.uncheckedSymbol ?? "☐";
+            nodes.push(
+              <span
+                key={runKey}
+                contentEditable={false}
+                data-docx-form-field="true"
+                data-docx-form-field-type="checkbox"
+                role="checkbox"
+                aria-checked={Boolean(child.checked)}
+                tabIndex={isReadOnly ? -1 : 0}
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                }}
+                onClick={(event) => {
+                  if (isReadOnly) {
+                    return;
+                  }
+
+                  event.preventDefault();
+                  event.stopPropagation();
+                  editor.selectFormField(formFieldLocation);
+                  editor.toggleFormCheckbox(formFieldLocation);
+                }}
+                onKeyDown={(event) => {
+                  if (isReadOnly) {
+                    return;
+                  }
+
+                  if (event.key !== "Enter" && event.key !== " ") {
+                    return;
+                  }
+                  event.preventDefault();
+                  event.stopPropagation();
+                  editor.selectFormField(formFieldLocation);
+                  editor.toggleFormCheckbox(formFieldLocation);
+                }}
+                onFocus={() => {
+                  if (isReadOnly) {
+                    return;
+                  }
+                  editor.selectFormField(formFieldLocation);
+                }}
+                onDoubleClick={(event) => {
+                  if (isReadOnly) {
+                    return;
+                  }
+
+                  event.stopPropagation();
+                  editor.selectFormField(formFieldLocation);
+                  onFormFieldDoubleClick?.(formFieldLocation);
+                }}
+                style={{
+                  display: "inline",
+                  marginInline: 0,
+                  lineHeight: "inherit",
+                  fontFamily: cssFontFamily(child.style?.fontFamily) ?? "inherit",
+                  cursor: isReadOnly ? "default" : "pointer",
+                  userSelect: "none",
+                  outline: "none",
+                  ...runStyleToCss(child.style, editor.documentTheme)
+                }}
+              >
+                {checkboxSymbol}
+              </span>
+            );
+            trackTextAdvance(checkboxSymbol, child.style);
+          } else if (child.fieldType === "dropdown") {
+            const options = child.options ?? [];
+            const selectedValue = child.value ?? options[0]?.value ?? options[0]?.displayText ?? "";
+
+            nodes.push(
+              <select
+                key={runKey}
+                contentEditable={false}
+                data-docx-form-field="true"
+                data-docx-form-field-type="dropdown"
+                value={selectedValue}
+                onChange={(event) => {
+                  if (isReadOnly) {
+                    return;
+                  }
+                  editor.setFormFieldValue(formFieldLocation, event.currentTarget.value);
+                }}
+                onFocus={() => {
+                  if (isReadOnly) {
+                    return;
+                  }
+                  editor.selectFormField(formFieldLocation);
+                }}
+                onDoubleClick={(event) => {
+                  if (isReadOnly) {
+                    return;
+                  }
+
+                  event.stopPropagation();
+                  editor.selectFormField(formFieldLocation);
+                  onFormFieldDoubleClick?.(formFieldLocation);
+                }}
+                disabled={isReadOnly}
+                style={inputStyle}
+              >
+                {options.length > 0 ? (
+                  options.map((option, optionIndex) => {
+                    const optionValue = option.value ?? option.displayText;
+                    return (
+                      <option key={`${runKey}-option-${optionIndex}`} value={optionValue}>
+                        {option.displayText}
+                      </option>
+                    );
+                  })
+                ) : (
+                  <option value={selectedValue}>{selectedValue}</option>
+                )}
+              </select>
+            );
+            trackInlineAdvance(compactFieldWidthPx);
+          } else if (child.fieldType === "date") {
+            const normalizedDate = normalizeDateInputValue(child.value);
+            if (normalizedDate) {
+              nodes.push(
+                <input
+                  key={runKey}
+                  contentEditable={false}
+                  data-docx-form-field="true"
+                  data-docx-form-field-type="date"
+                  type={compactFieldLayout ? "text" : "date"}
+                  value={normalizedDate}
+                  onChange={(event) => {
+                    if (isReadOnly) {
+                      return;
+                    }
+                    editor.setFormFieldValue(formFieldLocation, event.currentTarget.value);
+                  }}
+                  onFocus={() => {
+                    if (isReadOnly) {
+                      return;
+                    }
+                    editor.selectFormField(formFieldLocation);
+                  }}
+                  onDoubleClick={(event) => {
+                    if (isReadOnly) {
+                      return;
+                    }
+
+                    event.stopPropagation();
+                    editor.selectFormField(formFieldLocation);
+                    onFormFieldDoubleClick?.(formFieldLocation);
+                  }}
+                  readOnly={isReadOnly}
+                  style={inputStyle}
+                />
+              );
+              trackInlineAdvance(compactFieldWidthPx);
+            } else {
+              nodes.push(
+                <input
+                  key={runKey}
+                  contentEditable={false}
+                  data-docx-form-field="true"
+                  data-docx-form-field-type="date"
+                  type="text"
+                  value={child.value ?? ""}
+                  placeholder={child.placeholder ?? child.title ?? "Enter date"}
+                  onChange={(event) => {
+                    if (isReadOnly) {
+                      return;
+                    }
+                    editor.setFormFieldValue(formFieldLocation, event.currentTarget.value);
+                  }}
+                  onFocus={() => {
+                    if (isReadOnly) {
+                      return;
+                    }
+                    editor.selectFormField(formFieldLocation);
+                  }}
+                  onDoubleClick={(event) => {
+                    if (isReadOnly) {
+                      return;
+                    }
+
+                    event.stopPropagation();
+                    editor.selectFormField(formFieldLocation);
+                    onFormFieldDoubleClick?.(formFieldLocation);
+                  }}
+                  readOnly={isReadOnly}
+                  style={inputStyle}
+                />
+              );
+              trackInlineAdvance(compactFieldWidthPx);
+            }
+          } else {
+            nodes.push(
+              <input
+                key={runKey}
+                contentEditable={false}
+                data-docx-form-field="true"
+                data-docx-form-field-type="text"
+                type="text"
+                value={child.value ?? ""}
+                placeholder={child.placeholder ?? child.title ?? ""}
+                onChange={(event) => {
+                  if (isReadOnly) {
+                    return;
+                  }
+                  editor.setFormFieldValue(formFieldLocation, event.currentTarget.value);
+                }}
+                onFocus={() => {
+                  if (isReadOnly) {
+                    return;
+                  }
+                  editor.selectFormField(formFieldLocation);
+                }}
+                onDoubleClick={(event) => {
+                  if (isReadOnly) {
+                    return;
+                  }
+
+                  event.stopPropagation();
+                  editor.selectFormField(formFieldLocation);
+                  onFormFieldDoubleClick?.(formFieldLocation);
+                }}
+                readOnly={isReadOnly}
+                style={inputStyle}
+              />
+            );
+            trackInlineAdvance(compactFieldWidthPx);
+          }
+        } else {
+          const noteLabel = noteMarkerLabel(
+            child.noteReference,
+            noteMarkerIndexes.footnote,
+            noteMarkerIndexes.endnote
+          );
+          if (noteLabel) {
+            nodes.push(
+              <span
+                key={runKey}
+                style={{
+                  ...runStyleToCss(child.style, editor.documentTheme),
+                  verticalAlign: "super",
+                  fontSize: "0.75em"
+                }}
+              >
+                {noteLabel}
+              </span>
+            );
+            trackTextAdvance(noteLabel, child.style);
+            nodes.push(
+              renderImageDropZone(
+                { ...location, childIndex: childIndex + 1 },
+                `${keyPrefix}-drop-${childIndex + 1}`
+              )
+            );
+            return;
+          }
+
+          if (child.link) {
+            const linkHref = child.link;
+            const isInternalLink = linkHref.startsWith("#");
+            nodes.push(
+              <a
+                key={runKey}
+                href={linkHref}
+                target={isInternalLink ? undefined : "_blank"}
+                rel={isInternalLink ? undefined : "noreferrer noopener"}
+                contentEditable={isInternalLink ? false : undefined}
+                onMouseDown={(event) => {
+                  if (!isInternalLink) {
+                    return;
+                  }
+
+                  event.preventDefault();
+                  event.stopPropagation();
+                }}
+                onClick={(event) => {
+                  if (!isInternalLink) {
+                    return;
+                  }
+
+                  event.preventDefault();
+                  event.stopPropagation();
+                  const bookmarkName = linkHref.slice(1);
+                  scrollToBookmark(bookmarkName);
+                }}
+                style={linkStyleToCss(child.style, editor.documentTheme)}
+              >
+                {child.text}
+              </a>
+            );
+            trackTextAdvance(child.text, child.style);
+            nodes.push(
+              renderImageDropZone(
+                { ...location, childIndex: childIndex + 1 },
+                `${keyPrefix}-drop-${childIndex + 1}`
+              )
+            );
+            return;
+          }
+
+          const runStyle = runStyleToCss(child.style, editor.documentTheme);
+          const renderedText = attachTextToPreviousCheckbox(paragraph, childIndex, child.text);
+          if (renderedText === "\t") {
+            const tabWidthPx = resolveNextTabWidthPx();
+            nodes.push(
+              <span
+                key={runKey}
+                data-docx-tab-char="true"
+                style={{
+                  ...runStyle,
+                  display: "inline-block",
+                  width: tabWidthPx,
+                  minWidth: tabWidthPx,
+                  whiteSpace: "pre",
+                  textDecoration: child.style?.underline ? "none" : runStyle.textDecoration,
+                  borderBottom: child.style?.underline ? "1px solid currentColor" : undefined,
+                  lineHeight: "1em"
+                }}
+              >
+                {"\u00a0"}
+              </span>
+            );
+            trackInlineAdvance(tabWidthPx);
+          } else {
+            appendInteractiveTextWithSoftBreakControl(
+              runKey,
+              renderedText,
+              runStyle,
+              child.style
+            );
+          }
+        }
+
+        nodes.push(
+          renderImageDropZone({ ...location, childIndex: childIndex + 1 }, `${keyPrefix}-drop-${childIndex + 1}`)
+        );
+      });
+
+      if (hasDualWrapSpacer) {
+        nodes.push(
+          <span
+            key={`${keyPrefix}-dual-wrap-clear`}
+            contentEditable={false}
+            aria-hidden="true"
+            style={{
+              display: "block",
+              clear: "both",
+              height: 0,
+              pointerEvents: "none",
+              userSelect: "none"
+            }}
+          />
+        );
+      }
+
+      return nodes;
+    },
+    [
+      beginFloatingImageMove,
+      beginImageResize,
+      clearTableCellSelection,
+      floatingMovePreview,
+      isDraggingImage,
+      openContextMenu,
+      onImageDragEnd,
+      onImageDragStart,
+      renderImageDropZone,
+      resolveActiveRangeFromDomSelection,
+      resizePreview,
+      selectedImage,
+      setSelectedSectionImageKey,
+      editor.documentTheme,
+      editor.selectFormField,
+      editor.setFormFieldValue,
+      editor.toggleFormCheckbox,
+      onFormFieldDoubleClick,
+      isReadOnly,
+      paragraphNumberingLabels,
+      scrollToBookmark,
+      documentLayout,
+      tocLinkColorByLevel,
+      trackedChangesEnabled
+    ]
+  );
+
+  const hasFilePayload = React.useCallback((dataTransfer: DataTransfer | null): boolean => {
+    return Array.from(dataTransfer?.types ?? []).includes("Files");
+  }, []);
+
+  const extractDroppedDocxFile = React.useCallback((dataTransfer: DataTransfer | null): File | undefined => {
+    return Array.from(dataTransfer?.files ?? []).find((candidate) => /\.docx$/i.test(candidate.name));
+  }, []);
+
+  const onCanvasDragOver = React.useCallback(
+    (event: React.DragEvent<HTMLDivElement>): void => {
+      if (isDraggingImage) {
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "move";
+        setIsDragOverCanvas(false);
+        return;
+      }
+
+      if (!canReplaceDocumentByDrop) {
+        setIsDragOverCanvas(false);
+        return;
+      }
+
+      if (!hasFilePayload(event.dataTransfer)) {
+        setIsDragOverCanvas(false);
+        return;
+      }
+
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "copy";
+      setIsDragOverCanvas(true);
+    },
+    [canReplaceDocumentByDrop, hasFilePayload, isDraggingImage]
+  );
+
+  const onCanvasDragLeave = React.useCallback((event: React.DragEvent<HTMLDivElement>): void => {
+    if (event.currentTarget.contains(event.relatedTarget as Node | null)) {
+      return;
+    }
+
+    setIsDragOverCanvas(false);
+  }, []);
+
+  const onCanvasDrop = React.useCallback(
+    async (event: React.DragEvent<HTMLDivElement>): Promise<void> => {
+      setIsDragOverCanvas(false);
+
+      if (isDraggingImage) {
+        event.preventDefault();
+        return;
+      }
+
+      if (!canReplaceDocumentByDrop) {
+        return;
+      }
+
+      const file = extractDroppedDocxFile(event.dataTransfer);
+      if (!file) {
+        return;
+      }
+
+      event.preventDefault();
+      setSelectedImage(undefined);
+      await editor.importDocxFile(file);
+    },
+    [canReplaceDocumentByDrop, editor, extractDroppedDocxFile, isDraggingImage]
+  );
+
+  React.useEffect(() => {
+    if (!canReplaceDocumentByDrop) {
+      fileDragDepthRef.current = 0;
+      setIsDragOverCanvas(false);
+      return;
+    }
+
+    const onWindowDragEnter = (event: DragEvent): void => {
+      if (isDraggingImage || !hasFilePayload(event.dataTransfer)) {
+        return;
+      }
+
+      fileDragDepthRef.current += 1;
+      setIsDragOverCanvas(true);
+    };
+
+    const onWindowDragOver = (event: DragEvent): void => {
+      if (isDraggingImage || !hasFilePayload(event.dataTransfer)) {
+        return;
+      }
+
+      event.preventDefault();
+      if (event.dataTransfer) {
+        event.dataTransfer.dropEffect = "copy";
+      }
+      setIsDragOverCanvas(true);
+    };
+
+    const onWindowDragLeave = (event: DragEvent): void => {
+      if (event.relatedTarget === null) {
+        fileDragDepthRef.current = 0;
+        setIsDragOverCanvas(false);
+        return;
+      }
+
+      if (!hasFilePayload(event.dataTransfer)) {
+        return;
+      }
+
+      fileDragDepthRef.current = Math.max(0, fileDragDepthRef.current - 1);
+      if (fileDragDepthRef.current === 0) {
+        setIsDragOverCanvas(false);
+      }
+    };
+
+    const onWindowDrop = (event: DragEvent): void => {
+      fileDragDepthRef.current = 0;
+      setIsDragOverCanvas(false);
+
+      if (event.defaultPrevented || isDraggingImage || !hasFilePayload(event.dataTransfer)) {
+        return;
+      }
+
+      const file = extractDroppedDocxFile(event.dataTransfer);
+      if (!file) {
+        return;
+      }
+
+      event.preventDefault();
+      setSelectedImage(undefined);
+      void editor.importDocxFile(file);
+    };
+
+    window.addEventListener("dragenter", onWindowDragEnter);
+    window.addEventListener("dragover", onWindowDragOver);
+    window.addEventListener("dragleave", onWindowDragLeave);
+    window.addEventListener("drop", onWindowDrop);
+
+    return () => {
+      window.removeEventListener("dragenter", onWindowDragEnter);
+      window.removeEventListener("dragover", onWindowDragOver);
+      window.removeEventListener("dragleave", onWindowDragLeave);
+      window.removeEventListener("drop", onWindowDrop);
+      fileDragDepthRef.current = 0;
+    };
+  }, [canReplaceDocumentByDrop, editor, extractDroppedDocxFile, hasFilePayload, isDraggingImage]);
+
+  const documentContentWidthPx = Math.max(
+    120,
+    documentLayout.pageWidthPx - documentLayout.marginsPx.left - documentLayout.marginsPx.right
+  );
+  const pageSurfaceBaseStyle: React.CSSProperties = {
+    ...BASE_DOC_STYLE,
+    ...DOC_SURFACE_STYLE_BY_THEME[editor.documentTheme],
+    ...(isDragOverCanvas ? { boxShadow: "0 0 0 2px rgba(59,130,246,0.4)" } : undefined),
+    boxSizing: "border-box"
+  };
+  const renderDocumentNode = (
+    node: DocModel["nodes"][number],
+    nodeIndex: number,
+    tableRowRange?: TableRowRange,
+    paragraphLineRange?: ParagraphLineRange
+  ): React.ReactNode => {
+    const nodeDocGridLinePitchPx = docGridLinePitchPxByNodeIndex.get(nodeIndex);
+    if (node.type === "paragraph") {
+      const hasImage = paragraphHasImage(node);
+      const hasPartialLineRange = paragraphSegmentHasPartialLineRange(paragraphLineRange);
+      const paragraphSegmentStartLine = paragraphLineRange?.startLineIndex ?? 0;
+      const paragraphSegmentEndLine =
+        paragraphLineRange?.endLineIndex ?? paragraphLineRange?.totalLineCount ?? 1;
+      const paragraphSegmentTotalLines =
+        paragraphLineRange?.totalLineCount ?? Math.max(1, paragraphSegmentEndLine);
+      const paragraphSegmentLineHeightPx = Math.max(
+        1,
+        paragraphLineRange?.lineHeightPx ??
+          estimateParagraphLineHeightPx(node, nodeDocGridLinePitchPx)
+      );
+      const paragraphSegmentVisibleLineCount = Math.max(
+        1,
+        paragraphSegmentEndLine - paragraphSegmentStartLine
+      );
+      const paragraphSegmentVisibleHeightPx = paragraphSegmentVisibleLineCount * paragraphSegmentLineHeightPx;
+      const paragraphSegmentTranslateYPx = paragraphSegmentStartLine * paragraphSegmentLineHeightPx;
+      const shouldTrackParagraphElement = !hasPartialLineRange || paragraphSegmentStartLine === 0;
+      const isManualPageBreakParagraph = paragraphIsOnlyExplicitPageBreak(node);
+      const editable =
+        !hasImage &&
+        !isReadOnly &&
+        !hasPartialLineRange &&
+        !isManualPageBreakParagraph;
+      const requiresPageAbsoluteContext = paragraphNeedsPageAnchoredAbsolutePositioningContext(node);
+      const hasDualWrappedFloatingImage = node.children.some(
+        (child) =>
+          child.type === "image" &&
+          Boolean(
+            wrappedFloatingImageDualExclusionLayout(child, {
+              containerWidthPx: documentContentWidthPx
+            })
+          )
+      );
+      const beforeSpacingPx = paragraphBeforeSpacingPx(node);
+      const afterSpacingPx = paragraphAfterSpacingPx(node);
+      const baseParagraphStyle = paragraphBlockStyle(
+        node,
+        editor.model.metadata.numberingDefinitions,
+        headingStyles,
+        nodeDocGridLinePitchPx
+      );
+      const paragraphStyle: React.CSSProperties = {
+        ...baseParagraphStyle,
+        ...(hasPartialLineRange
+          ? {
+              marginTop: paragraphSegmentStartLine === 0 ? beforeSpacingPx : 0,
+              marginBottom:
+                paragraphSegmentEndLine >= paragraphSegmentTotalLines ? afterSpacingPx : 0
+            }
+          : undefined),
+        ...(requiresPageAbsoluteContext
+          ? { position: "static" }
+          : hasDualWrappedFloatingImage
+            ? { position: "relative" }
+            : undefined),
+        outline: "none"
+      };
+
+      return (
+        <div
+          key={
+            paragraphLineRange
+              ? `epoch-${paragraphStructureEpoch}-node-${nodeIndex}-lines-${paragraphSegmentStartLine}-${paragraphSegmentEndLine}`
+              : `epoch-${paragraphStructureEpoch}-node-${nodeIndex}`
+          }
+          data-docx-paragraph-host="true"
+          data-docx-paragraph-kind="paragraph"
+          data-docx-paragraph-node-index={nodeIndex}
+          style={paragraphStyle}
+          ref={(element) => {
+            if (shouldTrackParagraphElement) {
+              if (element) {
+                paragraphElementsRef.current.set(nodeIndex, element);
+              } else {
+                paragraphElementsRef.current.delete(nodeIndex);
+              }
+            }
+
+            if (!element || !editable) {
+              return;
+            }
+
+            const draft = paragraphDraftsRef.current.get(nodeIndex);
+            if (typeof draft === "string") {
+              const draftHtml = draft;
+              scheduleDomWrite(() => {
+                if (!element.isConnected) {
+                  return;
+                }
+                const latestDraft = paragraphDraftsRef.current.get(nodeIndex);
+                if (latestDraft !== draftHtml) {
+                  return;
+                }
+
+                if (element.innerHTML !== draftHtml) {
+                  const activeElement = document.activeElement;
+                  const shouldRestoreSelection =
+                    activeElement === element ||
+                    (activeElement instanceof Element &&
+                      element.contains(activeElement));
+                  const selectionOffsets = shouldRestoreSelection
+                    ? selectionOffsetsWithinElement(element)
+                    : undefined;
+                  element.innerHTML = draftHtml;
+                  if (shouldRestoreSelection) {
+                    if (selectionOffsets) {
+                      const textLength = editableTextFromElement(element).length;
+                      const safeStart = Math.max(
+                        0,
+                        Math.min(selectionOffsets.start, textLength)
+                      );
+                      const safeEnd = Math.max(
+                        safeStart,
+                        Math.min(selectionOffsets.end, textLength)
+                      );
+                      setSelectionWithinElementByTextOffsets(
+                        element,
+                        safeStart,
+                        safeEnd
+                      );
+                    } else {
+                      placeCaretInsideElement(element);
+                    }
+                  }
+                }
+
+                const latestParagraph = editor.model.nodes[nodeIndex];
+                if (
+                  latestParagraph &&
+                  latestParagraph.type === "paragraph" &&
+                  editableTextFromElement(element) === paragraphText(latestParagraph)
+                ) {
+                  paragraphDraftsRef.current.delete(nodeIndex);
+                }
+              });
+            }
+          }}
+          onPointerDown={(event) => {
+            if (eventTargetIsInteractiveControl(event.target) || !editable) {
+              return;
+            }
+
+            clearTableCellSelection();
+          }}
+          onClick={(event) => {
+            clearTableCellSelection();
+            if (!editable) {
+              editor.selectParagraph(nodeIndex);
+              return;
+            }
+
+            const selection = window.getSelection();
+            const rangeInsideParagraph =
+              selection &&
+              selection.rangeCount > 0 &&
+              (() => {
+                const range = selection.getRangeAt(0);
+                return (
+                  event.currentTarget.contains(range.startContainer) ||
+                  event.currentTarget.contains(range.endContainer)
+                );
+              })();
+            // Some DOCX layouts (tabs/large spacing spans) can absorb clicks without
+            // moving DOM selection. In that case, place caret at the click point.
+            if (!rangeInsideParagraph) {
+              placeCaretInsideElement(event.currentTarget, {
+                x: event.clientX,
+                y: event.clientY
+              });
+            }
+            flushActiveRangeFromSelection();
+          }}
+          contentEditable={editable}
+          suppressContentEditableWarning
+          onMouseUp={(event) => {
+            if (!editable) {
+              return;
+            }
+
+            flushActiveRangeFromSelection();
+          }}
+          onKeyUp={(event) => {
+            if (!editable) {
+              return;
+            }
+
+            updateActiveTextRangeFromElement(event.currentTarget, {
+              kind: "paragraph",
+              nodeIndex
+            });
+          }}
+          onInput={(event) => {
+            if (!editable) {
+              return;
+            }
+
+            paragraphDraftsRef.current.set(nodeIndex, event.currentTarget.innerHTML);
+          }}
+          onPaste={(event) => {
+            const pastedText = event.clipboardData.getData("text/plain");
+            if (!pastedText) {
+              return;
+            }
+
+            const replaced = replaceExpandedSelectionWithText(pastedText);
+            if (!replaced) {
+              return;
+            }
+
+            event.preventDefault();
+            event.stopPropagation();
+            paragraphDraftsRef.current.delete(nodeIndex);
+          }}
+          onKeyDown={(event) => {
+            if (!editable) {
+              return;
+            }
+
+            if (handleDeleteAcrossTableCellSelection(event)) {
+              return;
+            }
+
+            if (handleDeleteAcrossSelection(event)) {
+              return;
+            }
+
+            const handledHistoryShortcut = handleEditorHistoryShortcut(event, () => {
+              commitParagraphDraftFromElement(nodeIndex, node, event.currentTarget);
+            });
+            if (handledHistoryShortcut) {
+              return;
+            }
+
+            const isPlainTextInsertKey =
+              event.key.length === 1 && !event.metaKey && !event.ctrlKey && !event.altKey;
+            if (isPlainTextInsertKey) {
+              const replaced = replaceExpandedSelectionWithText(event.key);
+              if (replaced) {
+                event.preventDefault();
+                event.stopPropagation();
+                paragraphDraftsRef.current.delete(nodeIndex);
+                return;
+              }
+            }
+
+            const isPlainEnterKey =
+              event.key === "Enter" && !event.metaKey && !event.ctrlKey && !event.altKey;
+            if (isPlainEnterKey && event.shiftKey) {
+              const replaced = replaceExpandedSelectionWithText("\n");
+              if (replaced) {
+                event.preventDefault();
+                event.stopPropagation();
+                paragraphDraftsRef.current.delete(nodeIndex);
+                return;
+              }
+            }
+
+            const currentText = editableTextFromElement(event.currentTarget);
+            const currentLocation: ParagraphLocation = {
+              kind: "paragraph",
+              nodeIndex
+            };
+            const selectionOffsets =
+              selectionOffsetsWithinElement(event.currentTarget) ??
+              (() => {
+                const activeRange = editor.activeTextRange
+                  ? normalizeTextRange(editor.activeTextRange)
+                  : undefined;
+                if (
+                  !activeRange ||
+                  !sameParagraphLocation(activeRange.start.location, currentLocation) ||
+                  !sameParagraphLocation(activeRange.end.location, currentLocation)
+                ) {
+                  return undefined;
+                }
+                const safeStart = Math.max(
+                  0,
+                  Math.min(Math.round(activeRange.start.offset), currentText.length)
+                );
+                const safeEnd = Math.max(
+                  safeStart,
+                  Math.min(Math.round(activeRange.end.offset), currentText.length)
+                );
+                return {
+                  start: safeStart,
+                  end: safeEnd
+                };
+              })();
+            const isListParagraph = paragraphIsList(node, currentText);
+            const isCollapsedSelection =
+              selectionOffsets !== undefined && selectionOffsets.start === selectionOffsets.end;
+            const collapsedSelectionOffset = selectionOffsets?.start ?? -1;
+            const listStartBackspaceOffset = paragraphHasNumbering(node)
+              ? 0
+              : listPrefixLength(currentText);
+
+            const isPlainBackspaceOrDelete =
+              (event.key === "Backspace" || event.key === "Delete") &&
+              !event.metaKey &&
+              !event.ctrlKey &&
+              !event.altKey &&
+              !event.shiftKey;
+            const isPlainVerticalArrowKey =
+              (event.key === "ArrowUp" || event.key === "ArrowDown") &&
+              !event.metaKey &&
+              !event.ctrlKey &&
+              !event.altKey &&
+              !event.shiftKey;
+
+            if (
+              isPlainVerticalArrowKey &&
+              isCollapsedSelection &&
+              collapsedSelectionOffset >= 0
+            ) {
+              if (event.key === "ArrowUp" && collapsedSelectionOffset === 0) {
+                let previousLocation: ParagraphLocation | undefined;
+                for (
+                  let scanNodeIndex = nodeIndex - 1;
+                  scanNodeIndex >= 0;
+                  scanNodeIndex -= 1
+                ) {
+                  const candidate = lastParagraphLocationInNode(editor.model, scanNodeIndex);
+                  if (candidate) {
+                    previousLocation = candidate;
+                    break;
+                  }
+                }
+
+                const previousParagraph = previousLocation
+                  ? getParagraphAtLocation(editor.model, previousLocation).paragraph
+                  : undefined;
+                if (previousLocation && previousParagraph) {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  paragraphDraftsRef.current.delete(nodeIndex);
+                  const caretClientPoint = collapsedCaretClientPointWithinElement(event.currentTarget);
+                  if (
+                    caretClientPoint &&
+                    focusParagraphLocationAtClientPoint(previousLocation, caretClientPoint, 0)
+                  ) {
+                    return;
+                  }
+                  focusParagraphLocationAtOffset(previousLocation, 0);
+                  return;
+                }
+              }
+
+              if (event.key === "ArrowDown" && collapsedSelectionOffset === currentText.length) {
+                const nextLocation = nextParagraphLocation(editor.model, currentLocation);
+                const nextParagraph = nextLocation
+                  ? getParagraphAtLocation(editor.model, nextLocation).paragraph
+                  : undefined;
+                if (nextLocation && nextParagraph) {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  paragraphDraftsRef.current.delete(nodeIndex);
+                  const caretClientPoint = collapsedCaretClientPointWithinElement(event.currentTarget);
+                  const fallbackOffset = paragraphText(nextParagraph).length;
+                  if (
+                    caretClientPoint &&
+                    focusParagraphLocationAtClientPoint(nextLocation, caretClientPoint, fallbackOffset)
+                  ) {
+                    return;
+                  }
+                  focusParagraphLocationAtOffset(nextLocation, paragraphText(nextParagraph).length);
+                  return;
+                }
+              }
+            }
+
+            if (
+              isPlainBackspaceOrDelete &&
+              isCollapsedSelection &&
+              collapsedSelectionOffset >= 0
+            ) {
+              if (event.key === "Backspace" && collapsedSelectionOffset === 0) {
+                let previousLocation: ParagraphLocation | undefined;
+                for (
+                  let scanNodeIndex = nodeIndex - 1;
+                  scanNodeIndex >= 0;
+                  scanNodeIndex -= 1
+                ) {
+                  const candidate = lastParagraphLocationInNode(editor.model, scanNodeIndex);
+                  if (candidate) {
+                    previousLocation = candidate;
+                    break;
+                  }
+                }
+
+                const previousParagraph = previousLocation
+                  ? getParagraphAtLocation(editor.model, previousLocation).paragraph
+                  : undefined;
+                if (previousLocation && previousParagraph) {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  paragraphDraftsRef.current.delete(nodeIndex);
+                  const collapsedRange = editor.deleteExpandedSelection({
+                    start: {
+                      location: cloneTextRangeLocation(previousLocation),
+                      offset: paragraphText(previousParagraph).length
+                    },
+                    end: {
+                      location: cloneTextRangeLocation(currentLocation),
+                      offset: 0
+                    }
+                  });
+                  if (collapsedRange) {
+                    syncSelectionFromDocxRange(collapsedRange);
+                  }
+                  return;
+                }
+              }
+
+              if (
+                event.key === "Delete" &&
+                collapsedSelectionOffset === currentText.length
+              ) {
+                const nextLocation = nextParagraphLocation(editor.model, currentLocation);
+                const nextParagraph = nextLocation
+                  ? getParagraphAtLocation(editor.model, nextLocation).paragraph
+                  : undefined;
+                if (nextLocation && nextParagraph) {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  paragraphDraftsRef.current.delete(nodeIndex);
+                  const collapsedRange = editor.deleteExpandedSelection({
+                    start: {
+                      location: cloneTextRangeLocation(currentLocation),
+                      offset: currentText.length
+                    },
+                    end: {
+                      location: cloneTextRangeLocation(nextLocation),
+                      offset: 0
+                    }
+                  });
+                  if (collapsedRange) {
+                    syncSelectionFromDocxRange(collapsedRange);
+                  }
+                  return;
+                }
+              }
+            }
+
+            if (
+              event.key === "Backspace" &&
+              !event.metaKey &&
+              !event.ctrlKey &&
+              !event.altKey &&
+              !event.shiftKey &&
+              isListParagraph &&
+              isCollapsedSelection &&
+              collapsedSelectionOffset >= 0 &&
+              collapsedSelectionOffset <= listStartBackspaceOffset
+            ) {
+              const listDepthChanged = editor.adjustSelectedListDepth(-1, currentText);
+              let handledBackspace = listDepthChanged;
+
+              if (!handledBackspace) {
+                const listType = paragraphListType(node, editor.model.metadata.numberingDefinitions);
+                if (listType) {
+                  editor.toggleList(listType);
+                  handledBackspace = true;
+                }
+              }
+
+              if (handledBackspace) {
+                event.preventDefault();
+                event.stopPropagation();
+                paragraphDraftsRef.current.delete(nodeIndex);
+                focusParagraphAtOffset(nodeIndex, 0);
+                return;
+              }
+            }
+
+            if (
+              isPlainEnterKey &&
+              event.shiftKey
+            ) {
+              event.preventDefault();
+              event.stopPropagation();
+              const start = Math.max(
+                0,
+                Math.min(selectionOffsets?.start ?? currentText.length, currentText.length)
+              );
+              const end = Math.max(
+                start,
+                Math.min(selectionOffsets?.end ?? start, currentText.length)
+              );
+              const nextText = `${currentText.slice(0, start)}\n${currentText.slice(end)}`;
+              paragraphDraftsRef.current.delete(nodeIndex);
+              editor.commitParagraphText(nodeIndex, nextText);
+              focusParagraphAtOffset(nodeIndex, start + 1);
+              return;
+            }
+
+            if (
+              event.key === "Tab" &&
+              !event.metaKey &&
+              !event.ctrlKey &&
+              !event.altKey &&
+              isListParagraph
+            ) {
+              event.preventDefault();
+              const listDepthChanged = editor.adjustSelectedListDepth(
+                event.shiftKey ? -1 : 1,
+                currentText
+              );
+              if (listDepthChanged) {
+                paragraphDraftsRef.current.delete(nodeIndex);
+                const targetOffset = selectionOffsets?.end ?? currentText.length;
+                focusParagraphAtOffset(nodeIndex, targetOffset);
+              }
+              return;
+            }
+
+            if (event.key === "Enter" && !event.shiftKey && isListParagraph) {
+              event.preventDefault();
+              event.stopPropagation();
+              const start = selectionOffsets?.start ?? currentText.length;
+              const end = selectionOffsets?.end ?? start;
+              paragraphDraftsRef.current.clear();
+              tableCellDraftsRef.current.clear();
+              tableCellParagraphDraftsRef.current.clear();
+              const insertedListItem = editor.insertListItemAfterSelection(currentText, start, end, {
+                kind: "paragraph",
+                nodeIndex
+              });
+              if (insertedListItem !== undefined) {
+                focusParagraphAtOffset(
+                  insertedListItem.paragraphIndex,
+                  insertedListItem.caretOffset
+                );
+              }
+              return;
+            }
+
+            if (
+              isPlainEnterKey &&
+              !event.shiftKey &&
+              !isListParagraph
+            ) {
+              event.preventDefault();
+              event.stopPropagation();
+              const start = Math.max(
+                0,
+                Math.min(selectionOffsets?.start ?? currentText.length, currentText.length)
+              );
+              const end = Math.max(
+                start,
+                Math.min(selectionOffsets?.end ?? start, currentText.length)
+              );
+              paragraphDraftsRef.current.clear();
+              tableCellDraftsRef.current.clear();
+              tableCellParagraphDraftsRef.current.clear();
+              const splitParagraph = editor.splitParagraphAtSelection(currentText, start, end, {
+                kind: "paragraph",
+                nodeIndex
+              });
+              if (splitParagraph !== undefined) {
+                focusParagraphAtOffset(
+                  splitParagraph.paragraphIndex,
+                  splitParagraph.caretOffset
+                );
+              }
+              return;
+            }
+          }}
+          onBlur={(event) => {
+            if (!editable) {
+              return;
+            }
+
+            if (!paragraphDraftsRef.current.has(nodeIndex)) {
+              return;
+            }
+
+            commitParagraphDraftFromElement(nodeIndex, node, event.currentTarget);
+          }}
+        >
+          {hasPartialLineRange ? (
+            <div
+              style={{
+                height: paragraphSegmentVisibleHeightPx,
+                minHeight: paragraphSegmentVisibleHeightPx,
+                overflow: "hidden"
+              }}
+            >
+              <div
+                style={{
+                  transform: `translateY(-${paragraphSegmentTranslateYPx}px)`
+                }}
+              >
+                {renderInteractiveParagraphRuns(
+                  node,
+                  `node-${nodeIndex}-lines-${paragraphSegmentStartLine}-${paragraphSegmentEndLine}`,
+                  {
+                    kind: "paragraph",
+                    nodeIndex
+                  }
+                )}
+              </div>
+            </div>
+          ) : (
+            renderInteractiveParagraphRuns(node, `node-${nodeIndex}`, {
+              kind: "paragraph",
+              nodeIndex
+            })
+          )}
+        </div>
+      );
+    }
+
+    return (
+      <div
+        key={
+          tableRowRange
+            ? `node-${nodeIndex}-rows-${tableRowRange.startRowIndex}-${tableRowRange.endRowIndex}`
+            : `node-${nodeIndex}`
+        }
+        ref={(element) => {
+          const shouldTrackTableRef = !tableRowRange || tableRowRange.startRowIndex === 0;
+          if (!shouldTrackTableRef) {
+            return;
+          }
+
+          if (element) {
+            tableElementsRef.current.set(nodeIndex, element);
+          } else {
+            tableElementsRef.current.delete(nodeIndex);
+          }
+        }}
+        style={tableWrapperStyle(node, twipsToPixels(node.style?.indentTwips) ?? 0)}
+        onPointerEnter={() => {
+          if (isReadOnly) {
+            return;
+          }
+          setHoveredTableHandleTableIndex(nodeIndex);
+        }}
+        onPointerLeave={(event) => {
+          if (isReadOnly) {
+            return;
+          }
+          if (tableMoveDragRef.current?.tableIndex === nodeIndex) {
+            return;
+          }
+          if (isPointWithinTableHandleHoverZone(nodeIndex, event.clientX, event.clientY)) {
+            return;
+          }
+          const nextTarget = event.relatedTarget;
+          if (nextTarget instanceof Node && event.currentTarget.contains(nextTarget)) {
+            return;
+          }
+          setHoveredTableHandleTableIndex((current) => (current === nodeIndex ? undefined : current));
+        }}
+      >
+        {(() => {
+          const tableIndentPx = twipsToPixels(node.style?.indentTwips) ?? 0;
+          const maxTableWidthPx = Math.max(120, documentContentWidthPx - tableIndentPx);
+          const columnCount = tableColumnCount(node);
+          const tableWidthPx = twipsToPixels(node.style?.widthTwips);
+          const hasStoredColumnWidths =
+            (tableColumnWidths[nodeIndex]?.length ?? 0) === columnCount;
+          const rawColumnWidthsPx = resolveTableColumnWidths(nodeIndex, node, tableWidthPx);
+          const rawResolvedTableWidthPx =
+            hasStoredColumnWidths
+              ? rawColumnWidthsPx.reduce((sum, widthPx) => sum + widthPx, 0)
+              : tableWidthPx ?? rawColumnWidthsPx.reduce((sum, widthPx) => sum + widthPx, 0);
+          const resolvedTableWidthPx = clampTableWidthPx(rawResolvedTableWidthPx, maxTableWidthPx);
+          const {
+            columnWidthsPx,
+            effectiveColumnCount
+          } = resolveFittedTableColumnWidths(node, rawColumnWidthsPx, resolvedTableWidthPx);
+          const rowHeightsPx = resolveTableRowHeights(nodeIndex, node);
+          const tableCellMarginTwips = node.style?.cellMarginTwips;
+          const tableBorders = node.style?.borders;
+          const applyWordTableDefaults = tableUsesWordLikeParagraphDefaults(node);
+          const tableRowStartIndex = Math.max(0, tableRowRange?.startRowIndex ?? 0);
+          const tableRowEndIndex = Math.min(node.rows.length, tableRowRange?.endRowIndex ?? node.rows.length);
+          const visibleRows = node.rows.slice(tableRowStartIndex, tableRowEndIndex);
+          const isSplitTableSegment = tableRowStartIndex > 0 || tableRowEndIndex < node.rows.length;
+          const isCornerResizing = !isSplitTableSegment && activeTableResize?.tableIndex === nodeIndex;
+          const isColumnHandleActive =
+            !isSplitTableSegment && activeColumnResize?.tableIndex === nodeIndex;
+          const isRowHandleActive = !isSplitTableSegment && activeRowResize?.tableIndex === nodeIndex;
+          const isTableMoveDragging = tableMoveDragRef.current?.tableIndex === nodeIndex;
+          const isTableContextMenuOpen = tableContextMenuState?.tableIndex === nodeIndex;
+          const tableHasActiveCursor =
+            (editor.selection.kind === "table-cell" && editor.selection.tableIndex === nodeIndex) ||
+            tableCellSelectionRange?.tableIndex === nodeIndex ||
+            textRangeTouchesTable(editor.activeTextRange, nodeIndex);
+          const showTableHandles =
+            !isReadOnly &&
+            (hoveredTableHandleTableIndex === nodeIndex ||
+              tableHasActiveCursor ||
+              isTableMoveDragging ||
+              isColumnHandleActive ||
+              isRowHandleActive ||
+              isCornerResizing ||
+              isTableContextMenuOpen);
+          const tableColumnBoundaryOffsetsPx = columnWidthsPx.reduce((offsets: number[], widthPx: number) => {
+            const previous = offsets[offsets.length - 1] ?? 0;
+            offsets.push(previous + widthPx);
+            return offsets;
+          }, [] as number[]);
+          const normalizedRowHeightsPx = rowHeightsPx.map((value) =>
+            Number.isFinite(value) && (value as number) > 0 ? Math.max(24, value as number) : 24
+          );
+          const measuredRowHeightsPx = tableMeasuredRowHeights[nodeIndex];
+          const rowBoundarySourceHeightsPx =
+            measuredRowHeightsPx && measuredRowHeightsPx.length === node.rows.length
+              ? measuredRowHeightsPx.map((value) =>
+                  Number.isFinite(value) && (value as number) > 0 ? Math.max(24, value as number) : 24
+                )
+              : normalizedRowHeightsPx;
+          const tableRowBoundaryOffsetsPx = rowBoundarySourceHeightsPx.reduce(
+            (offsets: number[], rowHeightPx: number) => {
+              const previous = offsets[offsets.length - 1] ?? 0;
+              offsets.push(previous + rowHeightPx);
+              return offsets;
+            },
+            [] as number[]
+          );
+          const maxBoundaryColumnIndex = Math.max(0, effectiveColumnCount - 2);
+          const maxBoundaryRowIndex = Math.max(0, node.rows.length - 2);
+          const showTableMoveHandle = showTableHandles && tableRowStartIndex === 0;
+          const tableMoveHandleToneStyle: React.CSSProperties =
+            editor.documentTheme === "dark"
+              ? {
+                  backgroundColor: "#111827",
+                  border: "1px solid #374151",
+                  color: "#cbd5e1",
+                  boxShadow: "0 1px 2px rgba(2, 6, 23, 0.6)"
+                }
+              : {
+                  backgroundColor: "#ffffff",
+                  border: "1px solid #d4d4d8",
+                  color: "#4b5563",
+                  boxShadow: "0 1px 2px rgba(0, 0, 0, 0.14)"
+                };
+
+          return (
+            <>
+              {showTableHandles ? (
+                <>
+                  <span
+                    contentEditable={false}
+                    style={{
+                      position: "absolute",
+                      top: -TABLE_HANDLE_SAFEZONE_TOP_PX,
+                      left: -TABLE_HANDLE_SAFEZONE_LEFT_PX,
+                      width: TABLE_HANDLE_SAFEZONE_LEFT_PX,
+                      height: TABLE_HANDLE_SAFEZONE_TOP_PX,
+                      backgroundColor: "transparent",
+                      zIndex: 4
+                    }}
+                    onPointerEnter={() => setHoveredTableHandleTableIndex(nodeIndex)}
+                    onMouseEnter={() => setHoveredTableHandleTableIndex(nodeIndex)}
+                  />
+                  <span
+                    contentEditable={false}
+                    style={{
+                      position: "absolute",
+                      right: -TABLE_HANDLE_SAFEZONE_RIGHT_PX,
+                      bottom: -TABLE_HANDLE_SAFEZONE_BOTTOM_PX,
+                      width: TABLE_RESIZE_HANDLE_HIT_SIZE + TABLE_HANDLE_SAFEZONE_RIGHT_PX,
+                      height: TABLE_RESIZE_HANDLE_HIT_SIZE + TABLE_HANDLE_SAFEZONE_BOTTOM_PX,
+                      backgroundColor: "transparent",
+                      zIndex: 4
+                    }}
+                    onPointerEnter={() => setHoveredTableHandleTableIndex(nodeIndex)}
+                    onMouseEnter={() => setHoveredTableHandleTableIndex(nodeIndex)}
+                  />
+                </>
+              ) : null}
+              {showTableMoveHandle ? (
+                <span
+                  contentEditable={false}
+                  data-docx-table-move-handle="true"
+                  title="Select or drag to move table"
+                  style={{
+                    position: "absolute",
+                    top: -TABLE_MOVE_HANDLE_HIT_SIZE - 4,
+                    left: -TABLE_MOVE_HANDLE_HIT_SIZE - 4,
+                    width: TABLE_MOVE_HANDLE_HIT_SIZE,
+                    height: TABLE_MOVE_HANDLE_HIT_SIZE,
+                    display: "grid",
+                    placeItems: "center",
+                    cursor: "move",
+                    zIndex: 7,
+                    touchAction: "none",
+                    userSelect: "none"
+                  }}
+                  onPointerDown={(event) => {
+                    beginTableMoveDrag(event, nodeIndex);
+                  }}
+                  onContextMenu={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    const context = resolveTableContextMenuLocation(nodeIndex, 0, 0);
+                    selectWholeTable(nodeIndex);
+                    openTableContextMenu(context, {
+                      x: event.clientX,
+                      y: event.clientY
+                    });
+                  }}
+                >
+                  <span
+                    style={{
+                      ...TABLE_MOVE_HANDLE_STYLE,
+                      ...tableMoveHandleToneStyle
+                    }}
+                  >
+                    <svg
+                      width="11"
+                      height="11"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      aria-hidden="true"
+                    >
+                      <path d="M12 2v20" />
+                      <path d="m7 7 5-5 5 5" />
+                      <path d="m7 17 5 5 5-5" />
+                      <path d="M2 12h20" />
+                      <path d="m7 7-5 5 5 5" />
+                      <path d="m17 7 5 5-5 5" />
+                    </svg>
+                  </span>
+                </span>
+              ) : null}
+              <table
+                style={{
+                  width: resolvedTableWidthPx > 0 ? `${resolvedTableWidthPx}px` : "100%",
+                  borderCollapse: "collapse",
+                  tableLayout: node.style?.layout === "autofit" ? "auto" : "fixed"
+                }}
+              >
+              <colgroup>
+                {columnWidthsPx.map((widthPx, columnIndex) => (
+                  <col key={`table-col-${nodeIndex}-${columnIndex}`} style={{ width: `${widthPx}px` }} />
+                ))}
+              </colgroup>
+              <tbody>
+		                {visibleRows.map((row, visibleRowIndex) => {
+                      const rowIndex = tableRowStartIndex + visibleRowIndex;
+		                  const rowHeightPx = rowHeightsPx[rowIndex];
+		                  const hasCustomRowHeight = tableRowHeights[nodeIndex]?.[rowIndex] !== undefined;
+	                  const hasResolvedRowHeight =
+	                    typeof rowHeightPx === "number" && Number.isFinite(rowHeightPx) && rowHeightPx > 0;
+	                  const resolvedRowHeightStyle = hasResolvedRowHeight ? { height: `${rowHeightPx}px` } : undefined;
+	                  let columnCursor = 0;
+
+	                  return (
+	                    <tr
+	                      key={`row-${nodeIndex}-${rowIndex}`}
+	                      style={resolvedRowHeightStyle}
+	                    >
+                      {row.cells.map((cell, cellIndex) => {
+                        const selectedByRange = isCellWithinTableSelectionRange(
+                          tableCellSelectionRange,
+                          nodeIndex,
+                          rowIndex,
+                          cellIndex
+                        );
+                        const selectedByAnchor = isCellSelected(
+                          editor.selection,
+                          nodeIndex,
+                          rowIndex,
+                          cellIndex
+                        );
+                        const isMultiCellSelectionActive = Boolean(
+                          tableCellSelectionRange &&
+                            tableCellSelectionRange.tableIndex === nodeIndex &&
+                            !isSingleTableCellSelectionRange(tableCellSelectionRange)
+                        );
+                        const cellParagraphs = tableCellParagraphs(cell.nodes);
+                        const recursiveCellParagraphs = tableCellParagraphsRecursively(cell.nodes);
+                        const cellHasImage = tableCellHasImage(cell.nodes);
+                        const editableCell =
+                          selectedByAnchor &&
+                          !isMultiCellSelectionActive &&
+                          !cellHasImage &&
+                          !isReadOnly &&
+                          cellParagraphs.length > 0;
+                        const nestedParagraphIndexesByNode = new Map<ParagraphNode, number>();
+                        recursiveCellParagraphs.forEach((paragraph, paragraphIndex) => {
+                          nestedParagraphIndexesByNode.set(paragraph, paragraphIndex);
+                        });
+                        const tableCellEditScope: TableCellParagraphEditScope | undefined =
+                          recursiveCellParagraphs.length > 0 &&
+                          !isReadOnly &&
+                          !isMultiCellSelectionActive &&
+                          !cellHasImage
+                            ? {
+                                isEditable: true,
+                                draftKeyPrefix: `${nodeIndex}:${rowIndex}:${cellIndex}`,
+                                paragraphIndexesByNode: nestedParagraphIndexesByNode,
+                                handlers: {
+                                  registerElement: registerTableCellParagraphElement,
+                                  readDraftHtml: readTableCellParagraphDraft,
+                                  writeDraftHtml: writeTableCellParagraphDraft,
+                                  clearDraftHtml: clearTableCellParagraphDraft,
+                                  commitText: (paragraphIndex, text) => {
+                                    commitTableCellParagraphDraft(
+                                      nodeIndex,
+                                      rowIndex,
+                                      cellIndex,
+                                      paragraphIndex,
+                                      text
+                                    );
+                                  }
+                                }
+                              }
+                            : undefined;
+                        const cellDraftKey = `${nodeIndex}:${rowIndex}:${cellIndex}`;
+                        const cellElementKey = `cell-${nodeIndex}-${rowIndex}-${cellIndex}`;
+                        const colSpanValue =
+                          cell.style?.gridSpan && cell.style.gridSpan > 1 ? cell.style.gridSpan : 1;
+                        const rowSpanValue =
+                          cell.style?.rowSpan && cell.style.rowSpan > 1 ? cell.style.rowSpan : 1;
+                        const colSpan = colSpanValue > 1 ? colSpanValue : undefined;
+                        const rowSpan = rowSpanValue > 1 ? rowSpanValue : undefined;
+                        const startColumnIndex = columnCursor;
+                        const boundaryColumnIndex = startColumnIndex + colSpanValue - 1;
+                        columnCursor += colSpanValue;
+                        if (cell.style?.vMergeContinuation) {
+                          return null;
+                        }
+                        const cellWidthPx = twipsToPixels(cell.style?.widthTwips);
+                        const spannedWidthPx = columnWidthsPx
+                          .slice(startColumnIndex, startColumnIndex + colSpanValue)
+                          .reduce((sum, widthPx) => sum + widthPx, 0);
+
+	                        const cellBackgroundColor =
+	                          cell.style?.backgroundColor ?? row.style?.backgroundColor;
+	                        const hasCustomCellRowHeight = hasCustomRowHeight || hasResolvedRowHeight;
+
+	                        return (
+                          <td
+                            key={`cell-${nodeIndex}-${rowIndex}-${cellIndex}`}
+                            data-docx-table-cell="true"
+                            data-docx-table-index={nodeIndex}
+                            data-docx-row-index={rowIndex}
+                            data-docx-cell-index={cellIndex}
+                            colSpan={colSpan}
+                            rowSpan={rowSpan}
+                            style={{
+                              ...resolveTableCellBorderCss(
+                                tableBorders,
+                                cell.style?.borders,
+                                rowIndex,
+                                node.rows.length,
+                                startColumnIndex,
+                                boundaryColumnIndex,
+                                columnCount
+                              ),
+                              ...resolveTableCellDiagonalOverlayCss(
+                                tableBorders,
+                                cell.style?.borders
+                              ),
+                              ...tableSpacingPaddingStyle(
+                                mergeTableSpacing(tableCellMarginTwips, cell.style?.marginTwips)
+                              ),
+                              backgroundColor: cellBackgroundColor,
+                              verticalAlign: cell.style?.verticalAlign ?? "top",
+                              minWidth: cellWidthPx ? `${cellWidthPx}px` : spannedWidthPx > 0 ? `${spannedWidthPx}px` : 0,
+	                              width:
+	                                cellWidthPx && colSpanValue === 1
+	                                  ? `${cellWidthPx}px`
+	                                  : spannedWidthPx > 0
+	                                    ? `${spannedWidthPx}px`
+	                                    : undefined,
+                              ...(hasCustomCellRowHeight ? resolvedRowHeightStyle : undefined),
+                              wordWrap: "break-word",
+                              overflowWrap: "break-word",
+                              wordBreak: "break-word",
+                              position: "relative"
+                            }}
+                            onClick={(event) => {
+                              if (isReadOnly) {
+                                return;
+                              }
+
+                              const clickTargetElement =
+                                event.target instanceof Element
+                                  ? event.target
+                                  : event.target instanceof Node
+                                    ? event.target.parentElement
+                                    : null;
+                              const clickInsideEditableCell = Boolean(
+                                clickTargetElement?.closest(
+                                  `[data-docx-cell-key='${cellElementKey}']`
+                                )
+                              );
+                              if (clickInsideEditableCell) {
+                                return;
+                              }
+
+                              if (eventTargetIsNestedTableParagraphEditor(event.target)) {
+                                return;
+                              }
+
+                              if (suppressNextTableCellClickRef.current) {
+                                suppressNextTableCellClickRef.current = false;
+                                event.preventDefault();
+                                event.stopPropagation();
+                                return;
+                              }
+
+                              clearTableCellSelection();
+                              setSingleTableCellSelection(nodeIndex, rowIndex, cellIndex);
+                              editor.selectTableCell(nodeIndex, rowIndex, cellIndex);
+
+                              const clickPoint = {
+                                x: event.clientX,
+                                y: event.clientY
+                              };
+                              const paragraphSelector =
+                                `[data-docx-paragraph-kind='table-cell']` +
+                                `[data-docx-table-index='${nodeIndex}']` +
+                                `[data-docx-row-index='${rowIndex}']` +
+                                `[data-docx-cell-index='${cellIndex}']` +
+                                `[data-docx-table-paragraph-index]`;
+                              const paragraphElements = Array.from(
+                                event.currentTarget.querySelectorAll<HTMLElement>(paragraphSelector)
+                              );
+                              const clickedParagraphElement =
+                                paragraphElements.length > 0
+                                  ? paragraphElements.reduce<HTMLElement>((closest, candidate) => {
+                                      const closestRect = closest.getBoundingClientRect();
+                                      const candidateRect = candidate.getBoundingClientRect();
+                                      const closestDistance = Math.abs(
+                                        clickPoint.y - (closestRect.top + closestRect.height / 2)
+                                      );
+                                      const candidateDistance = Math.abs(
+                                        clickPoint.y - (candidateRect.top + candidateRect.height / 2)
+                                      );
+                                      return candidateDistance < closestDistance ? candidate : closest;
+                                    }, paragraphElements[0])
+                                  : undefined;
+                              const clickedParagraphIndexRaw =
+                                clickedParagraphElement?.getAttribute("data-docx-table-paragraph-index") ??
+                                clickedParagraphElement?.getAttribute("data-docx-paragraph-index");
+                              const clickedParagraphIndexParsed = Number.parseInt(
+                                clickedParagraphIndexRaw ?? "",
+                                10
+                              );
+                              const clickedParagraphIndex = Number.isFinite(clickedParagraphIndexParsed)
+                                ? Math.max(0, Math.round(clickedParagraphIndexParsed))
+                                : undefined;
+
+                              window.requestAnimationFrame(() => {
+                                const cellEditorElement = tableCellEditorElementsRef.current.get(cellDraftKey);
+                                if (!cellEditorElement || !cellEditorElement.isConnected) {
+                                  return;
+                                }
+
+                                cellEditorElement.focus();
+                                const paragraphSelector =
+                                  `[data-docx-paragraph-kind='table-cell']` +
+                                  `[data-docx-table-index='${nodeIndex}']` +
+                                  `[data-docx-row-index='${rowIndex}']` +
+                                  `[data-docx-cell-index='${cellIndex}']` +
+                                  `[data-docx-table-paragraph-index]`;
+                                const paragraphElements = Array.from(
+                                  cellEditorElement.querySelectorAll<HTMLElement>(paragraphSelector)
+                                );
+                                const paragraphElementByIndex = Number.isFinite(clickedParagraphIndex)
+                                  ? (cellEditorElement.querySelector<HTMLElement>(
+                                      `[data-docx-paragraph-kind='table-cell']` +
+                                        `[data-docx-table-index='${nodeIndex}']` +
+                                        `[data-docx-row-index='${rowIndex}']` +
+                                        `[data-docx-cell-index='${cellIndex}']` +
+                                        `[data-docx-table-paragraph-index='${clickedParagraphIndex}']`
+                                    ) ?? undefined)
+                                  : undefined;
+                                const paragraphElementAtPoint =
+                                  document.elementFromPoint(clickPoint.x, clickPoint.y)?.closest<HTMLElement>(
+                                    paragraphSelector
+                                  ) ?? undefined;
+                                const paragraphElementByPoint =
+                                  paragraphElements.length > 0
+                                    ? paragraphElements.reduce<HTMLElement>((closest, candidate) => {
+                                        const closestRect = closest.getBoundingClientRect();
+                                        const candidateRect = candidate.getBoundingClientRect();
+                                        const closestDistance = Math.abs(
+                                          clickPoint.y - (closestRect.top + closestRect.height / 2)
+                                        );
+                                        const candidateDistance = Math.abs(
+                                          clickPoint.y - (candidateRect.top + candidateRect.height / 2)
+                                        );
+                                        return candidateDistance < closestDistance ? candidate : closest;
+                                      }, paragraphElements[0])
+                                    : undefined;
+                                const paragraphElement =
+                                  paragraphElementByIndex ?? paragraphElementAtPoint ?? paragraphElementByPoint;
+                                placeCaretInsideElement(paragraphElement ?? cellEditorElement, clickPoint);
+                                updateActiveTextRangeFromTableCell(
+                                  cellEditorElement,
+                                  nodeIndex,
+                                  rowIndex,
+                                  cellIndex
+                                );
+                              });
+                            }}
+                            onContextMenu={(event) => {
+                              if (isReadOnly) {
+                                return;
+                              }
+
+                              if (
+                                eventTargetIsInteractiveControl(event.target) ||
+                                eventTargetIsNestedTableParagraphEditor(event.target)
+                              ) {
+                                return;
+                              }
+
+                              event.preventDefault();
+                              event.stopPropagation();
+                              clearTableCellSelection();
+                              setSingleTableCellSelection(nodeIndex, rowIndex, cellIndex);
+                              editor.selectTableCell(nodeIndex, rowIndex, cellIndex);
+                              openTableContextMenu(
+                                {
+                                  tableIndex: nodeIndex,
+                                  rowIndex,
+                                  cellIndex
+                                },
+                                {
+                                  x: event.clientX,
+                                  y: event.clientY
+                                }
+                              );
+                            }}
+                            onPointerDown={(event) => {
+                              if (isReadOnly) {
+                                return;
+                              }
+
+                              // Always clear stale click suppression at the start of a new pointer interaction.
+                              suppressNextTableCellClickRef.current = false;
+
+                              const pointerTargetElement =
+                                event.target instanceof Element
+                                  ? event.target
+                                  : event.target instanceof Node
+                                    ? event.target.parentElement
+                                    : null;
+                              const pointerInsideEditableCell = Boolean(
+                                pointerTargetElement?.closest(
+                                  `[data-docx-cell-key='${cellElementKey}']`
+                                )
+                              );
+                              if (pointerInsideEditableCell) {
+                                // Preserve native caret placement and text drag behavior.
+                                pendingTableCellFocusRef.current = undefined;
+                                return;
+                              }
+
+                              const targetIsNestedTableParagraphEditor =
+                                eventTargetIsNestedTableParagraphEditor(event.target);
+                              if (targetIsNestedTableParagraphEditor) {
+                                // Let nested table paragraph editors own pointer behavior.
+                                return;
+                              }
+
+                              if (
+                                (event.button !== 0 && event.button !== undefined) ||
+                                eventTargetIsInteractiveControl(event.target)
+                              ) {
+                                return;
+                              }
+
+                              const startBoundary = resolveBoundaryFromPoint({
+                                x: event.clientX,
+                                y: event.clientY
+                              });
+
+                              beginTableCellSelectionDrag(event.pointerId, {
+                                tableIndex: nodeIndex,
+                                rowIndex,
+                                cellIndex
+                              }, event.clientX, event.clientY, startBoundary);
+
+                              const pendingFocusBoundary =
+                                startBoundary?.location.kind === "table-cell" &&
+                                startBoundary.location.tableIndex === nodeIndex &&
+                                startBoundary.location.rowIndex === rowIndex &&
+                                startBoundary.location.cellIndex === cellIndex
+                                  ? {
+                                      location: cloneTextRangeLocation(startBoundary.location),
+                                      offset: startBoundary.offset
+                                    }
+                                  : undefined;
+                              const paragraphSelector =
+                                `[data-docx-paragraph-kind='table-cell']` +
+                                `[data-docx-table-index='${nodeIndex}']` +
+                                `[data-docx-row-index='${rowIndex}']` +
+                                `[data-docx-cell-index='${cellIndex}']` +
+                                `[data-docx-table-paragraph-index]`;
+                              const paragraphElements = Array.from(
+                                event.currentTarget.querySelectorAll<HTMLElement>(paragraphSelector)
+                              );
+                              const pointerParagraphElement =
+                                paragraphElements.length > 0
+                                  ? paragraphElements.reduce<HTMLElement>((closest, candidate) => {
+                                      const closestRect = closest.getBoundingClientRect();
+                                      const candidateRect = candidate.getBoundingClientRect();
+                                      const closestDistance = Math.abs(
+                                        event.clientY - (closestRect.top + closestRect.height / 2)
+                                      );
+                                      const candidateDistance = Math.abs(
+                                        event.clientY - (candidateRect.top + candidateRect.height / 2)
+                                      );
+                                      return candidateDistance < closestDistance ? candidate : closest;
+                                    }, paragraphElements[0])
+                                  : undefined;
+                              const pointerParagraphIndexRaw =
+                                pointerParagraphElement?.getAttribute("data-docx-table-paragraph-index") ??
+                                pointerParagraphElement?.getAttribute("data-docx-paragraph-index");
+                              const pointerParagraphIndexParsed = Number.parseInt(
+                                pointerParagraphIndexRaw ?? "",
+                                10
+                              );
+                              const pendingFocusParagraphIndex = Number.isFinite(pointerParagraphIndexParsed)
+                                ? Math.max(0, Math.round(pointerParagraphIndexParsed))
+                                : undefined;
+                              pendingTableCellFocusRef.current = {
+                                cellElementKey,
+                                point: {
+                                  x: event.clientX,
+                                  y: event.clientY
+                                },
+                                boundary: pendingFocusBoundary,
+                                paragraphIndex: pendingFocusParagraphIndex
+                              };
+                            }}
+                          >
+                            {editableCell ? (
+                              <div
+                                contentEditable
+                                suppressContentEditableWarning
+                                data-docx-cell-key={cellElementKey}
+                                style={{
+                                  minHeight: 0,
+                                  outline: "none",
+                                  padding: 0,
+                                  borderRadius: 0,
+                                  display: "grid",
+                                  gap: 4,
+                                  whiteSpace: "pre-wrap",
+                                  wordWrap: "break-word",
+                                  overflowWrap: "break-word",
+                                  wordBreak: "break-word"
+                                }}
+                                ref={(element) => {
+                                  if (element) {
+                                    tableCellEditorElementsRef.current.set(cellDraftKey, element);
+                                  } else {
+                                    tableCellEditorElementsRef.current.delete(cellDraftKey);
+                                  }
+
+                                  if (!element || !editableCell) {
+                                    return;
+                                  }
+
+                                  const draft = tableCellDraftsRef.current.get(cellDraftKey);
+                                  if (typeof draft === "string") {
+                                    const draftHtml = draft;
+                                    scheduleDomWrite(() => {
+                                      if (!element.isConnected) {
+                                        return;
+                                      }
+
+                                      const latestDraft = tableCellDraftsRef.current.get(cellDraftKey);
+                                      if (latestDraft !== draftHtml) {
+                                        return;
+                                      }
+
+                                      if (element.innerHTML !== draftHtml) {
+                                        const activeElement = document.activeElement;
+                                        const shouldRestoreSelection =
+                                          activeElement === element ||
+                                          (activeElement instanceof Element &&
+                                            element.contains(activeElement));
+                                        const selectionOffsets = shouldRestoreSelection
+                                          ? selectionOffsetsWithinElement(element)
+                                          : undefined;
+                                        element.innerHTML = draftHtml;
+                                        if (shouldRestoreSelection) {
+                                          if (selectionOffsets) {
+                                            const textLength = editableTextFromTableCellElement(element).length;
+                                            const safeStart = Math.max(
+                                              0,
+                                              Math.min(selectionOffsets.start, textLength)
+                                            );
+                                            const safeEnd = Math.max(
+                                              safeStart,
+                                              Math.min(selectionOffsets.end, textLength)
+                                            );
+                                            setSelectionWithinElementByTextOffsets(
+                                              element,
+                                              safeStart,
+                                              safeEnd
+                                            );
+                                          } else {
+                                            placeCaretInsideElement(element);
+                                          }
+                                        }
+                                      }
+
+                                      const latestTableNode = editor.model.nodes[nodeIndex];
+                                      if (!latestTableNode || latestTableNode.type !== "table") {
+                                        return;
+                                      }
+
+                                      const latestCell = latestTableNode.rows[rowIndex]?.cells[cellIndex];
+                                      if (!latestCell) {
+                                        return;
+                                      }
+
+                                      if (
+                                        editableTextFromTableCellElement(element) ===
+                                        tableCellText(tableCellParagraphs(latestCell.nodes))
+                                      ) {
+                                        tableCellDraftsRef.current.delete(cellDraftKey);
+                                      }
+                                    });
+                                  }
+
+                                  const pendingFocus = pendingTableCellFocusRef.current;
+                                  if (pendingFocus?.cellElementKey === cellElementKey) {
+                                    if (pendingFocus.point) {
+                                      const rect = element.getBoundingClientRect();
+                                      const pointInsideElement =
+                                        pendingFocus.point.x >= rect.left &&
+                                        pendingFocus.point.x <= rect.right &&
+                                        pendingFocus.point.y >= rect.top &&
+                                        pendingFocus.point.y <= rect.bottom;
+                                      if (!pointInsideElement) {
+                                        return;
+                                      }
+                                    }
+
+                                    window.requestAnimationFrame(() => {
+                                      const latestPendingFocus = pendingTableCellFocusRef.current;
+                                      if (
+                                        !latestPendingFocus ||
+                                        latestPendingFocus.cellElementKey !== cellElementKey ||
+                                        !element.isConnected
+                                      ) {
+                                        return;
+                                      }
+
+                                      element.focus();
+                                      const boundary = latestPendingFocus.boundary;
+                                      const boundaryInCurrentCell = Boolean(
+                                        boundary &&
+                                          boundary.location.kind === "table-cell" &&
+                                          boundary.location.tableIndex === nodeIndex &&
+                                          boundary.location.rowIndex === rowIndex &&
+                                          boundary.location.cellIndex === cellIndex
+                                      );
+                                      const paragraphElementForFocus = Number.isFinite(
+                                        latestPendingFocus.paragraphIndex
+                                      )
+                                        ? (element.querySelector<HTMLElement>(
+                                            `[data-docx-paragraph-kind='table-cell']` +
+                                              `[data-docx-table-index='${nodeIndex}']` +
+                                              `[data-docx-row-index='${rowIndex}']` +
+                                              `[data-docx-cell-index='${cellIndex}']` +
+                                              `[data-docx-table-paragraph-index='${latestPendingFocus.paragraphIndex}']`
+                                          ) ?? undefined)
+                                        : undefined;
+                                      const paragraphSelector =
+                                        `[data-docx-paragraph-kind='table-cell']` +
+                                        `[data-docx-table-index='${nodeIndex}']` +
+                                        `[data-docx-row-index='${rowIndex}']` +
+                                        `[data-docx-cell-index='${cellIndex}']` +
+                                        `[data-docx-table-paragraph-index]`;
+                                      const paragraphElements = Array.from(
+                                        element.querySelectorAll<HTMLElement>(paragraphSelector)
+                                      );
+                                      const paragraphElementAtPoint =
+                                        latestPendingFocus.point
+                                          ? (document
+                                              .elementFromPoint(
+                                                latestPendingFocus.point.x,
+                                                latestPendingFocus.point.y
+                                              )
+                                              ?.closest<HTMLElement>(paragraphSelector) ?? undefined)
+                                          : undefined;
+                                      const paragraphElementByPoint =
+                                        latestPendingFocus.point && paragraphElements.length > 0
+                                          ? paragraphElements.reduce<HTMLElement>((closest, candidate) => {
+                                              const closestRect = closest.getBoundingClientRect();
+                                              const candidateRect = candidate.getBoundingClientRect();
+                                              const closestDistance = Math.abs(
+                                                latestPendingFocus.point!.y - (closestRect.top + closestRect.height / 2)
+                                              );
+                                              const candidateDistance = Math.abs(
+                                                latestPendingFocus.point!.y - (candidateRect.top + candidateRect.height / 2)
+                                              );
+                                              return candidateDistance < closestDistance ? candidate : closest;
+                                            }, paragraphElements[0])
+                                          : undefined;
+                                      const paragraphElement =
+                                        paragraphElementForFocus ??
+                                        paragraphElementAtPoint ??
+                                        paragraphElementByPoint;
+                                      if (boundaryInCurrentCell && boundary) {
+                                        setSelectionFromDocxBoundaries(boundary, boundary);
+                                      } else if (paragraphElement) {
+                                        placeCaretInsideElement(paragraphElement, latestPendingFocus.point);
+                                      } else if (latestPendingFocus.point) {
+                                        placeCaretInsideElement(element, latestPendingFocus.point);
+                                      } else {
+                                        placeCaretInsideElement(element);
+                                      }
+
+                                      updateActiveTextRangeFromTableCell(
+                                        element,
+                                        nodeIndex,
+                                        rowIndex,
+                                        cellIndex
+                                      );
+                                      pendingTableCellFocusRef.current = undefined;
+                                    });
+                                  }
+                                }}
+                                onInput={(event) => {
+                                  tableCellDraftsRef.current.set(cellDraftKey, event.currentTarget.innerHTML);
+                                  requestTableDraftLayoutRefresh();
+                                }}
+                                onClick={(event) => {
+                                  if (eventTargetIsInteractiveControl(event.target)) {
+                                    return;
+                                  }
+
+                                  if (eventTargetIsNestedTableParagraphEditor(event.target)) {
+                                    return;
+                                  }
+
+                                  const paragraphSelector =
+                                    `[data-docx-paragraph-kind='table-cell']` +
+                                    `[data-docx-table-index='${nodeIndex}']` +
+                                    `[data-docx-row-index='${rowIndex}']` +
+                                    `[data-docx-cell-index='${cellIndex}']` +
+                                    `[data-docx-table-paragraph-index]`;
+                                  const clickTargetElement =
+                                    event.target instanceof Element
+                                      ? event.target
+                                      : event.target instanceof Node
+                                        ? event.target.parentElement
+                                        : null;
+                                  const clickedParagraph =
+                                    clickTargetElement
+                                      ? (clickTargetElement.closest<HTMLElement>(paragraphSelector) ?? undefined)
+                                      : undefined;
+                                  const fallbackParagraph = (() => {
+                                    if (clickedParagraph) {
+                                      return clickedParagraph;
+                                    }
+
+                                    const paragraphs = Array.from(
+                                      event.currentTarget.querySelectorAll<HTMLElement>(paragraphSelector)
+                                    );
+                                    if (paragraphs.length === 0) {
+                                      return undefined;
+                                    }
+
+                                    return paragraphs.reduce<HTMLElement>((closest, candidate) => {
+                                      const closestRect = closest.getBoundingClientRect();
+                                      const candidateRect = candidate.getBoundingClientRect();
+                                      const closestDistance = Math.abs(
+                                        event.clientY - (closestRect.top + closestRect.height / 2)
+                                      );
+                                      const candidateDistance = Math.abs(
+                                        event.clientY - (candidateRect.top + candidateRect.height / 2)
+                                      );
+                                      return candidateDistance < closestDistance ? candidate : closest;
+                                    }, paragraphs[0]);
+                                  })();
+                                  const selection = window.getSelection();
+                                  const rangeInsideParagraph =
+                                    selection &&
+                                    selection.rangeCount > 0 &&
+                                    fallbackParagraph &&
+                                    (() => {
+                                      const range = selection.getRangeAt(0);
+                                      return (
+                                        fallbackParagraph.contains(range.startContainer) ||
+                                        fallbackParagraph.contains(range.endContainer)
+                                      );
+                                    })();
+                                  if (fallbackParagraph && !rangeInsideParagraph) {
+                                    placeCaretInsideElement(fallbackParagraph, {
+                                      x: event.clientX,
+                                      y: event.clientY
+                                    });
+                                  }
+
+                                  updateActiveTextRangeFromTableCell(
+                                    event.currentTarget,
+                                    nodeIndex,
+                                    rowIndex,
+                                    cellIndex
+                                  );
+                                }}
+                                onPaste={(event) => {
+                                  const pastedText = event.clipboardData.getData("text/plain");
+                                  if (!pastedText) {
+                                    return;
+                                  }
+
+                                  const replaced = replaceExpandedSelectionWithText(pastedText);
+                                  if (!replaced) {
+                                    return;
+                                  }
+
+                                  event.preventDefault();
+                                  event.stopPropagation();
+                                  tableCellDraftsRef.current.delete(cellDraftKey);
+                                }}
+                                onMouseUp={(event) => {
+                                  updateActiveTextRangeFromTableCell(
+                                    event.currentTarget,
+                                    nodeIndex,
+                                    rowIndex,
+                                    cellIndex
+                                  );
+                                }}
+                                onKeyUp={(event) => {
+                                  updateActiveTextRangeFromTableCell(
+                                    event.currentTarget,
+                                    nodeIndex,
+                                    rowIndex,
+                                    cellIndex
+                                  );
+                                }}
+                                onKeyDown={(event) => {
+                                  if (handleDeleteAcrossTableCellSelection(event)) {
+                                    return;
+                                  }
+
+                                  if (handleDeleteAcrossSelection(event)) {
+                                    return;
+                                  }
+
+                                  const handledHistoryShortcut = handleEditorHistoryShortcut(event, () => {
+                                    commitTableCellDraftFromElement(
+                                      nodeIndex,
+                                      rowIndex,
+                                      cellIndex,
+                                      cellParagraphs,
+                                      cellDraftKey,
+                                      event.currentTarget
+                                    );
+                                  });
+                                  if (handledHistoryShortcut) {
+                                    return;
+                                  }
+
+                                  const isPlainTextInsertKey =
+                                    event.key.length === 1 && !event.metaKey && !event.ctrlKey && !event.altKey;
+                                  if (isPlainTextInsertKey) {
+                                    const replaced = replaceExpandedSelectionWithText(event.key);
+                                    if (replaced) {
+                                      event.preventDefault();
+                                      event.stopPropagation();
+                                      tableCellDraftsRef.current.delete(cellDraftKey);
+                                      return;
+                                    }
+                                  }
+
+                                  if (event.key === "Enter" && !event.metaKey && !event.ctrlKey && !event.altKey) {
+                                    const replaced = replaceExpandedSelectionWithText("\n");
+                                    if (replaced) {
+                                      event.preventDefault();
+                                      event.stopPropagation();
+                                      tableCellDraftsRef.current.delete(cellDraftKey);
+                                      return;
+                                    }
+                                  }
+
+                                  const paragraphContext = activeTableCellParagraphContext(event.currentTarget);
+                                  const activeParagraphIndex = paragraphContext?.paragraphIndex ?? 0;
+                                  const activeParagraph = cellParagraphs[activeParagraphIndex];
+                                  if (!activeParagraph || !paragraphContext?.paragraphElement) {
+                                    return;
+                                  }
+
+                                  const currentText = editableTextFromElement(paragraphContext.paragraphElement);
+                                  const isListParagraph = paragraphIsList(activeParagraph, currentText);
+                                  const selectionOffsets = selectionOffsetsWithinElement(
+                                    paragraphContext.paragraphElement
+                                  );
+                                  const isCollapsedSelection =
+                                    selectionOffsets !== undefined &&
+                                    selectionOffsets.start === selectionOffsets.end;
+                                  const isPlainEnterKey =
+                                    event.key === "Enter" &&
+                                    !event.metaKey &&
+                                    !event.ctrlKey &&
+                                    !event.altKey;
+                                  if (isPlainEnterKey && !isListParagraph) {
+                                    event.preventDefault();
+                                    event.stopPropagation();
+                                    const start = Math.max(
+                                      0,
+                                      Math.min(
+                                        selectionOffsets?.start ?? currentText.length,
+                                        currentText.length
+                                      )
+                                    );
+                                    const end = Math.max(
+                                      start,
+                                      Math.min(
+                                        selectionOffsets?.end ?? start,
+                                        currentText.length
+                                      )
+                                    );
+                                    const nextText = `${currentText.slice(0, start)}\n${currentText.slice(end)}`;
+                                    tableCellDraftsRef.current.delete(cellDraftKey);
+                                    tableCellParagraphDraftsRef.current.delete(
+                                      tableCellParagraphDraftKey(
+                                        nodeIndex,
+                                        rowIndex,
+                                        cellIndex,
+                                        activeParagraphIndex
+                                      )
+                                    );
+                                    editor.commitTableCellParagraphTextRecursive(
+                                      nodeIndex,
+                                      rowIndex,
+                                      cellIndex,
+                                      activeParagraphIndex,
+                                      nextText
+                                    );
+                                    focusTableCellParagraphAtOffset(
+                                      cellDraftKey,
+                                      activeParagraphIndex,
+                                      start + 1
+                                    );
+                                    return;
+                                  }
+                                  if (
+                                    event.key === "Backspace" &&
+                                    !event.metaKey &&
+                                    !event.ctrlKey &&
+                                    !event.altKey &&
+                                    !event.shiftKey &&
+                                    isListParagraph &&
+                                    isCollapsedSelection &&
+                                    (selectionOffsets?.start ?? -1) === 0
+                                  ) {
+                                    const listDepthChanged = editor.adjustSelectedListDepth(-1, currentText);
+                                    let handledBackspace = listDepthChanged;
+
+                                    if (!handledBackspace) {
+                                      const listType = paragraphListType(
+                                        activeParagraph,
+                                        editor.model.metadata.numberingDefinitions
+                                      );
+                                      if (listType) {
+                                        editor.toggleList(listType);
+                                        handledBackspace = true;
+                                      }
+                                    }
+
+                                    if (handledBackspace) {
+                                      event.preventDefault();
+                                      event.stopPropagation();
+                                      tableCellDraftsRef.current.delete(cellDraftKey);
+                                      focusTableCellParagraphAtOffset(
+                                        cellDraftKey,
+                                        activeParagraphIndex,
+                                        0
+                                      );
+                                      return;
+                                    }
+                                  }
+                                  if (
+                                    event.key === "Tab" &&
+                                    !event.metaKey &&
+                                    !event.ctrlKey &&
+                                    !event.altKey &&
+                                    isListParagraph
+                                  ) {
+                                    event.preventDefault();
+                                    const listDepthChanged = editor.adjustSelectedListDepth(
+                                      event.shiftKey ? -1 : 1,
+                                      currentText
+                                    );
+                                    if (listDepthChanged) {
+                                      tableCellDraftsRef.current.delete(cellDraftKey);
+                                      const targetOffset = selectionOffsets?.end ?? currentText.length;
+                                      focusTableCellParagraphAtOffset(
+                                        cellDraftKey,
+                                        activeParagraphIndex,
+                                        targetOffset
+                                      );
+                                    }
+                                  }
+                                }}
+                                onBlur={(event) => {
+                                  if (!tableCellDraftsRef.current.has(cellDraftKey)) {
+                                    return;
+                                  }
+
+                                  commitTableCellDraftFromElement(
+                                    nodeIndex,
+                                    rowIndex,
+                                    cellIndex,
+                                    cellParagraphs,
+                                    cellDraftKey,
+                                    event.currentTarget
+                                  );
+                                }}
+                              >
+                                {(() => {
+                                  let paragraphCursor = 0;
+                                  return cell.nodes.map((cellContent, contentIndex) => {
+                                    if (cellContent.type === "paragraph") {
+                                      const paragraphIndex = paragraphCursor;
+                                      paragraphCursor += 1;
+                                      return (
+                                        <div
+                                          key={`active-cell-p-${nodeIndex}-${rowIndex}-${cellIndex}-${contentIndex}`}
+                                          data-docx-paragraph-host="true"
+                                          data-docx-paragraph-kind="table-cell"
+                                          data-docx-table-index={nodeIndex}
+                                          data-docx-row-index={rowIndex}
+                                          data-docx-cell-index={cellIndex}
+                                          data-docx-paragraph-index={paragraphIndex}
+                                          data-docx-table-paragraph-index={paragraphIndex}
+                                          style={tableCellParagraphBlockStyle(
+                                            cellContent,
+                                            editor.model.metadata.numberingDefinitions,
+                                            headingStyles,
+                                            paragraphIndex,
+                                            applyWordTableDefaults,
+                                            nodeDocGridLinePitchPx
+                                          )}
+                                        >
+                                          {renderInteractiveParagraphRuns(
+                                            cellContent,
+                                            `active-cell-${nodeIndex}-${rowIndex}-${cellIndex}-${contentIndex}`,
+                                            {
+                                              kind: "table-cell",
+                                              tableIndex: nodeIndex,
+                                              rowIndex,
+                                              cellIndex,
+                                              paragraphIndex
+                                            }
+                                          )}
+                                        </div>
+                                      );
+                                    }
+
+                                    return (
+                                      <div
+                                        key={`active-cell-nested-${nodeIndex}-${rowIndex}-${cellIndex}-${contentIndex}`}
+                                        contentEditable={false}
+                                        suppressContentEditableWarning
+                                      >
+                                        {renderHeaderNode(
+                                          cellContent,
+                                          `active-cell-nested-table-${nodeIndex}-${rowIndex}-${cellIndex}-${contentIndex}`,
+                                          editor.documentTheme,
+                                          editor.model.metadata.numberingDefinitions,
+                                          headingStyles,
+                                          spannedWidthPx > 0 ? spannedWidthPx : undefined,
+                                          scrollToBookmark,
+                                          undefined,
+                                          undefined,
+                                          undefined,
+                                          undefined,
+                                          paragraphRunRenderOptions,
+                                          undefined,
+                                          undefined,
+                                          undefined,
+                                          undefined,
+                                          embeddedTableResizeController
+                                        )}
+                                      </div>
+                                    );
+                                  });
+                                })()}
+                              </div>
+                            ) : (
+                              <div style={{ display: "grid", gap: 4 }}>
+                                {(() => {
+                                  let paragraphCursor = 0;
+                                  return cell.nodes.map((cellContent, contentIndex) => {
+                                    if (cellContent.type === "paragraph") {
+                                      const paragraphIndex = paragraphCursor;
+                                      paragraphCursor += 1;
+                                      return (
+                                        <div
+                                          key={`body-cell-p-${nodeIndex}-${rowIndex}-${cellIndex}-${contentIndex}`}
+                                          data-docx-paragraph-host="true"
+                                          data-docx-paragraph-kind="table-cell"
+                                          data-docx-table-index={nodeIndex}
+                                          data-docx-row-index={rowIndex}
+                                          data-docx-cell-index={cellIndex}
+                                          data-docx-paragraph-index={paragraphIndex}
+                                          data-docx-table-paragraph-index={paragraphIndex}
+                                          style={tableCellParagraphBlockStyle(
+                                            cellContent,
+                                            editor.model.metadata.numberingDefinitions,
+                                            headingStyles,
+                                            paragraphIndex,
+                                            applyWordTableDefaults,
+                                            nodeDocGridLinePitchPx
+                                          )}
+                                        >
+                                          {renderInteractiveParagraphRuns(
+                                            cellContent,
+                                            `body-cell-${nodeIndex}-${rowIndex}-${cellIndex}-${contentIndex}`,
+                                            {
+                                              kind: "table-cell",
+                                              tableIndex: nodeIndex,
+                                              rowIndex,
+                                              cellIndex,
+                                              paragraphIndex
+                                            }
+                                          )}
+                                        </div>
+                                      );
+                                    }
+
+                                    return renderHeaderNode(
+                                      cellContent,
+                                      `body-cell-nested-table-${nodeIndex}-${rowIndex}-${cellIndex}-${contentIndex}`,
+                                      editor.documentTheme,
+                                      editor.model.metadata.numberingDefinitions,
+                                      headingStyles,
+                                      spannedWidthPx > 0 ? spannedWidthPx : undefined,
+                                      scrollToBookmark,
+                                      undefined,
+                                      undefined,
+                                      undefined,
+                                      undefined,
+                                      paragraphRunRenderOptions,
+                                      undefined,
+                                      undefined,
+                                      tableCellEditScope,
+                                      undefined,
+                                      embeddedTableResizeController
+                                    );
+                                  });
+                                })()}
+                              </div>
+                            )}
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  );
+                  })}
+              </tbody>
+            </table>
+		              {showTableHandles && !isSplitTableSegment && columnCount > 1
+                ? columnWidthsPx.slice(0, maxBoundaryColumnIndex + 1).map((_, boundaryColumnIndex) => {
+                    if (boundaryColumnIndex > maxBoundaryColumnIndex) {
+                      return null;
+                    }
+
+                    const leftPx = tableColumnBoundaryOffsetsPx[boundaryColumnIndex] ?? 0;
+                    const isResizing = isColumnHandleActive
+                      && activeColumnResize?.boundaryColumnIndex === boundaryColumnIndex;
+                    const isHovered = hoveredTableResizeHandle?.tableIndex === nodeIndex
+                      && hoveredTableResizeHandle?.kind === "column"
+                      && hoveredTableResizeHandle.boundaryIndex === boundaryColumnIndex;
+                    const isHot = isResizing || isHovered;
+
+                    return (
+                      <span
+                        key={`column-border-${nodeIndex}-${boundaryColumnIndex}`}
+                        contentEditable={false}
+                        style={{
+                          position: "absolute",
+                          top: 0,
+                          bottom: 0,
+                          left: `${leftPx - TABLE_RESIZE_HANDLE_HIT_SIZE / 2 + TABLE_RESIZE_HANDLE_ALIGNMENT_OFFSET_PX}px`,
+                          width: TABLE_RESIZE_HANDLE_HIT_SIZE,
+                          cursor: "col-resize",
+                          zIndex: 5,
+                          touchAction: "none",
+                          userSelect: "none",
+                          backgroundColor: "transparent"
+                        }}
+                        onMouseEnter={() =>
+                          setHoveredTableResizeHandle({
+                            tableIndex: nodeIndex,
+                            kind: "column",
+                            boundaryIndex: boundaryColumnIndex
+                          })
+                        }
+                        onPointerEnter={() =>
+                          setHoveredTableResizeHandle({
+                            tableIndex: nodeIndex,
+                            kind: "column",
+                            boundaryIndex: boundaryColumnIndex
+                          })
+                        }
+                        onMouseLeave={() => {
+                          if (
+                            hoveredTableResizeHandle?.tableIndex === nodeIndex &&
+                            hoveredTableResizeHandle.kind === "column" &&
+                            hoveredTableResizeHandle.boundaryIndex === boundaryColumnIndex
+                          ) {
+                            setHoveredTableResizeHandle(undefined);
+                          }
+                        }}
+                        onPointerLeave={() => {
+                          if (
+                            hoveredTableResizeHandle?.tableIndex === nodeIndex &&
+                            hoveredTableResizeHandle.kind === "column" &&
+                            hoveredTableResizeHandle.boundaryIndex === boundaryColumnIndex
+                          ) {
+                            setHoveredTableResizeHandle(undefined);
+                          }
+                        }}
+                        onContextMenu={(event) => {
+                          if (isReadOnly) {
+                            return;
+                          }
+
+                          event.preventDefault();
+                          event.stopPropagation();
+                          const context = resolveTableContextMenuLocation(
+                            nodeIndex,
+                            0,
+                            boundaryColumnIndex
+                          );
+                          clearTableCellSelection();
+                          setSingleTableCellSelection(
+                            context.tableIndex,
+                            context.rowIndex,
+                            context.cellIndex
+                          );
+                          editor.selectTableCell(
+                            context.tableIndex,
+                            context.rowIndex,
+                            context.cellIndex
+                          );
+                          openTableContextMenu(context, {
+                            x: event.clientX,
+                            y: event.clientY
+                          });
+                        }}
+                        onPointerDown={(event) => {
+                          const tableElement = event.currentTarget.parentElement?.querySelector("table");
+                          const tableElementWidthPx = tableElement
+                            ? tableElement.getBoundingClientRect().width
+                            : 0;
+                          beginTableColumnResize(
+                            event,
+                            nodeIndex,
+                            boundaryColumnIndex,
+                            tableElementWidthPx,
+                            columnWidthsPx
+                          );
+                          setHoveredTableResizeHandle(undefined);
+                        }}
+                      >
+                        <span
+                          style={{
+                            position: "absolute",
+                            left: "50%",
+                            top: 0,
+                            transform: "translateX(-50%)",
+                            width: TABLE_RESIZE_BORDER_SIZE,
+                            height: "100%",
+                            backgroundColor: isHot ? "#3b82f6" : "transparent"
+                          }}
+                        />
+                      </span>
+                    );
+                  })
+                : null}
+		              {showTableHandles && !isSplitTableSegment && node.rows.length > 1
+                ? rowHeightsPx.slice(0, maxBoundaryRowIndex + 1).map((_, boundaryRowIndex) => {
+                    if (boundaryRowIndex > maxBoundaryRowIndex) {
+                      return null;
+                    }
+
+                    const topPx = tableRowBoundaryOffsetsPx[boundaryRowIndex] ?? 0;
+                    const isResizing = isRowHandleActive
+                      && activeRowResize?.boundaryRowIndex === boundaryRowIndex;
+                    const isHovered = hoveredTableResizeHandle?.tableIndex === nodeIndex
+                      && hoveredTableResizeHandle?.kind === "row"
+                      && hoveredTableResizeHandle.boundaryIndex === boundaryRowIndex;
+                    const isHot = isResizing || isHovered;
+
+                    return (
+                      <span
+                        key={`row-border-${nodeIndex}-${boundaryRowIndex}`}
+                        contentEditable={false}
+                        style={{
+                          position: "absolute",
+                          left: 0,
+                          width: `${resolvedTableWidthPx}px`,
+                          top: `${topPx - TABLE_RESIZE_HANDLE_HIT_SIZE / 2 + TABLE_RESIZE_HANDLE_ALIGNMENT_OFFSET_PX}px`,
+                          height: TABLE_RESIZE_HANDLE_HIT_SIZE,
+                          cursor: "row-resize",
+                          zIndex: 5,
+                          touchAction: "none",
+                          userSelect: "none",
+                          backgroundColor: "transparent"
+                        }}
+                        onMouseEnter={() =>
+                          setHoveredTableResizeHandle({
+                            tableIndex: nodeIndex,
+                            kind: "row",
+                            boundaryIndex: boundaryRowIndex
+                          })
+                        }
+                        onPointerEnter={() =>
+                          setHoveredTableResizeHandle({
+                            tableIndex: nodeIndex,
+                            kind: "row",
+                            boundaryIndex: boundaryRowIndex
+                          })
+                        }
+                        onMouseLeave={() => {
+                          if (
+                            hoveredTableResizeHandle?.tableIndex === nodeIndex &&
+                            hoveredTableResizeHandle.kind === "row" &&
+                            hoveredTableResizeHandle.boundaryIndex === boundaryRowIndex
+                          ) {
+                            setHoveredTableResizeHandle(undefined);
+                          }
+                        }}
+                        onPointerLeave={() => {
+                          if (
+                            hoveredTableResizeHandle?.tableIndex === nodeIndex &&
+                            hoveredTableResizeHandle.kind === "row" &&
+                            hoveredTableResizeHandle.boundaryIndex === boundaryRowIndex
+                          ) {
+                            setHoveredTableResizeHandle(undefined);
+                          }
+                        }}
+                        onContextMenu={(event) => {
+                          if (isReadOnly) {
+                            return;
+                          }
+
+                          event.preventDefault();
+                          event.stopPropagation();
+                          const context = resolveTableContextMenuLocation(
+                            nodeIndex,
+                            boundaryRowIndex,
+                            0
+                          );
+                          clearTableCellSelection();
+                          setSingleTableCellSelection(
+                            context.tableIndex,
+                            context.rowIndex,
+                            context.cellIndex
+                          );
+                          editor.selectTableCell(
+                            context.tableIndex,
+                            context.rowIndex,
+                            context.cellIndex
+                          );
+                          openTableContextMenu(context, {
+                            x: event.clientX,
+                            y: event.clientY
+                          });
+                        }}
+                        onPointerDown={(event) => {
+                          const tableElement = event.currentTarget.parentElement?.querySelector("table");
+                          const measuredRows = tableElement
+                            ? Array.from(tableElement.querySelectorAll("tbody > tr")).map((rowElement) =>
+                              normalizeMeasuredTableRowHeightPx(
+                                (rowElement as HTMLTableRowElement).getBoundingClientRect().height
+                              )
+                            )
+                            : [];
+                          const startingHeights =
+                            measuredRows.length > 0 ? measuredRows : rowBoundarySourceHeightsPx;
+                          beginTableRowResize(
+                            event,
+                            nodeIndex,
+                            boundaryRowIndex,
+                            startingHeights
+                          );
+                          setHoveredTableResizeHandle(undefined);
+                        }}
+                      >
+                        <span
+                          style={{
+                            position: "absolute",
+                            top: "50%",
+                            left: 0,
+                            right: 0,
+                            transform: "translateY(-50%)",
+                            width: "100%",
+                            height: TABLE_RESIZE_BORDER_SIZE,
+                            backgroundColor: isHot ? "#3b82f6" : "transparent"
+                          }}
+                        />
+                      </span>
+                    );
+                  })
+                : null}
+		              {showTableHandles && !isSplitTableSegment ? (
+		              <span
+                contentEditable={false}
+                style={{
+                  position: "absolute",
+                  left: `${Math.max(
+                    0,
+                    resolvedTableWidthPx -
+                      TABLE_RESIZE_HANDLE_HIT_SIZE / 2 +
+                      TABLE_RESIZE_HANDLE_ALIGNMENT_OFFSET_PX
+                  )}px`,
+                  bottom: -8,
+                  width: TABLE_RESIZE_HANDLE_HIT_SIZE,
+                  height: TABLE_RESIZE_HANDLE_HIT_SIZE,
+                  display: "flex",
+                  alignItems: "flex-start",
+                  justifyContent: "flex-start",
+                  cursor: "nwse-resize",
+                  opacity: isCornerResizing ? 1 : 1,
+                  zIndex: 6,
+                  touchAction: "none"
+                }}
+                onPointerDown={(event) => {
+                  const tableElement = event.currentTarget.parentElement?.querySelector("table");
+                  const handleTableWidthPx = tableElement
+                    ? tableElement.getBoundingClientRect().width
+                    : 0;
+                  const measuredRows = tableElement
+                    ? Array.from(tableElement.querySelectorAll("tbody > tr")).map((rowElement) =>
+                      normalizeMeasuredTableRowHeightPx(
+                        (rowElement as HTMLTableRowElement).getBoundingClientRect().height
+                      )
+                    )
+                    : [];
+                  const currentHeights =
+                    measuredRows.length > 0 ? measuredRows : rowHeightsPx.map((rowHeightPx) => rowHeightPx ?? 24);
+
+                  beginTableCornerResize(
+                    event,
+                    nodeIndex,
+                    handleTableWidthPx,
+                    columnWidthsPx,
+                    currentHeights,
+                    maxTableWidthPx
+                  );
+                }}
+                onContextMenu={(event) => {
+                  if (isReadOnly) {
+                    return;
+                  }
+
+                  event.preventDefault();
+                  event.stopPropagation();
+                  const context = resolveTableContextMenuLocation(nodeIndex, 0, 0);
+                  clearTableCellSelection();
+                  setSingleTableCellSelection(
+                    context.tableIndex,
+                    context.rowIndex,
+                    context.cellIndex
+                  );
+                  editor.selectTableCell(
+                    context.tableIndex,
+                    context.rowIndex,
+                    context.cellIndex
+                  );
+                  openTableContextMenu(context, {
+                    x: event.clientX,
+                    y: event.clientY
+                  });
+                }}
+              >
+                <span
+                  style={{
+                    ...TABLE_RESIZE_HANDLE_STYLE,
+                    position: "absolute",
+                    right: 0,
+                    bottom: 0
+                  }}
+                />
+              </span>
+              ) : null}
+            </>
+          );
+        })()}
+      </div>
+    );
+  };
+
+  const renderNodeSegments = React.useCallback(
+    (nodeSegments: DocumentPageNodeSegment[]): React.ReactNode[] => {
+      const rendered: React.ReactNode[] = [];
+
+      for (let offset = 0; offset < nodeSegments.length; offset += 1) {
+        const segment = nodeSegments[offset];
+        const nodeIndex = segment.nodeIndex;
+        const node = editor.model.nodes[nodeIndex];
+        if (!node) {
+          continue;
+        }
+
+        if (node.type === "paragraph" && !segment.tableRowRange) {
+          const segmentHasPartialLines = paragraphSegmentHasPartialLineRange(segment.paragraphLineRange);
+          const dropCap = paragraphDropCap(node);
+          const nextSegment = nodeSegments[offset + 1];
+          const nextSegmentHasPartialLines = paragraphSegmentHasPartialLineRange(
+            nextSegment?.paragraphLineRange
+          );
+          const nextNodeIndex = nextSegment?.nodeIndex;
+          const nextNode = nextNodeIndex !== undefined ? editor.model.nodes[nextNodeIndex] : undefined;
+          if (
+            dropCap?.type === "drop" &&
+            nextNode?.type === "paragraph" &&
+            !nextSegment?.tableRowRange &&
+            !segmentHasPartialLines &&
+            !nextSegmentHasPartialLines
+          ) {
+            const dropCapText = paragraphText(node).trimStart();
+            const dropCapCharacter = dropCapText.length > 0 ? dropCapText.charAt(0) : "";
+            const dropCapStyle = firstRunStyle(node);
+            const nextParagraphLineHeight = paragraphLineHeight(
+              nextNode,
+              nextNodeIndex !== undefined ? docGridLinePitchPxByNodeIndex.get(nextNodeIndex) : undefined
+            );
+            const minimumHeightPx =
+              dropCap.lines && dropCap.lines > 0
+                ? typeof nextParagraphLineHeight === "number"
+                  ? Math.max(18, Math.round(nextParagraphLineHeight * 16 * dropCap.lines))
+                  : typeof nextParagraphLineHeight === "string" && nextParagraphLineHeight.endsWith("px")
+                    ? Math.max(18, Math.round(Number.parseFloat(nextParagraphLineHeight) * dropCap.lines))
+                    : undefined
+                : undefined;
+
+            rendered.push(
+              <div
+                key={`dropcap-${nodeIndex}-${nextNodeIndex}`}
+                style={{
+                  display: "flow-root"
+                }}
+              >
+                {dropCapCharacter.length > 0 ? (
+                  <span
+                    contentEditable={false}
+                    style={{
+                      ...runStyleToCss(dropCapStyle, editor.documentTheme),
+                      float: "left",
+                      lineHeight: 1,
+                      marginRight: 6,
+                      marginTop: 0,
+                      marginBottom: 0,
+                      minHeight: minimumHeightPx,
+                      whiteSpace: "pre",
+                      pointerEvents: "none",
+                      userSelect: "none"
+                    }}
+                  >
+                    {dropCapCharacter}
+                  </span>
+                ) : null}
+                {renderDocumentNode(
+                  nextNode,
+                  nextNodeIndex,
+                  nextSegment?.tableRowRange,
+                  nextSegment?.paragraphLineRange
+                )}
+              </div>
+            );
+            offset += 1;
+            continue;
+          }
+        }
+
+        rendered.push(
+          renderDocumentNode(
+            node,
+            nodeIndex,
+            segment.tableRowRange,
+            segment.paragraphLineRange
+          )
+        );
+      }
+
+      return rendered;
+    },
+    [docGridLinePitchPxByNodeIndex, editor.documentTheme, editor.model.nodes, renderDocumentNode]
+  );
+
+  const footnotes = editor.model.metadata.footnotes ?? [];
+  const endnotes = editor.model.metadata.endnotes ?? [];
+  const footnoteDisplayIndexById = React.useMemo(
+    () => new Map(footnotes.map((note, index) => [note.id, index + 1])),
+    [footnotes]
+  );
+  const endnoteDisplayIndexById = React.useMemo(
+    () => new Map(endnotes.map((note, index) => [note.id, index + 1])),
+    [endnotes]
+  );
+  const footnotesById = React.useMemo(
+    () => new Map(footnotes.map((note) => [note.id, note])),
+    [footnotes]
+  );
+  const endnotesById = React.useMemo(
+    () => new Map(endnotes.map((note) => [note.id, note])),
+    [endnotes]
+  );
+  const pageFootnotesByIndex = React.useMemo(
+    () =>
+      pageNodeSegmentsByPage.map((nodeSegments) => {
+        const referencedIds: number[] = [];
+        const seen = new Set<number>();
+        nodeSegments.forEach((segment) => {
+          const node = editor.model.nodes[segment.nodeIndex];
+          if (!node) {
+            return;
+          }
+
+          nodeReferencedNoteIds(
+            node,
+            "footnote",
+            segment.tableRowRange,
+            segment.paragraphLineRange
+          ).forEach((referenceId) => {
+            if (seen.has(referenceId)) {
+              return;
+            }
+            seen.add(referenceId);
+            referencedIds.push(referenceId);
+          });
+        });
+
+        return referencedIds
+          .map((referenceId) => footnotesById.get(referenceId))
+          .filter((note): note is NonNullable<typeof note> => Boolean(note));
+      }),
+    [editor.model.nodes, footnotesById, pageNodeSegmentsByPage]
+  );
+  const referencedEndnotes = React.useMemo(() => {
+    const referencedIds: number[] = [];
+    const seen = new Set<number>();
+    editor.model.nodes.forEach((node) => {
+      nodeReferencedNoteIds(node, "endnote").forEach((referenceId) => {
+        if (seen.has(referenceId)) {
+          return;
+        }
+        seen.add(referenceId);
+        referencedIds.push(referenceId);
+      });
+    });
+
+    const referenced = referencedIds
+      .map((referenceId) => endnotesById.get(referenceId))
+      .filter((note): note is NonNullable<typeof note> => Boolean(note));
+    return referenced.length > 0 ? referenced : endnotes;
+  }, [editor.model.nodes, endnotes, endnotesById]);
+  const placedFootnoteIds = React.useMemo(() => {
+    const ids = new Set<number>();
+    pageFootnotesByIndex.forEach((notesForPage) => {
+      notesForPage.forEach((note) => {
+        ids.add(note.id);
+      });
+    });
+    return ids;
+  }, [pageFootnotesByIndex]);
+  const remainingFootnotes = React.useMemo(
+    () => footnotes.filter((note) => !placedFootnoteIds.has(note.id)),
+    [footnotes, placedFootnoteIds]
+  );
+  const headerFooterEditHandlers = React.useMemo<HeaderFooterParagraphEditHandlers>(
+    () => ({
+      registerElement: registerSectionParagraphElement,
+      readDraftHtml: readSectionParagraphDraft,
+      writeDraftHtml: writeSectionParagraphDraft,
+      clearDraftHtml: clearSectionParagraphDraft,
+      commitText: commitSectionParagraphDraft
+    }),
+    [
+      clearSectionParagraphDraft,
+      commitSectionParagraphDraft,
+      readSectionParagraphDraft,
+      registerSectionParagraphElement,
+      writeSectionParagraphDraft
+    ]
+  );
+
+  return (
+    <div
+      data-testid="docx-editor-viewer"
+      ref={viewerRootRef}
+      className={className}
+      style={{
+        position: "relative",
+        display: "grid",
+        gap: DOC_PAGE_BREAK_GAP,
+        backgroundColor: pageGapBackgroundColor ?? "transparent",
+        ...style
+      }}
+      onDragOver={onCanvasDragOver}
+      onDragLeave={onCanvasDragLeave}
+      onDrop={(event) => void onCanvasDrop(event)}
+      onPointerDownCapture={onViewerPointerDown}
+      onPointerMoveCapture={onViewerPointerMove}
+      onPointerLeave={onViewerPointerLeave}
+      onMouseUp={flushActiveRangeFromSelection}
+      onPointerUp={flushActiveRangeFromSelection}
+      onKeyUp={flushActiveRangeFromSelection}
+      onKeyDownCapture={onViewerKeyDown}
+      onContextMenu={onViewerContextMenu}
+    >
+      {isDragOverCanvas ? (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 200,
+            pointerEvents: "none",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            backgroundColor: "rgba(59, 130, 246, 0.1)",
+            fontSize: 14,
+            fontWeight: 500
+          }}
+          >
+          Drop .docx anywhere to replace current document
+        </div>
+      ) : null}
+      {tableMoveDropPreview && !isReadOnly ? (
+        <div
+          style={{
+            position: "absolute",
+            top: tableMoveDropPreview.top,
+            left: tableMoveDropPreview.left,
+            width: tableMoveDropPreview.width,
+            height: 2,
+            borderRadius: 999,
+            backgroundColor: "#2563eb",
+            boxShadow: "0 0 0 1px rgba(37, 99, 235, 0.2)",
+            zIndex: 16,
+            pointerEvents: "none"
+          }}
+        />
+      ) : null}
+
+      {pageNodeSegmentsByPage.map((pageNodeSegments, pageIndex) => {
+        const pageInfo = pageSectionInfoByIndex[pageIndex];
+        const pageLayout = pageInfo?.layout ?? documentLayout;
+        const pageVisible = isPageVisible(pageIndex);
+        const pageWrapperWidthPx = showTrackedChangeGutter
+          ? pageLayout.pageWidthPx + TRACKED_CHANGE_GUTTER_WIDTH_PX
+          : pageLayout.pageWidthPx;
+
+        if (!pageVisible) {
+          return (
+            <div
+              key={`page-${pageIndex}`}
+              data-docx-page-wrapper="true"
+              data-docx-page-index={pageIndex}
+              style={{
+                width: pageWrapperWidthPx,
+                margin: "0 auto"
+              }}
+            >
+              <div
+                data-docx-page-placeholder="true"
+                ref={(element) => {
+                  if (element) {
+                    pageElementsRef.current.set(pageIndex, element);
+                  } else {
+                    pageElementsRef.current.delete(pageIndex);
+                  }
+                }}
+                style={{
+                  height: pageLayout.pageHeightPx,
+                  width: pageLayout.pageWidthPx
+                }}
+              />
+            </div>
+          );
+        }
+
+        const pageContentWidthPx = Math.max(
+          120,
+          pageLayout.pageWidthPx - pageLayout.marginsPx.left - pageLayout.marginsPx.right
+        );
+        const pageSections = pageHeaderAndFooterNodes[pageIndex] ?? {
+          headerPartName: undefined,
+          footerPartName: undefined,
+          headerNodes: [] as DocModel["nodes"],
+          footerNodes: [] as DocModel["nodes"]
+        };
+        const pageHeaderFooterEditActive =
+          !isReadOnly && activeHeaderFooterEdit?.pageIndex === pageIndex;
+        const headerEditScope = pageSections.headerPartName
+          ? {
+              region: "header" as const,
+              partName: pageSections.headerPartName,
+              handlers:
+                !isReadOnly &&
+                pageHeaderFooterEditActive
+                  ? headerFooterEditHandlers
+                  : undefined
+            }
+          : undefined;
+        const footerEditScope = pageSections.footerPartName
+          ? {
+              region: "footer" as const,
+              partName: pageSections.footerPartName,
+              handlers:
+                !isReadOnly &&
+                pageHeaderFooterEditActive
+                  ? headerFooterEditHandlers
+                  : undefined
+            }
+          : undefined;
+        const sectionImageInteractionReadOnly = isReadOnly || !pageHeaderFooterEditActive;
+        const headerImageInteraction = pageSections.headerPartName
+          ? {
+              isReadOnly: sectionImageInteractionReadOnly,
+              selectedImageKey: selectedSectionImageKey,
+              floatingMovePreview,
+              onImagePointerDown: beginSectionFloatingImageMove,
+              onImageClick: onSectionImageClick
+            }
+          : undefined;
+        const footerImageInteraction = pageSections.footerPartName
+          ? {
+              isReadOnly: sectionImageInteractionReadOnly,
+              selectedImageKey: selectedSectionImageKey,
+              floatingMovePreview,
+              onImagePointerDown: beginSectionFloatingImageMove,
+              onImageClick: onSectionImageClick
+            }
+          : undefined;
+        const footerNeedsPageWideLayout = sectionNodesNeedPageWideLayout(
+          pageSections.footerNodes,
+          pageLayout.pageWidthPx,
+          pageContentWidthPx
+        );
+        const headerOverlayTop = Math.max(0, pageLayout.headerDistancePx);
+        const footerOverlayBottom = Math.max(0, pageLayout.footerDistancePx);
+        const headerTopOffsetPx = headerOverlayTop - pageLayout.marginsPx.top;
+        const headerFlowCompensationPx = Math.max(0, -headerTopOffsetPx);
+        const headerVisualOverflowPx = headerVisualOverflowByPage[pageIndex] ?? 0;
+        const footerBottomOffsetPx = footerOverlayBottom;
+        const pageNumber = pageInfo?.pageNumber ?? pageIndex + 1;
+        const pageFootnotes = pageFootnotesByIndex[pageIndex] ?? [];
+        const isLastPage = pageIndex === pageCount - 1;
+        const headerFooterBodyDimmed = pageHeaderFooterEditActive;
+        const pageSurfaceStyle: React.CSSProperties = {
+          ...pageSurfaceBaseStyle,
+          width: pageLayout.pageWidthPx,
+          minHeight: pageLayout.pageHeightPx,
+          paddingTop: pageLayout.marginsPx.top,
+          paddingRight: pageLayout.marginsPx.right,
+          paddingBottom: pageLayout.marginsPx.bottom,
+          paddingLeft: pageLayout.marginsPx.left
+        };
+        const pageTrackedChanges = positionedTrackedChangesByPage[pageIndex] ?? [];
+
+        return (
+          <div
+            key={`page-${pageIndex}`}
+            data-docx-page-wrapper="true"
+            data-docx-page-index={pageIndex}
+            style={{
+              position: "relative",
+              width: pageWrapperWidthPx,
+              minHeight: pageLayout.pageHeightPx,
+              margin: "0 auto"
+            }}
+          >
+            <div
+              data-docx-page-surface="true"
+              ref={(element) => {
+                if (element) {
+                  pageElementsRef.current.set(pageIndex, element);
+                } else {
+                  pageElementsRef.current.delete(pageIndex);
+                }
+              }}
+              style={{
+                ...pageSurfaceStyle,
+                margin: 0
+              }}
+            >
+	            {pageSections.headerNodes.length > 0 ? (
+	              <div
+	                ref={(element) => {
+                  if (element) {
+                    pageHeaderElementsRef.current.set(pageIndex, element);
+                  } else {
+                    pageHeaderElementsRef.current.delete(pageIndex);
+                  }
+                }}
+                style={{
+                  display: "grid",
+                  gap: 8,
+                  width: "100%",
+                  maxWidth: "100%",
+                  boxSizing: "border-box",
+                  marginTop: headerTopOffsetPx,
+                  marginBottom: 8 + headerFlowCompensationPx + headerVisualOverflowPx,
+                  opacity: pageHeaderFooterEditActive || isReadOnly ? 1 : HEADER_FOOTER_INACTIVE_OPACITY,
+                  transition: "opacity 120ms ease",
+                  outline: "none",
+                  boxShadow: "none",
+                  zIndex: 1
+                }}
+                contentEditable={pageHeaderFooterEditActive && !isReadOnly}
+                suppressContentEditableWarning
+                data-docx-header-footer-region="header"
+                onFocus={(event) => {
+                  event.currentTarget.style.outline = "none";
+                  event.currentTarget.style.boxShadow = "none";
+                }}
+                  onInputCapture={(event) => {
+                    if (!pageHeaderFooterEditActive || !pageSections.headerPartName) {
+                      return;
+                    }
+                    updateSectionParagraphDraftFromTarget(event.target);
+                  }}
+                  onBlurCapture={(event) => {
+                    if (!pageHeaderFooterEditActive || !pageSections.headerPartName) {
+                      return;
+                    }
+                    const relatedTarget = event.relatedTarget as Node | null;
+                    if (relatedTarget && event.currentTarget.contains(relatedTarget)) {
+                      return;
+                    }
+                    commitSectionRegionDraftsFromContainer(
+                      event.currentTarget,
+                      "header",
+                      pageSections.headerPartName
+                    );
+                  }}
+	                onDoubleClick={(event) => {
+	                  if (isReadOnly || !pageSections.headerPartName) {
+	                    return;
+                  }
+                  event.preventDefault();
+                  event.stopPropagation();
+
+                  const target = event.target;
+                  const paragraphHost =
+                    target instanceof Element
+                      ? target.closest<HTMLElement>("[data-docx-section-paragraph-key]")
+                      : null;
+                  const draftKey = paragraphHost?.getAttribute("data-docx-section-paragraph-key");
+                  if (draftKey) {
+                    pendingSectionParagraphFocusRef.current = {
+                      draftKey,
+                      point: {
+                        x: event.clientX,
+                        y: event.clientY
+                      }
+                    };
+                  }
+
+                  clearTableCellSelection();
+                  editor.setActiveTextRange(undefined);
+                  setActiveHeaderFooterEdit({
+                    region: "header",
+                    partName: pageSections.headerPartName,
+                    pageIndex
+                  });
+                }}
+              >
+                {pageSections.headerNodes.map((node, index) =>
+                  renderHeaderNode(
+                    node,
+                    `header-${pageIndex}-${index}`,
+                    editor.documentTheme,
+                    editor.model.metadata.numberingDefinitions,
+                    headingStyles,
+                    pageLayout.pageWidthPx,
+                    scrollToBookmark,
+                    {
+                      left: pageLayout.marginsPx.left,
+                      top: pageLayout.marginsPx.top,
+                      pageWidth: pageLayout.pageWidthPx
+                    },
+                    {
+                      footnote: footnoteDisplayIndexById,
+                      endnote: endnoteDisplayIndexById
+                    },
+                    pageNumber,
+                    totalPagesForFieldResolution,
+                    paragraphRunRenderOptions,
+                    headerEditScope,
+                    headerImageInteraction,
+                    undefined,
+                    index
+                  )
+                )}
+              </div>
+            ) : null}
+
+              <div
+                ref={(element) => {
+                  if (element) {
+                    pageBodyElementsRef.current.set(pageIndex, element);
+                  } else {
+                    pageBodyElementsRef.current.delete(pageIndex);
+                  }
+                }}
+                style={{
+                  opacity: headerFooterBodyDimmed ? 0.5 : 1,
+                  transition: "opacity 120ms ease"
+                }}
+              >
+	              {(() => {
+	                if (!finalSectionColumns || finalSectionStartNodeIndex === undefined) {
+	                  return renderNodeSegments(pageNodeSegments);
+	                }
+
+	                const multiColumnStartOffset = pageNodeSegments.findIndex(
+	                  (segment) => segment.nodeIndex >= finalSectionStartNodeIndex
+	                );
+	                if (multiColumnStartOffset < 0) {
+	                  return renderNodeSegments(pageNodeSegments);
+	                }
+
+	                const regularNodeSegments = pageNodeSegments.slice(0, multiColumnStartOffset);
+	                const multiColumnNodeSegments = pageNodeSegments.slice(multiColumnStartOffset);
+
+	                return (
+	                  <>
+	                    {renderNodeSegments(regularNodeSegments)}
+	                    <div
+	                      style={{
+	                        columnCount: finalSectionColumns.count,
+	                        columnGap: finalSectionColumns.gapPx,
+	                        columnFill: "balance"
+	                      }}
+	                    >
+	                      {multiColumnNodeSegments.map((columnSegment) => {
+	                        const columnNode = editor.model.nodes[columnSegment.nodeIndex];
+	                        if (!columnNode) {
+	                          return null;
+	                        }
+
+	                        const renderedNode = renderDocumentNode(
+	                          columnNode,
+	                          columnSegment.nodeIndex,
+	                          columnSegment.tableRowRange,
+	                          columnSegment.paragraphLineRange
+	                        );
+	                        const segmentKeySuffix = columnSegment.tableRowRange
+	                          ? `rows-${columnSegment.tableRowRange.startRowIndex}-${columnSegment.tableRowRange.endRowIndex}`
+	                          : columnSegment.paragraphLineRange
+	                            ? `lines-${columnSegment.paragraphLineRange.startLineIndex}-${columnSegment.paragraphLineRange.endLineIndex}`
+	                            : "all";
+	                        return (
+	                          <div
+	                            key={`column-layout-node-${pageIndex}-${columnSegment.nodeIndex}-${segmentKeySuffix}`}
+	                            style={columnNode.type === "table" ? { breakInside: "avoid" } : undefined}
+	                          >
+	                            {renderedNode}
+	                          </div>
+	                        );
+	                      })}
+	                    </div>
+	                  </>
+	                );
+	              })()}
+
+	              {pageFootnotes.length > 0 ? (
+	                <section
+	                  style={{
+	                    marginTop: 10,
+	                    paddingTop: 8,
+	                    borderTop: `1px solid ${editor.documentTheme === "dark" ? "#4b5563" : "#9ca3af"}`,
+	                    display: "grid",
+	                    gap: 6,
+	                    fontSize: 12
+	                  }}
+	                >
+	                  {pageFootnotes.map((note, index) => (
+	                    <p
+	                      key={`page-footnote-${pageIndex}-${note.id}-${index}`}
+	                      id={`docx-footnote-${note.id}`}
+	                      style={{
+	                        margin: 0,
+	                        whiteSpace: "pre-wrap",
+	                        lineHeight: 1.35
+	                      }}
+	                    >
+	                      <sup
+	                        style={{
+	                          marginRight: 4,
+	                          verticalAlign: "super",
+	                          fontSize: "0.75em"
+	                        }}
+	                      >
+	                        {noteMarkerLabel(
+	                          { kind: "footnote", id: note.id },
+	                          footnoteDisplayIndexById,
+	                          endnoteDisplayIndexById
+	                        ) ?? note.id}
+	                      </sup>
+	                      {note.text}
+	                    </p>
+	                  ))}
+	                </section>
+	              ) : null}
+
+	              {isLastPage && (remainingFootnotes.length > 0 || referencedEndnotes.length > 0) ? (
+	                <section
+	                  style={{
+	                    marginTop: 10,
+	                    paddingTop: 8,
+	                    borderTop: `1px solid ${editor.documentTheme === "dark" ? "#4b5563" : "#9ca3af"}`,
+	                    display: "grid",
+	                    gap: 6,
+	                    fontSize: 12
+	                  }}
+	                >
+	                  {remainingFootnotes.map((note, index) => (
+	                    <p
+	                      key={`remaining-footnote-${note.id}-${index}`}
+	                      id={`docx-footnote-${note.id}`}
+	                      style={{
+	                        margin: 0,
+	                        whiteSpace: "pre-wrap",
+	                        lineHeight: 1.35
+	                      }}
+	                    >
+	                      <sup
+	                        style={{
+	                          marginRight: 4,
+	                          verticalAlign: "super",
+	                          fontSize: "0.75em"
+	                        }}
+	                      >
+	                        {noteMarkerLabel(
+	                          { kind: "footnote", id: note.id },
+	                          footnoteDisplayIndexById,
+	                          endnoteDisplayIndexById
+	                        ) ?? note.id}
+	                      </sup>
+	                      {note.text}
+	                    </p>
+	                  ))}
+	                  {referencedEndnotes.map((note, index) => (
+	                    <p
+	                      key={`last-page-endnote-${note.id}-${index}`}
+	                      id={`docx-endnote-${note.id}`}
+	                      style={{
+	                        margin: 0,
+	                        whiteSpace: "pre-wrap",
+	                        lineHeight: 1.35
+	                      }}
+	                    >
+	                      <sup
+	                        style={{
+	                          marginRight: 4,
+	                          verticalAlign: "super",
+	                          fontSize: "0.75em",
+	                          opacity: 0.75
+	                        }}
+	                      >
+	                        {noteMarkerLabel(
+	                          { kind: "endnote", id: note.id },
+	                          footnoteDisplayIndexById,
+	                          endnoteDisplayIndexById
+	                        ) ?? note.id}.
+	                      </sup>
+	                      {note.text}
+	                    </p>
+	                  ))}
+	                </section>
+	              ) : null}
+
+	              {isLastPage ? (
+	                <div
+	                  style={{
+	                    minHeight: 28,
+	                    marginTop: 10,
+	                    cursor: "text"
+	                  }}
+	                  onClick={() => {
+	                    const nextParagraphIndex = editor.appendParagraph("");
+	                    focusParagraphAtEnd(nextParagraphIndex);
+	                  }}
+	                />
+	              ) : null}
+              </div>
+
+		            {pageSections.footerNodes.length > 0 ? (
+		              <div
+                ref={(element) => {
+                  if (element) {
+                    pageFooterElementsRef.current.set(pageIndex, element);
+                  } else {
+                    pageFooterElementsRef.current.delete(pageIndex);
+                  }
+                }}
+                style={{
+                  display: "grid",
+                  gap: 8,
+                  position: "absolute",
+                  left: 0,
+	                  right: 0,
+	                  bottom: footerBottomOffsetPx,
+	                  width: "100%",
+	                  maxWidth: "100%",
+		                  boxSizing: "border-box",
+                  paddingLeft: footerNeedsPageWideLayout ? 0 : pageLayout.marginsPx.left,
+                  paddingRight: footerNeedsPageWideLayout ? 0 : pageLayout.marginsPx.right,
+                  opacity: pageHeaderFooterEditActive || isReadOnly ? 1 : HEADER_FOOTER_INACTIVE_OPACITY,
+                  transition: "opacity 120ms ease",
+                  outline: "none",
+                  boxShadow: "none",
+                  zIndex: 1
+                }}
+                contentEditable={pageHeaderFooterEditActive && !isReadOnly}
+                suppressContentEditableWarning
+                data-docx-header-footer-region="footer"
+                onFocus={(event) => {
+                  event.currentTarget.style.outline = "none";
+                  event.currentTarget.style.boxShadow = "none";
+                }}
+                  onInputCapture={(event) => {
+                    if (!pageHeaderFooterEditActive || !pageSections.footerPartName) {
+                      return;
+                    }
+                    updateSectionParagraphDraftFromTarget(event.target);
+                  }}
+                  onBlurCapture={(event) => {
+                    if (!pageHeaderFooterEditActive || !pageSections.footerPartName) {
+                      return;
+                    }
+                    const relatedTarget = event.relatedTarget as Node | null;
+                    if (relatedTarget && event.currentTarget.contains(relatedTarget)) {
+                      return;
+                    }
+                    commitSectionRegionDraftsFromContainer(
+                      event.currentTarget,
+                      "footer",
+                      pageSections.footerPartName
+                    );
+                  }}
+                  onDoubleClick={(event) => {
+	                    if (isReadOnly || !pageSections.footerPartName) {
+	                      return;
+                    }
+                    event.preventDefault();
+                    event.stopPropagation();
+
+                    const target = event.target;
+                    const paragraphHost =
+                      target instanceof Element
+                        ? target.closest<HTMLElement>("[data-docx-section-paragraph-key]")
+                        : null;
+                    const draftKey = paragraphHost?.getAttribute("data-docx-section-paragraph-key");
+                    if (draftKey) {
+                      pendingSectionParagraphFocusRef.current = {
+                        draftKey,
+                        point: {
+                          x: event.clientX,
+                          y: event.clientY
+                        }
+                      };
+                    }
+
+                    clearTableCellSelection();
+                    editor.setActiveTextRange(undefined);
+                    setActiveHeaderFooterEdit({
+                      region: "footer",
+                      partName: pageSections.footerPartName,
+                      pageIndex
+                    });
+                  }}
+	              >
+	                {pageSections.footerNodes.map((node, index) =>
+	                  renderHeaderNode(
+	                    node,
+	                    `footer-${pageIndex}-${index}`,
+	                    editor.documentTheme,
+	                    editor.model.metadata.numberingDefinitions,
+	                    headingStyles,
+	                    footerNeedsPageWideLayout ? pageLayout.pageWidthPx : pageContentWidthPx,
+	                    scrollToBookmark,
+	                    {
+	                      left: footerNeedsPageWideLayout ? 0 : pageLayout.marginsPx.left,
+	                      top: pageLayout.marginsPx.top,
+	                      pageWidth: pageLayout.pageWidthPx
+	                    },
+                    {
+                      footnote: footnoteDisplayIndexById,
+                      endnote: endnoteDisplayIndexById
+                    },
+                    pageNumber,
+                    totalPagesForFieldResolution,
+                    paragraphRunRenderOptions,
+                    footerEditScope,
+                    footerImageInteraction,
+                    undefined,
+                    index
+                  )
+                )}
+              </div>
+            ) : null}
+            </div>
+
+            {showTrackedChangeGutter ? (
+              <div
+                style={{
+                  position: "absolute",
+                  left: pageLayout.pageWidthPx,
+                  top: 0,
+                  width: TRACKED_CHANGE_GUTTER_WIDTH_PX,
+                  height: pageLayout.pageHeightPx,
+                  pointerEvents: "none",
+                  overflow: "visible"
+                }}
+              >
+                <span
+                  style={{
+                    position: "absolute",
+                    top: 0,
+                    bottom: 0,
+                    left: 0,
+                    width: 1,
+                    backgroundColor: editor.documentTheme === "dark" ? "#374151" : "#d1d5db"
+                  }}
+                />
+                <svg
+                  width={pageLayout.pageWidthPx + TRACKED_CHANGE_GUTTER_WIDTH_PX}
+                  height={pageLayout.pageHeightPx}
+                  viewBox={`0 0 ${pageLayout.pageWidthPx + TRACKED_CHANGE_GUTTER_WIDTH_PX} ${pageLayout.pageHeightPx}`}
+                  style={{
+                    position: "absolute",
+                    top: 0,
+                    left: -pageLayout.pageWidthPx,
+                    overflow: "visible"
+                  }}
+                >
+                  {pageTrackedChanges.map((entry) => {
+                    const accentColor = trackedChangeAccentColor(entry.change.kind, editor.documentTheme);
+                    const cardCenterY = clampNumber(
+                      Math.round(entry.top + entry.heightPx / 2),
+                      8,
+                      Math.max(8, pageLayout.pageHeightPx - 8)
+                    );
+                    const anchorY = clampNumber(
+                      Math.round(entry.anchorY),
+                      8,
+                      Math.max(8, pageLayout.pageHeightPx - 8)
+                    );
+                    const anchorX = clampNumber(
+                      Math.round(entry.anchorX),
+                      8,
+                      Math.max(8, pageLayout.pageWidthPx - 8)
+                    );
+                    const cardLeadX = pageLayout.pageWidthPx + TRACKED_CHANGE_GUTTER_CARD_LEFT_PX - 6;
+                    const bendX = clampNumber(
+                      Math.round((anchorX + cardLeadX) / 2),
+                      anchorX + 8,
+                      Math.max(anchorX + 8, cardLeadX - 8)
+                    );
+                    return (
+                      <g key={`tracked-connector-${pageIndex}-${entry.change.id}`}>
+                        <path
+                          d={`M ${anchorX} ${anchorY} L ${bendX} ${anchorY} L ${cardLeadX} ${cardCenterY}`}
+                          stroke={accentColor}
+                          strokeWidth={1.75}
+                          strokeOpacity={1}
+                          strokeDasharray="5 4"
+                          strokeLinejoin="round"
+                          strokeLinecap="round"
+                          fill="none"
+                        />
+                        <circle
+                          cx={anchorX}
+                          cy={anchorY}
+                          r={2.2}
+                          fill={accentColor}
+                          stroke={editor.documentTheme === "dark" ? "#020617" : "#ffffff"}
+                          strokeWidth={1}
+                        />
+                        <circle
+                          cx={cardLeadX}
+                          cy={cardCenterY}
+                          r={1.8}
+                          fill={accentColor}
+                        />
+                      </g>
+                    );
+                  })}
+                </svg>
+                {!hasTrackedChanges && pageIndex === 0 ? (
+                  <p
+                    style={{
+                      position: "absolute",
+                      top: 8,
+                      left: TRACKED_CHANGE_GUTTER_CARD_LEFT_PX,
+                      right: TRACKED_CHANGE_GUTTER_CARD_RIGHT_PX,
+                      margin: 0,
+                      fontSize: 11,
+                      lineHeight: 1.35,
+                      color: "#94a3b8"
+                    }}
+                  >
+                    No edits found
+                  </p>
+                ) : null}
+                {pageTrackedChanges.map((entry) => {
+                  const accentColor = trackedChangeAccentColor(entry.change.kind, editor.documentTheme);
+                  const formattedDate = formatTrackedChangeDate(entry.change.date);
+                  const kindLabel = trackedChangeKindLabel(entry.change.kind);
+                  const snippet =
+                    normalizeTrackedChangeSnippet(entry.change.text) ??
+                    (entry.change.kind === "format-change" || entry.change.kind === "paragraph-format-change"
+                      ? "Formatting"
+                      : "Change");
+                  const cardWidthPx = Math.max(
+                    140,
+                      TRACKED_CHANGE_GUTTER_WIDTH_PX -
+                      TRACKED_CHANGE_GUTTER_CARD_LEFT_PX -
+                      TRACKED_CHANGE_GUTTER_CARD_RIGHT_PX
+                  );
+                  const cardContainerStyle: React.CSSProperties = {
+                    position: "absolute",
+                    top: entry.top,
+                    left: TRACKED_CHANGE_GUTTER_CARD_LEFT_PX,
+                    width: cardWidthPx,
+                    minHeight: entry.heightPx,
+                    pointerEvents: "none"
+                  };
+                  const cardStyle: React.CSSProperties = {
+                    width: "100%",
+                    minHeight: entry.heightPx
+                  };
+                  const defaultCard = (
+                    <div
+                      style={{
+                        ...cardStyle,
+                        padding: "6px 8px",
+                        boxSizing: "border-box",
+                        borderLeft: `2px solid ${accentColor}`,
+                        borderTop: `1px solid ${editor.documentTheme === "dark" ? "rgba(148, 163, 184, 0.28)" : "rgba(15, 23, 42, 0.12)"}`,
+                        borderRight: `1px solid ${editor.documentTheme === "dark" ? "rgba(148, 163, 184, 0.28)" : "rgba(15, 23, 42, 0.12)"}`,
+                        borderBottom: `1px solid ${editor.documentTheme === "dark" ? "rgba(148, 163, 184, 0.28)" : "rgba(15, 23, 42, 0.12)"}`,
+                        backgroundColor:
+                          editor.documentTheme === "dark"
+                            ? "rgba(2, 6, 23, 0.96)"
+                            : "rgba(255, 255, 255, 0.96)",
+                        color: editor.documentTheme === "dark" ? "#f3f4f6" : "#111827",
+                        boxShadow:
+                          editor.documentTheme === "dark"
+                            ? "0 2px 6px rgba(2, 6, 23, 0.55)"
+                            : "0 1px 2px rgba(15, 23, 42, 0.14)"
+                      }}
+                    >
+                      <div
+                        style={{
+                          display: "flex",
+                          alignItems: "baseline",
+                          justifyContent: "space-between",
+                          gap: 8
+                        }}
+                      >
+                        <p
+                          style={{
+                            margin: 0,
+                            fontSize: 12,
+                            fontWeight: 700,
+                            lineHeight: 1.25
+                          }}
+                        >
+                          {entry.change.author?.trim() || "Unknown author"}
+                        </p>
+                        {formattedDate ? (
+                          <p
+                            style={{
+                              margin: 0,
+                              fontSize: 11,
+                              lineHeight: 1.2,
+                              color: editor.documentTheme === "dark" ? "#94a3b8" : "#6b7280",
+                              whiteSpace: "nowrap"
+                            }}
+                          >
+                            {formattedDate}
+                          </p>
+                        ) : null}
+                      </div>
+                      <p
+                        style={{
+                          margin: "2px 0 0",
+                          fontSize: 12,
+                          lineHeight: 1.35
+                        }}
+                      >
+                        <strong>{kindLabel}:</strong>{" "}
+                        {snippet}
+                      </p>
+                    </div>
+                  );
+                  const renderedCard = renderTrackedChangeCard
+                    ? renderTrackedChangeCard({
+                        change: entry.change,
+                        kindLabel,
+                        snippet,
+                        formattedDate,
+                        accentColor,
+                        documentTheme: editor.documentTheme,
+                        pageIndex,
+                        style: cardStyle
+                      })
+                    : defaultCard;
+                  return (
+                    <div
+                      key={`tracked-card-${pageIndex}-${entry.change.id}`}
+                      ref={(element) => {
+                        const elementKey = `${pageIndex}:${entry.change.id}`;
+                        if (element) {
+                          trackedChangeCardElementsRef.current.set(elementKey, element);
+                        } else {
+                          trackedChangeCardElementsRef.current.delete(elementKey);
+                        }
+                      }}
+                      style={cardContainerStyle}
+                    >
+                      {renderedCard}
+                    </div>
+                  );
+                })}
+              </div>
+            ) : null}
+          </div>
+        );
+      })}
+      {!isReadOnly ? (() => {
+        const hasCustomContextMenuState = Boolean(contextMenuState);
+        const hasTableContextMenuState = Boolean(tableContextMenuState);
+        if (!hasCustomContextMenuState && !hasTableContextMenuState) {
+          return null;
+        }
+
+        if (hasCustomContextMenuState || renderContextMenu) {
+          const tableContext = tableContextMenuState
+            ? ({
+                tableIndex: tableContextMenuState.tableIndex,
+                rowIndex: tableContextMenuState.rowIndex,
+                cellIndex: tableContextMenuState.cellIndex
+              } satisfies DocxTableContextMenuContext)
+            : undefined;
+          const context = contextMenuState
+            ? contextMenuState
+            : ({
+                kind: "table",
+                tableContext,
+                location: tableContext ? firstParagraphLocationInTable(editor.model, tableContext.tableIndex) : undefined,
+                activeTextRange: editor.activeTextRange
+              } satisfies DocxContextMenuContext);
+          const menuState = contextMenuState ?? tableContextMenuState;
+          if (!menuState) {
+            return null;
+          }
+
+          const isImageContext = context.kind === "image";
+          const estimatedWidth = isImageContext ? 252 : 228;
+          const estimatedHeight = isImageContext ? 344 : 260;
+          const position = {
+            x:
+              typeof window === "undefined"
+                ? menuState.clientX
+                : clampNumber(menuState.clientX, 8, Math.max(8, window.innerWidth - estimatedWidth)),
+            y:
+              typeof window === "undefined"
+                ? menuState.clientY
+                : clampNumber(menuState.clientY, 8, Math.max(8, window.innerHeight - estimatedHeight))
+          };
+          const actions = resolveContextMenuActions(context);
+          const menuProps: DocxContextMenuRenderProps = {
+            context,
+            actions,
+            runAction: (actionId) => {
+              runContextMenuAction(actionId, context);
+            },
+            closeMenu: contextMenuState ? closeContextMenu : closeTableContextMenu,
+            position,
+            documentTheme: editor.documentTheme
+          };
+          const menuTextColor = editor.documentTheme === "dark" ? "#f3f4f6" : "#111827";
+          const menuMutedTextColor = editor.documentTheme === "dark" ? "#94a3b8" : "#6b7280";
+          const defaultMenu = (
+            <div
+              style={{
+                width: isImageContext ? 248 : 220,
+                display: "grid",
+                gap: 2,
+                padding: 6,
+                borderRadius: 8,
+                border: `1px solid ${
+                  editor.documentTheme === "dark"
+                    ? "rgba(148, 163, 184, 0.3)"
+                    : "rgba(15, 23, 42, 0.14)"
+                }`,
+                backgroundColor:
+                  editor.documentTheme === "dark"
+                    ? "rgba(2, 6, 23, 0.98)"
+                    : "rgba(255, 255, 255, 0.98)",
+                boxShadow:
+                  editor.documentTheme === "dark"
+                    ? "0 8px 20px rgba(2, 6, 23, 0.55)"
+                    : "0 8px 20px rgba(15, 23, 42, 0.16)"
+              }}
+            >
+              {actions.map((action) => {
+                const childActions = action.children ?? [];
+                const hasChildren = childActions.length > 0;
+                return (
+                  <div key={String(action.id)} style={{ display: "grid", gap: 2 }}>
+                    <button
+                      type="button"
+                      disabled={action.disabled || hasChildren}
+                      onClick={() => runContextMenuAction(action.id, context)}
+                      style={{
+                        appearance: "none",
+                        border: "none",
+                        background: "transparent",
+                        color:
+                          action.destructive
+                            ? editor.documentTheme === "dark"
+                              ? "#fda4af"
+                              : "#b91c1c"
+                            : menuTextColor,
+                        opacity: action.disabled ? 0.5 : 1,
+                        textAlign: "left",
+                        fontSize: 13,
+                        lineHeight: 1.25,
+                        padding: "7px 10px",
+                        borderRadius: 6,
+                        cursor: action.disabled || hasChildren ? "default" : "pointer",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        gap: 8
+                      }}
+                    >
+                      <span>{action.label}</span>
+                      {action.shortcut ? (
+                        <span style={{ fontSize: 11, color: menuMutedTextColor }}>{action.shortcut}</span>
+                      ) : hasChildren ? (
+                        <span style={{ fontSize: 11, color: menuMutedTextColor }}>Submenu</span>
+                      ) : null}
+                    </button>
+                    {hasChildren ? (
+                      <div
+                        style={{
+                          marginLeft: 10,
+                          display: "grid",
+                          gap: 2,
+                          paddingLeft: 8,
+                          borderLeft: `1px solid ${
+                            editor.documentTheme === "dark"
+                              ? "rgba(148, 163, 184, 0.24)"
+                              : "rgba(15, 23, 42, 0.12)"
+                          }`
+                        }}
+                      >
+                        {childActions.map((childAction) => (
+                          <button
+                            key={String(childAction.id)}
+                            type="button"
+                            disabled={childAction.disabled}
+                            onClick={() => runContextMenuAction(childAction.id, context)}
+                            style={{
+                              appearance: "none",
+                              border: "none",
+                              background: "transparent",
+                              color:
+                                childAction.destructive
+                                  ? editor.documentTheme === "dark"
+                                    ? "#fda4af"
+                                    : "#b91c1c"
+                                  : menuTextColor,
+                              opacity: childAction.disabled ? 0.5 : 1,
+                              textAlign: "left",
+                              fontSize: 13,
+                              lineHeight: 1.25,
+                              padding: "7px 10px",
+                              borderRadius: 6,
+                              cursor: childAction.disabled ? "default" : "pointer",
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "space-between",
+                              gap: 8
+                            }}
+                          >
+                            <span>{childAction.label}</span>
+                            {childAction.shortcut ? (
+                              <span style={{ fontSize: 11, color: menuMutedTextColor }}>
+                                {childAction.shortcut}
+                              </span>
+                            ) : null}
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
+          );
+          const renderedMenu = renderContextMenu ? renderContextMenu(menuProps) : defaultMenu;
+          return (
+            <div
+              data-docx-context-menu="true"
+              style={{
+                position: "fixed",
+                left: position.x,
+                top: position.y,
+                zIndex: 2000
+              }}
+              onContextMenu={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+              }}
+            >
+              {renderedMenu}
+            </div>
+          );
+        }
+
+        if (!tableContextMenuState) {
+          return null;
+        }
+
+        const context = {
+          tableIndex: tableContextMenuState.tableIndex,
+          rowIndex: tableContextMenuState.rowIndex,
+          cellIndex: tableContextMenuState.cellIndex
+        } satisfies DocxTableContextMenuContext;
+        const position = {
+          x:
+            typeof window === "undefined"
+              ? tableContextMenuState.clientX
+              : clampNumber(tableContextMenuState.clientX, 8, Math.max(8, window.innerWidth - 228)),
+          y:
+            typeof window === "undefined"
+              ? tableContextMenuState.clientY
+              : clampNumber(tableContextMenuState.clientY, 8, Math.max(8, window.innerHeight - 260))
+        };
+        const menuProps: DocxTableContextMenuRenderProps = {
+          context,
+          actions: tableContextMenuActions,
+          runAction: (actionId) => {
+            runTableContextMenuAction(actionId, context);
+          },
+          closeMenu: closeTableContextMenu,
+          position,
+          documentTheme: editor.documentTheme
+        };
+        const defaultMenu = (
+          <div
+            style={{
+              width: 220,
+              display: "grid",
+              gap: 2,
+              padding: 6,
+              borderRadius: 8,
+              border: `1px solid ${
+                editor.documentTheme === "dark"
+                  ? "rgba(148, 163, 184, 0.3)"
+                  : "rgba(15, 23, 42, 0.14)"
+              }`,
+              backgroundColor:
+                editor.documentTheme === "dark"
+                  ? "rgba(2, 6, 23, 0.98)"
+                  : "rgba(255, 255, 255, 0.98)",
+              boxShadow:
+                editor.documentTheme === "dark"
+                  ? "0 8px 20px rgba(2, 6, 23, 0.55)"
+                  : "0 8px 20px rgba(15, 23, 42, 0.16)"
+            }}
+          >
+            {tableContextMenuActions.map((action) => (
+              <button
+                key={action.id}
+                type="button"
+                onClick={() => runTableContextMenuAction(action.id, context)}
+                style={{
+                  appearance: "none",
+                  border: "none",
+                  background: "transparent",
+                  color:
+                    action.destructive
+                      ? editor.documentTheme === "dark"
+                        ? "#fda4af"
+                        : "#b91c1c"
+                      : editor.documentTheme === "dark"
+                        ? "#f3f4f6"
+                        : "#111827",
+                  textAlign: "left",
+                  fontSize: 13,
+                  lineHeight: 1.25,
+                  padding: "7px 10px",
+                  borderRadius: 6,
+                  cursor: "pointer"
+                }}
+              >
+                {action.label}
+              </button>
+            ))}
+          </div>
+        );
+        const renderedMenu = renderTableContextMenu
+          ? renderTableContextMenu(menuProps)
+          : defaultMenu;
+        return (
+          <div
+            data-docx-table-context-menu="true"
+            style={{
+              position: "fixed",
+              left: position.x,
+              top: position.y,
+              zIndex: 2000
+            }}
+            onContextMenu={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+            }}
+          >
+            {renderedMenu}
+          </div>
+        );
+      })() : null}
+
+    </div>
+  );
+}

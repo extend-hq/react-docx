@@ -1,0 +1,1786 @@
+import { describe, expect, it } from "vitest";
+import { buildDocModel } from "@react-docx/doc-model";
+import { parseDocx } from "@react-docx/ooxml-core";
+import { createZip } from "./helpers/zip";
+
+const RED_TEXT_DOC_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">
+  <w:body>
+    <w:p>
+      <w:r>
+        <w:rPr><w:color w:val="FF0000"/></w:rPr>
+        <w:t>Red text</w:t>
+      </w:r>
+    </w:p>
+    <w:tbl>
+      <w:tr>
+        <w:tc>
+          <w:tcPr><w:shd w:val="clear" w:color="auto" w:fill="00FF00"/></w:tcPr>
+          <w:p><w:r><w:t>Cell A1</w:t></w:r></w:p>
+        </w:tc>
+      </w:tr>
+    </w:tbl>
+    <w:p>
+      <w:r>
+        <w:drawing>
+          <wp:inline>
+            <wp:extent cx="952500" cy="952500"/>
+            <wp:docPr id="1" name="Picture" descr="Test image"/>
+            <a:graphic>
+              <a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">
+                <pic:pic>
+                  <pic:blipFill>
+                    <a:blip r:embed="rId5"/>
+                  </pic:blipFill>
+                </pic:pic>
+              </a:graphicData>
+            </a:graphic>
+          </wp:inline>
+        </w:drawing>
+      </w:r>
+    </w:p>
+  </w:body>
+</w:document>`;
+
+const CONTENT_TYPES_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Default Extension="png" ContentType="image/png"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>`;
+
+const ROOT_RELS_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>`;
+
+const DOCUMENT_RELS_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId5" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image1.png"/>
+</Relationships>`;
+
+const HYPERLINK_DOC_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <w:body>
+    <w:p>
+      <w:r><w:t xml:space="preserve">Website: </w:t></w:r>
+      <w:hyperlink r:id="rId2">
+        <w:r>
+          <w:rPr><w:rStyle w:val="InternetLink"/></w:rPr>
+          <w:t>openai.com</w:t>
+        </w:r>
+      </w:hyperlink>
+    </w:p>
+  </w:body>
+</w:document>`;
+
+const FIELD_HYPERLINK_DOC_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p>
+      <w:r><w:fldChar w:fldCharType="begin"/></w:r>
+      <w:r><w:instrText xml:space="preserve"> HYPERLINK "https://example.com"</w:instrText></w:r>
+      <w:r><w:fldChar w:fldCharType="separate"/></w:r>
+      <w:r><w:t>_________</w:t></w:r>
+      <w:r><w:fldChar w:fldCharType="end"/></w:r>
+    </w:p>
+  </w:body>
+</w:document>`;
+
+const FORM_CONTROLS_DOC_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml">
+  <w:body>
+    <w:p>
+      <w:r><w:t xml:space="preserve">Female </w:t></w:r>
+      <w:sdt>
+        <w:sdtPr>
+          <w14:checkbox>
+            <w14:checked w14:val="0"/>
+            <w14:checkedState w14:val="2612" w14:font="MS Gothic"/>
+            <w14:uncheckedState w14:val="2610" w14:font="MS Gothic"/>
+          </w14:checkbox>
+        </w:sdtPr>
+        <w:sdtContent>
+          <w:r><w:t>☐</w:t></w:r>
+        </w:sdtContent>
+      </w:sdt>
+      <w:r><w:t xml:space="preserve"> Name: </w:t></w:r>
+      <w:sdt>
+        <w:sdtPr><w:text/></w:sdtPr>
+        <w:sdtContent>
+          <w:r><w:t>Click here.</w:t></w:r>
+        </w:sdtContent>
+      </w:sdt>
+    </w:p>
+    <w:p>
+      <w:sdt>
+        <w:sdtPr>
+          <w:dropDownList>
+            <w:listItem w:displayText="Option A" w:value="A"/>
+            <w:listItem w:displayText="Option B" w:value="B"/>
+            <w:lastValue w:val="B"/>
+          </w:dropDownList>
+        </w:sdtPr>
+        <w:sdtContent>
+          <w:r><w:t>Option B</w:t></w:r>
+        </w:sdtContent>
+      </w:sdt>
+    </w:p>
+  </w:body>
+</w:document>`;
+
+const DOCUMENT_RELS_WITH_HYPERLINK_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://openai.com" TargetMode="External"/>
+</Relationships>`;
+
+const CONTENT_TYPES_WITH_HEADER_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Default Extension="png" ContentType="image/png"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+  <Override PartName="/word/header1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml"/>
+</Types>`;
+
+const TABLE_AND_HEADER_DOC_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">
+  <w:body>
+    <w:tbl>
+      <w:tr>
+        <w:trPr><w:shd w:val="clear" w:color="auto" w:fill="3F4448"/></w:trPr>
+        <w:tc>
+          <w:tcPr><w:gridSpan w:val="2"/></w:tcPr>
+          <w:p>
+            <w:r>
+              <w:rPr><w:b/><w:color w:val="FFFFFF"/></w:rPr>
+              <w:t>Demographics</w:t>
+            </w:r>
+          </w:p>
+        </w:tc>
+      </w:tr>
+    </w:tbl>
+    <w:sectPr>
+      <w:headerReference w:type="default" r:id="rId10"/>
+    </w:sectPr>
+  </w:body>
+</w:document>`;
+
+const DOCUMENT_RELS_WITH_HEADER_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId10" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/>
+</Relationships>`;
+
+const HEADER_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">
+  <w:tbl>
+    <w:tr>
+      <w:tc>
+        <w:p><w:r><w:t>Header</w:t></w:r></w:p>
+      </w:tc>
+      <w:tc>
+        <w:p>
+          <w:r>
+            <w:drawing>
+              <wp:inline>
+                <wp:extent cx="952500" cy="952500"/>
+                <wp:docPr id="1" name="Logo"/>
+                <a:graphic>
+                  <a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">
+                    <pic:pic>
+                      <pic:blipFill>
+                        <a:blip r:embed="rId1"/>
+                      </pic:blipFill>
+                    </pic:pic>
+                  </a:graphicData>
+                </a:graphic>
+              </wp:inline>
+            </w:drawing>
+          </w:r>
+        </w:p>
+      </w:tc>
+    </w:tr>
+  </w:tbl>
+</w:hdr>`;
+
+const HEADER_RELS_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image1.png"/>
+</Relationships>`;
+
+const CONTENT_TYPES_WITH_TWO_HEADERS_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+  <Override PartName="/word/header1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml"/>
+  <Override PartName="/word/header2.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml"/>
+</Types>`;
+
+const MULTI_SECTION_HEADERS_DOC_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <w:body>
+    <w:p><w:r><w:t>Section One</w:t></w:r></w:p>
+    <w:p>
+      <w:pPr>
+        <w:sectPr>
+          <w:headerReference w:type="default" r:id="rId10"/>
+          <w:pgSz w:w="12240" w:h="15840"/>
+          <w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720"/>
+        </w:sectPr>
+      </w:pPr>
+    </w:p>
+    <w:p><w:r><w:t>Section Two</w:t></w:r></w:p>
+    <w:sectPr>
+      <w:headerReference w:type="default" r:id="rId11"/>
+      <w:pgSz w:w="12240" w:h="15840"/>
+      <w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720"/>
+    </w:sectPr>
+  </w:body>
+</w:document>`;
+
+const DOCUMENT_RELS_WITH_TWO_HEADERS_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId10" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/>
+  <Relationship Id="rId11" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header2.xml"/>
+</Relationships>`;
+
+const SIMPLE_HEADER_ONE_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:p><w:r><w:t>Header One</w:t></w:r></w:p>
+</w:hdr>`;
+
+const SIMPLE_HEADER_TWO_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:p><w:r><w:t>Header Two</w:t></w:r></w:p>
+</w:hdr>`;
+
+const DRAWING_TEXTBOX_DOC_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture" xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">
+  <w:body>
+    <w:p>
+      <w:r>
+        <w:drawing>
+          <wp:inline>
+            <wp:extent cx="952500" cy="952500"/>
+            <wp:docPr id="1" name="Background"/>
+            <a:graphic>
+              <a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">
+                <pic:pic>
+                  <pic:blipFill>
+                    <a:blip r:embed="rId5"/>
+                  </pic:blipFill>
+                </pic:pic>
+              </a:graphicData>
+            </a:graphic>
+          </wp:inline>
+        </w:drawing>
+      </w:r>
+      <w:r>
+        <w:drawing>
+          <wp:anchor>
+            <a:graphic>
+              <a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">
+                <wps:wsp>
+                  <wps:txbx>
+                    <w:txbxContent>
+                      <w:p>
+                        <w:r>
+                          <w:rPr><w:b/><w:color w:val="FFFFFF"/></w:rPr>
+                          <w:t>Overlay Title</w:t>
+                        </w:r>
+                      </w:p>
+                    </w:txbxContent>
+                  </wps:txbx>
+                </wps:wsp>
+              </a:graphicData>
+            </a:graphic>
+          </wp:anchor>
+        </w:drawing>
+      </w:r>
+    </w:p>
+  </w:body>
+</w:document>`;
+
+const DRAWING_TEXTBOX_ALTERNATE_DOC_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:v="urn:schemas-microsoft-com:vml" mc:Ignorable="w14">
+  <w:body>
+    <w:p>
+      <w:r>
+        <w:rPr><w:color w:val="000000"/></w:rPr>
+        <mc:AlternateContent>
+          <mc:Choice Requires="wps">
+            <w:drawing>
+              <wp:anchor>
+                <a:graphic>
+                  <a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">
+                    <wps:wsp>
+                      <wps:txbx>
+                        <w:txbxContent>
+                          <w:p>
+                            <w:r>
+                              <w:rPr><w:b/><w:color w:val="FFFFFF"/></w:rPr>
+                              <w:t>Overlay Title</w:t>
+                            </w:r>
+                          </w:p>
+                        </w:txbxContent>
+                      </wps:txbx>
+                    </wps:wsp>
+                  </a:graphicData>
+                </a:graphic>
+              </wp:anchor>
+            </w:drawing>
+          </mc:Choice>
+          <mc:Fallback>
+            <w:pict>
+              <v:shape>
+                <v:textbox>
+                  <w:txbxContent>
+                    <w:p><w:r><w:t>Overlay Title</w:t></w:r></w:p>
+                  </w:txbxContent>
+                </v:textbox>
+              </v:shape>
+            </w:pict>
+          </mc:Fallback>
+        </mc:AlternateContent>
+      </w:r>
+    </w:p>
+  </w:body>
+</w:document>`;
+
+const TEXTBOX_COLOR_ONLY_UNDERLINE_DOC_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">
+  <w:body>
+    <w:p>
+      <w:r>
+        <w:drawing>
+          <wp:anchor behindDoc="0">
+            <wp:extent cx="5071110" cy="4519448"/>
+            <a:graphic>
+              <a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">
+                <wps:wsp>
+                  <wps:txbx>
+                    <w:txbxContent>
+                      <w:p>
+                        <w:pPr>
+                          <w:pStyle w:val="IntroParagraph"/>
+                          <w:jc w:val="center"/>
+                          <w:rPr>
+                            <w:b/>
+                            <w:color w:val="FFFFFF"/>
+                            <w:sz w:val="72"/>
+                            <w:u w:color="FFFFFF"/>
+                          </w:rPr>
+                        </w:pPr>
+                        <w:r>
+                          <w:rPr>
+                            <w:b/>
+                            <w:color w:val="FFFFFF"/>
+                            <w:sz w:val="72"/>
+                            <w:u w:color="FFFFFF"/>
+                          </w:rPr>
+                          <w:t>PITC0008189</w:t>
+                        </w:r>
+                      </w:p>
+                      <w:p>
+                        <w:pPr>
+                          <w:pStyle w:val="IntroParagraph"/>
+                          <w:jc w:val="center"/>
+                          <w:rPr>
+                            <w:b/>
+                            <w:color w:val="FFFFFF"/>
+                            <w:sz w:val="72"/>
+                            <w:u w:color="FFFFFF"/>
+                          </w:rPr>
+                        </w:pPr>
+                        <w:r>
+                          <w:rPr>
+                            <w:b/>
+                            <w:color w:val="FFFFFF"/>
+                            <w:sz w:val="72"/>
+                            <w:u w:color="FFFFFF"/>
+                          </w:rPr>
+                          <w:t>Cleaning Services for Libraries ACT</w:t>
+                        </w:r>
+                      </w:p>
+                    </w:txbxContent>
+                  </wps:txbx>
+                </wps:wsp>
+              </a:graphicData>
+            </a:graphic>
+          </wp:anchor>
+        </w:drawing>
+      </w:r>
+    </w:p>
+  </w:body>
+</w:document>`;
+
+const TEXTBOX_COLOR_ONLY_UNDERLINE_STYLES_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:docDefaults>
+    <w:rPrDefault>
+      <w:rPr>
+        <w:rFonts w:ascii="Calibri" w:hAnsi="Calibri"/>
+        <w:color w:val="000000"/>
+        <w:sz w:val="24"/>
+      </w:rPr>
+    </w:rPrDefault>
+  </w:docDefaults>
+  <w:style w:type="paragraph" w:default="1" w:styleId="Normal">
+    <w:name w:val="Normal"/>
+  </w:style>
+  <w:style w:type="paragraph" w:styleId="IntroParagraph">
+    <w:name w:val="Intro Paragraph"/>
+    <w:rPr>
+      <w:rFonts w:ascii="Calibri" w:hAnsi="Calibri"/>
+      <w:u w:val="none"/>
+    </w:rPr>
+  </w:style>
+</w:styles>`;
+
+const CONTENT_TYPES_WITH_CHART_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+  <Override PartName="/word/charts/chart1.xml" ContentType="application/vnd.openxmlformats-officedocument.drawingml.chart+xml"/>
+</Types>`;
+
+const CHART_DOC_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart">
+  <w:body>
+    <w:p>
+      <w:r>
+        <w:drawing>
+          <wp:inline>
+            <wp:extent cx="4098290" cy="2059305"/>
+            <wp:docPr id="1" name="Sales chart"/>
+            <a:graphic>
+              <a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/chart">
+                <c:chart r:id="rId3"/>
+              </a:graphicData>
+            </a:graphic>
+          </wp:inline>
+        </w:drawing>
+      </w:r>
+    </w:p>
+  </w:body>
+</w:document>`;
+
+const DOCUMENT_RELS_WITH_CHART_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart" Target="charts/chart1.xml"/>
+</Relationships>`;
+
+const CHART_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+  <c:chart>
+    <c:title><c:tx><c:rich><a:p><a:r><a:t>Quarterly Revenue</a:t></a:r></a:p></c:rich></c:tx></c:title>
+    <c:plotArea>
+      <c:barChart>
+        <c:ser>
+          <c:tx><c:strRef><c:strCache><c:pt idx="0"><c:v>North</c:v></c:pt></c:strCache></c:strRef></c:tx>
+          <c:spPr><a:solidFill><a:srgbClr val="004586"/></a:solidFill></c:spPr>
+          <c:cat><c:strRef><c:strCache><c:pt idx="0"><c:v>Q1</c:v></c:pt><c:pt idx="1"><c:v>Q2</c:v></c:pt></c:strCache></c:strRef></c:cat>
+          <c:val><c:numRef><c:numCache><c:pt idx="0"><c:v>4.2</c:v></c:pt><c:pt idx="1"><c:v>8.1</c:v></c:pt></c:numCache></c:numRef></c:val>
+        </c:ser>
+        <c:ser>
+          <c:tx><c:strRef><c:strCache><c:pt idx="0"><c:v>South</c:v></c:pt></c:strCache></c:strRef></c:tx>
+          <c:spPr><a:solidFill><a:srgbClr val="ff420e"/></a:solidFill></c:spPr>
+          <c:cat><c:strRef><c:strCache><c:pt idx="0"><c:v>Q1</c:v></c:pt><c:pt idx="1"><c:v>Q2</c:v></c:pt></c:strCache></c:strRef></c:cat>
+          <c:val><c:numRef><c:numCache><c:pt idx="0"><c:v>2.1</c:v></c:pt><c:pt idx="1"><c:v>7.5</c:v></c:pt></c:numCache></c:numRef></c:val>
+        </c:ser>
+      </c:barChart>
+    </c:plotArea>
+  </c:chart>
+</c:chartSpace>`;
+
+const CONTENT_TYPES_WITH_STYLES_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+  <Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
+</Types>`;
+
+const STYLES_DOC_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:docDefaults>
+    <w:rPrDefault>
+      <w:rPr>
+        <w:rFonts w:ascii="Calibri" w:hAnsi="Calibri"/>
+        <w:sz w:val="22"/>
+        <w:color w:val="222222"/>
+      </w:rPr>
+    </w:rPrDefault>
+  </w:docDefaults>
+  <w:style w:type="paragraph" w:default="1" w:styleId="Normal">
+    <w:name w:val="Body"/>
+    <w:rPr>
+      <w:color w:val="111111"/>
+    </w:rPr>
+  </w:style>
+  <w:style w:type="paragraph" w:styleId="CustomBody">
+    <w:name w:val="Custom Body"/>
+    <w:basedOn w:val="Normal"/>
+    <w:rPr>
+      <w:rFonts w:ascii="Georgia" w:hAnsi="Georgia"/>
+      <w:color w:val="336699"/>
+    </w:rPr>
+  </w:style>
+  <w:style w:type="character" w:styleId="FancyLink">
+    <w:name w:val="Fancy Link"/>
+    <w:rPr>
+      <w:color w:val="AA00AA"/>
+      <w:u w:val="single"/>
+    </w:rPr>
+  </w:style>
+</w:styles>`;
+
+const DOC_WITH_STYLE_REFERENCES_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p>
+      <w:pPr>
+        <w:pStyle w:val="CustomBody"/>
+      </w:pPr>
+      <w:r>
+        <w:t>Styled paragraph</w:t>
+      </w:r>
+    </w:p>
+    <w:p>
+      <w:r>
+        <w:rPr><w:rStyle w:val="FancyLink"/></w:rPr>
+        <w:t>Styled run</w:t>
+      </w:r>
+    </w:p>
+    <w:p>
+      <w:pPr>
+        <w:pStyle w:val="CustomBody"/>
+      </w:pPr>
+      <w:r>
+        <w:rPr>
+          <w:rFonts w:cs="Arial Unicode MS" w:eastAsia="Arial Unicode MS"/>
+        </w:rPr>
+        <w:t>Latin run should keep CustomBody font</w:t>
+      </w:r>
+    </w:p>
+  </w:body>
+</w:document>`;
+
+const PAGINATION_STYLES_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:style w:type="paragraph" w:default="1" w:styleId="Normal">
+    <w:name w:val="Normal"/>
+    <w:pPr>
+      <w:keepNext w:val="0"/>
+      <w:keepLines w:val="0"/>
+      <w:widowControl w:val="1"/>
+      <w:pageBreakBefore w:val="0"/>
+    </w:pPr>
+  </w:style>
+  <w:style w:type="paragraph" w:styleId="KeepWithNext">
+    <w:name w:val="Keep With Next"/>
+    <w:basedOn w:val="Normal"/>
+    <w:pPr>
+      <w:keepNext w:val="1"/>
+      <w:keepLines w:val="1"/>
+      <w:widowControl w:val="1"/>
+      <w:pageBreakBefore w:val="0"/>
+    </w:pPr>
+  </w:style>
+</w:styles>`;
+
+const DOC_WITH_PAGINATION_STYLE_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p>
+      <w:pPr><w:pStyle w:val="KeepWithNext"/></w:pPr>
+      <w:r><w:t>Keep this paragraph with the next one</w:t></w:r>
+    </w:p>
+    <w:p>
+      <w:pPr>
+        <w:pStyle w:val="Normal"/>
+        <w:pageBreakBefore/>
+        <w:keepLines w:val="0"/>
+      </w:pPr>
+      <w:r><w:t>Start on a new page</w:t></w:r>
+    </w:p>
+  </w:body>
+</w:document>`;
+
+const PARAGRAPH_BORDERS_STYLES_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:style w:type="paragraph" w:default="1" w:styleId="Normal">
+    <w:name w:val="Normal"/>
+    <w:pPr>
+      <w:pBdr>
+        <w:bottom w:val="single" w:sz="8" w:space="4" w:color="auto"/>
+      </w:pBdr>
+    </w:pPr>
+  </w:style>
+  <w:style w:type="paragraph" w:styleId="Title">
+    <w:name w:val="Title"/>
+    <w:basedOn w:val="Normal"/>
+    <w:pPr>
+      <w:pBdr>
+        <w:top w:val="double" w:sz="6" w:space="2" w:color="336699"/>
+      </w:pBdr>
+    </w:pPr>
+  </w:style>
+</w:styles>`;
+
+const DOC_WITH_PARAGRAPH_BORDERS_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p>
+      <w:pPr>
+        <w:pStyle w:val="Title"/>
+      </w:pPr>
+      <w:r><w:t>Title with inherited border</w:t></w:r>
+    </w:p>
+    <w:p>
+      <w:pPr>
+        <w:pStyle w:val="Title"/>
+        <w:pBdr>
+          <w:bottom w:val="nil"/>
+        </w:pBdr>
+      </w:pPr>
+      <w:r><w:t>Title with direct border override</w:t></w:r>
+    </w:p>
+  </w:body>
+</w:document>`;
+
+const DOC_WITH_PARAGRAPH_SHADING_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p>
+      <w:pPr>
+        <w:shd w:val="clear" w:color="auto" w:fill="DDDDDD"/>
+        <w:jc w:val="right"/>
+      </w:pPr>
+      <w:r><w:t>Paragraph with gray background</w:t></w:r>
+    </w:p>
+  </w:body>
+</w:document>`;
+
+const DOC_WITH_JC_BOTH_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p>
+      <w:pPr>
+        <w:jc w:val="both"/>
+      </w:pPr>
+      <w:r><w:t>Justified paragraph</w:t></w:r>
+    </w:p>
+  </w:body>
+</w:document>`;
+
+const TABLE_LAYOUT_DOC_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p>
+      <w:bookmarkStart w:id="0" w:name="_GoBack"/>
+      <w:bookmarkEnd w:id="0"/>
+    </w:p>
+    <w:tbl>
+      <w:tblPr>
+        <w:tblW w:w="7200" w:type="dxa"/>
+        <w:tblInd w:w="180" w:type="dxa"/>
+        <w:tblLayout w:type="fixed"/>
+        <w:tblCellMar>
+          <w:top w:w="120" w:type="dxa"/>
+          <w:right w:w="90" w:type="dxa"/>
+          <w:bottom w:w="120" w:type="dxa"/>
+          <w:left w:w="90" w:type="dxa"/>
+        </w:tblCellMar>
+      </w:tblPr>
+      <w:tblGrid>
+        <w:gridCol w:w="5000"/>
+        <w:gridCol w:w="2200"/>
+      </w:tblGrid>
+      <w:tr>
+        <w:trPr><w:trHeight w:val="840"/></w:trPr>
+        <w:tc>
+          <w:tcPr>
+            <w:tcW w:w="5000" w:type="dxa"/>
+            <w:tcMar>
+              <w:top w:w="180" w:type="dxa"/>
+              <w:right w:w="180" w:type="dxa"/>
+              <w:bottom w:w="180" w:type="dxa"/>
+              <w:left w:w="180" w:type="dxa"/>
+            </w:tcMar>
+            <w:vAlign w:val="center"/>
+          </w:tcPr>
+          <w:p><w:r><w:t>Left cell</w:t></w:r></w:p>
+        </w:tc>
+        <w:tc>
+          <w:tcPr><w:tcW w:w="2200" w:type="dxa"/></w:tcPr>
+          <w:p><w:r><w:t>Right cell</w:t></w:r></w:p>
+        </w:tc>
+      </w:tr>
+    </w:tbl>
+  </w:body>
+</w:document>`;
+
+const TABLE_BORDERS_DOC_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:tbl>
+      <w:tblPr>
+        <w:tblBorders>
+          <w:top w:val="none" w:sz="0" w:space="0" w:color="auto"/>
+          <w:left w:val="none" w:sz="0" w:space="0" w:color="auto"/>
+          <w:bottom w:val="none" w:sz="0" w:space="0" w:color="auto"/>
+          <w:right w:val="none" w:sz="0" w:space="0" w:color="auto"/>
+          <w:insideH w:val="none" w:sz="0" w:space="0" w:color="auto"/>
+          <w:insideV w:val="none" w:sz="0" w:space="0" w:color="auto"/>
+        </w:tblBorders>
+      </w:tblPr>
+      <w:tr>
+        <w:tc>
+          <w:p><w:r><w:t>Layout cell</w:t></w:r></w:p>
+        </w:tc>
+      </w:tr>
+    </w:tbl>
+    <w:tbl>
+      <w:tr>
+        <w:tc>
+          <w:tcPr>
+            <w:tcBorders>
+              <w:top w:val="single" w:sz="8" w:space="0" w:color="BFBFBF"/>
+              <w:left w:val="single" w:sz="8" w:space="0" w:color="FF0000"/>
+            </w:tcBorders>
+          </w:tcPr>
+          <w:p><w:r><w:t>Bordered cell</w:t></w:r></w:p>
+        </w:tc>
+      </w:tr>
+    </w:tbl>
+  </w:body>
+</w:document>`;
+
+const STYLES_WITH_TABLE_CONDITIONALS_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:style w:type="table" w:styleId="HeaderOnly">
+    <w:name w:val="Header Only"/>
+    <w:tblStylePr w:type="firstRow">
+      <w:tcPr>
+        <w:shd w:val="clear" w:color="auto" w:fill="9BBB59"/>
+        <w:tcBorders>
+          <w:top w:val="single" w:sz="8" w:space="0" w:color="00AA00"/>
+        </w:tcBorders>
+      </w:tcPr>
+      <w:rPr>
+        <w:b/>
+        <w:color w:val="FFFFFF"/>
+      </w:rPr>
+    </w:tblStylePr>
+  </w:style>
+</w:styles>`;
+
+const DOC_WITH_TABLE_STYLE_CONDITIONALS_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:tbl>
+      <w:tblPr>
+        <w:tblStyle w:val="HeaderOnly"/>
+        <w:tblLook w:firstRow="1" w:lastRow="0" w:firstColumn="0" w:lastColumn="0" w:noHBand="1" w:noVBand="1"/>
+      </w:tblPr>
+      <w:tr>
+        <w:tc><w:p><w:r><w:t>Header</w:t></w:r></w:p></w:tc>
+      </w:tr>
+      <w:tr>
+        <w:tc><w:p><w:r><w:t>Body</w:t></w:r></w:p></w:tc>
+      </w:tr>
+    </w:tbl>
+  </w:body>
+</w:document>`;
+
+const STYLES_WITH_CALENDAR_LIKE_TABLE_STYLE_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:style w:type="table" w:styleId="CalendarLike">
+    <w:name w:val="Calendar Like"/>
+    <w:pPr>
+      <w:jc w:val="right"/>
+    </w:pPr>
+    <w:rPr>
+      <w:color w:val="7F7F7F"/>
+    </w:rPr>
+    <w:tblStylePr w:type="firstRow">
+      <w:pPr>
+        <w:jc w:val="right"/>
+      </w:pPr>
+      <w:rPr>
+        <w:color w:val="365F91"/>
+        <w:sz w:val="44"/>
+      </w:rPr>
+    </w:tblStylePr>
+  </w:style>
+</w:styles>`;
+
+const DOC_WITH_CALENDAR_LIKE_TABLE_STYLE_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:tbl>
+      <w:tblPr>
+        <w:tblStyle w:val="CalendarLike"/>
+        <w:tblLook w:firstRow="1" w:lastRow="0" w:firstColumn="0" w:lastColumn="0" w:noHBand="1" w:noVBand="1"/>
+      </w:tblPr>
+      <w:tr>
+        <w:tc><w:p><w:r><w:t>December 2007</w:t></w:r></w:p></w:tc>
+      </w:tr>
+      <w:tr>
+        <w:tc><w:p><w:r><w:t>1</w:t></w:r></w:p></w:tc>
+      </w:tr>
+    </w:tbl>
+  </w:body>
+</w:document>`;
+
+const DOC_WITH_NESTED_VMERGE_TABLE_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:tbl>
+      <w:tr>
+        <w:tc>
+          <w:tbl>
+            <w:tr>
+              <w:tc>
+                <w:tcPr><w:vMerge w:val="restart"/></w:tcPr>
+                <w:p><w:r><w:t>One</w:t></w:r></w:p>
+                <w:p><w:r><w:t>Three</w:t></w:r></w:p>
+              </w:tc>
+              <w:tc><w:p><w:r><w:t>Two</w:t></w:r></w:p></w:tc>
+            </w:tr>
+            <w:tr>
+              <w:tc><w:tcPr><w:vMerge/></w:tcPr><w:p/></w:tc>
+              <w:tc><w:p><w:r><w:t>Four</w:t></w:r></w:p></w:tc>
+            </w:tr>
+          </w:tbl>
+        </w:tc>
+        <w:tc><w:p><w:r><w:t>Right</w:t></w:r></w:p></w:tc>
+      </w:tr>
+    </w:tbl>
+  </w:body>
+</w:document>`;
+
+const STYLES_WITH_STYLE_LOOK_AND_PROPERTIES_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:style w:type="table" w:styleId="StyleLookAndProperties">
+    <w:name w:val="Style Look And Properties"/>
+    <w:tblPr>
+      <w:tblLook w:firstRow="1" w:lastRow="0" w:firstColumn="1" w:lastColumn="0" w:noHBand="1" w:noVBand="1"/>
+      <w:tblW w:w="5200" w:type="dxa"/>
+      <w:tblLayout w:type="autofit"/>
+      <w:tblStyleRowBandSize w:val="2"/>
+      <w:tblStyleColBandSize w:val="2"/>
+      <w:tblCellMar><w:top w:w="80" w:type="dxa"/><w:right w:w="90" w:type="dxa"/><w:bottom w:w="80" w:type="dxa"/><w:left w:w="90" w:type="dxa"/></w:tblCellMar>
+    </w:tblPr>
+    <w:tblStylePr w:type="firstRow">
+      <w:tcPr>
+        <w:shd w:fill="9bbb59"/>
+      </w:tcPr>
+      <w:rPr>
+        <w:b/>
+        <w:color w:val="ffffff"/>
+      </w:rPr>
+    </w:tblStylePr>
+  </w:style>
+</w:styles>`;
+
+const DOC_WITH_TABLE_STYLE_LOOK_FROM_STYLE_ONLY_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:tbl>
+      <w:tblPr>
+        <w:tblStyle w:val="StyleLookAndProperties"/>
+      </w:tblPr>
+      <w:tr>
+        <w:tc><w:p><w:r><w:t>Header</w:t></w:r></w:p></w:tc>
+      </w:tr>
+      <w:tr>
+        <w:tc><w:p><w:r><w:t>Body</w:t></w:r></w:p></w:tc>
+      </w:tr>
+    </w:tbl>
+  </w:body>
+</w:document>`;
+
+const DOC_WITH_FLOATING_TABLE_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:tbl>
+      <w:tblPr>
+        <w:tblW w:w="2800" w:type="dxa"/>
+        <w:tblpPr
+          w:leftFromText="120"
+          w:rightFromText="240"
+          w:topFromText="60"
+          w:bottomFromText="180"
+          w:vertAnchor="text"
+          w:horzAnchor="margin"
+          w:tblpX="720"
+          w:tblpY="360"
+          w:tblpXSpec="left"
+          w:tblpYSpec="top"/>
+      </w:tblPr>
+      <w:tr><w:tc><w:p><w:r><w:t>Floating table</w:t></w:r></w:p></w:tc></w:tr>
+    </w:tbl>
+  </w:body>
+</w:document>`;
+
+const NUMBERED_LIST_DOC_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p>
+      <w:pPr>
+        <w:numPr>
+          <w:ilvl w:val="0"/>
+          <w:numId w:val="1"/>
+        </w:numPr>
+      </w:pPr>
+      <w:r><w:t>Top level</w:t></w:r>
+    </w:p>
+    <w:p>
+      <w:pPr>
+        <w:numPr>
+          <w:ilvl w:val="1"/>
+          <w:numId w:val="1"/>
+        </w:numPr>
+      </w:pPr>
+      <w:r><w:t>Second level</w:t></w:r>
+    </w:p>
+    <w:p>
+      <w:pPr>
+        <w:numPr>
+          <w:ilvl w:val="2"/>
+          <w:numId w:val="1"/>
+        </w:numPr>
+      </w:pPr>
+      <w:r><w:t>Third level</w:t></w:r>
+    </w:p>
+  </w:body>
+</w:document>`;
+
+const NUMBERING_DOC_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:abstractNum w:abstractNumId="0">
+    <w:lvl w:ilvl="0">
+      <w:start w:val="1"/>
+      <w:numFmt w:val="decimal"/>
+      <w:lvlText w:val="%1."/>
+      <w:lvlJc w:val="left"/>
+      <w:pPr><w:ind w:left="720" w:hanging="360"/></w:pPr>
+    </w:lvl>
+    <w:lvl w:ilvl="1">
+      <w:start w:val="1"/>
+      <w:numFmt w:val="decimal"/>
+      <w:lvlText w:val="%1.%2."/>
+      <w:lvlJc w:val="left"/>
+      <w:pPr><w:ind w:left="1440" w:hanging="360"/></w:pPr>
+      <w:rPr>
+        <w:rFonts w:hAnsi="Arial Unicode MS"/>
+        <w:color w:val="7030A0"/>
+      </w:rPr>
+    </w:lvl>
+    <w:lvl w:ilvl="2">
+      <w:start w:val="1"/>
+      <w:numFmt w:val="decimal"/>
+      <w:lvlText w:val="%1.%2.%3."/>
+      <w:lvlJc w:val="left"/>
+      <w:pPr><w:ind w:left="2160" w:hanging="360"/></w:pPr>
+    </w:lvl>
+  </w:abstractNum>
+  <w:num w:numId="1">
+    <w:abstractNumId w:val="0"/>
+  </w:num>
+</w:numbering>`;
+
+const CONTENT_TYPES_WITH_NUMBERING_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+  <Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/>
+</Types>`;
+
+const DOCUMENT_RELS_WITH_NUMBERING_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="document.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/>
+</Relationships>`;
+
+const ONE_BY_ONE_PNG = new Uint8Array(
+  Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO2M4x8AAAAASUVORK5CYII=",
+    "base64"
+  )
+);
+
+describe("doc-model import", () => {
+  it("imports text color, tables, and embedded images", async () => {
+    const zip = createZip([
+      { name: "[Content_Types].xml", content: CONTENT_TYPES_XML },
+      { name: "_rels/.rels", content: ROOT_RELS_XML },
+      { name: "word/document.xml", content: RED_TEXT_DOC_XML },
+      { name: "word/_rels/document.xml.rels", content: DOCUMENT_RELS_XML },
+      { name: "word/media/image1.png", content: ONE_BY_ONE_PNG }
+    ]);
+
+    const pkg = await parseDocx(zip);
+    const model = buildDocModel(pkg);
+
+    const firstParagraph = model.nodes[0];
+    expect(firstParagraph?.type).toBe("paragraph");
+    if (firstParagraph?.type === "paragraph") {
+      const firstRun = firstParagraph.children[0];
+      expect(firstRun?.type).toBe("text");
+      if (firstRun?.type === "text") {
+        expect(firstRun.style?.color?.toLowerCase()).toBe("#ff0000");
+      }
+    }
+
+    const tableNode = model.nodes.find((node) => node.type === "table");
+    expect(tableNode).toBeDefined();
+    if (tableNode?.type === "table") {
+      expect(tableNode.rows[0]?.cells[0]?.style?.backgroundColor?.toLowerCase()).toBe("#00ff00");
+      expect(tableNode.rows[0]?.cells[0]?.nodes[0]?.children[0]?.type).toBe("text");
+    }
+
+    const imageParagraph = model.nodes.find((node) =>
+      node.type === "paragraph" && node.children.some((child) => child.type === "image")
+    );
+    expect(imageParagraph).toBeDefined();
+    if (imageParagraph?.type === "paragraph") {
+      const imageRun = imageParagraph.children.find((child) => child.type === "image");
+      expect(imageRun).toBeDefined();
+      if (imageRun?.type === "image") {
+        expect(imageRun.src?.startsWith("data:image/png;base64,")).toBe(true);
+        expect(imageRun.widthPx).toBeGreaterThan(0);
+        expect(imageRun.heightPx).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  it("imports numbering level indentation metadata", async () => {
+    const zip = createZip([
+      { name: "[Content_Types].xml", content: CONTENT_TYPES_WITH_NUMBERING_XML },
+      { name: "_rels/.rels", content: ROOT_RELS_XML },
+      { name: "word/document.xml", content: NUMBERED_LIST_DOC_XML },
+      { name: "word/_rels/document.xml.rels", content: DOCUMENT_RELS_WITH_NUMBERING_XML },
+      { name: "word/numbering.xml", content: NUMBERING_DOC_XML }
+    ]);
+
+    const pkg = await parseDocx(zip);
+    const model = buildDocModel(pkg);
+
+    expect(model.metadata.numberingDefinitions).toBeDefined();
+    const levelSet = model.metadata.numberingDefinitions;
+    if (!levelSet) {
+      return;
+    }
+
+    const numbering = levelSet.instances.find((instance) => instance.numId === 1);
+    expect(numbering?.abstractNumId).toBe(0);
+
+    const abstractNumber = levelSet.abstracts.find((candidate) => candidate.abstractNumId === 0);
+    expect(abstractNumber?.levels[0]?.indent?.leftTwips).toBe(720);
+    expect(abstractNumber?.levels[1]?.indent?.leftTwips).toBe(1440);
+    expect(abstractNumber?.levels[2]?.indent?.leftTwips).toBe(2160);
+    expect(abstractNumber?.levels[1]?.runStyle?.color?.toLowerCase()).toBe("#7030a0");
+  });
+
+  it("imports hyperlink runs with external targets", async () => {
+    const zip = createZip([
+      { name: "[Content_Types].xml", content: CONTENT_TYPES_XML },
+      { name: "_rels/.rels", content: ROOT_RELS_XML },
+      { name: "word/document.xml", content: HYPERLINK_DOC_XML },
+      { name: "word/_rels/document.xml.rels", content: DOCUMENT_RELS_WITH_HYPERLINK_XML }
+    ]);
+
+    const pkg = await parseDocx(zip);
+    const model = buildDocModel(pkg);
+    const firstParagraph = model.nodes[0];
+    expect(firstParagraph?.type).toBe("paragraph");
+
+    if (firstParagraph?.type === "paragraph") {
+      const linkRun = firstParagraph.children.find(
+        (child) => child.type === "text" && child.link
+      );
+      expect(linkRun?.type).toBe("text");
+      if (linkRun?.type === "text") {
+        expect(linkRun.text).toBe("openai.com");
+        expect(linkRun.link).toBe("https://openai.com");
+      }
+    }
+  });
+
+  it("imports field-code hyperlinks as clickable links", async () => {
+    const zip = createZip([
+      { name: "[Content_Types].xml", content: CONTENT_TYPES_XML },
+      { name: "_rels/.rels", content: ROOT_RELS_XML },
+      { name: "word/document.xml", content: FIELD_HYPERLINK_DOC_XML }
+    ]);
+
+    const pkg = await parseDocx(zip);
+    const model = buildDocModel(pkg);
+    const firstParagraph = model.nodes[0];
+    expect(firstParagraph?.type).toBe("paragraph");
+
+    if (firstParagraph?.type === "paragraph") {
+      const linkRun = firstParagraph.children.find(
+        (child) => child.type === "text" && child.text === "_________"
+      );
+      expect(linkRun?.type).toBe("text");
+      if (linkRun?.type === "text") {
+        expect(linkRun.link).toBe("https://example.com");
+      }
+    }
+  });
+
+  it("imports SDT form controls as structured form-field runs", async () => {
+    const zip = createZip([
+      { name: "[Content_Types].xml", content: CONTENT_TYPES_XML },
+      { name: "_rels/.rels", content: ROOT_RELS_XML },
+      { name: "word/document.xml", content: FORM_CONTROLS_DOC_XML }
+    ]);
+
+    const pkg = await parseDocx(zip);
+    const model = buildDocModel(pkg);
+
+    const firstParagraph = model.nodes[0];
+    expect(firstParagraph?.type).toBe("paragraph");
+    if (firstParagraph?.type === "paragraph") {
+      const checkboxField = firstParagraph.children.find(
+        (child) => child.type === "form-field" && child.fieldType === "checkbox"
+      );
+      expect(checkboxField?.type).toBe("form-field");
+      if (checkboxField?.type === "form-field") {
+        expect(checkboxField.fieldType).toBe("checkbox");
+        expect(checkboxField.checked).toBe(false);
+        expect(checkboxField.uncheckedSymbol).toBe("☐");
+      }
+
+      const textField = firstParagraph.children.find(
+        (child) => child.type === "form-field" && child.fieldType === "text"
+      );
+      expect(textField?.type).toBe("form-field");
+      if (textField?.type === "form-field") {
+        expect(textField.value).toBe("Click here.");
+      }
+    }
+
+    const secondParagraph = model.nodes[1];
+    expect(secondParagraph?.type).toBe("paragraph");
+    if (secondParagraph?.type === "paragraph") {
+      const dropdownField = secondParagraph.children.find(
+        (child) => child.type === "form-field" && child.fieldType === "dropdown"
+      );
+      expect(dropdownField?.type).toBe("form-field");
+      if (dropdownField?.type === "form-field") {
+        expect(dropdownField.value).toBe("Option B");
+        expect(dropdownField.options).toHaveLength(2);
+      }
+    }
+  });
+
+  it("imports header images, table row shading, cell spans, and run styles", async () => {
+    const zip = createZip([
+      { name: "[Content_Types].xml", content: CONTENT_TYPES_WITH_HEADER_XML },
+      { name: "_rels/.rels", content: ROOT_RELS_XML },
+      { name: "word/document.xml", content: TABLE_AND_HEADER_DOC_XML },
+      { name: "word/_rels/document.xml.rels", content: DOCUMENT_RELS_WITH_HEADER_XML },
+      { name: "word/header1.xml", content: HEADER_XML },
+      { name: "word/_rels/header1.xml.rels", content: HEADER_RELS_XML },
+      { name: "word/media/image1.png", content: ONE_BY_ONE_PNG }
+    ]);
+
+    const pkg = await parseDocx(zip);
+    const model = buildDocModel(pkg);
+
+    const tableNode = model.nodes.find((node) => node.type === "table");
+    expect(tableNode).toBeDefined();
+    if (tableNode?.type === "table") {
+      const headerRow = tableNode.rows[0];
+      expect(headerRow?.style?.backgroundColor?.toLowerCase()).toBe("#3f4448");
+      expect(headerRow?.cells[0]?.style?.gridSpan).toBe(2);
+
+      const firstRun = headerRow?.cells[0]?.nodes[0]?.children[0];
+      expect(firstRun?.type).toBe("text");
+      if (firstRun?.type === "text") {
+        expect(firstRun.style?.bold).toBe(true);
+        expect(firstRun.style?.color?.toLowerCase()).toBe("#ffffff");
+      }
+    }
+
+    expect(model.metadata.headerSections).toHaveLength(1);
+    const headerSection = model.metadata.headerSections[0];
+    expect(headerSection?.partName).toBe("word/header1.xml");
+
+    const headerTable = headerSection?.nodes.find((node) => node.type === "table");
+    expect(headerTable).toBeDefined();
+    if (headerTable?.type === "table") {
+      const imageRun = headerTable.rows[0]?.cells[1]?.nodes[0]?.children.find((child) => child.type === "image");
+      expect(imageRun).toBeDefined();
+      if (imageRun?.type === "image") {
+        expect(imageRun.src?.startsWith("data:image/png;base64,")).toBe(true);
+      }
+    }
+  });
+
+  it("tracks section-scoped header references for multi-section documents", async () => {
+    const zip = createZip([
+      { name: "[Content_Types].xml", content: CONTENT_TYPES_WITH_TWO_HEADERS_XML },
+      { name: "_rels/.rels", content: ROOT_RELS_XML },
+      { name: "word/document.xml", content: MULTI_SECTION_HEADERS_DOC_XML },
+      { name: "word/_rels/document.xml.rels", content: DOCUMENT_RELS_WITH_TWO_HEADERS_XML },
+      { name: "word/header1.xml", content: SIMPLE_HEADER_ONE_XML },
+      { name: "word/header2.xml", content: SIMPLE_HEADER_TWO_XML }
+    ]);
+
+    const pkg = await parseDocx(zip);
+    const model = buildDocModel(pkg);
+
+    expect(model.metadata.sections).toBeDefined();
+    expect(model.metadata.sections).toHaveLength(2);
+    expect(model.metadata.sections?.[0]?.startNodeIndex).toBe(0);
+    expect(model.metadata.sections?.[1]?.startNodeIndex).toBe(2);
+    expect(model.metadata.sections?.[0]?.headerSections[0]?.partName).toBe("word/header1.xml");
+    expect(model.metadata.sections?.[1]?.headerSections[0]?.partName).toBe("word/header2.xml");
+  });
+
+  it("imports overlay textbox text from drawing runs with nested runs", async () => {
+    const zip = createZip([
+      { name: "[Content_Types].xml", content: CONTENT_TYPES_XML },
+      { name: "_rels/.rels", content: ROOT_RELS_XML },
+      { name: "word/document.xml", content: DRAWING_TEXTBOX_DOC_XML },
+      { name: "word/_rels/document.xml.rels", content: DOCUMENT_RELS_XML },
+      { name: "word/media/image1.png", content: ONE_BY_ONE_PNG }
+    ]);
+
+    const pkg = await parseDocx(zip);
+    const model = buildDocModel(pkg);
+
+    const firstParagraph = model.nodes[0];
+    expect(firstParagraph?.type).toBe("paragraph");
+    if (firstParagraph?.type === "paragraph") {
+      const imageRuns = firstParagraph.children.filter((child) => child.type === "image");
+      expect(imageRuns.length).toBeGreaterThanOrEqual(2);
+
+      const overlayImage = imageRuns.find((child) => child.syntheticTextBox);
+      expect(overlayImage?.type).toBe("image");
+      if (overlayImage?.type === "image") {
+        expect(overlayImage.src?.startsWith("data:image/svg+xml")).toBe(true);
+        expect(overlayImage.contentType).toBe("image/svg+xml");
+      }
+
+      const overlayTextInFlow = firstParagraph.children.find(
+        (child) => child.type === "text" && child.text.includes("Overlay Title")
+      );
+      expect(overlayTextInFlow).toBeUndefined();
+    }
+  });
+
+  it("prefers AlternateContent Choice textbox text and style over fallback duplication", async () => {
+    const zip = createZip([
+      { name: "[Content_Types].xml", content: CONTENT_TYPES_XML },
+      { name: "_rels/.rels", content: ROOT_RELS_XML },
+      { name: "word/document.xml", content: DRAWING_TEXTBOX_ALTERNATE_DOC_XML }
+    ]);
+
+    const pkg = await parseDocx(zip);
+    const model = buildDocModel(pkg);
+
+    const firstParagraph = model.nodes[0];
+    expect(firstParagraph?.type).toBe("paragraph");
+    if (firstParagraph?.type === "paragraph") {
+      const overlayImage = firstParagraph.children.find(
+        (child) => child.type === "image" && child.syntheticTextBox
+      );
+      expect(overlayImage?.type).toBe("image");
+      if (overlayImage?.type === "image") {
+        expect(overlayImage.src?.startsWith("data:image/svg+xml")).toBe(true);
+        expect(overlayImage.contentType).toBe("image/svg+xml");
+      }
+
+      const overlayTextInFlow = firstParagraph.children.find(
+        (child) => child.type === "text" && child.text.includes("Overlay Title")
+      );
+      expect(overlayTextInFlow).toBeUndefined();
+    }
+  });
+
+  it("keeps color-only textbox underline tags from forcing underline and fits long overlay text", async () => {
+    const zip = createZip([
+      { name: "[Content_Types].xml", content: CONTENT_TYPES_WITH_STYLES_XML },
+      { name: "_rels/.rels", content: ROOT_RELS_XML },
+      { name: "word/document.xml", content: TEXTBOX_COLOR_ONLY_UNDERLINE_DOC_XML },
+      { name: "word/styles.xml", content: TEXTBOX_COLOR_ONLY_UNDERLINE_STYLES_XML }
+    ]);
+
+    const pkg = await parseDocx(zip);
+    const model = buildDocModel(pkg);
+
+    const firstParagraph = model.nodes[0];
+    expect(firstParagraph?.type).toBe("paragraph");
+    if (firstParagraph?.type === "paragraph") {
+      const overlayImage = firstParagraph.children.find(
+        (child) => child.type === "image" && child.syntheticTextBox
+      );
+      expect(overlayImage?.type).toBe("image");
+      if (overlayImage?.type === "image") {
+        expect(overlayImage.src?.startsWith("data:image/svg+xml")).toBe(true);
+        const encodedSvg = overlayImage.src?.replace(/^data:image\/svg\+xml;charset=utf-8,/, "") ?? "";
+        const decodedSvg = decodeURIComponent(encodedSvg);
+
+        expect(decodedSvg).toContain("Cleaning Services for Libraries ACT");
+        expect(decodedSvg).toContain("font-family=\"Calibri, Arial, sans-serif\"");
+        expect(decodedSvg).not.toContain("text-decoration=\"underline\"");
+        expect(decodedSvg).toContain("textLength=\"");
+      }
+    }
+  });
+
+  it("imports chart relationships as renderable svg image runs", async () => {
+    const zip = createZip([
+      { name: "[Content_Types].xml", content: CONTENT_TYPES_WITH_CHART_XML },
+      { name: "_rels/.rels", content: ROOT_RELS_XML },
+      { name: "word/document.xml", content: CHART_DOC_XML },
+      { name: "word/_rels/document.xml.rels", content: DOCUMENT_RELS_WITH_CHART_XML },
+      { name: "word/charts/chart1.xml", content: CHART_XML }
+    ]);
+
+    const pkg = await parseDocx(zip);
+    const model = buildDocModel(pkg);
+
+    const chartParagraph = model.nodes.find(
+      (node) => node.type === "paragraph" && node.children.some((child) => child.type === "image")
+    );
+    expect(chartParagraph).toBeDefined();
+
+    if (chartParagraph?.type === "paragraph") {
+      const chartImage = chartParagraph.children.find((child) => child.type === "image");
+      expect(chartImage?.type).toBe("image");
+      if (chartImage?.type === "image") {
+        expect(chartImage.src?.startsWith("data:image/svg+xml")).toBe(true);
+        expect(chartImage.widthPx).toBeGreaterThan(0);
+        expect(chartImage.heightPx).toBeGreaterThan(0);
+        expect(chartImage.alt).toBe("Sales chart");
+      }
+    }
+  });
+
+  it("imports style definitions and applies style-inherited run formatting", async () => {
+    const zip = createZip([
+      { name: "[Content_Types].xml", content: CONTENT_TYPES_WITH_STYLES_XML },
+      { name: "_rels/.rels", content: ROOT_RELS_XML },
+      { name: "word/document.xml", content: DOC_WITH_STYLE_REFERENCES_XML },
+      { name: "word/styles.xml", content: STYLES_DOC_XML }
+    ]);
+
+    const pkg = await parseDocx(zip);
+    const model = buildDocModel(pkg);
+
+    expect(model.metadata.defaultParagraphStyleId).toBe("Normal");
+    expect(model.metadata.paragraphStyles.some((style) => style.id === "CustomBody")).toBe(true);
+
+    const firstParagraph = model.nodes[0];
+    expect(firstParagraph?.type).toBe("paragraph");
+    if (firstParagraph?.type === "paragraph") {
+      expect(firstParagraph.style?.styleId).toBe("CustomBody");
+      expect(firstParagraph.style?.styleName).toBe("Custom Body");
+
+      const firstRun = firstParagraph.children[0];
+      expect(firstRun?.type).toBe("text");
+      if (firstRun?.type === "text") {
+        expect(firstRun.style?.fontFamily).toBe("Georgia");
+        expect(firstRun.style?.color?.toLowerCase()).toBe("#336699");
+      }
+    }
+
+    const secondParagraph = model.nodes[1];
+    expect(secondParagraph?.type).toBe("paragraph");
+    if (secondParagraph?.type === "paragraph") {
+      const styledRun = secondParagraph.children[0];
+      expect(styledRun?.type).toBe("text");
+      if (styledRun?.type === "text") {
+        expect(styledRun.style?.underline).toBe(true);
+        expect(styledRun.style?.color?.toLowerCase()).toBe("#aa00aa");
+      }
+    }
+
+    const thirdParagraph = model.nodes[2];
+    expect(thirdParagraph?.type).toBe("paragraph");
+    if (thirdParagraph?.type === "paragraph") {
+      const eastAsiaOnlyRun = thirdParagraph.children[0];
+      expect(eastAsiaOnlyRun?.type).toBe("text");
+      if (eastAsiaOnlyRun?.type === "text") {
+        expect(eastAsiaOnlyRun.style?.fontFamily).toBe("Georgia");
+      }
+    }
+  });
+
+  it("imports paragraph pagination properties from style inheritance and direct paragraph properties", async () => {
+    const zip = createZip([
+      { name: "[Content_Types].xml", content: CONTENT_TYPES_WITH_STYLES_XML },
+      { name: "_rels/.rels", content: ROOT_RELS_XML },
+      { name: "word/document.xml", content: DOC_WITH_PAGINATION_STYLE_XML },
+      { name: "word/styles.xml", content: PAGINATION_STYLES_XML }
+    ]);
+
+    const pkg = await parseDocx(zip);
+    const model = buildDocModel(pkg);
+
+    const keepWithNextStyle = model.metadata.paragraphStyles.find((style) => style.id === "KeepWithNext");
+    expect(keepWithNextStyle).toBeDefined();
+    expect(keepWithNextStyle?.keepNext).toBe(true);
+    expect(keepWithNextStyle?.keepLines).toBe(true);
+    expect(keepWithNextStyle?.pageBreakBefore).toBe(false);
+
+    const firstParagraph = model.nodes[0];
+    expect(firstParagraph?.type).toBe("paragraph");
+    if (firstParagraph?.type === "paragraph") {
+      expect(firstParagraph.style?.keepNext).toBe(true);
+      expect(firstParagraph.style?.keepLines).toBe(true);
+      expect(firstParagraph.style?.pageBreakBefore).toBe(false);
+    }
+
+    const secondParagraph = model.nodes[1];
+    expect(secondParagraph?.type).toBe("paragraph");
+    if (secondParagraph?.type === "paragraph") {
+      expect(secondParagraph.style?.pageBreakBefore).toBe(true);
+      expect(secondParagraph.style?.keepLines).toBe(false);
+    }
+  });
+
+  it("imports paragraph border properties from style inheritance and direct paragraph properties", async () => {
+    const zip = createZip([
+      { name: "[Content_Types].xml", content: CONTENT_TYPES_WITH_STYLES_XML },
+      { name: "_rels/.rels", content: ROOT_RELS_XML },
+      { name: "word/document.xml", content: DOC_WITH_PARAGRAPH_BORDERS_XML },
+      { name: "word/styles.xml", content: PARAGRAPH_BORDERS_STYLES_XML }
+    ]);
+
+    const pkg = await parseDocx(zip);
+    const model = buildDocModel(pkg);
+
+    const titleStyle = model.metadata.paragraphStyles.find((style) => style.id === "Title");
+    expect(titleStyle).toBeDefined();
+    expect(titleStyle?.borders?.top?.type).toBe("double");
+    expect(titleStyle?.borders?.top?.spacePt).toBe(2);
+    expect(titleStyle?.borders?.bottom?.type).toBe("single");
+    expect(titleStyle?.borders?.bottom?.spacePt).toBe(4);
+
+    const firstParagraph = model.nodes[0];
+    expect(firstParagraph?.type).toBe("paragraph");
+    if (firstParagraph?.type === "paragraph") {
+      expect(firstParagraph.style?.borders?.top?.type).toBe("double");
+      expect(firstParagraph.style?.borders?.bottom?.type).toBe("single");
+    }
+
+    const secondParagraph = model.nodes[1];
+    expect(secondParagraph?.type).toBe("paragraph");
+    if (secondParagraph?.type === "paragraph") {
+      expect(secondParagraph.style?.borders?.bottom?.type).toBe("nil");
+      expect(secondParagraph.style?.borders?.top?.type).toBe("double");
+    }
+  });
+
+  it("imports paragraph shading as paragraph background color", async () => {
+    const zip = createZip([
+      { name: "[Content_Types].xml", content: CONTENT_TYPES_XML },
+      { name: "_rels/.rels", content: ROOT_RELS_XML },
+      { name: "word/document.xml", content: DOC_WITH_PARAGRAPH_SHADING_XML }
+    ]);
+
+    const pkg = await parseDocx(zip);
+    const model = buildDocModel(pkg);
+
+    const firstParagraph = model.nodes[0];
+    expect(firstParagraph?.type).toBe("paragraph");
+    if (firstParagraph?.type === "paragraph") {
+      expect(firstParagraph.style?.backgroundColor?.toLowerCase()).toBe("#dddddd");
+      expect(firstParagraph.style?.align).toBe("right");
+    }
+  });
+
+  it("maps paragraph alignment both to justify", async () => {
+    const zip = createZip([
+      { name: "[Content_Types].xml", content: CONTENT_TYPES_XML },
+      { name: "_rels/.rels", content: ROOT_RELS_XML },
+      { name: "word/document.xml", content: DOC_WITH_JC_BOTH_XML }
+    ]);
+    const pkg = await parseDocx(zip);
+    const model = buildDocModel(pkg);
+    const firstParagraph = model.nodes[0];
+
+    expect(firstParagraph?.type).toBe("paragraph");
+    if (firstParagraph?.type === "paragraph") {
+      expect(firstParagraph.style?.align).toBe("justify");
+    }
+  });
+
+  it("imports table layout metadata and skips bookmark-only _GoBack paragraphs", async () => {
+    const zip = createZip([
+      { name: "[Content_Types].xml", content: CONTENT_TYPES_XML },
+      { name: "_rels/.rels", content: ROOT_RELS_XML },
+      { name: "word/document.xml", content: TABLE_LAYOUT_DOC_XML },
+      { name: "word/_rels/document.xml.rels", content: DOCUMENT_RELS_XML }
+    ]);
+
+    const pkg = await parseDocx(zip);
+    const model = buildDocModel(pkg);
+
+    expect(model.nodes).toHaveLength(1);
+    const table = model.nodes[0];
+    expect(table?.type).toBe("table");
+    if (table?.type === "table") {
+      expect(table.style?.widthTwips).toBe(7200);
+      expect(table.style?.indentTwips).toBe(180);
+      expect(table.style?.layout).toBe("fixed");
+      expect(table.style?.columnWidthsTwips).toEqual([5000, 2200]);
+      expect(table.style?.cellMarginTwips).toEqual({
+        topTwips: 120,
+        rightTwips: 90,
+        bottomTwips: 120,
+        leftTwips: 90
+      });
+
+      const firstRow = table.rows[0];
+      expect(firstRow?.style?.heightTwips).toBe(840);
+
+      const firstCell = firstRow?.cells[0];
+      expect(firstCell?.style?.widthTwips).toBe(5000);
+      expect(firstCell?.style?.verticalAlign).toBe("center");
+      expect(firstCell?.style?.marginTwips).toEqual({
+        topTwips: 180,
+        rightTwips: 180,
+        bottomTwips: 180,
+        leftTwips: 180
+      });
+    }
+  });
+
+  it("imports table and cell border metadata", async () => {
+    const zip = createZip([
+      { name: "[Content_Types].xml", content: CONTENT_TYPES_XML },
+      { name: "_rels/.rels", content: ROOT_RELS_XML },
+      { name: "word/document.xml", content: TABLE_BORDERS_DOC_XML },
+      { name: "word/_rels/document.xml.rels", content: DOCUMENT_RELS_XML }
+    ]);
+
+    const pkg = await parseDocx(zip);
+    const model = buildDocModel(pkg);
+
+    expect(model.nodes).toHaveLength(2);
+    expect(model.nodes[0]?.type).toBe("table");
+    expect(model.nodes[1]?.type).toBe("table");
+
+    const layoutTable = model.nodes[0];
+    if (layoutTable?.type === "table") {
+      expect(layoutTable.style?.borders?.top?.type).toBe("none");
+      expect(layoutTable.style?.borders?.insideH?.type).toBe("none");
+    }
+
+    const borderedTable = model.nodes[1];
+    if (borderedTable?.type === "table") {
+      const firstCell = borderedTable.rows[0]?.cells[0];
+      expect(firstCell?.style?.borders?.top).toEqual({
+        type: "single",
+        sizeEighthPt: 8,
+        color: "#BFBFBF"
+      });
+      expect(firstCell?.style?.borders?.left).toEqual({
+        type: "single",
+        sizeEighthPt: 8,
+        color: "#FF0000"
+      });
+    }
+  });
+
+  it("applies first-row table style condition without leaking to whole-table formatting", async () => {
+    const zip = createZip([
+      { name: "[Content_Types].xml", content: CONTENT_TYPES_WITH_STYLES_XML },
+      { name: "_rels/.rels", content: ROOT_RELS_XML },
+      { name: "word/document.xml", content: DOC_WITH_TABLE_STYLE_CONDITIONALS_XML },
+      { name: "word/styles.xml", content: STYLES_WITH_TABLE_CONDITIONALS_XML }
+    ]);
+
+    const pkg = await parseDocx(zip);
+    const model = buildDocModel(pkg);
+    const table = model.nodes[0];
+    expect(table?.type).toBe("table");
+    if (table?.type !== "table") {
+      return;
+    }
+
+    expect(table.style?.borders).toBeUndefined();
+    expect(table.rows[0]?.cells[0]?.style?.backgroundColor?.toLowerCase()).toBe("#9bbb59");
+    expect(table.rows[0]?.cells[0]?.style?.borders?.top?.type).toBe("single");
+    expect(table.rows[0]?.cells[0]?.nodes[0]?.children[0]?.type).toBe("text");
+    if (table.rows[0]?.cells[0]?.nodes[0]?.children[0]?.type === "text") {
+      expect(table.rows[0].cells[0].nodes[0].children[0].style?.bold).toBe(true);
+      expect(table.rows[0].cells[0].nodes[0].children[0].style?.color?.toLowerCase()).toBe("#ffffff");
+    }
+    expect(table.rows[1]?.cells[0]?.style?.backgroundColor).toBeUndefined();
+    expect(table.rows[1]?.cells[0]?.style?.borders).toBeUndefined();
+  });
+
+  it("applies table-style paragraph alignment and first-row run overrides", async () => {
+    const zip = createZip([
+      { name: "[Content_Types].xml", content: CONTENT_TYPES_WITH_STYLES_XML },
+      { name: "_rels/.rels", content: ROOT_RELS_XML },
+      { name: "word/document.xml", content: DOC_WITH_CALENDAR_LIKE_TABLE_STYLE_XML },
+      { name: "word/styles.xml", content: STYLES_WITH_CALENDAR_LIKE_TABLE_STYLE_XML }
+    ]);
+
+    const pkg = await parseDocx(zip);
+    const model = buildDocModel(pkg);
+    const table = model.nodes[0];
+    expect(table?.type).toBe("table");
+    if (table?.type !== "table") {
+      return;
+    }
+
+    const firstRowParagraph = table.rows[0]?.cells[0]?.nodes[0];
+    const secondRowParagraph = table.rows[1]?.cells[0]?.nodes[0];
+    expect(firstRowParagraph?.type).toBe("paragraph");
+    expect(secondRowParagraph?.type).toBe("paragraph");
+    if (firstRowParagraph?.type !== "paragraph" || secondRowParagraph?.type !== "paragraph") {
+      return;
+    }
+
+    expect(firstRowParagraph.style?.align).toBe("right");
+    expect(secondRowParagraph.style?.align).toBe("right");
+
+    const firstRun = firstRowParagraph.children[0];
+    const secondRun = secondRowParagraph.children[0];
+    expect(firstRun?.type).toBe("text");
+    expect(secondRun?.type).toBe("text");
+    if (firstRun?.type !== "text" || secondRun?.type !== "text") {
+      return;
+    }
+
+    expect(firstRun.style?.color?.toLowerCase()).toBe("#365f91");
+    expect(firstRun.style?.fontSizePt).toBe(22);
+    expect(secondRun.style?.color?.toLowerCase()).toBe("#7f7f7f");
+  });
+
+  it("preserves nested table structure and vertical merge metadata in cells", async () => {
+    const zip = createZip([
+      { name: "[Content_Types].xml", content: CONTENT_TYPES_XML },
+      { name: "_rels/.rels", content: ROOT_RELS_XML },
+      { name: "word/document.xml", content: DOC_WITH_NESTED_VMERGE_TABLE_XML }
+    ]);
+
+    const pkg = await parseDocx(zip);
+    const model = buildDocModel(pkg);
+    const outerTable = model.nodes[0];
+    expect(outerTable?.type).toBe("table");
+    if (outerTable?.type !== "table") {
+      return;
+    }
+
+    const leftCell = outerTable.rows[0]?.cells[0];
+    const nestedTable = leftCell?.nodes.find((node) => node.type === "table");
+    expect(nestedTable?.type).toBe("table");
+    if (!nestedTable || nestedTable.type !== "table") {
+      return;
+    }
+    expect(leftCell?.nodes).toHaveLength(1);
+
+    expect(nestedTable.rows).toHaveLength(2);
+    expect(nestedTable.rows[0]?.cells[0]?.style?.rowSpan).toBe(2);
+    expect(nestedTable.rows[1]?.cells[0]?.style?.vMergeContinuation).toBe(true);
+  });
+
+  it("imports floating table positioning metadata from tblpPr", async () => {
+    const zip = createZip([
+      { name: "[Content_Types].xml", content: CONTENT_TYPES_XML },
+      { name: "_rels/.rels", content: ROOT_RELS_XML },
+      { name: "word/document.xml", content: DOC_WITH_FLOATING_TABLE_XML }
+    ]);
+
+    const pkg = await parseDocx(zip);
+    const model = buildDocModel(pkg);
+    const table = model.nodes[0];
+    expect(table?.type).toBe("table");
+    if (table?.type !== "table") {
+      return;
+    }
+
+    expect(table.style?.floating).toEqual({
+      xTwips: 720,
+      yTwips: 360,
+      leftFromTextTwips: 120,
+      rightFromTextTwips: 240,
+      topFromTextTwips: 60,
+      bottomFromTextTwips: 180,
+      horizontalAnchor: "margin",
+      verticalAnchor: "text",
+      horizontalAlign: "left",
+      verticalAlign: "top"
+    });
+  });
+
+  it("applies table style look and properties from style definition when table instance omits them", async () => {
+    const zip = createZip([
+      { name: "[Content_Types].xml", content: CONTENT_TYPES_XML },
+      { name: "_rels/.rels", content: ROOT_RELS_XML },
+      { name: "word/document.xml", content: DOC_WITH_TABLE_STYLE_LOOK_FROM_STYLE_ONLY_XML },
+      { name: "word/styles.xml", content: STYLES_WITH_STYLE_LOOK_AND_PROPERTIES_XML }
+    ]);
+
+    const pkg = await parseDocx(zip);
+    const model = buildDocModel(pkg);
+    const table = model.nodes[0];
+    expect(table?.type).toBe("table");
+    if (table?.type !== "table") {
+      return;
+    }
+
+    expect(table.style?.widthTwips).toBe(5200);
+    expect(table.style?.layout).toBe("autofit");
+    expect(table.style?.cellMarginTwips).toEqual({
+      topTwips: 80,
+      rightTwips: 90,
+      bottomTwips: 80,
+      leftTwips: 90
+    });
+    expect(table.rows[0]?.cells[0]?.nodes[0]?.children[0]?.type).toBe("text");
+    const firstCellRun = table.rows[0]?.cells[0]?.nodes[0]?.children[0];
+    if (firstCellRun?.type === "text") {
+      expect(firstCellRun.style?.bold).toBe(true);
+      expect(firstCellRun.style?.color?.toLowerCase()).toBe("#ffffff");
+    }
+  });
+
+  it("imports compatibility pagination flags from settings.xml", async () => {
+    const settingsXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:settings xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:compat>
+    <w:suppressSpBfAfterPgBrk/>
+    <w:usePrinterMetrics w:val="1"/>
+    <w:doNotUseHTMLParagraphAutoSpacing/>
+    <w:doNotBreakWrappedTables/>
+    <w:doNotBreakConstrainedForcedTable/>
+  </w:compat>
+</w:settings>`;
+    const zip = createZip([
+      { name: "[Content_Types].xml", content: CONTENT_TYPES_XML },
+      { name: "_rels/.rels", content: ROOT_RELS_XML },
+      { name: "word/document.xml", content: RED_TEXT_DOC_XML },
+      { name: "word/settings.xml", content: settingsXml }
+    ]);
+
+    const pkg = await parseDocx(zip);
+    const model = buildDocModel(pkg);
+
+    expect(model.metadata.compatibility).toEqual({
+      suppressSpacingBeforeAfterPageBreak: true,
+      usePrinterMetrics: true,
+      useFixedHtmlParagraphSpacing: true,
+      doNotBreakWrappedTables: true,
+      doNotBreakConstrainedForcedTable: true
+    });
+  });
+});
