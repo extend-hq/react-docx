@@ -31,6 +31,7 @@ import {
   AlignLeft,
   AlignRight,
   Bold,
+  Columns2,
   Download,
   FileDiff,
   Highlighter,
@@ -1250,6 +1251,34 @@ function buildDocxTestSummary(editor: DocxEditorController): PlaygroundDocxTestS
   };
 }
 
+function parseToolbarSectionColumns(
+  sectionPropertiesXml?: string
+): { count: number; gapPx: number } | undefined {
+  if (!sectionPropertiesXml) {
+    return undefined;
+  }
+
+  const columnsTag = sectionPropertiesXml.match(/<w:cols\b[^>]*\/?>/i)?.[0];
+  if (!columnsTag) {
+    return undefined;
+  }
+
+  const countRaw = columnsTag.match(/\bw:num="(\d+)"/i)?.[1];
+  const count = countRaw ? Number(countRaw) : 1;
+  if (!Number.isFinite(count) || count <= 1) {
+    return undefined;
+  }
+
+  const gapRaw = columnsTag.match(/\bw:space="(\d+)"/i)?.[1];
+  const gapTwips = gapRaw ? Number(gapRaw) : 720;
+  const gapPx = Math.max(0, Math.round((gapTwips * 96) / 1440));
+
+  return {
+    count: Math.max(2, Math.round(count)),
+    gapPx
+  };
+}
+
 export function App(): React.JSX.Element {
   const { theme, resolvedTheme, setTheme } = useTheme();
   const editor = useDocxEditor();
@@ -1329,6 +1358,26 @@ export function App(): React.JSX.Element {
   const [formWidgetDraft, setFormWidgetDraft] = React.useState<
     FormWidgetDialogDraft | undefined
   >(undefined);
+  const activeSectionColumns = React.useMemo(() => {
+    const activeNodeIndex =
+      editor.selection.kind === "paragraph"
+        ? editor.selection.nodeIndex
+        : editor.selection.tableIndex;
+    const sections = editor.model.metadata.sections ?? [];
+    const activeSection = sections
+      .filter((section) => section.startNodeIndex <= activeNodeIndex)
+      .at(-1);
+    return (
+      parseToolbarSectionColumns(activeSection?.sectionPropertiesXml) ??
+      parseToolbarSectionColumns(editor.model.metadata.sectionPropertiesXml) ??
+      pageLayout.columns
+    );
+  }, [
+    editor.model.metadata.sectionPropertiesXml,
+    editor.model.metadata.sections,
+    editor.selection,
+    pageLayout.columns
+  ]);
 
   React.useEffect(() => {
     setThemeReady(true);
@@ -2428,6 +2477,17 @@ export function App(): React.JSX.Element {
                   <ListOrdered />
                   Numbered
                 </Toggle>
+              </ButtonGroup>
+
+              <ButtonGroup>
+                <div className="border-input bg-input/20 dark:bg-input/30 h-8 rounded-md border px-2 py-1.5 text-xs/relaxed text-muted-foreground flex items-center gap-2">
+                  <Columns2 className="size-3.5" />
+                  <span>
+                    {activeSectionColumns
+                      ? `${activeSectionColumns.count} columns`
+                      : "1 column"}
+                  </span>
+                </div>
               </ButtonGroup>
 
               <ButtonGroup>

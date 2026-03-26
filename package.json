@@ -5,6 +5,7 @@
   "packageManager": "pnpm@9.15.0",
   "type": "module",
   "scripts": {
+    "prepare": "git config core.hooksPath .githooks || true",
     "build": "pnpm -r --filter './packages/*' run build",
     "clean": "pnpm -r --filter './packages/*' run clean",
     "dev": "pnpm --filter @react-docx/playground dev",

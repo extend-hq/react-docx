@@ -1066,6 +1066,63 @@ function sectionHasVisibleHeaderContent(section: ResolvedDocumentSection): boole
   );
 }
 
+function sectionHasVisibleFooterContent(section: ResolvedDocumentSection): boolean {
+  const footerSections = section.footerSections ?? [];
+  return footerSections.some((footerSection) =>
+    (footerSection.nodes ?? []).some((node) =>
+      node.type === "table" || paragraphHasInFlowImage(node) || paragraphHasVisibleText(node)
+    )
+  );
+}
+
+export function resolveFooterPaginationReservePx(
+  footerSections: FooterSection[],
+  layout: Pick<DocumentLayoutMetrics, "pageWidthPx" | "marginsPx" | "footerDistancePx" | "docGridLinePitchPx">
+): number {
+  const visibleFooterSections = (footerSections ?? []).filter((footerSection) =>
+    (footerSection.nodes ?? []).some((node) =>
+      node.type === "table" || paragraphHasInFlowImage(node) || paragraphHasVisibleText(node)
+    )
+  );
+  if (visibleFooterSections.length === 0) {
+    return 0;
+  }
+
+  const availableWidthPx = Math.max(
+    24,
+    layout.pageWidthPx - layout.marginsPx.left - layout.marginsPx.right
+  );
+  const estimatedFooterHeightPx = visibleFooterSections.reduce((largestHeightPx, footerSection) => {
+    const visibleNodes = (footerSection.nodes ?? []).filter((node) =>
+      node.type === "table" || paragraphHasInFlowImage(node) || paragraphHasVisibleText(node)
+    );
+    if (visibleNodes.length === 0) {
+      return largestHeightPx;
+    }
+
+    const nodeHeightsPx = visibleNodes.reduce((sum, node) => {
+      return (
+        sum +
+        estimateDocNodeHeightPx(
+          node,
+          availableWidthPx,
+          undefined,
+          layout.docGridLinePitchPx
+        )
+      );
+    }, 0);
+    const interParagraphGapPx = Math.max(0, visibleNodes.length - 1) * 8;
+    return Math.max(largestHeightPx, Math.round(nodeHeightsPx + interParagraphGapPx));
+  }, 0);
+
+  if (estimatedFooterHeightPx <= 0) {
+    return 0;
+  }
+
+  const footerMarginBudgetPx = Math.max(0, layout.marginsPx.bottom - layout.footerDistancePx);
+  return Math.max(0, Math.round(estimatedFooterHeightPx - footerMarginBudgetPx));
+}
+
 function buildPaginationSectionMetrics(
   sections: ResolvedDocumentSection[],
   fallbackLayout: DocumentLayoutMetrics
@@ -1093,12 +1150,16 @@ function buildPaginationSectionMetrics(
     .map((section) => {
       const layout = parseSectionLayout(section.sectionPropertiesXml);
       const hasHeaderContent = sectionHasVisibleHeaderContent(section);
+      const hasFooterContent = sectionHasVisibleFooterContent(section);
       const headerTopOffsetPx = Math.max(0, layout.headerDistancePx) - layout.marginsPx.top;
       const headerFlowCompensationPx = Math.max(0, -headerTopOffsetPx);
       // Header rendering keeps content in normal flow and adds this compensation.
       // Reserve the same vertical budget during pagination to avoid late page breaks.
       const headerPaginationReservePx = hasHeaderContent
         ? Math.round(headerFlowCompensationPx + 8 + MIN_PARAGRAPH_LINE_HEIGHT_PX * 2)
+        : 0;
+      const footerPaginationReservePx = hasFooterContent
+        ? resolveFooterPaginationReservePx(section.footerSections ?? [], layout)
         : 0;
       return {
         startNodeIndex: Math.max(0, Math.round(section.startNodeIndex)),
@@ -1108,7 +1169,11 @@ function buildPaginationSectionMetrics(
         ),
         pageContentHeightPx: Math.max(
           120,
-          layout.pageHeightPx - layout.marginsPx.top - layout.marginsPx.bottom - headerPaginationReservePx
+          layout.pageHeightPx -
+            layout.marginsPx.top -
+            layout.marginsPx.bottom -
+            headerPaginationReservePx -
+            footerPaginationReservePx
         ),
         docGridLinePitchPx: layout.docGridLinePitchPx
       };
@@ -2181,6 +2246,15 @@ function paragraphText(paragraph: ParagraphNode): string {
 }
 
 function replaceTabLayoutMarkersWithTabText(root: HTMLElement): void {
+  const centerLayouts = Array.from(
+    root.querySelectorAll<HTMLElement>("[data-docx-tab-layout='center']")
+  );
+  centerLayouts.forEach((layout) => {
+    const left = layout.querySelector<HTMLElement>("[data-docx-tab-zone='left']")?.textContent ?? "";
+    const center = layout.querySelector<HTMLElement>("[data-docx-tab-zone='center']")?.textContent ?? "";
+    layout.replaceWith(`${left}\t${center}`);
+  });
+
   const centerRightLayouts = Array.from(
     root.querySelectorAll<HTMLElement>("[data-docx-tab-layout='center-right']")
   );
@@ -2195,6 +2269,15 @@ function replaceTabLayoutMarkersWithTabText(root: HTMLElement): void {
     root.querySelectorAll<HTMLElement>("[data-docx-tab-layout='leader']")
   );
   leaderLayouts.forEach((layout) => {
+    const left = layout.querySelector<HTMLElement>("[data-docx-tab-zone='left']")?.textContent ?? "";
+    const right = layout.querySelector<HTMLElement>("[data-docx-tab-zone='right']")?.textContent ?? "";
+    layout.replaceWith(`${left}\t${right}`);
+  });
+
+  const rightLayouts = Array.from(
+    root.querySelectorAll<HTMLElement>("[data-docx-tab-layout='right']")
+  );
+  rightLayouts.forEach((layout) => {
     const left = layout.querySelector<HTMLElement>("[data-docx-tab-zone='left']")?.textContent ?? "";
     const right = layout.querySelector<HTMLElement>("[data-docx-tab-zone='right']")?.textContent ?? "";
     layout.replaceWith(`${left}\t${right}`);
@@ -3299,6 +3382,14 @@ function estimateWrappedLineCountForParagraph(paragraph: ParagraphNode, availabl
   const tabStopsPx = resolveParagraphTabStopsPx(paragraph);
   const useTabLeaderLayout = paragraphUsesTabLeaders(paragraph);
   const useCenterRightTabLayout = !useTabLeaderLayout && paragraphUsesCenterRightTabLayout(paragraph);
+  const useCenterTabLayout =
+    !useTabLeaderLayout && !useCenterRightTabLayout && paragraphUsesCenterTabLayout(paragraph);
+  const useRightTabLayout =
+    !useTabLeaderLayout &&
+    !useCenterRightTabLayout &&
+    !useCenterTabLayout &&
+    paragraphUsesRightTabLayout(paragraph);
+  const useAnchoredTabLayout = useCenterRightTabLayout || useCenterTabLayout || useRightTabLayout;
   let lineCount = 1;
   let currentLineWidthPx = 0;
   let hasVisibleContent = false;
@@ -3370,7 +3461,7 @@ function estimateWrappedLineCountForParagraph(paragraph: ParagraphNode, availabl
         return;
       }
 
-      if (useCenterRightTabLayout) {
+      if (useAnchoredTabLayout) {
         currentLineWidthPx = Math.min(maxLineWidthPx, Math.max(currentLineWidthPx, maxLineWidthPx - 1));
         return;
       }
@@ -6034,14 +6125,7 @@ function tableOfContentsLeadingLeftTabStopPx(paragraph: ParagraphNode): number |
   return leftTabStopPositionsPx[0];
 }
 
-function paragraphUsesCenterRightTabLayout(paragraph: ParagraphNode): boolean {
-  const tabStops = paragraph.style?.tabStops ?? [];
-  const hasCenter = tabStops.some((tabStop) => tabStop.alignment === "center");
-  const hasRight = tabStops.some((tabStop) => tabStop.alignment === "right");
-  if (!hasCenter || !hasRight) {
-    return false;
-  }
-
+function paragraphContainsTabCharacter(paragraph: ParagraphNode): boolean {
   return paragraph.children.some((child) => {
     if (child.type === "text") {
       return child.text.includes("\t");
@@ -6051,6 +6135,42 @@ function paragraphUsesCenterRightTabLayout(paragraph: ParagraphNode): boolean {
     }
     return false;
   });
+}
+
+function paragraphFirstTabStopPx(
+  paragraph: ParagraphNode,
+  alignment: "center" | "right"
+): number | undefined {
+  return (paragraph.style?.tabStops ?? [])
+    .filter((tabStop) => tabStop.alignment === alignment)
+    .map((tabStop) => twipsToPixels(tabStop.positionTwips))
+    .filter((positionPx): positionPx is number => Number.isFinite(positionPx) && (positionPx as number) > 0)
+    .sort((left, right) => left - right)[0];
+}
+
+function paragraphUsesCenterTabLayout(paragraph: ParagraphNode): boolean {
+  const tabStops = paragraph.style?.tabStops ?? [];
+  const hasCenter = tabStops.some((tabStop) => tabStop.alignment === "center");
+  const hasRight = tabStops.some((tabStop) => tabStop.alignment === "right");
+  return hasCenter && !hasRight && paragraphContainsTabCharacter(paragraph);
+}
+
+function paragraphUsesRightTabLayout(paragraph: ParagraphNode): boolean {
+  const tabStops = paragraph.style?.tabStops ?? [];
+  const hasCenter = tabStops.some((tabStop) => tabStop.alignment === "center");
+  const hasRight = tabStops.some((tabStop) => tabStop.alignment === "right");
+  return hasRight && !hasCenter && paragraphContainsTabCharacter(paragraph);
+}
+
+function paragraphUsesCenterRightTabLayout(paragraph: ParagraphNode): boolean {
+  const tabStops = paragraph.style?.tabStops ?? [];
+  const hasCenter = tabStops.some((tabStop) => tabStop.alignment === "center");
+  const hasRight = tabStops.some((tabStop) => tabStop.alignment === "right");
+  if (!hasCenter || !hasRight) {
+    return false;
+  }
+
+  return paragraphContainsTabCharacter(paragraph);
 }
 
 type PageFieldKind = "PAGE" | "NUMPAGES";
@@ -6920,6 +7040,14 @@ function renderParagraphRuns(
   };
   const useTabLeaderLayout = paragraphUsesTabLeaders(paragraph);
   const useCenterRightTabLayout = !useTabLeaderLayout && paragraphUsesCenterRightTabLayout(paragraph);
+  const useCenterTabLayout =
+    !useTabLeaderLayout && !useCenterRightTabLayout && paragraphUsesCenterTabLayout(paragraph);
+  const useRightTabLayout =
+    !useTabLeaderLayout &&
+    !useCenterRightTabLayout &&
+    !useCenterTabLayout &&
+    paragraphUsesRightTabLayout(paragraph);
+  const useAnchoredTabLayout = useCenterRightTabLayout || useCenterTabLayout || useRightTabLayout;
   const pageFieldSequence = paragraphPageFieldSequence(paragraph);
   const pageFieldValueSequence = paragraphPageFieldValueSequence(paragraph);
   const hasPageField = pageFieldSequence.length > 0 || pageFieldValueSequence.length > 0;
@@ -6937,8 +7065,8 @@ function renderParagraphRuns(
   const tocParagraphLevel = tableOfContentsLevel(paragraph);
   const tocLinkColor = tocParagraphLevel ? options?.tocLinkColorByLevel?.[tocParagraphLevel] : undefined;
   const checkboxChoiceRow = paragraphLooksLikeCheckboxChoiceRow(paragraph);
-  const fallbackTabWidthPx = checkboxChoiceRow ? checkboxChoiceRowTabWidthPx(paragraph) : 56;
-  const shouldTrackTabLineWidth = !useTabLeaderLayout && !useCenterRightTabLayout;
+  const fallbackTabWidthPx = checkboxChoiceRow ? checkboxChoiceRowTabWidthPx(paragraph) : DEFAULT_TAB_STOP_PX;
+  const shouldTrackTabLineWidth = !useTabLeaderLayout && !useAnchoredTabLayout;
   let approximateLineWidthPx = 0;
   let trackedVisibleChildCursor = 0;
   const appendTrackedDeletionSegments = (
@@ -7183,7 +7311,7 @@ function renderParagraphRuns(
       }
 
       const trackedStyle = trackedInlineStyle(runStyleToCss(child.style, documentTheme), trackedInlineChange);
-      if (text === "\t" && !useTabLeaderLayout && !useCenterRightTabLayout) {
+      if (text === "\t" && !useTabLeaderLayout && !useAnchoredTabLayout) {
         target.push(
           <span key={key} style={tabTextStyle(child.style, trackedStyle)}>
             {"\u00a0"}
@@ -7449,7 +7577,7 @@ function renderParagraphRuns(
       return;
     }
 
-    if ((textOverride ?? child.text) === "\t" && !useTabLeaderLayout && !useCenterRightTabLayout) {
+    if ((textOverride ?? child.text) === "\t" && !useTabLeaderLayout && !useAnchoredTabLayout) {
       target.push(
         <span key={key} style={tabTextStyle(child.style, textStyle)}>
           {"\u00a0"}
@@ -7502,11 +7630,28 @@ function renderParagraphRuns(
     );
   };
 
-  if (numberingLabel) {
+  const anchoredTabZoneStyle: React.CSSProperties = {
+    display: "inline-flex",
+    minWidth: 0,
+    whiteSpace: "pre-wrap",
+    alignItems: "baseline",
+    wordBreak: "normal",
+    overflowWrap: "normal",
+    flexWrap: "nowrap"
+  };
+
+  const renderNumberingIntoTarget = (
+    target: React.ReactNode[],
+    numberingKey: string
+  ): void => {
+    if (!numberingLabel) {
+      return;
+    }
+
     const numberingTextStyle = numberingLabel.style ? runStyleToCss(numberingLabel.style, documentTheme) : undefined;
-    (useTabLeaderLayout ? runsLeft : runs).push(
+    target.push(
       <span
-        key={`${keyPrefix}-numbering`}
+        key={numberingKey}
         style={numberingMarkerStyle(
           paragraph,
           options?.numberingDefinitions,
@@ -7536,6 +7681,71 @@ function renderParagraphRuns(
         )}
       </span>
     );
+  };
+
+  const buildAnchoredTabZones = (zoneCount: 2 | 3): React.ReactNode[][] => {
+    const zones = Array.from({ length: zoneCount }, () => [] as React.ReactNode[]);
+    let activeZone = 0;
+
+    renderNumberingIntoTarget(zones[0], `${keyPrefix}-numbering-anchored`);
+
+    paragraph.children.forEach((child, childIndex) => {
+      const zoneIndex = Math.max(0, Math.min(zoneCount - 1, activeZone));
+      const zoneTarget = zones[zoneIndex];
+      const key = `${keyPrefix}-anchored-run-${childIndex}`;
+      appendTrackedDeletionSegments(
+        zoneTarget,
+        `${key}-before`,
+        child.type === "text" || child.type === "form-field" ? child.style : undefined
+      );
+      const trackedInlineChange = currentTrackedInlineChange();
+
+      const rawText =
+        child.type === "text" ? child.text : child.type === "form-field" ? formFieldDisplayValue(child) : undefined;
+      if (typeof rawText !== "string" || !rawText.includes("\t")) {
+        if (child.type === "text") {
+          const resolvedText = resolvePageFieldText(rawText ?? "", zoneIndex);
+          renderRun(
+            zoneTarget,
+            child,
+            key,
+            attachTextToPreviousCheckbox(paragraph, childIndex, resolvedText),
+            trackedInlineChange,
+            childIndex
+          );
+        } else {
+          renderRun(zoneTarget, child, key, undefined, trackedInlineChange, childIndex);
+        }
+        consumeTrackedVisibleChild(child);
+        return;
+      }
+
+      const parts = rawText.split("\t");
+      parts.forEach((part, partIndex) => {
+        const currentZone = Math.max(0, Math.min(zoneCount - 1, activeZone));
+        if (part.length > 0) {
+          renderRun(
+            zones[currentZone],
+            child,
+            `${key}-part-${partIndex}`,
+            resolvePageFieldText(part, currentZone),
+            trackedInlineChange,
+            childIndex
+          );
+        }
+        if (partIndex < parts.length - 1 && activeZone < zoneCount - 1) {
+          activeZone += 1;
+        }
+      });
+      consumeTrackedVisibleChild(child);
+    });
+
+    appendTrackedDeletionSegments(zones[Math.max(0, Math.min(zoneCount - 1, activeZone))], `${keyPrefix}-tail`);
+    return zones;
+  };
+
+  if (numberingLabel && !useAnchoredTabLayout) {
+    renderNumberingIntoTarget(useTabLeaderLayout ? runsLeft : runs, `${keyPrefix}-numbering`);
     if (numberingLabel.imageSrc) {
       trackInlineAdvance(numberingLabel.imageWidthPx ?? 12);
       trackTextAdvance(numberingLabel.trailingText ?? "", numberingLabel.style);
@@ -7544,7 +7754,7 @@ function renderParagraphRuns(
     }
   }
 
-  if (!useCenterRightTabLayout) {
+  if (!useAnchoredTabLayout) {
     paragraph.children.forEach((child, childIndex) => {
       const key = `${keyPrefix}-run-${childIndex}`;
       const target = useTabLeaderLayout ? (hasTabSplit ? runsRight : runsLeft) : runs;
@@ -7628,128 +7838,41 @@ function renderParagraphRuns(
   }
 
   if (useCenterRightTabLayout) {
-    const zones: [React.ReactNode[], React.ReactNode[], React.ReactNode[]] = [[], [], []];
-    let activeZone = 0;
-
-    if (numberingLabel) {
-      const numberingTextStyle = numberingLabel.style ? runStyleToCss(numberingLabel.style, documentTheme) : undefined;
-      zones[0].push(
-        <span
-          key={`${keyPrefix}-numbering-center-right`}
-          style={numberingMarkerStyle(
-            paragraph,
-            options?.numberingDefinitions,
-            numberingLabel,
-            numberingTextStyle,
-            documentTheme
-          )}
-        >
-          {numberingLabel.imageSrc ? (
-            <>
-              <img
-                src={numberingLabel.imageSrc}
-                alt=""
-                aria-hidden="true"
-                style={{
-                  display: "inline-block",
-                  verticalAlign: "text-bottom",
-                  width: numberingLabel.imageWidthPx ?? 12,
-                  height: numberingLabel.imageHeightPx ?? 12,
-                  marginRight: 2
-                }}
-              />
-              {numberingLabel.trailingText ?? ""}
-            </>
-          ) : (
-            numberingLabel.text ?? ""
-          )}
-        </span>
-      );
-    }
-
-    paragraph.children.forEach((child, childIndex) => {
-      const zoneIndex = Math.max(0, Math.min(2, activeZone));
-      const zoneTarget = zones[zoneIndex];
-      const key = `${keyPrefix}-center-right-run-${childIndex}`;
-      appendTrackedDeletionSegments(
-        zoneTarget,
-        `${key}-before`,
-        child.type === "text" || child.type === "form-field" ? child.style : undefined
-      );
-      const trackedInlineChange = currentTrackedInlineChange();
-
-      const rawText = child.type === "text" ? child.text : child.type === "form-field" ? formFieldDisplayValue(child) : undefined;
-      if (typeof rawText !== "string" || !rawText.includes("\t")) {
-        if (child.type === "text") {
-          const resolvedText = resolvePageFieldText(rawText ?? "", zoneIndex);
-          renderRun(
-            zoneTarget,
-            child,
-            key,
-            attachTextToPreviousCheckbox(paragraph, childIndex, resolvedText),
-            trackedInlineChange,
-            childIndex
-          );
-        } else {
-          renderRun(zoneTarget, child, key, undefined, trackedInlineChange, childIndex);
-        }
-        consumeTrackedVisibleChild(child);
-        return;
-      }
-
-      const parts = rawText.split("\t");
-      parts.forEach((part, partIndex) => {
-        const currentZone = Math.max(0, Math.min(2, activeZone));
-        if (part.length > 0) {
-          renderRun(
-            zones[currentZone],
-            child,
-            `${key}-part-${partIndex}`,
-            resolvePageFieldText(part, currentZone),
-            trackedInlineChange,
-            childIndex
-          );
-        }
-        if (partIndex < parts.length - 1 && activeZone < 2) {
-          activeZone += 1;
-        }
-      });
-      consumeTrackedVisibleChild(child);
-    });
-
-    appendTrackedDeletionSegments(zones[Math.max(0, Math.min(2, activeZone))], `${keyPrefix}-tail`);
-
+    const zones = buildAnchoredTabZones(3);
+    const centerStopPx = Math.max(0, Math.round(paragraphFirstTabStopPx(paragraph, "center") ?? 0));
+    const rightStopPx = Math.max(
+      centerStopPx,
+      Math.round(paragraphFirstTabStopPx(paragraph, "right") ?? centerStopPx)
+    );
     return (
       <div
         key={`${keyPrefix}-center-right-tabs`}
         data-docx-tab-layout="center-right"
         style={{
           display: "grid",
-          gridTemplateColumns: "1fr 1fr 1fr",
-          alignItems: "baseline",
+          gridTemplateColumns: `${centerStopPx}px 0px ${Math.max(0, rightStopPx - centerStopPx)}px 0px minmax(0, 1fr)`,
+          alignItems: "start",
           width: "100%"
         }}
       >
         <span
           data-docx-tab-zone="0"
-          style={{
-            display: "inline-flex",
-            minWidth: 0,
-            whiteSpace: "pre-wrap",
-            alignItems: "baseline"
-          }}
+          style={{ ...anchoredTabZoneStyle, gridColumn: "1 / 2", gridRow: "1 / 2" }}
         >
           {zones[0]}
         </span>
         <span
           data-docx-tab-zone="1"
           style={{
-            display: "inline-flex",
-            minWidth: 0,
-            justifyContent: "center",
+            ...anchoredTabZoneStyle,
+            gridColumn: "1 / -1",
+            gridRow: "1 / 2",
+            justifySelf: "start",
+            marginLeft: centerStopPx,
             textAlign: "center",
-            whiteSpace: "pre-wrap",
-            alignItems: "baseline"
+            transform: "translateX(-50%)",
+            width: "max-content",
+            maxWidth: "100%"
           }}
         >
           {zones[1]}
@@ -7757,15 +7880,94 @@ function renderParagraphRuns(
         <span
           data-docx-tab-zone="2"
           style={{
-            display: "inline-flex",
-            minWidth: 0,
+            ...anchoredTabZoneStyle,
+            gridColumn: "3 / 4",
+            gridRow: "1 / 2",
+            justifySelf: "end",
             justifyContent: "flex-end",
-            textAlign: "right",
-            whiteSpace: "pre-wrap",
-            alignItems: "baseline"
+            textAlign: "right"
           }}
         >
           {zones[2]}
+        </span>
+      </div>
+    );
+  }
+
+  if (useCenterTabLayout) {
+    const zones = buildAnchoredTabZones(2);
+    const centerStopPx = Math.max(0, Math.round(paragraphFirstTabStopPx(paragraph, "center") ?? 0));
+    return (
+      <div
+        key={`${keyPrefix}-center-tabs`}
+        data-docx-tab-layout="center"
+        style={{
+          display: "grid",
+          gridTemplateColumns: `${centerStopPx}px 0px minmax(0, 1fr)`,
+          alignItems: "start",
+          width: "100%"
+        }}
+      >
+        {zones[0].length > 0 ? (
+          <span
+            data-docx-tab-zone="left"
+            style={{ ...anchoredTabZoneStyle, gridColumn: "1 / 2", gridRow: "1 / 2" }}
+          >
+            {zones[0]}
+          </span>
+        ) : null}
+        <span
+          data-docx-tab-zone="center"
+          style={{
+            ...anchoredTabZoneStyle,
+            gridColumn: "1 / -1",
+            gridRow: "1 / 2",
+            justifySelf: "start",
+            marginLeft: centerStopPx,
+            textAlign: "center",
+            transform: "translateX(-50%)",
+            width: "max-content",
+            maxWidth: "100%"
+          }}
+        >
+          {zones[1]}
+        </span>
+      </div>
+    );
+  }
+
+  if (useRightTabLayout) {
+    const zones = buildAnchoredTabZones(2);
+    const rightStopPx = Math.max(0, Math.round(paragraphFirstTabStopPx(paragraph, "right") ?? 0));
+    return (
+      <div
+        key={`${keyPrefix}-right-tabs`}
+        data-docx-tab-layout="right"
+        style={{
+          display: "grid",
+          gridTemplateColumns: `${rightStopPx}px 0px minmax(0, 1fr)`,
+          alignItems: "start",
+          width: "100%"
+        }}
+      >
+        <span
+          data-docx-tab-zone="left"
+          style={{ ...anchoredTabZoneStyle, gridColumn: "1 / 2", gridRow: "1 / 2" }}
+        >
+          {zones[0]}
+        </span>
+        <span
+          data-docx-tab-zone="right"
+          style={{
+            ...anchoredTabZoneStyle,
+            gridColumn: "1 / 2",
+            gridRow: "1 / 2",
+            justifySelf: "end",
+            justifyContent: "flex-end",
+            textAlign: "right"
+          }}
+        >
+          {zones[1]}
         </span>
       </div>
     );
@@ -12433,8 +12635,13 @@ export function useDocxEditor(options: UseDocxEditorOptions = {}): DocxEditorCon
     anchor.download = fileName.endsWith(".docx")
       ? fileName.replace(/\.docx$/i, "") + "-edited.docx"
       : "edited.docx";
+    anchor.style.display = "none";
+    document.body.append(anchor);
     anchor.click();
-    URL.revokeObjectURL(url);
+    window.setTimeout(() => {
+      anchor.remove();
+      URL.revokeObjectURL(url);
+    }, 1000);
 
     setStatus("Exported DOCX");
   }, [basePackage, fileName]);
@@ -22613,7 +22820,7 @@ export function DocxEditorViewer({
     (paragraph: ParagraphNode, keyPrefix: string, location: ParagraphLocation): React.ReactNode => {
       const nodes: React.ReactNode[] = [];
       const checkboxChoiceRow = paragraphLooksLikeCheckboxChoiceRow(paragraph);
-      const fallbackTabWidthPx = checkboxChoiceRow ? checkboxChoiceRowTabWidthPx(paragraph) : 56;
+      const fallbackTabWidthPx = checkboxChoiceRow ? checkboxChoiceRowTabWidthPx(paragraph) : DEFAULT_TAB_STOP_PX;
       const tabStopPositionsPx = (paragraph.style?.tabStops ?? [])
         .map((tabStopEntry) => twipsToPixels(tabStopEntry.positionTwips))
         .filter((value): value is number => Number.isFinite(value) && (value as number) > 0)
@@ -22695,26 +22902,12 @@ export function DocxEditorViewer({
       });
 
       const numberingLabel = paragraphNumberingLabels.get(paragraphLocationKey(location));
-      if (trackedChangesEnabled) {
-        return renderParagraphRuns(
-          paragraph,
-          keyPrefix,
-          editor.documentTheme,
-          numberingLabel,
-          scrollToBookmark,
-          undefined,
-          noteMarkerIndexes,
-          undefined,
-          undefined,
-          {
-            showTrackedChanges: true,
-            numberingDefinitions: editor.model.metadata.numberingDefinitions,
-            tocLinkColorByLevel
-          }
-        );
-      }
-
-      if (paragraphUsesTabLeaders(paragraph)) {
+      const useSpecialTabLayout =
+        paragraphUsesTabLeaders(paragraph) ||
+        paragraphUsesCenterRightTabLayout(paragraph) ||
+        paragraphUsesCenterTabLayout(paragraph) ||
+        paragraphUsesRightTabLayout(paragraph);
+      if (trackedChangesEnabled || useSpecialTabLayout) {
         return renderParagraphRuns(
           paragraph,
           keyPrefix,
@@ -26503,7 +26696,7 @@ export function DocxEditorViewer({
                 }}
                 style={{
                   display: "grid",
-                  gap: 8,
+                  gap: 0,
                   position: "absolute",
                   left: 0,
 	                  right: 0,
