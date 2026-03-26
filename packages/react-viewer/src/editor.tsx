@@ -7231,9 +7231,7 @@ function renderParagraphRuns(
           ? Math.max(1, Math.round(totalPages as number))
           : undefined
         : Number.isFinite(pageNumber) && (pageNumber as number) > 0
-          ? Number.isFinite(totalPages) && (totalPages as number) > 0
-            ? Math.min(Math.max(1, Math.round(pageNumber as number)), Math.max(1, Math.round(totalPages as number)))
-            : Math.max(1, Math.round(pageNumber as number))
+          ? Math.max(1, Math.round(pageNumber as number))
           : undefined;
     if (!Number.isFinite(resolvedFieldValue)) {
       return value;
