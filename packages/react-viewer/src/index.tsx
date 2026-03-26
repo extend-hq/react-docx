@@ -10,6 +10,12 @@ import {
 } from "@react-docx/layout-engine";
 import { buildDocModel } from "@react-docx/doc-model";
 import { parseDocx } from "@react-docx/ooxml-core";
+import { DEFAULT_DOCUMENT_LAYOUT, parseSectionLayout, resolveDocumentLayout } from "./section-layout";
+import {
+  imageUsesPlaceholderFallback,
+  resolveRenderableImageSource,
+  unsupportedImageFallbackLabel
+} from "./image-render";
 
 export interface ReactDocxViewerProps {
   file?: ArrayBuffer;
@@ -179,6 +185,7 @@ function linkRunTextStyle(run: LayoutRun): React.CSSProperties {
 function renderParagraphRuns(block: LayoutParagraphBlock): React.JSX.Element[] {
   return block.runs.map((run) => {
     if (run.kind === "image") {
+      const renderableImageSrc = resolveRenderableImageSource(run);
       if (!run.src) {
         return (
           <span
@@ -201,10 +208,42 @@ function renderParagraphRuns(block: LayoutParagraphBlock): React.JSX.Element[] {
         );
       }
 
+      if (imageUsesPlaceholderFallback(run) || (run.src && !renderableImageSrc)) {
+        return (
+          <span
+            key={run.id}
+            role="img"
+            aria-label={run.alt ?? "DOCX image"}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              width: run.widthPx ? `${run.widthPx}px` : "1.8em",
+              height: run.heightPx ? `${run.heightPx}px` : "1.8em",
+              minWidth: 16,
+              minHeight: 16,
+              border: "1px solid #d1d5db",
+              borderRadius: 3,
+              backgroundColor: "#ffffff",
+              color: "#0f172a",
+              fontSize: (run.widthPx ?? 0) <= 56 && (run.heightPx ?? 0) <= 56 ? 12 : 10,
+              fontWeight: 700,
+              textTransform: "lowercase",
+              fontFamily: "Arial, sans-serif",
+              lineHeight: 1,
+              verticalAlign: "middle",
+              marginInline: 4
+            }}
+          >
+            {unsupportedImageFallbackLabel(run, run.widthPx, run.heightPx)}
+          </span>
+        );
+      }
+
       return (
         <img
           key={run.id}
-          src={run.src}
+          src={renderableImageSrc}
           alt={run.alt ?? "DOCX image"}
           style={{
             maxWidth: run.widthPx ? `${run.widthPx}px` : "100%",
@@ -342,12 +381,25 @@ export function ReactDocxViewer({
     };
   }, [resolvedModel]);
 
+  const resolvedLayoutOptions = React.useMemo(() => {
+    if (!resolvedModel) {
+      return layoutOptions;
+    }
+
+    const documentLayout = resolveDocumentLayout(resolvedModel);
+    return {
+      ...layoutOptions,
+      pageWidth: layoutOptions?.pageWidth ?? documentLayout.pageWidthPx,
+      pageHeight: layoutOptions?.pageHeight ?? documentLayout.pageHeightPx
+    } satisfies LayoutOptions;
+  }, [layoutOptions, resolvedModel]);
+
   const pages = React.useMemo(() => {
     if (!modelWithSections) {
       return [];
     }
-    return layoutDocument(modelWithSections, layoutOptions);
-  }, [modelWithSections, layoutOptions]);
+    return layoutDocument(modelWithSections, resolvedLayoutOptions);
+  }, [modelWithSections, resolvedLayoutOptions]);
 
   if (isLoading) {
     return <div className={className}>Loading DOCX...</div>;
@@ -361,9 +413,9 @@ export function ReactDocxViewer({
     return <div className={className}>{emptyState ?? "No DOCX loaded."}</div>;
   }
 
-  const pageWidth = layoutOptions?.pageWidth ?? 816;
-  const pageHeight = layoutOptions?.pageHeight ?? 1056;
-  const pagePadding = layoutOptions?.margin ?? 72;
+  const pageWidth = resolvedLayoutOptions?.pageWidth ?? DEFAULT_DOCUMENT_LAYOUT.pageWidthPx;
+  const pageHeight = resolvedLayoutOptions?.pageHeight ?? DEFAULT_DOCUMENT_LAYOUT.pageHeightPx;
+  const pagePadding = resolvedLayoutOptions?.margin ?? 72;
 
   return (
     <div className={className} data-testid="react-docx-viewer" style={containerStyle}>
@@ -441,3 +493,8 @@ export {
   useDocxEditor,
   type UseDocxEditorOptions
 } from "./editor";
+
+export {
+  parseSectionLayout,
+  resolveDocumentLayout
+} from "./section-layout";

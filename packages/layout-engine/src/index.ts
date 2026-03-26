@@ -33,6 +33,8 @@ export interface LayoutImageRun {
   alt?: string;
   widthPx?: number;
   heightPx?: number;
+  contentType?: string;
+  data?: Uint8Array;
   floating?: boolean;
 }
 
@@ -192,6 +194,8 @@ function paragraphToLayout(
       alt: child.alt,
       widthPx: child.widthPx,
       heightPx: child.heightPx,
+      contentType: child.contentType,
+      data: child.data ? new Uint8Array(child.data) : undefined,
       floating: Boolean(child.floating)
     };
   });

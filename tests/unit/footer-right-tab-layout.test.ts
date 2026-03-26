@@ -153,6 +153,35 @@ describe("footer right-tab layout", () => {
     expect(html).toContain("ADJUSTABLE RATE RIDER");
   });
 
+  it("does not apply right-tab anchored layout to multi-tab body rows", () => {
+    const model = cloneDocModel(defaultStarterModel);
+    model.nodes = [
+      {
+        type: "paragraph",
+        style: {
+          tabStops: [
+            {
+              alignment: "right",
+              leader: "none",
+              positionTwips: 8640
+            }
+          ]
+        },
+        children: [
+          {
+            type: "text",
+            text: "\t(ba)\t a paper record that shows the total votes received by each candidate."
+          }
+        ]
+      }
+    ];
+
+    const html = renderToStaticMarkup(React.createElement(FooterViewer, { model }));
+
+    expect(html).not.toContain('data-docx-tab-layout="right"');
+    expect(html).toContain("a paper record that shows the total votes");
+  });
+
   it("keeps leading-tab footer page text horizontal in anchored center-right layouts", () => {
     const model = cloneDocModel(defaultStarterModel);
     model.nodes = [

@@ -165,6 +165,7 @@ export interface ParagraphStyle {
   backgroundColor?: string;
   borders?: ParagraphBorderSet;
   tabStops?: ParagraphTabStop[];
+  contextualSpacing?: boolean;
   keepNext?: boolean;
   keepLines?: boolean;
   widowControl?: boolean;
@@ -175,6 +176,7 @@ export interface ParagraphNode {
   type: "paragraph";
   children: ParagraphChildNode[];
   style?: ParagraphStyle;
+  paragraphMarkDeleted?: boolean;
   sourceXml?: string;
 }
 
@@ -363,6 +365,7 @@ export interface ParagraphStyleDefinition {
   backgroundColor?: string;
   borders?: ParagraphBorderSet;
   tabStops?: ParagraphTabStop[];
+  contextualSpacing?: boolean;
   keepNext?: boolean;
   keepLines?: boolean;
   widowControl?: boolean;
@@ -474,6 +477,7 @@ interface RawStyleDefinition {
   backgroundColor?: string;
   borders?: ParagraphBorderSet;
   tabStops?: ParagraphTabStop[];
+  contextualSpacing?: boolean;
   keepNext?: boolean;
   keepLines?: boolean;
   widowControl?: boolean;
@@ -1951,6 +1955,7 @@ function parseStyleSheet(pkg: OoxmlPackage): ParsedStyleSheet {
     const borders = parseParagraphBorderSetFromXml(paragraphDefaults);
     const tabStops = parseParagraphTabStopsFromXml(paragraphDefaults);
     const numbering = parseParagraphNumberingFromXml(paragraphDefaults);
+    const contextualSpacing = parseOnOffAttribute(paragraphDefaults, "contextualSpacing");
     const keepNext = parseOnOffAttribute(paragraphDefaults, "keepNext");
     const keepLines = parseOnOffAttribute(paragraphDefaults, "keepLines");
     const widowControl = parseOnOffAttribute(paragraphDefaults, "widowControl");
@@ -1964,6 +1969,7 @@ function parseStyleSheet(pkg: OoxmlPackage): ParsedStyleSheet {
       !borders &&
       (!tabStops || tabStops.length === 0) &&
       !numbering &&
+      contextualSpacing === undefined &&
       keepNext === undefined &&
       keepLines === undefined &&
       widowControl === undefined &&
@@ -1980,6 +1986,7 @@ function parseStyleSheet(pkg: OoxmlPackage): ParsedStyleSheet {
       borders,
       tabStops,
       numbering,
+      contextualSpacing,
       keepNext,
       keepLines,
       widowControl,
@@ -2028,6 +2035,7 @@ function parseStyleSheet(pkg: OoxmlPackage): ParsedStyleSheet {
       backgroundColor: parseParagraphShadingFromXml(paragraphPropertiesXml),
       borders: parseParagraphBorderSetFromXml(paragraphPropertiesXml),
       tabStops: parseParagraphTabStopsFromXml(paragraphPropertiesXml),
+      contextualSpacing: parseOnOffAttribute(paragraphPropertiesXml, "contextualSpacing"),
       keepNext: parseOnOffAttribute(paragraphPropertiesXml, "keepNext"),
       keepLines: parseOnOffAttribute(paragraphPropertiesXml, "keepLines"),
       widowControl: parseOnOffAttribute(paragraphPropertiesXml, "widowControl"),
@@ -2135,6 +2143,7 @@ function parseStyleSheet(pkg: OoxmlPackage): ParsedStyleSheet {
       backgroundColor: mergeParagraphBackgroundColor(inherited?.backgroundColor, style.backgroundColor),
       borders: mergeParagraphBorderSets(inherited?.borders, style.borders),
       tabStops: mergeParagraphTabStops(inherited?.tabStops, style.tabStops),
+      contextualSpacing: mergeParagraphBoolean(inherited?.contextualSpacing, style.contextualSpacing),
       keepNext: mergeParagraphBoolean(inherited?.keepNext, style.keepNext),
       keepLines: mergeParagraphBoolean(inherited?.keepLines, style.keepLines),
       widowControl: mergeParagraphBoolean(inherited?.widowControl, style.widowControl),
@@ -4022,6 +4031,7 @@ function parseParagraphStyle(paragraphXml: string, context: ParseContext): Parag
   const directBorders = parseParagraphBorderSetFromXml(paragraphPropertiesXml);
   const directNumbering = parseParagraphNumberingFromXml(paragraphPropertiesXml);
   const directTabStops = parseParagraphTabStopsFromXml(paragraphPropertiesXml);
+  const directContextualSpacing = parseOnOffAttribute(paragraphPropertiesXml, "contextualSpacing");
   const directKeepNext = parseOnOffAttribute(paragraphPropertiesXml, "keepNext");
   const directKeepLines = parseOnOffAttribute(paragraphPropertiesXml, "keepLines");
   const directWidowControl = parseOnOffAttribute(paragraphPropertiesXml, "widowControl");
@@ -4064,6 +4074,10 @@ function parseParagraphStyle(paragraphXml: string, context: ParseContext): Parag
     mergeParagraphTabStops(defaultParagraphStyle?.tabStops, inherited?.tabStops),
     directTabStops
   );
+  const contextualSpacing = mergeParagraphBoolean(
+    mergeParagraphBoolean(defaultParagraphStyle?.contextualSpacing, inherited?.contextualSpacing),
+    directContextualSpacing
+  );
   const keepNext = mergeParagraphBoolean(
     mergeParagraphBoolean(defaultParagraphStyle?.keepNext, inherited?.keepNext),
     directKeepNext
@@ -4093,6 +4107,7 @@ function parseParagraphStyle(paragraphXml: string, context: ParseContext): Parag
       !backgroundColor &&
       !borders &&
       (!tabStops || tabStops.length === 0) &&
+      contextualSpacing === undefined &&
       keepNext === undefined &&
       keepLines === undefined &&
       widowControl === undefined &&
@@ -4112,6 +4127,7 @@ function parseParagraphStyle(paragraphXml: string, context: ParseContext): Parag
     backgroundColor,
     borders,
     tabStops,
+    contextualSpacing,
     keepNext,
     keepLines,
     widowControl,
@@ -4122,6 +4138,7 @@ function parseParagraphStyle(paragraphXml: string, context: ParseContext): Parag
 function parseParagraph(paragraphXml: string, context: ParseContext): ParagraphNode {
   const children: ParagraphChildNode[] = [];
   const paragraphStyle = parseParagraphStyle(paragraphXml, context);
+  const paragraphMarkDeleted = /<w:pPr\b[\s\S]*?<w:rPr\b[\s\S]*?<w:del\b/i.test(paragraphXml);
   const runs = parseParagraphRuns(paragraphXml, context);
   const formFieldTokens = parseParagraphFormFieldTokens(
     paragraphXml,
@@ -4204,6 +4221,7 @@ function parseParagraph(paragraphXml: string, context: ParseContext): ParagraphN
   return {
     type: "paragraph",
     style: paragraphStyle,
+    paragraphMarkDeleted: paragraphMarkDeleted || undefined,
     children,
     sourceXml: paragraphXml
   };
@@ -5780,6 +5798,7 @@ function cloneParagraph(paragraph: ParagraphNode): ParagraphNode {
   return {
     type: "paragraph",
     style: cloneParagraphStyle(paragraph.style),
+    paragraphMarkDeleted: paragraph.paragraphMarkDeleted,
     sourceXml: paragraph.sourceXml,
     children: paragraph.children.map((child) => {
       if (child.type === "text") {

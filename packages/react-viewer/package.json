@@ -13,7 +13,9 @@
       "require": "./dist/index.cjs"
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "publishConfig": {
     "access": "public"
   },
@@ -26,7 +28,9 @@
     "@react-docx/editor-ops": "workspace:*",
     "@react-docx/layout-engine": "workspace:*",
     "@react-docx/ooxml-core": "workspace:*",
-    "@react-docx/serializer": "workspace:*"
+    "@react-docx/serializer": "workspace:*",
+    "fast-png": "^8.0.0",
+    "utif": "^3.1.0"
   },
   "scripts": {
     "build": "tsup src/index.tsx --format esm,cjs --dts --sourcemap --clean --external react,react-dom",

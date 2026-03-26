@@ -194,4 +194,67 @@ describe("header import fidelity", () => {
 
     expect(html).toContain("margin-left:113px");
   });
+
+  it("does not inject a synthetic 8px gap below the header container", () => {
+    const model = cloneDocModel(defaultStarterModel);
+    model.nodes = [
+      {
+        type: "paragraph",
+        children: [{ type: "text", text: "Body" }]
+      }
+    ];
+    model.metadata.headerSections = [
+      {
+        partName: "word/header1.xml",
+        referenceType: "default",
+        nodes: [
+          {
+            type: "paragraph",
+            children: [{ type: "text", text: "Header" }]
+          }
+        ]
+      }
+    ];
+
+    const html = renderToStaticMarkup(React.createElement(HeaderViewer, { model }));
+
+    expect(html).toContain('data-docx-header-footer-region="header"');
+    expect(html).not.toMatch(/data-docx-header-footer-region="header"[^>]*margin-bottom:8px/);
+  });
+
+  it("collapses an empty paragraph after a deleted paragraph mark like Word final view", () => {
+    const model = cloneDocModel(defaultStarterModel);
+    model.nodes = [
+      {
+        type: "paragraph",
+        paragraphMarkDeleted: true,
+        style: {
+          spacing: {
+            afterTwips: 120
+          }
+        },
+        children: [{ type: "text", text: "Personal information" }]
+      },
+      {
+        type: "paragraph",
+        style: {
+          spacing: {
+            afterTwips: 120
+          }
+        },
+        children: [{ type: "text", text: "" }]
+      },
+      {
+        type: "paragraph",
+        children: [{ type: "text", text: "Date: 9th February 2023" }]
+      }
+    ];
+
+    const html = renderToStaticMarkup(React.createElement(HeaderViewer, { model }));
+    const paragraphHostCount = (html.match(/data-docx-paragraph-host="true"/g) ?? []).length;
+
+    expect(html).toContain("Personal information");
+    expect(html).toContain("Date: 9th February 2023");
+    expect(paragraphHostCount).toBe(2);
+  });
 });

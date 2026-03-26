@@ -154,6 +154,37 @@ describe("footer pagination reserve", () => {
     ).toBeGreaterThan(resolveFooterPaginationReservePx(singleParagraphFooterSections, layout));
   });
 
+  it("adds extra reserve when the footer distance exceeds the bottom margin", () => {
+    const footerSections: FooterSection[] = [
+      {
+        type: "default",
+        partName: "footer1.xml",
+        nodes: [footerParagraph("Page - 2 -")],
+      },
+    ];
+
+    const reserveWithMatchingMargin = resolveFooterPaginationReservePx(footerSections, {
+      pageWidthPx: 794,
+      marginsPx: {
+        left: 45,
+        right: 45,
+        bottom: 96,
+      },
+      footerDistancePx: 96,
+    });
+    const reserveWithRaisedFooter = resolveFooterPaginationReservePx(footerSections, {
+      pageWidthPx: 794,
+      marginsPx: {
+        left: 45,
+        right: 45,
+        bottom: 72,
+      },
+      footerDistancePx: 96,
+    });
+
+    expect(reserveWithRaisedFooter).toBe(reserveWithMatchingMargin + 24);
+  });
+
   it("caps the measured page content budget at the visible footer boundary", () => {
     expect(
       resolveMeasuredPageContentHeightPx({
@@ -172,4 +203,5 @@ describe("footer pagination reserve", () => {
       })
     ).toBe(840);
   });
+
 });

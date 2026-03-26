@@ -1750,6 +1750,8 @@ export function App(): React.JSX.Element {
 
   const isDark = currentTheme === "dark";
   const zoomScale = zoomPercent / 100;
+  const disablePageVirtualization =
+    typeof navigator !== "undefined" && navigator.webdriver;
   const estimatedPageExtentPx = React.useMemo(
     () =>
       Math.max(
@@ -1773,6 +1775,15 @@ export function App(): React.JSX.Element {
       };
     }
 
+    // Visual regression runs need every page mounted; virtualized page windows
+    // keep later pages shifting during screenshot capture.
+    if (disablePageVirtualization) {
+      return {
+        startPageIndex: 0,
+        endPageIndex: Math.max(0, viewerPageCount - 1),
+      };
+    }
+
     if (virtualItems.length === 0) {
       const fallbackEnd = Math.min(viewerPageCount - 1, 2);
       return {
@@ -1792,7 +1803,7 @@ export function App(): React.JSX.Element {
       startPageIndex,
       endPageIndex,
     };
-  }, [viewerPageCount, virtualItems]);
+  }, [disablePageVirtualization, viewerPageCount, virtualItems]);
   const handleViewerPageCountChange = React.useCallback((pageCount: number): void => {
     const nextCount = Number.isFinite(pageCount) ? Math.max(1, Math.round(pageCount)) : 1;
     setViewerPageCount((current) => (current === nextCount ? current : nextCount));

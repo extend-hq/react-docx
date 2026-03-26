@@ -5,6 +5,7 @@ import {
   type LayoutParagraphBlock,
   type LayoutTableBlock
 } from "@react-docx/layout-engine";
+import { resolveDocumentLayout } from "../section-layout";
 import type {
   DocxLayoutDiagnostics,
   DocxLayoutLineGeometry,
@@ -124,9 +125,15 @@ export function buildDocxLayoutDiagnostics(
   model: DocModel,
   options: LayoutOptions = {}
 ): DocxLayoutDiagnostics {
-  const layoutPages = layoutDocument(model, options);
-  const pageWidth = options.pageWidth ?? 816;
-  const pageHeight = options.pageHeight ?? 1056;
+  const documentLayout = resolveDocumentLayout(model);
+  const resolvedOptions: LayoutOptions = {
+    ...options,
+    pageWidth: options.pageWidth ?? documentLayout.pageWidthPx,
+    pageHeight: options.pageHeight ?? documentLayout.pageHeightPx
+  };
+  const layoutPages = layoutDocument(model, resolvedOptions);
+  const pageWidth = resolvedOptions.pageWidth ?? documentLayout.pageWidthPx;
+  const pageHeight = resolvedOptions.pageHeight ?? documentLayout.pageHeightPx;
 
   return {
     generatedAt: Date.now(),

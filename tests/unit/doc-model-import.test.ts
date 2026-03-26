@@ -1017,6 +1017,86 @@ const ONE_BY_ONE_PNG = new Uint8Array(
 );
 
 describe("doc-model import", () => {
+  it("imports deleted paragraph marks so final-view layout can collapse them like Word", async () => {
+    const deletedParagraphMarkDocXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p>
+      <w:pPr>
+        <w:rPr>
+          <w:del w:id="1" w:author="Author" w:date="2023-02-20T15:55:00Z"/>
+        </w:rPr>
+      </w:pPr>
+      <w:r><w:t>Personal information</w:t></w:r>
+    </w:p>
+    <w:p>
+      <w:r><w:t></w:t></w:r>
+    </w:p>
+  </w:body>
+</w:document>`;
+
+    const zip = createZip([
+      { name: "[Content_Types].xml", content: CONTENT_TYPES_XML },
+      { name: "_rels/.rels", content: ROOT_RELS_XML },
+      { name: "word/document.xml", content: deletedParagraphMarkDocXml }
+    ]);
+
+    const pkg = await parseDocx(zip);
+    const model = buildDocModel(pkg);
+
+    expect(model.nodes[0]?.type).toBe("paragraph");
+    expect(model.nodes[1]?.type).toBe("paragraph");
+    if (model.nodes[0]?.type === "paragraph") {
+      expect(model.nodes[0].paragraphMarkDeleted).toBe(true);
+    }
+    if (model.nodes[1]?.type === "paragraph") {
+      expect(model.nodes[1].paragraphMarkDeleted).toBeUndefined();
+    }
+  });
+
+  it("imports contextualSpacing from paragraph styles", async () => {
+    const contextualSpacingDocXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p>
+      <w:pPr>
+        <w:pStyle w:val="ListParagraph"/>
+      </w:pPr>
+      <w:r><w:t>One</w:t></w:r>
+    </w:p>
+  </w:body>
+</w:document>`;
+    const contextualSpacingStylesXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:style w:type="paragraph" w:styleId="Normal" w:default="1">
+    <w:name w:val="Normal"/>
+  </w:style>
+  <w:style w:type="paragraph" w:styleId="ListParagraph">
+    <w:name w:val="List Paragraph"/>
+    <w:basedOn w:val="Normal"/>
+    <w:pPr>
+      <w:contextualSpacing/>
+    </w:pPr>
+  </w:style>
+</w:styles>`;
+
+    const zip = createZip([
+      { name: "[Content_Types].xml", content: CONTENT_TYPES_XML },
+      { name: "_rels/.rels", content: ROOT_RELS_XML },
+      { name: "word/document.xml", content: contextualSpacingDocXml },
+      { name: "word/styles.xml", content: contextualSpacingStylesXml }
+    ]);
+
+    const pkg = await parseDocx(zip);
+    const model = buildDocModel(pkg);
+
+    expect(model.nodes[0]?.type).toBe("paragraph");
+    if (model.nodes[0]?.type === "paragraph") {
+      expect(model.nodes[0].style?.styleId).toBe("ListParagraph");
+      expect(model.nodes[0].style?.contextualSpacing).toBe(true);
+    }
+  });
+
   it("imports text color, tables, and embedded images", async () => {
     const zip = createZip([
       { name: "[Content_Types].xml", content: CONTENT_TYPES_XML },
