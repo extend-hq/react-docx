@@ -1008,6 +1008,25 @@ function parseSectionPageNumberStartOverride(sectionPropertiesXml?: string): num
   return Math.max(1, Math.round(start));
 }
 
+function parseSectionPageNumberFormat(sectionPropertiesXml?: string): string | undefined {
+  if (!sectionPropertiesXml) {
+    return undefined;
+  }
+
+  const pageNumberTag = sectionPropertiesXml.match(/<w:pgNumType\b[^>]*\/?>/i)?.[0];
+  const format = pageNumberTag?.match(/\bw:fmt="([^"]+)"/i)?.[1]?.trim();
+  return format && format.length > 0 ? format : undefined;
+}
+
+function parseSectionStartType(sectionPropertiesXml?: string): string | undefined {
+  if (!sectionPropertiesXml) {
+    return undefined;
+  }
+
+  const sectionType = sectionPropertiesXml.match(/<w:type\b[^>]*w:val="([^"]+)"/i)?.[1]?.trim();
+  return sectionType && sectionType.length > 0 ? sectionType.toLowerCase() : undefined;
+}
+
 interface ResolvedDocumentSection {
   startNodeIndex: number;
   sectionPropertiesXml?: string;
@@ -3019,7 +3038,7 @@ function selectSectionVariantForPage<T extends HeaderSection | FooterSection>(
   const safePageIndex = Number.isFinite(pageIndex) ? Math.max(0, Math.round(pageIndex)) : 0;
   const oddPageNumber = safePageIndex % 2 === 0;
 
-  if (safePageIndex === 0 && titlePage && first) {
+  if (safePageIndex === 0 && titlePage) {
     return first;
   }
 
@@ -3525,8 +3544,8 @@ function paragraphAvailableTextWidthPx(
     Number.isFinite(firstLineDeltaPx) && (firstLineDeltaPx as number) > 0
       ? (firstLineDeltaPx as number)
       : 0;
-  const leftPaddingPx = paragraphBorderPaddingPx(paragraph.style?.borders?.left) ?? 0;
-  const rightPaddingPx = paragraphBorderPaddingPx(paragraph.style?.borders?.right) ?? 0;
+  const leftBorderInsetPx = paragraphBorderInsetPx(paragraph.style?.borders?.left);
+  const rightBorderInsetPx = paragraphBorderInsetPx(paragraph.style?.borders?.right);
 
   return Math.max(
     24,
@@ -3535,8 +3554,8 @@ function paragraphAvailableTextWidthPx(
         leftIndentPx -
         rightIndentPx -
         textIndentReductionPx -
-        leftPaddingPx -
-        rightPaddingPx
+        leftBorderInsetPx -
+        rightBorderInsetPx
     )
   );
 }
@@ -3854,6 +3873,8 @@ function estimateParagraphHeightPx(
   const emptyParagraphHeightPx = paragraphIsEffectivelyEmpty(paragraph)
     ? lineHeightPx + EMPTY_PARAGRAPH_EXTRA_HEIGHT_PX
     : 0;
+  const topBorderInsetPx = paragraphBorderInsetPx(paragraph.style?.borders?.top);
+  const bottomBorderInsetPx = paragraphBorderInsetPx(paragraph.style?.borders?.bottom);
 
   const contentHeightPx = Math.max(
     lineHeightPx,
@@ -3863,7 +3884,10 @@ function estimateParagraphHeightPx(
     absoluteFloatingImageHeightPx,
     emptyParagraphHeightPx
   );
-  const estimatedHeightPx = Math.max(1, beforeSpacing + afterSpacing + contentHeightPx);
+  const estimatedHeightPx = Math.max(
+    1,
+    beforeSpacing + afterSpacing + topBorderInsetPx + bottomBorderInsetPx + contentHeightPx
+  );
   if (sourceXml) {
     const cachedByWidth = paragraphEstimatedHeightBySourceXml.get(sourceXml) ?? new Map<number, number>();
     cachedByWidth.set(widthKey, estimatedHeightPx);
@@ -5499,6 +5523,30 @@ function paragraphBorderPaddingPx(border: ParagraphBorderStyle | undefined): num
   return pointsToPixels(border?.spacePt);
 }
 
+function paragraphBorderStrokeWidthPx(border: ParagraphBorderStyle | undefined): number {
+  const type = normalizeBorderType(border?.type);
+  if (!type || type === "none" || type === "nil") {
+    return 0;
+  }
+
+  const sizeEighthPt = border?.sizeEighthPt;
+  return Number.isFinite(sizeEighthPt) && (sizeEighthPt as number) > 0
+    ? Math.max(0.5, Number((((sizeEighthPt as number) / 6)).toFixed(2)))
+    : 1;
+}
+
+function paragraphBorderInsetPx(border: ParagraphBorderStyle | undefined): number {
+  const type = normalizeBorderType(border?.type);
+  if (!type || type === "none" || type === "nil") {
+    return 0;
+  }
+
+  return (
+    paragraphBorderStrokeWidthPx(border) +
+    (paragraphBorderPaddingPx(border) ?? 0)
+  );
+}
+
 function paragraphExplicitIndentTwips(paragraph: ParagraphNode): ParagraphIndent | undefined {
   const sourceXml = paragraph.sourceXml;
   if (!sourceXml) {
@@ -7009,6 +7057,7 @@ interface ParagraphRunRenderOptions {
   tocLinkColorByLevel?: Partial<Record<number, string | undefined>>;
   trackedMarkupMode?: "inline" | "gutter";
   withinHeaderFooter?: boolean;
+  pageNumberFormat?: string;
   sectionImageInteraction?: HeaderFooterImageInteraction;
 }
 
@@ -7240,7 +7289,12 @@ function renderParagraphRuns(
     consumedPageFieldValues += 1;
     const leadingWhitespace = value.match(/^\s*/)?.[0] ?? "";
     const trailingWhitespace = value.match(/\s*$/)?.[0] ?? "";
-    return `${leadingWhitespace}${Math.max(1, Math.round(resolvedFieldValue as number))}${trailingWhitespace}`;
+    const normalizedValue = Math.max(1, Math.round(resolvedFieldValue as number));
+    const formattedFieldValue =
+      fieldKind === "PAGE"
+        ? formatPageFieldValue(normalizedValue, options?.pageNumberFormat)
+        : String(normalizedValue);
+    return `${leadingWhitespace}${formattedFieldValue}${trailingWhitespace}`;
   };
 
   const trackedLinkStyle = (
@@ -8113,6 +8167,11 @@ function formatNumberingCounter(format: string | undefined, value: number): stri
     default:
       return String(value);
   }
+}
+
+function formatPageFieldValue(value: number, format: string | undefined): string {
+  const formatted = formatNumberingCounter(format, value);
+  return formatted.length > 0 ? formatted : String(value);
 }
 
 function findNumberingLevelDefinition(
@@ -17179,7 +17238,26 @@ export function DocxEditorViewer({
         measuredPageContentHeightsPxByPageIndex: measuredPageContentHeightByIndex
       }
     );
-    const allowStoredPageCountReconciliation = !editor.canUndo && !editor.canRedo;
+    const measuredPageHeightOverridesReduceContent = estimatedPages.some((segments, pageIndex) => {
+      const measuredHeightPx = measuredPageContentHeightByIndex?.[pageIndex];
+      if (!Number.isFinite(measuredHeightPx)) {
+        return false;
+      }
+
+      const firstNodeIndex = segments[0]?.nodeIndex ?? 0;
+      const metricsIndex = resolvePaginationSectionMetricsIndexForNodeIndex(
+        paginationSectionMetrics,
+        firstNodeIndex,
+        0
+      );
+      const sectionHeightPx =
+        paginationSectionMetrics[metricsIndex]?.pageContentHeightPx ?? pageContentHeightPx;
+      return (measuredHeightPx as number) < sectionHeightPx - 4;
+    });
+    const allowStoredPageCountReconciliation =
+      !editor.canUndo &&
+      !editor.canRedo &&
+      !measuredPageHeightOverridesReduceContent;
     if (!allowStoredPageCountReconciliation) {
       return appendTrailingEndnotePage(estimatedPages);
     }
@@ -17247,6 +17325,17 @@ export function DocxEditorViewer({
     measuredPageContentHeightByIndex,
     tableMeasuredRowHeightsForPagination
   ]);
+  const pageIndexByNodeIndex = React.useMemo(() => {
+    const indexByNode = new Map<number, number>();
+    pageNodeSegmentsByPage.forEach((segments, pageIndex) => {
+      segments.forEach((segment) => {
+        if (!indexByNode.has(segment.nodeIndex)) {
+          indexByNode.set(segment.nodeIndex, pageIndex);
+        }
+      });
+    });
+    return indexByNode;
+  }, [pageNodeSegmentsByPage]);
   const pageSectionInfoByIndex = React.useMemo(() => {
     if (pageNodeSegmentsByPage.length === 0) {
       return [] as Array<{
@@ -17268,6 +17357,46 @@ export function DocxEditorViewer({
             footerSections: editor.model.metadata.footerSections
           }
         ];
+    const firstRenderedPageIndexBySectionIndex = new Map<number, number>();
+    let previewSectionIndex = 0;
+    for (let pageIndex = 0; pageIndex < pageNodeSegmentsByPage.length; pageIndex += 1) {
+      const firstNodeIndex = pageNodeSegmentsByPage[pageIndex]?.[0]?.nodeIndex;
+      if (firstNodeIndex !== undefined) {
+        previewSectionIndex = resolveSectionIndexForNodeIndex(
+          sections,
+          firstNodeIndex,
+          previewSectionIndex
+        );
+      }
+      if (!firstRenderedPageIndexBySectionIndex.has(previewSectionIndex)) {
+        firstRenderedPageIndexBySectionIndex.set(previewSectionIndex, pageIndex);
+      }
+    }
+
+    const initialPageOffsetBySectionIndex = new Map<number, number>();
+    sections.forEach((section, sectionIndex) => {
+      if (sectionIndex === 0 || section.startNodeIndex < 0) {
+        return;
+      }
+
+      if (parseSectionStartType(section.sectionPropertiesXml) !== "continuous") {
+        return;
+      }
+
+      const firstNodePageIndex = pageIndexByNodeIndex.get(section.startNodeIndex);
+      const firstRenderedPageIndex = firstRenderedPageIndexBySectionIndex.get(sectionIndex);
+      if (
+        Number.isFinite(firstNodePageIndex) &&
+        Number.isFinite(firstRenderedPageIndex) &&
+        (firstRenderedPageIndex as number) > (firstNodePageIndex as number)
+      ) {
+        initialPageOffsetBySectionIndex.set(
+          sectionIndex,
+          Math.round((firstRenderedPageIndex as number) - (firstNodePageIndex as number))
+        );
+      }
+    });
+
     const sectionPageCounts = new Map<number, number>();
     const pageInfo: Array<{
       section: ResolvedDocumentSection;
@@ -17291,15 +17420,19 @@ export function DocxEditorViewer({
       }
 
       const section = sections[currentSectionIndex] ?? sections[sections.length - 1];
-      const pageIndexWithinSection = sectionPageCounts.get(currentSectionIndex) ?? 0;
-      sectionPageCounts.set(currentSectionIndex, pageIndexWithinSection + 1);
+      const renderedPageIndexWithinSection = sectionPageCounts.get(currentSectionIndex) ?? 0;
+      sectionPageCounts.set(currentSectionIndex, renderedPageIndexWithinSection + 1);
+
+      const initialPageOffset = initialPageOffsetBySectionIndex.get(currentSectionIndex) ?? 0;
+      const pageIndexWithinSection = renderedPageIndexWithinSection + initialPageOffset;
 
       if (pageIndex === 0) {
         const firstOverride = parseSectionPageNumberStartOverride(section.sectionPropertiesXml);
         currentPageNumber = firstOverride ?? parseSectionPageNumberStart(section.sectionPropertiesXml);
-      } else if (pageIndexWithinSection === 0) {
+      } else if (renderedPageIndexWithinSection === 0) {
         const sectionOverride = parseSectionPageNumberStartOverride(section.sectionPropertiesXml);
-        currentPageNumber = sectionOverride ?? currentPageNumber + 1;
+        const sectionStart = sectionOverride ?? currentPageNumber + 1;
+        currentPageNumber = sectionStart + initialPageOffset;
       } else {
         currentPageNumber += 1;
       }
@@ -17319,20 +17452,10 @@ export function DocxEditorViewer({
     editor.model.metadata.footerSections,
     editor.model.metadata.headerSections,
     editor.model.metadata.sectionPropertiesXml,
+    pageIndexByNodeIndex,
     pageNodeSegmentsByPage,
     primarySectionPropertiesXml
   ]);
-  const pageIndexByNodeIndex = React.useMemo(() => {
-    const indexByNode = new Map<number, number>();
-    pageNodeSegmentsByPage.forEach((segments, pageIndex) => {
-      segments.forEach((segment) => {
-        if (!indexByNode.has(segment.nodeIndex)) {
-          indexByNode.set(segment.nodeIndex, pageIndex);
-        }
-      });
-    });
-    return indexByNode;
-  }, [pageNodeSegmentsByPage]);
   const pageCount = pageNodeSegmentsByPage.length;
   const normalizedVisiblePageRange = React.useMemo(() => {
     if (pageCount <= 0) {
@@ -17800,7 +17923,40 @@ export function DocxEditorViewer({
       if (footerElement) {
         const pageRect = pageElement.getBoundingClientRect();
         const footerRect = footerElement.getBoundingClientRect();
-        const footerTopPx = (footerRect.top - pageRect.top) / zoomScale;
+        let visualTop = footerRect.top;
+        const maxOverflowCapPx = Math.max(
+          16,
+          Math.min(
+            Math.round(pageLayout.pageHeightPx * 0.12),
+            Math.round(pageLayout.marginsPx.bottom + pageLayout.footerDistancePx + 24)
+          )
+        );
+        footerElement.querySelectorAll<HTMLElement>("*").forEach((element) => {
+          if (!element.isConnected) {
+            return;
+          }
+
+          const computedStyle = window.getComputedStyle(element);
+          if (computedStyle.position === "absolute" || computedStyle.position === "fixed") {
+            const zIndex = Number.parseInt(computedStyle.zIndex ?? "", 10);
+            if (Number.isFinite(zIndex) && (zIndex as number) <= 0) {
+              return;
+            }
+          }
+
+          const rect = element.getBoundingClientRect();
+          if (rect.width <= 0 && rect.height <= 0) {
+            return;
+          }
+
+          if (rect.top < footerRect.top - maxOverflowCapPx - 1) {
+            return;
+          }
+
+          visualTop = Math.min(visualTop, rect.top);
+        });
+
+        const footerTopPx = (visualTop - pageRect.top) / zoomScale;
         const bodyBottomPx = pageLayout.pageHeightPx - pageLayout.marginsPx.bottom;
         footerOverlapPx = Math.max(0, Math.round(bodyBottomPx - footerTopPx));
       }
@@ -26340,6 +26496,15 @@ export function DocxEditorViewer({
         const headerVisualOverflowPx = headerVisualOverflowByPage[pageIndex] ?? 0;
         const footerBottomOffsetPx = footerOverlayBottom;
         const pageNumber = pageInfo?.pageNumber ?? pageIndex + 1;
+        const pageNumberFormat = parseSectionPageNumberFormat(
+          pageInfo?.section.sectionPropertiesXml ?? editor.model.metadata.sectionPropertiesXml
+        );
+        const pageHeaderFooterRunRenderOptions = pageNumberFormat
+          ? {
+              ...paragraphRunRenderOptions,
+              pageNumberFormat
+            }
+          : paragraphRunRenderOptions;
         const pageFootnotes = pageFootnotesByIndex[pageIndex] ?? [];
         const isLastPage = pageIndex === pageCount - 1;
         const headerFooterBodyDimmed = pageHeaderFooterEditActive;
@@ -26482,7 +26647,7 @@ export function DocxEditorViewer({
                     },
                     pageNumber,
                     totalPagesForFieldResolution,
-                    paragraphRunRenderOptions,
+                    pageHeaderFooterRunRenderOptions,
                     headerEditScope,
                     headerImageInteraction,
                     undefined,
@@ -26789,7 +26954,7 @@ export function DocxEditorViewer({
                     },
                     pageNumber,
                     totalPagesForFieldResolution,
-                    paragraphRunRenderOptions,
+                    pageHeaderFooterRunRenderOptions,
                     footerEditScope,
                     footerImageInteraction,
                     undefined,

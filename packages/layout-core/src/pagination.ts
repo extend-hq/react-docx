@@ -298,7 +298,7 @@ export function selectSectionVariantForPage<T extends HeaderSection | FooterSect
   const safePageIndex = Number.isFinite(pageIndex) ? Math.max(0, Math.round(pageIndex)) : 0;
   const oddPageNumber = safePageIndex % 2 === 0;
 
-  if (safePageIndex === 0 && titlePage && first) {
+  if (safePageIndex === 0 && titlePage) {
     return first;
   }
 

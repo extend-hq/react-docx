@@ -352,6 +352,13 @@ describe("layout-core", () => {
         2
       )?.partName
     ).toBe("header-default");
+    expect(
+      selectSectionVariantForPage(
+        headerSections.filter((section) => section.referenceType !== "first"),
+        `<w:sectPr><w:titlePg/></w:sectPr>`,
+        0
+      )
+    ).toBeUndefined();
   });
 
   it("owns the generic page segmentation solver and break scoring", () => {
