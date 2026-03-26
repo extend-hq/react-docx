@@ -1171,7 +1171,9 @@ function parseTableStylePropertiesFromXml(tablePropertiesXml: string | undefined
   const tableIndentType = tableIndentTag ? getAttribute(tableIndentTag, "w:type")?.toLowerCase() : undefined;
   const tableIndentRaw = tableIndentTag ? parseIntegerAttribute(tableIndentTag, "w:w") : undefined;
   const indentTwips =
-    tableIndentType === "dxa" && tableIndentRaw !== undefined && tableIndentRaw > 0 ? tableIndentRaw : undefined;
+    tableIndentType === "dxa" && tableIndentRaw !== undefined && tableIndentRaw !== 0
+      ? tableIndentRaw
+      : undefined;
 
   const tableLayoutTag = tablePropertiesXml.match(/<w:tblLayout\b[^>]*>/i)?.[0];
   const tableLayoutRaw = tableLayoutTag ? getAttribute(tableLayoutTag, "w:type")?.toLowerCase() : undefined;

@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { FooterSection } from "@react-docx/doc-model";
-import { resolveFooterPaginationReservePx } from "../../packages/react-viewer/src/editor";
+import {
+  resolveFooterPaginationReservePx,
+  resolveMeasuredPageContentHeightPx
+} from "../../packages/react-viewer/src/editor";
 
 function footerParagraph(text: string) {
   return {
@@ -149,5 +152,24 @@ describe("footer pagination reserve", () => {
     expect(
       resolveFooterPaginationReservePx(stackedParagraphFooterSections, layout)
     ).toBeGreaterThan(resolveFooterPaginationReservePx(singleParagraphFooterSections, layout));
+  });
+
+  it("caps the measured page content budget at the visible footer boundary", () => {
+    expect(
+      resolveMeasuredPageContentHeightPx({
+        pageLayout: {
+          pageHeightPx: 1100,
+          marginsPx: {
+            bottom: 96,
+          },
+          footerDistancePx: 48,
+        },
+        fallbackHeightPx: 900,
+        headerHeightPx: 120,
+        bodyTopPx: 120,
+        bodyRenderedBottomPx: 998,
+        footerTopPx: 960,
+      })
+    ).toBe(840);
   });
 });

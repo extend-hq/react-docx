@@ -1142,6 +1142,35 @@ export function resolveFooterPaginationReservePx(
   return Math.max(0, Math.round(estimatedFooterHeightPx - footerMarginBudgetPx));
 }
 
+export function resolveMeasuredPageContentHeightPx(params: {
+  pageLayout: Pick<DocumentLayoutMetrics, "pageHeightPx" | "marginsPx" | "footerDistancePx">;
+  fallbackHeightPx: number;
+  headerHeightPx: number;
+  bodyTopPx?: number;
+  bodyRenderedBottomPx?: number;
+  footerTopPx?: number;
+}): number {
+  const {
+    pageLayout,
+    fallbackHeightPx,
+    headerHeightPx,
+    bodyTopPx,
+    footerTopPx
+  } = params;
+
+  const nominalBodyBottomPx = pageLayout.pageHeightPx - pageLayout.marginsPx.bottom;
+  const footerOverlapPx = Number.isFinite(footerTopPx)
+    ? Math.max(0, Math.round(nominalBodyBottomPx - (footerTopPx as number)))
+    : 0;
+  const allowedBodyBottomPx = nominalBodyBottomPx - footerOverlapPx;
+
+  if (Number.isFinite(bodyTopPx) && allowedBodyBottomPx > (bodyTopPx as number)) {
+    return Math.max(120, Math.round(allowedBodyBottomPx - (bodyTopPx as number)));
+  }
+
+  return Math.max(120, fallbackHeightPx - headerHeightPx - footerOverlapPx);
+}
+
 function buildPaginationSectionMetrics(
   sections: ResolvedDocumentSection[],
   fallbackLayout: DocumentLayoutMetrics
@@ -2467,6 +2496,34 @@ function paragraphHasInFlowImage(paragraph: ParagraphNode): boolean {
 
     return !shouldRenderAbsoluteFloatingImage(child) && !shouldRenderWrappedFloatingImage(child);
   });
+}
+
+function paragraphIsFloatingImageAnchorOnly(paragraph: ParagraphNode): boolean {
+  if (paragraphHasVisibleText(paragraph) || paragraphHasFormField(paragraph)) {
+    return false;
+  }
+
+  let hasFloatingImage = false;
+  for (const child of paragraph.children) {
+    if (child.type === "text") {
+      if (child.text.trim().length > 0) {
+        return false;
+      }
+      continue;
+    }
+
+    if (child.type !== "image") {
+      return false;
+    }
+
+    if (!shouldRenderWrappedFloatingImage(child) && !shouldRenderAbsoluteFloatingImage(child)) {
+      return false;
+    }
+
+    hasFloatingImage = true;
+  }
+
+  return hasFloatingImage;
 }
 
 function collectHeadingTextColorByLevel(model: DocModel): Partial<Record<number, string>> {
@@ -5256,6 +5313,7 @@ function wrappedFloatingImageStyle(
   });
   return {
     display: "block",
+    ...intrinsicBlockWidthStyle,
     float: side,
     marginTop: distT + verticalOffset,
     marginBottom: distB,
@@ -5845,6 +5903,7 @@ function paragraphBlockStyle(
   const checkboxChoiceRow = paragraphLooksLikeCheckboxChoiceRow(paragraph);
   const suppressTocNumberingTextIndent =
     isTableOfContentsParagraph(paragraph) && paragraphHasNumbering(paragraph);
+  const suppressIndentForFloatingAnchorOnlyParagraph = paragraphIsFloatingImageAnchorOnly(paragraph);
   const headingLevel = paragraph.style?.headingLevel;
   const applyWordLikeHeadingFallback = !paragraph.sourceXml;
   const hasSoftLineBreak = paragraphText(paragraph).includes("\n");
@@ -5863,10 +5922,10 @@ function paragraphBlockStyle(
     lineHeight: paragraphLineHeight(paragraph, docGridLinePitchPx, disableDocGridSnap),
     marginTop: beforeSpacing,
     marginBottom: afterSpacing,
-    marginLeft: leftIndent,
-    marginRight: rightIndent,
+    marginLeft: suppressIndentForFloatingAnchorOnlyParagraph ? 0 : leftIndent,
+    marginRight: suppressIndentForFloatingAnchorOnlyParagraph ? 0 : rightIndent,
     backgroundColor: paragraph.style?.backgroundColor,
-    textIndent: suppressTocNumberingTextIndent
+    textIndent: suppressTocNumberingTextIndent || suppressIndentForFloatingAnchorOnlyParagraph
       ? undefined
       : firstLineIndent ?? (hangingIndent ? -hangingIndent : undefined),
     minHeight: paragraphIsEffectivelyEmpty(paragraph)
@@ -5912,9 +5971,62 @@ function tableCellParagraphBlockStyle(
   );
   const suppressTopSpacing =
     paragraphIndex <= 0 && suppressFirstTableCellParagraphTopSpacing(paragraph);
+  const normalizedMarginLeft =
+    typeof baseStyle.marginLeft === "number"
+      ? baseStyle.marginLeft
+      : Number.parseFloat(String(baseStyle.marginLeft ?? ""));
+  const normalizedMarginRight =
+    typeof baseStyle.marginRight === "number"
+      ? baseStyle.marginRight
+      : Number.parseFloat(String(baseStyle.marginRight ?? ""));
+  const normalizedPaddingLeft =
+    typeof baseStyle.paddingLeft === "number"
+      ? baseStyle.paddingLeft
+      : Number.parseFloat(String(baseStyle.paddingLeft ?? ""));
+  const normalizedPaddingRight =
+    typeof baseStyle.paddingRight === "number"
+      ? baseStyle.paddingRight
+      : Number.parseFloat(String(baseStyle.paddingRight ?? ""));
+  const convertPositiveCellIndentToPadding =
+    (Number.isFinite(normalizedMarginLeft) && (normalizedMarginLeft as number) > 0) ||
+    (Number.isFinite(normalizedMarginRight) && (normalizedMarginRight as number) > 0);
 
   return {
     ...baseStyle,
+    ...(convertPositiveCellIndentToPadding
+      ? {
+          marginLeft:
+            Number.isFinite(normalizedMarginLeft) && (normalizedMarginLeft as number) > 0
+              ? 0
+              : baseStyle.marginLeft,
+          marginRight:
+            Number.isFinite(normalizedMarginRight) && (normalizedMarginRight as number) > 0
+              ? 0
+              : baseStyle.marginRight,
+          paddingLeft:
+            Number.isFinite(normalizedMarginLeft) && (normalizedMarginLeft as number) > 0
+              ? Math.max(
+                  0,
+                  Math.round(
+                    (Number.isFinite(normalizedPaddingLeft) ? (normalizedPaddingLeft as number) : 0) +
+                      (normalizedMarginLeft as number)
+                  )
+                )
+              : baseStyle.paddingLeft,
+          paddingRight:
+            Number.isFinite(normalizedMarginRight) && (normalizedMarginRight as number) > 0
+              ? Math.max(
+                  0,
+                  Math.round(
+                    (Number.isFinite(normalizedPaddingRight) ? (normalizedPaddingRight as number) : 0) +
+                      (normalizedMarginRight as number)
+                  )
+                )
+              : baseStyle.paddingRight,
+          boxSizing: "border-box",
+          width: "100%"
+        }
+      : undefined),
     ...(suppressTopSpacing ? { marginTop: 0 } : undefined)
   };
 }
@@ -7058,6 +7170,7 @@ interface ParagraphRunRenderOptions {
   trackedMarkupMode?: "inline" | "gutter";
   withinHeaderFooter?: boolean;
   pageNumberFormat?: string;
+  floatingAnchorOriginCorrectionXPx?: number;
   sectionImageInteraction?: HeaderFooterImageInteraction;
 }
 
@@ -7113,6 +7226,9 @@ function renderParagraphRuns(
   const trackedMarkup = showTrackedInlineMarkup ? resolveParagraphTrackedMarkup(paragraph) : undefined;
   const tocParagraphLevel = tableOfContentsLevel(paragraph);
   const tocLinkColor = tocParagraphLevel ? options?.tocLinkColorByLevel?.[tocParagraphLevel] : undefined;
+  const floatingAnchorOriginCorrectionXPx = Number.isFinite(options?.floatingAnchorOriginCorrectionXPx)
+    ? Math.round(options?.floatingAnchorOriginCorrectionXPx as number)
+    : 0;
   const checkboxChoiceRow = paragraphLooksLikeCheckboxChoiceRow(paragraph);
   const fallbackTabWidthPx = checkboxChoiceRow ? checkboxChoiceRowTabWidthPx(paragraph) : DEFAULT_TAB_STOP_PX;
   const shouldTrackTabLineWidth = !useTabLeaderLayout && !useAnchoredTabLayout;
@@ -7313,6 +7429,14 @@ function renderParagraphRuns(
         textDecoration: "none"
       },
       trackedInlineChange
+      );
+  };
+  const usesExternalHorizontalAnchorOrigin = (image: ImageRunNode): boolean => {
+    const horizontalRelativeTo = image.floating?.horizontalRelativeTo?.trim().toLowerCase();
+    return (
+      horizontalRelativeTo === "page" ||
+      horizontalRelativeTo === "margin" ||
+      horizontalRelativeTo === "column"
     );
   };
 
@@ -7431,10 +7555,13 @@ function renderParagraphRuns(
           widthPx = minimumWidthPx;
         }
       }
+      const horizontalAnchorCorrectionPx = usesExternalHorizontalAnchorOrigin(child)
+        ? floatingAnchorOriginCorrectionXPx
+        : 0;
       const floatingStyle: React.CSSProperties = isWrappedFloatingImage
         ? wrappedFloatingImageStyle(child, {
             containerWidthPx: floatingPageOriginPx?.pageWidth,
-            deltaX: movePreview?.deltaX ?? 0,
+            deltaX: (movePreview?.deltaX ?? 0) + horizontalAnchorCorrectionPx,
             deltaY: movePreview?.deltaY ?? 0,
             allowNegativeOffsets: true
           })
@@ -7442,7 +7569,7 @@ function renderParagraphRuns(
           ? absoluteFloatingImageStyle(child, {
               pageOriginLeft: floatingPageOriginPx?.left,
               pageOriginTop: floatingPageOriginPx?.top,
-              deltaX: movePreview?.deltaX ?? 0,
+              deltaX: (movePreview?.deltaX ?? 0) + horizontalAnchorCorrectionPx,
               deltaY: movePreview?.deltaY ?? 0
             })
           : movePreview
@@ -7514,7 +7641,7 @@ function renderParagraphRuns(
               borderRadius: 4,
               color: "#6b7280",
               fontSize: 12,
-              marginInline: 0,
+              marginInline: isWrappedFloatingImage || isAbsoluteFloatingImage ? undefined : 0,
               paddingInline: 8,
               ...trackedImageStyle,
               ...floatingStyleWithMovePreview,
@@ -7563,7 +7690,7 @@ function renderParagraphRuns(
 	              fontFamily: "Arial, sans-serif",
 	              lineHeight: 1,
 	              verticalAlign: "middle",
-	              marginInline: 0,
+	              marginInline: isWrappedFloatingImage || isAbsoluteFloatingImage ? undefined : 0,
                 ...trackedImageStyle,
 	              ...floatingStyleWithMovePreview,
                 cursor: sectionImageCursor
@@ -7593,7 +7720,7 @@ function renderParagraphRuns(
             marginLeft: isCenteredStandaloneInlineImage ? "auto" : undefined,
             marginRight: isCenteredStandaloneInlineImage ? "auto" : undefined,
             verticalAlign: "middle",
-            marginInline: 0,
+            marginInline: isWrappedFloatingImage || isAbsoluteFloatingImage ? undefined : 0,
             ...trackedImageStyle,
             ...floatingStyleWithMovePreview,
             cursor: sectionImageCursor
@@ -15865,10 +15992,12 @@ function renderHeaderNode(
     paragraphNode: ParagraphNode,
     paragraphKeyPrefix: string,
     paragraphStyle: React.CSSProperties,
-    location?: DocxSectionParagraphLocation
+    location?: DocxSectionParagraphLocation,
+    paragraphRunOptionOverrides?: Partial<ParagraphRunRenderOptions>
   ): React.JSX.Element => {
     const paragraphRunOptions: ParagraphRunRenderOptions = {
       ...(runRenderOptions ?? {}),
+      ...(paragraphRunOptionOverrides ?? {}),
       withinHeaderFooter: true,
       sectionImageInteraction:
         location && imageInteraction
@@ -16120,7 +16249,7 @@ function renderHeaderNode(
   }
 
   const columnCount = tableColumnCount(node);
-  const tableIndentPx = twipsToPixels(node.style?.indentTwips) ?? 0;
+  const tableIndentPx = twipsToSignedPixels(node.style?.indentTwips) ?? 0;
   const tableWidthPx = twipsToPixels(node.style?.widthTwips);
   const tableRuntimeKey = keyPrefix;
   const rawTableColumnWidthsPx = (() => {
@@ -16361,6 +16490,9 @@ function renderHeaderNode(
                     return null;
                   }
                   const cellWidthPx = twipsToPixels(cell.style?.widthTwips);
+                  const cellStartOffsetPx =
+                    startColumnIndex > 0 ? (tableColumnBoundaryOffsetsPx[startColumnIndex - 1] ?? 0) : 0;
+                  const floatingAnchorOriginCorrectionXPx = -(tableIndentPx + cellStartOffsetPx);
 
                   return (
                     <td
@@ -16394,7 +16526,7 @@ function renderHeaderNode(
 	                        wordBreak: "break-word"
                       }}
                     >
-                      <div style={{ display: "grid", gap: 4 }}>
+                      <div style={{ display: "grid", gap: 0 }}>
                         {(() => {
                           let paragraphIndexInCell = 0;
                           return cell.nodes.map((cellContent, contentIndex) => {
@@ -16419,6 +16551,11 @@ function renderHeaderNode(
                                     rowIndex,
                                     cellIndex,
                                     paragraphIndex
+                                  }
+                                : undefined,
+                              floatingAnchorOriginCorrectionXPx !== 0
+                                ? {
+                                    floatingAnchorOriginCorrectionXPx
                                   }
                                 : undefined
                             );
@@ -17919,7 +18056,7 @@ export function DocxEditorViewer({
         ? Math.max(0, Math.round(headerElement.getBoundingClientRect().height / zoomScale))
         : 0;
 
-      let footerOverlapPx = 0;
+      let footerTopPx: number | undefined;
       if (footerElement) {
         const pageRect = pageElement.getBoundingClientRect();
         const footerRect = footerElement.getBoundingClientRect();
@@ -17956,22 +18093,26 @@ export function DocxEditorViewer({
           visualTop = Math.min(visualTop, rect.top);
         });
 
-        const footerTopPx = (visualTop - pageRect.top) / zoomScale;
-        const bodyBottomPx = pageLayout.pageHeightPx - pageLayout.marginsPx.bottom;
-        footerOverlapPx = Math.max(0, Math.round(bodyBottomPx - footerTopPx));
+        footerTopPx = (visualTop - pageRect.top) / zoomScale;
       }
 
-      const bodyBottomPx = pageLayout.pageHeightPx - pageLayout.marginsPx.bottom - footerOverlapPx;
-      if (bodyElement) {
-        const pageRect = pageElement.getBoundingClientRect();
-        const bodyRect = bodyElement.getBoundingClientRect();
-        const bodyTopPx = Math.max(0, Math.round((bodyRect.top - pageRect.top) / zoomScale));
-        if (bodyBottomPx > bodyTopPx) {
-          return Math.max(120, Math.round(bodyBottomPx - bodyTopPx));
-        }
-      }
+      const pageRect = pageElement.getBoundingClientRect();
+      const bodyRect = bodyElement?.getBoundingClientRect();
+      const bodyTopPx = bodyRect
+        ? Math.max(0, Math.round((bodyRect.top - pageRect.top) / zoomScale))
+        : undefined;
+      const bodyRenderedBottomPx = bodyRect
+        ? Math.max(0, Math.round((bodyRect.bottom - pageRect.top) / zoomScale))
+        : undefined;
 
-      return Math.max(120, fallbackHeightPx - headerHeightPx - footerOverlapPx);
+      return resolveMeasuredPageContentHeightPx({
+        pageLayout,
+        fallbackHeightPx,
+        headerHeightPx,
+        bodyTopPx,
+        bodyRenderedBottomPx,
+        footerTopPx
+      });
     });
 
     setMeasuredPageContentHeightByIndex((current) => {
@@ -23198,7 +23339,7 @@ export function DocxEditorViewer({
                 display: "inline-block",
                 position: isAbsoluteFloatingImage || Boolean(dualWrapExclusionLayout) ? "absolute" : "relative",
                 verticalAlign: "middle",
-                marginInline: 0,
+                marginInline: isWrappedFloatingImage || isAbsoluteFloatingImage ? undefined : 0,
                 ...floatingStyle
               }}
               onPointerDown={(event) =>
@@ -24571,7 +24712,7 @@ export function DocxEditorViewer({
             tableElementsRef.current.delete(nodeIndex);
           }
         }}
-        style={tableWrapperStyle(node, twipsToPixels(node.style?.indentTwips) ?? 0)}
+        style={tableWrapperStyle(node, twipsToSignedPixels(node.style?.indentTwips) ?? 0)}
         onPointerEnter={() => {
           if (isReadOnly) {
             return;
@@ -24596,7 +24737,7 @@ export function DocxEditorViewer({
         }}
       >
         {(() => {
-          const tableIndentPx = twipsToPixels(node.style?.indentTwips) ?? 0;
+          const tableIndentPx = twipsToSignedPixels(node.style?.indentTwips) ?? 0;
           const maxTableWidthPx = Math.max(120, documentContentWidthPx - tableIndentPx);
           const columnCount = tableColumnCount(node);
           const tableWidthPx = twipsToPixels(node.style?.widthTwips);
