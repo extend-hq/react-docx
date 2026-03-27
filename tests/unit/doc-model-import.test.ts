@@ -439,6 +439,118 @@ const TEXTBOX_COLOR_ONLY_UNDERLINE_STYLES_XML = `<?xml version="1.0" encoding="U
   </w:style>
 </w:styles>`;
 
+const CUSTOM_SHAPE_DOC_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">
+  <w:body>
+    <w:p>
+      <w:r>
+        <w:drawing>
+          <wp:anchor behindDoc="1">
+            <wp:positionH relativeFrom="margin"><wp:align>center</wp:align></wp:positionH>
+            <wp:positionV relativeFrom="paragraph"><wp:posOffset>-650875</wp:posOffset></wp:positionV>
+            <wp:extent cx="3865880" cy="3528060"/>
+            <wp:docPr id="43" name="Flowchart: Delay 16"/>
+            <a:graphic>
+              <a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">
+                <wps:wsp>
+                  <wps:spPr bwMode="auto">
+                    <a:xfrm rot="5400000"><a:off x="0" y="0"/><a:ext cx="3865880" cy="3528060"/></a:xfrm>
+                    <a:prstGeom prst="flowChartDelay"><a:avLst/></a:prstGeom>
+                    <a:solidFill><a:schemeClr val="bg1"/></a:solidFill>
+                    <a:ln w="25400"><a:solidFill><a:schemeClr val="bg1"/></a:solidFill></a:ln>
+                  </wps:spPr>
+                </wps:wsp>
+              </a:graphicData>
+            </a:graphic>
+          </wp:anchor>
+        </w:drawing>
+      </w:r>
+      <w:r>
+        <w:drawing>
+          <wp:anchor behindDoc="1">
+            <wp:positionH relativeFrom="margin"><wp:align>center</wp:align></wp:positionH>
+            <wp:positionV relativeFrom="paragraph"><wp:posOffset>-669925</wp:posOffset></wp:positionV>
+            <wp:extent cx="7269480" cy="9487535"/>
+            <wp:docPr id="42" name="Freeform: Shape 12"/>
+            <a:graphic>
+              <a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">
+                <wps:wsp>
+                  <wps:spPr bwMode="auto">
+                    <a:xfrm><a:off x="0" y="0"/><a:ext cx="7269480" cy="9487535"/></a:xfrm>
+                    <a:custGeom>
+                      <a:avLst/>
+                      <a:pathLst>
+                        <a:path w="8513" h="2403">
+                          <a:moveTo><a:pt x="8512" y="0"/></a:moveTo>
+                          <a:lnTo><a:pt x="108" y="0"/></a:lnTo>
+                          <a:lnTo><a:pt x="0" y="2402"/></a:lnTo>
+                          <a:lnTo><a:pt x="8512" y="2402"/></a:lnTo>
+                          <a:close/>
+                        </a:path>
+                      </a:pathLst>
+                    </a:custGeom>
+                    <a:gradFill rotWithShape="1">
+                      <a:gsLst>
+                        <a:gs pos="0"><a:srgbClr val="2B4C17"><a:alpha val="0"/></a:srgbClr></a:gs>
+                        <a:gs pos="50000"><a:srgbClr val="427026"><a:alpha val="50000"/></a:srgbClr></a:gs>
+                        <a:gs pos="100000"><a:srgbClr val="51872F"/></a:gs>
+                      </a:gsLst>
+                      <a:lin ang="5400000" scaled="1"/>
+                    </a:gradFill>
+                    <a:ln><a:noFill/></a:ln>
+                  </wps:spPr>
+                </wps:wsp>
+              </a:graphicData>
+            </a:graphic>
+          </wp:anchor>
+        </w:drawing>
+      </w:r>
+    </w:p>
+  </w:body>
+</w:document>`;
+
+const FILTERED_IMAGE_DOC_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:a14="http://schemas.microsoft.com/office/drawing/2010/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">
+  <w:body>
+    <w:p>
+      <w:r>
+        <w:drawing>
+          <wp:anchor behindDoc="1">
+            <wp:extent cx="7256756" cy="9498842"/>
+            <wp:docPr id="1" name="Picture 1"/>
+            <a:graphic>
+              <a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">
+                <pic:pic>
+                  <pic:blipFill rotWithShape="1">
+                    <a:blip r:embed="rId5">
+                      <a:duotone>
+                        <a:prstClr val="black"/>
+                        <a:schemeClr val="accent3"/>
+                      </a:duotone>
+                      <a:alphaModFix amt="57000"/>
+                      <a:extLst>
+                        <a:ext uri="{BEBA8EAE-BF5A-486C-A8C5-ECC9F3942E4B}">
+                          <a14:imgProps>
+                            <a14:imgLayer r:embed="rId6">
+                              <a14:imgEffect><a14:artisticPastelsSmooth trans="34000"/></a14:imgEffect>
+                            </a14:imgLayer>
+                          </a14:imgProps>
+                        </a:ext>
+                      </a:extLst>
+                    </a:blip>
+                    <a:srcRect t="3196" b="12653"/>
+                    <a:stretch/>
+                  </pic:blipFill>
+                </pic:pic>
+              </a:graphicData>
+            </a:graphic>
+          </wp:anchor>
+        </w:drawing>
+      </w:r>
+    </w:p>
+  </w:body>
+</w:document>`;
+
 const CONTENT_TYPES_WITH_CHART_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
   <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
@@ -1416,6 +1528,84 @@ describe("doc-model import", () => {
         expect(decodedSvg).toContain("font-family=\"Calibri, Arial, sans-serif\"");
         expect(decodedSvg).not.toContain("text-decoration=\"underline\"");
         expect(decodedSvg).toContain("textLength=\"");
+      }
+    }
+  });
+
+  it("imports standalone custom drawing shapes as renderable svg image runs", async () => {
+    const zip = createZip([
+      { name: "[Content_Types].xml", content: CONTENT_TYPES_XML },
+      { name: "_rels/.rels", content: ROOT_RELS_XML },
+      { name: "word/document.xml", content: CUSTOM_SHAPE_DOC_XML }
+    ]);
+
+    const pkg = await parseDocx(zip);
+    const model = buildDocModel(pkg);
+
+    const firstParagraph = model.nodes[0];
+    expect(firstParagraph?.type).toBe("paragraph");
+    if (firstParagraph?.type === "paragraph") {
+      const imageRuns = firstParagraph.children.filter((child) => child.type === "image");
+      expect(imageRuns).toHaveLength(2);
+
+      const flowchartImage = imageRuns.find((child) => child.alt === "Flowchart: Delay 16");
+      expect(flowchartImage?.type).toBe("image");
+      if (flowchartImage?.type === "image") {
+        expect(flowchartImage.contentType).toBe("image/svg+xml");
+        expect(flowchartImage.floating?.horizontalAlign).toBe("center");
+        expect(flowchartImage.floating?.xPx).toBeUndefined();
+        expect(flowchartImage.floating?.yPx).toBeLessThan(0);
+        const decodedSvg = decodeURIComponent(
+          (flowchartImage.src ?? "").replace(/^data:image\/svg\+xml;charset=utf-8,/, "")
+        );
+        expect(decodedSvg).toContain("rotate(90.000");
+        expect(decodedSvg).toContain('fill="#ffffff"');
+      }
+
+      const freeformImage = imageRuns.find((child) => child.alt === "Freeform: Shape 12");
+      expect(freeformImage?.type).toBe("image");
+      if (freeformImage?.type === "image") {
+        expect(freeformImage.contentType).toBe("image/svg+xml");
+        expect(freeformImage.floating?.horizontalAlign).toBe("center");
+        expect(freeformImage.floating?.xPx).toBeUndefined();
+        const decodedSvg = decodeURIComponent(
+          (freeformImage.src ?? "").replace(/^data:image\/svg\+xml;charset=utf-8,/, "")
+        );
+        expect(decodedSvg).toContain("<linearGradient");
+        expect(decodedSvg).toContain('fill="url(#shape-fill)"');
+        expect(decodedSvg).toContain("<path d=");
+      }
+    }
+  });
+
+  it("parses drawing image crop and effect metadata", async () => {
+    const relsXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId5" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image1.png"/>
+  <Relationship Id="rId6" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image2.png"/>
+</Relationships>`;
+    const zip = createZip([
+      { name: "[Content_Types].xml", content: CONTENT_TYPES_XML },
+      { name: "_rels/.rels", content: ROOT_RELS_XML },
+      { name: "word/document.xml", content: FILTERED_IMAGE_DOC_XML },
+      { name: "word/_rels/document.xml.rels", content: relsXml },
+      { name: "word/media/image1.png", content: ONE_BY_ONE_PNG },
+      { name: "word/media/image2.png", content: ONE_BY_ONE_PNG }
+    ]);
+
+    const pkg = await parseDocx(zip);
+    const model = buildDocModel(pkg);
+    const firstParagraph = model.nodes[0];
+    expect(firstParagraph?.type).toBe("paragraph");
+    if (firstParagraph?.type === "paragraph") {
+      const image = firstParagraph.children.find((child) => child.type === "image");
+      expect(image?.type).toBe("image");
+      if (image?.type === "image") {
+        expect(image.crop?.topFraction).toBeCloseTo(0.03196, 5);
+        expect(image.crop?.bottomFraction).toBeCloseTo(0.12653, 5);
+        expect(image.cssOpacity).toBeCloseTo(0.57, 5);
+        expect(image.cssFilter).toContain("saturate(0.76)");
+        expect(image.cssFilter).toContain("grayscale(1)");
       }
     }
   });

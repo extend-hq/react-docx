@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import type { FooterSection } from "@react-docx/doc-model";
 import {
   resolveFooterPaginationReservePx,
-  resolveMeasuredPageContentHeightPx
+  resolveMeasuredBodyRenderedBottomPx,
+  resolveMeasuredPageContentHeightPx,
+  stabilizeMeasuredPageContentHeights
 } from "../../packages/react-viewer/src/editor";
 
 function footerParagraph(text: string) {
@@ -198,10 +200,89 @@ describe("footer pagination reserve", () => {
         fallbackHeightPx: 900,
         headerHeightPx: 120,
         bodyTopPx: 120,
-        bodyRenderedBottomPx: 998,
+        bodyRenderedBottomPx: 960,
         footerTopPx: 960,
       })
+    ).toBe(820);
+  });
+
+  it("shrinks the measured body budget further when rendered body content already overruns the footer", () => {
+    expect(
+      resolveMeasuredPageContentHeightPx({
+        pageLayout: {
+          pageHeightPx: 1100,
+          marginsPx: {
+            bottom: 96,
+          },
+          footerDistancePx: 48,
+        },
+        fallbackHeightPx: 900,
+        headerHeightPx: 120,
+        bodyTopPx: 120,
+        bodyRenderedBottomPx: 970,
+        footerTopPx: 960,
+      })
+    ).toBe(810);
+  });
+
+  it("continues shrinking a measured page budget when the same page still overruns the footer", () => {
+    expect(
+      resolveMeasuredPageContentHeightPx({
+        pageLayout: {
+          pageHeightPx: 1100,
+          marginsPx: {
+            bottom: 96,
+          },
+          footerDistancePx: 48,
+        },
+        fallbackHeightPx: 900,
+        headerHeightPx: 120,
+        currentMeasuredHeightPx: 822,
+        bodyTopPx: 120,
+        bodyRenderedBottomPx: 970,
+        footerTopPx: 960,
+      })
+    ).toBe(792);
+  });
+
+  it("ignores editor chrome when measuring the rendered body bottom", () => {
+    expect(
+      resolveMeasuredBodyRenderedBottomPx([
+        {
+          bottomPx: 840,
+          widthPx: 200,
+          heightPx: 24
+        },
+        {
+          bottomPx: 878,
+          widthPx: 200,
+          heightPx: 38,
+          ignore: true
+        }
+      ])
     ).toBe(840);
+  });
+
+  it("returns no rendered body bottom when only ignored editor chrome is present", () => {
+    expect(
+      resolveMeasuredBodyRenderedBottomPx([
+        {
+          bottomPx: 878,
+          widthPx: 200,
+          heightPx: 38,
+          ignore: true
+        }
+      ])
+    ).toBeUndefined();
+  });
+
+  it("preserves conservative measured page heights across page-count changes", () => {
+    expect(
+      stabilizeMeasuredPageContentHeights(
+        [840, 844, 842],
+        [900, 910, 905, 908]
+      )
+    ).toEqual([840, 844, 842, 908]);
   });
 
 });

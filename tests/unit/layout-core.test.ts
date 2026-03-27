@@ -357,8 +357,78 @@ describe("layout-core", () => {
         headerSections.filter((section) => section.referenceType !== "first"),
         `<w:sectPr><w:titlePg/></w:sectPr>`,
         0
-      )
+      )?.partName
     ).toBeUndefined();
+  });
+
+  it("inherits header/footer references forward when later sections omit references", () => {
+    const resolvedSections = resolveDocumentSectionsFromMetadata({
+      sourceParts: 1,
+      warnings: [],
+      sections: [
+        {
+          startNodeIndex: 0,
+          sectionPropertiesXml: `<w:sectPr/>`,
+          headerSections: [
+            {
+              referenceType: "default",
+              partName: "header-a",
+              nodes: []
+            }
+          ],
+          footerSections: [
+            {
+              referenceType: "default",
+              partName: "footer-a",
+              nodes: []
+            }
+          ]
+        },
+        {
+          startNodeIndex: 10,
+          sectionPropertiesXml: `<w:sectPr/>`,
+          headerSections: [],
+          footerSections: []
+        },
+        {
+          startNodeIndex: 20,
+          sectionPropertiesXml: `<w:sectPr/>`,
+          headerSections: [
+            {
+              referenceType: "default",
+              partName: "header-b",
+              nodes: []
+            }
+          ],
+          footerSections: [
+            {
+              referenceType: "default",
+              partName: "footer-b",
+              nodes: []
+            }
+          ]
+        },
+        {
+          startNodeIndex: 30,
+          sectionPropertiesXml: `<w:sectPr/>`,
+          headerSections: [],
+          footerSections: []
+        }
+      ],
+      headerSections: [],
+      footerSections: [],
+      paragraphStyles: []
+    });
+
+    expect(resolvedSections[0]?.headerSections[0]?.partName).toBe("header-a");
+    expect(resolvedSections[1]?.headerSections[0]?.partName).toBe("header-a");
+    expect(resolvedSections[2]?.headerSections[0]?.partName).toBe("header-b");
+    expect(resolvedSections[3]?.headerSections[0]?.partName).toBe("header-b");
+
+    expect(resolvedSections[0]?.footerSections[0]?.partName).toBe("footer-a");
+    expect(resolvedSections[1]?.footerSections[0]?.partName).toBe("footer-a");
+    expect(resolvedSections[2]?.footerSections[0]?.partName).toBe("footer-b");
+    expect(resolvedSections[3]?.footerSections[0]?.partName).toBe("footer-b");
   });
 
   it("owns the generic page segmentation solver and break scoring", () => {

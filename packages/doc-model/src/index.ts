@@ -35,6 +35,15 @@ export interface ImageRunNode {
   partName?: string;
   contentType?: string;
   data?: Uint8Array;
+  sourceXml?: string;
+  crop?: {
+    leftFraction?: number;
+    topFraction?: number;
+    rightFraction?: number;
+    bottomFraction?: number;
+  };
+  cssFilter?: string;
+  cssOpacity?: number;
   floating?: {
     xPx?: number;
     yPx?: number;
@@ -794,6 +803,391 @@ function normalizeHexColor(value?: string): string | undefined {
   }
 
   return undefined;
+}
+
+const DEFAULT_DRAWING_SCHEME_COLORS: ThemeColorMap = {
+  bg1: "#ffffff",
+  bg2: "#f3f4f6",
+  tx1: "#000000",
+  tx2: "#1f2937",
+  dk1: "#000000",
+  dk2: "#1f2937",
+  lt1: "#ffffff",
+  lt2: "#f3f4f6",
+  accent1: "#4472c4",
+  accent2: "#ed7d31",
+  accent3: "#70ad47",
+  accent4: "#5b9bd5",
+  accent5: "#7030a0",
+  accent6: "#ffc000",
+  hlink: "#0563c1",
+  folhlink: "#954f72",
+  followedhyperlink: "#954f72"
+};
+
+function emuToPixels(value: number | undefined): number | undefined {
+  if (!Number.isFinite(value)) {
+    return undefined;
+  }
+
+  return Math.round((value as number) / 9525);
+}
+
+function resolveDrawingColorFromXml(
+  colorXml: string | undefined,
+  themeColors: ThemeColorMap
+): { color: string; opacity?: number } | undefined {
+  if (!colorXml) {
+    return undefined;
+  }
+
+  const srgb = normalizeHexColor(colorXml.match(/<a:srgbClr\b[^>]*val="([^"]+)"/i)?.[1]);
+  const sys = normalizeHexColor(colorXml.match(/<a:sysClr\b[^>]*lastClr="([^"]+)"/i)?.[1]);
+  const schemeToken = colorXml.match(/<a:schemeClr\b[^>]*val="([^"]+)"/i)?.[1]?.trim().toLowerCase();
+  const scheme =
+    (schemeToken ? themeColors[schemeToken] : undefined) ??
+    (schemeToken ? DEFAULT_DRAWING_SCHEME_COLORS[schemeToken] : undefined);
+  const color = srgb ?? sys ?? scheme;
+  if (!color) {
+    return undefined;
+  }
+
+  const alphaRaw = colorXml.match(/<a:alpha\b[^>]*val="(\d+)"/i)?.[1];
+  const alpha = alphaRaw ? Number(alphaRaw) : undefined;
+  const opacity =
+    Number.isFinite(alpha) && (alpha as number) >= 0
+      ? Math.max(0, Math.min(1, (alpha as number) / 100000))
+      : undefined;
+
+  return {
+    color,
+    opacity
+  };
+}
+
+function gradientVectorForAngle(angleDegrees: number): {
+  x1: string;
+  y1: string;
+  x2: string;
+  y2: string;
+} {
+  const radians = (angleDegrees * Math.PI) / 180;
+  const dx = Math.cos(radians);
+  const dy = Math.sin(radians);
+
+  return {
+    x1: `${50 - dx * 50}%`,
+    y1: `${50 - dy * 50}%`,
+    x2: `${50 + dx * 50}%`,
+    y2: `${50 + dy * 50}%`
+  };
+}
+
+function svgRotationTransform(
+  rotationDegrees: number | undefined,
+  widthPx: number,
+  heightPx: number
+): string {
+  if (!Number.isFinite(rotationDegrees) || Math.abs(rotationDegrees as number) < 0.01) {
+    return "";
+  }
+
+  return ` transform="rotate(${(rotationDegrees as number).toFixed(3)} ${Math.round(widthPx / 2)} ${Math.round(
+    heightPx / 2
+  )})"`;
+}
+
+function svgRotationLayout(
+  rotationDegrees: number | undefined,
+  widthPx: number,
+  heightPx: number
+): {
+  transformAttribute: string;
+  viewBoxWidthPx: number;
+  viewBoxHeightPx: number;
+  preserveAspectRatio?: "none";
+} {
+  const safeWidth = Math.max(1, Math.round(widthPx));
+  const safeHeight = Math.max(1, Math.round(heightPx));
+  if (!Number.isFinite(rotationDegrees) || Math.abs(rotationDegrees as number) < 0.01) {
+    return {
+      transformAttribute: "",
+      viewBoxWidthPx: safeWidth,
+      viewBoxHeightPx: safeHeight
+    };
+  }
+
+  const radians = ((rotationDegrees as number) * Math.PI) / 180;
+  const cos = Math.cos(radians);
+  const sin = Math.sin(radians);
+  const centerX = safeWidth / 2;
+  const centerY = safeHeight / 2;
+  const corners = [
+    { x: 0, y: 0 },
+    { x: safeWidth, y: 0 },
+    { x: safeWidth, y: safeHeight },
+    { x: 0, y: safeHeight }
+  ].map(({ x, y }) => {
+    const deltaX = x - centerX;
+    const deltaY = y - centerY;
+    return {
+      x: centerX + deltaX * cos - deltaY * sin,
+      y: centerY + deltaX * sin + deltaY * cos
+    };
+  });
+  const minX = Math.min(...corners.map((corner) => corner.x));
+  const maxX = Math.max(...corners.map((corner) => corner.x));
+  const minY = Math.min(...corners.map((corner) => corner.y));
+  const maxY = Math.max(...corners.map((corner) => corner.y));
+  const viewBoxWidthPx = Math.max(1, Math.ceil(maxX - minX));
+  const viewBoxHeightPx = Math.max(1, Math.ceil(maxY - minY));
+
+  return {
+    transformAttribute: ` transform="translate(${(-minX).toFixed(2)} ${(-minY).toFixed(2)}) rotate(${(
+      rotationDegrees as number
+    ).toFixed(3)} ${centerX.toFixed(2)} ${centerY.toFixed(2)})"`,
+    viewBoxWidthPx,
+    viewBoxHeightPx,
+    preserveAspectRatio: "none"
+  };
+}
+
+function drawingShapeFillMarkup(
+  shapePropertiesXml: string,
+  themeColors: ThemeColorMap,
+  gradientId: string
+): { fillAttribute: string; defs: string[] } {
+  const fillScopeXml = shapePropertiesXml
+    .replace(/<a:ln\b[\s\S]*?<\/a:ln>/gi, "")
+    .replace(/<a:ln\b[^>]*\/>/gi, "")
+    .replace(/<a:extLst\b[\s\S]*?<\/a:extLst>/gi, "")
+    .replace(/<a:extLst\b[^>]*\/>/gi, "");
+  const solidFillXml = extractBalancedTagBlocks(fillScopeXml, "a:solidFill")[0];
+  if (solidFillXml) {
+    const resolved = resolveDrawingColorFromXml(solidFillXml, themeColors);
+    if (resolved) {
+      return {
+        fillAttribute: `fill="${resolved.color}"${
+          resolved.opacity !== undefined ? ` fill-opacity="${resolved.opacity}"` : ""
+        }`,
+        defs: []
+      };
+    }
+  }
+
+  const gradientFillXml = extractBalancedTagBlocks(fillScopeXml, "a:gradFill")[0];
+  if (gradientFillXml) {
+    const gradientStops = extractBalancedTagBlocks(gradientFillXml, "a:gs")
+      .map((stopXml) => {
+        const rawPosition = Number(getAttribute(stopXml.match(/<a:gs\b[^>]*>/i)?.[0] ?? "", "pos"));
+        const resolved = resolveDrawingColorFromXml(stopXml, themeColors);
+        if (!resolved) {
+          return undefined;
+        }
+
+        const clampedPosition = Number.isFinite(rawPosition) ? Math.max(0, Math.min(100, rawPosition / 1000)) : 0;
+        return `<stop offset="${clampedPosition}%" stop-color="${resolved.color}"${
+          resolved.opacity !== undefined ? ` stop-opacity="${resolved.opacity}"` : ""
+        }/>`;
+      })
+      .filter((stop): stop is string => Boolean(stop));
+
+    if (gradientStops.length > 0) {
+      const angleRaw = Number(getAttribute(gradientFillXml.match(/<a:lin\b[^>]*>/i)?.[0] ?? "", "ang"));
+      const angleDegrees = Number.isFinite(angleRaw) ? angleRaw / 60000 : 90;
+      const vector = gradientVectorForAngle(angleDegrees);
+
+      return {
+        fillAttribute: `fill="url(#${gradientId})"`,
+        defs: [
+          `<linearGradient id="${gradientId}" x1="${vector.x1}" y1="${vector.y1}" x2="${vector.x2}" y2="${vector.y2}">${gradientStops.join(
+            ""
+          )}</linearGradient>`
+        ]
+      };
+    }
+  }
+
+  if (/<a:noFill\b/i.test(fillScopeXml)) {
+    return {
+      fillAttribute: 'fill="none"',
+      defs: []
+    };
+  }
+
+  return {
+    fillAttribute: 'fill="none"',
+    defs: []
+  };
+}
+
+function drawingShapeStrokeMarkup(shapePropertiesXml: string, themeColors: ThemeColorMap): string {
+  const lineXml =
+    extractBalancedTagBlocks(shapePropertiesXml, "a:ln")[0] ??
+    shapePropertiesXml.match(/<a:ln\b[^>]*\/>/i)?.[0] ??
+    "";
+  if (!lineXml || /<a:noFill\b/i.test(lineXml)) {
+    return 'stroke="none"';
+  }
+
+  const resolved = resolveDrawingColorFromXml(lineXml, themeColors);
+  const widthPx = emuToPixels(parseIntegerAttribute(lineXml.match(/<a:ln\b[^>]*>/i)?.[0] ?? "", "w")) ?? 1;
+
+  return `stroke="${resolved?.color ?? "#000000"}"${
+    resolved?.opacity !== undefined ? ` stroke-opacity="${resolved.opacity}"` : ""
+  } stroke-width="${Math.max(1, widthPx)}"`;
+}
+
+function drawingShapePathData(pathXml: string, widthPx: number, heightPx: number): string | undefined {
+  const pathTag = pathXml.match(/<a:path\b[^>]*>/i)?.[0] ?? "";
+  const baseWidth = Math.max(1, parseIntegerAttribute(pathTag, "w") ?? 21600);
+  const baseHeight = Math.max(1, parseIntegerAttribute(pathTag, "h") ?? 21600);
+  const commandMatches = [
+    ...pathXml.matchAll(/<(a:moveTo|a:lnTo)\b[\s\S]*?<a:pt\b[^>]*x="([^"]+)"[^>]*y="([^"]+)"[^>]*\/>[\s\S]*?<\/\1>/gi)
+  ];
+  if (commandMatches.length === 0) {
+    return undefined;
+  }
+
+  const commands = commandMatches
+    .map((match) => {
+      const x = Number(match[2]);
+      const y = Number(match[3]);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) {
+        return undefined;
+      }
+
+      const scaledX = Number(((x / baseWidth) * widthPx).toFixed(2));
+      const scaledY = Number(((y / baseHeight) * heightPx).toFixed(2));
+      return `${match[1].toLowerCase().includes("moveto") ? "M" : "L"}${scaledX} ${scaledY}`;
+    })
+    .filter((command): command is string => Boolean(command));
+  if (commands.length === 0) {
+    return undefined;
+  }
+
+  return pathXml.includes("<a:close") ? `${commands.join(" ")} Z` : commands.join(" ");
+}
+
+function flowChartDelayPathData(widthPx: number, heightPx: number): string {
+  const safeWidth = Math.max(1, Math.round(widthPx));
+  const safeHeight = Math.max(1, Math.round(heightPx));
+  const radius = Math.max(1, Math.min(Math.round(safeHeight / 2), safeWidth - 1));
+  const arcX = safeWidth - radius;
+  return `M0 0 H${arcX} A${radius} ${radius} 0 0 1 ${arcX} ${safeHeight} H0 Z`;
+}
+
+function renderStandaloneWordShapeSvg(
+  runXml: string,
+  widthPx: number | undefined,
+  heightPx: number | undefined,
+  context: ParseContext
+): string | undefined {
+  const groupXml = extractBalancedTagBlocks(runXml, "wpg:wgp")[0];
+  if (groupXml) {
+    const groupTransformXml = extractBalancedTagBlocks(groupXml, "a:xfrm")[0];
+    const childOffsetTag = groupTransformXml.match(/<a:chOff\b[^>]*\/>/i)?.[0] ?? "";
+    const childExtentTag = groupTransformXml.match(/<a:chExt\b[^>]*\/>/i)?.[0] ?? "";
+    const childOffsetX = parseIntegerAttribute(childOffsetTag, "x") ?? 0;
+    const childOffsetY = parseIntegerAttribute(childOffsetTag, "y") ?? 0;
+    const childExtentX = Math.max(1, parseIntegerAttribute(childExtentTag, "cx") ?? 1);
+    const childExtentY = Math.max(1, parseIntegerAttribute(childExtentTag, "cy") ?? 1);
+    const safeWidth = clamp(Math.round(widthPx ?? 320), 8, 2400);
+    const safeHeight = clamp(Math.round(heightPx ?? 120), 8, 2400);
+    const scaleX = safeWidth / childExtentX;
+    const scaleY = safeHeight / childExtentY;
+    const elements = extractBalancedTagBlocks(groupXml, "wps:wsp")
+      .map((shapeXml, shapeIndex) => {
+        const shapePropertiesXml = extractBalancedTagBlocks(shapeXml, "wps:spPr")[0] ?? "";
+        const transformXml = extractBalancedTagBlocks(shapePropertiesXml, "a:xfrm")[0];
+        const offTag = transformXml.match(/<a:off\b[^>]*\/>/i)?.[0] ?? "";
+        const extTag = transformXml.match(/<a:ext\b[^>]*\/>/i)?.[0] ?? "";
+        const offXPx = (parseIntegerAttribute(offTag, "x") ?? 0) - childOffsetX;
+        const offYPx = (parseIntegerAttribute(offTag, "y") ?? 0) - childOffsetY;
+        const extXPx = parseIntegerAttribute(extTag, "cx") ?? 0;
+        const extYPx = parseIntegerAttribute(extTag, "cy") ?? 0;
+        const shapeWidth = Math.max(1, Math.round(extXPx * scaleX));
+        const shapeHeight = Math.max(1, Math.round(extYPx * scaleY));
+        const x = Math.round(offXPx * scaleX);
+        const y = Math.round(offYPx * scaleY);
+        const preset = getAttribute(shapePropertiesXml.match(/<a:prstGeom\b[^>]*>/i)?.[0] ?? "", "prst")?.trim();
+        const fill = drawingShapeFillMarkup(
+          shapePropertiesXml,
+          context.styleSheet.themeColors,
+          `group-fill-${shapeIndex}`
+        );
+        const stroke = drawingShapeStrokeMarkup(shapePropertiesXml, context.styleSheet.themeColors);
+
+        if (preset === "line") {
+          return `<line x1="${x}" y1="${y}" x2="${x + shapeWidth}" y2="${y + shapeHeight}" ${stroke} fill="none"/>`;
+        }
+
+        const pathXml = extractBalancedTagBlocks(shapePropertiesXml, "a:path")[0];
+        const pathData = pathXml ? drawingShapePathData(pathXml, shapeWidth, shapeHeight) : undefined;
+        if (pathData) {
+          return `${fill.defs.join("")}<path d="${pathData}" transform="translate(${x} ${y})" ${fill.fillAttribute} ${stroke}/>`;
+        }
+
+        if (preset === "flowChartDelay") {
+          return `${fill.defs.join("")}<path d="${flowChartDelayPathData(
+            shapeWidth,
+            shapeHeight
+          )}" transform="translate(${x} ${y})" ${fill.fillAttribute} ${stroke}/>`;
+        }
+
+        return `${fill.defs.join("")}<rect x="${x}" y="${y}" width="${shapeWidth}" height="${shapeHeight}" ${fill.fillAttribute} ${stroke}/>`;
+      })
+      .filter((element): element is string => Boolean(element));
+
+    if (elements.length > 0) {
+      return `<svg xmlns="http://www.w3.org/2000/svg" width="${safeWidth}" height="${safeHeight}" viewBox="0 0 ${safeWidth} ${safeHeight}">${elements.join(
+        ""
+      )}</svg>`;
+    }
+  }
+
+  const shapeXml = extractBalancedTagBlocks(runXml, "wps:wsp")[0];
+  if (!shapeXml || /<w:txbxContent\b/i.test(shapeXml)) {
+    return undefined;
+  }
+
+  const shapePropertiesXml = extractBalancedTagBlocks(shapeXml, "wps:spPr")[0] ?? "";
+  if (!shapePropertiesXml) {
+    return undefined;
+  }
+
+  const safeWidth = clamp(Math.round(widthPx ?? 320), 8, 2400);
+  const safeHeight = clamp(Math.round(heightPx ?? 240), 8, 2400);
+  const rotationRaw = Number(getAttribute(extractBalancedTagBlocks(shapePropertiesXml, "a:xfrm")[0] ?? "", "rot"));
+  const rotationDegrees = Number.isFinite(rotationRaw) ? rotationRaw / 60000 : undefined;
+  const rotationLayout = svgRotationLayout(rotationDegrees, safeWidth, safeHeight);
+  const preset = getAttribute(shapePropertiesXml.match(/<a:prstGeom\b[^>]*>/i)?.[0] ?? "", "prst")?.trim();
+  const fill = drawingShapeFillMarkup(shapePropertiesXml, context.styleSheet.themeColors, "shape-fill");
+  const stroke = drawingShapeStrokeMarkup(shapePropertiesXml, context.styleSheet.themeColors);
+  const pathXml = extractBalancedTagBlocks(shapePropertiesXml, "a:path")[0];
+  const pathData = pathXml ? drawingShapePathData(pathXml, safeWidth, safeHeight) : undefined;
+  let body = "";
+
+  if (preset === "line") {
+    body = `<line x1="0" y1="${Math.round(safeHeight / 2)}" x2="${safeWidth}" y2="${Math.round(
+      safeHeight / 2
+    )}" ${stroke} fill="none"${rotationLayout.transformAttribute}/>`;
+  } else if (pathData) {
+    body = `<path d="${pathData}" ${fill.fillAttribute} ${stroke}${rotationLayout.transformAttribute}/>`;
+  } else if (preset === "flowChartDelay") {
+    body = `<path d="${flowChartDelayPathData(
+      safeWidth,
+      safeHeight
+    )}" ${fill.fillAttribute} ${stroke}${rotationLayout.transformAttribute}/>`;
+  } else {
+    body = `<rect x="0" y="0" width="${safeWidth}" height="${safeHeight}" ${fill.fillAttribute} ${stroke}${rotationLayout.transformAttribute}/>`;
+  }
+
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${safeWidth}" height="${safeHeight}" viewBox="0 0 ${rotationLayout.viewBoxWidthPx} ${rotationLayout.viewBoxHeightPx}"${
+    rotationLayout.preserveAspectRatio ? ` preserveAspectRatio="${rotationLayout.preserveAspectRatio}"` : ""
+  }><defs>${fill.defs.join(
+    ""
+  )}</defs>${body}</svg>`;
 }
 
 function getAttribute(tagXml: string, attribute: string): string | undefined {
@@ -2553,14 +2947,16 @@ function parseFloatingAnchorFromRunXml(
     return undefined;
   }
 
-  const positionHTag = runXml.match(/<wp:positionH\b[^>]*>/i)?.[0];
-  const positionVTag = runXml.match(/<wp:positionV\b[^>]*>/i)?.[0];
+  const positionHBlock = runXml.match(/<wp:positionH\b[^>]*>[\s\S]*?<\/wp:positionH>/i)?.[0];
+  const positionVBlock = runXml.match(/<wp:positionV\b[^>]*>[\s\S]*?<\/wp:positionV>/i)?.[0];
+  const positionHTag = positionHBlock?.match(/<wp:positionH\b[^>]*>/i)?.[0];
+  const positionVTag = positionVBlock?.match(/<wp:positionV\b[^>]*>/i)?.[0];
   const wrapTag = runXml.match(/<wp:(?:wrapNone|wrapSquare|wrapTight|wrapThrough|wrapTopAndBottom)\b[^>]*\/?>/i)?.[0];
 
-  const xOffsetRaw = runXml.match(/<wp:positionH\b[^>]*>[\s\S]*?<wp:posOffset>(-?\d+)<\/wp:posOffset>/i)?.[1];
-  const yOffsetRaw = runXml.match(/<wp:positionV\b[^>]*>[\s\S]*?<wp:posOffset>(-?\d+)<\/wp:posOffset>/i)?.[1];
-  const horizontalAlignRaw = runXml.match(/<wp:positionH\b[^>]*>[\s\S]*?<wp:align>([^<]+)<\/wp:align>/i)?.[1];
-  const verticalAlignRaw = runXml.match(/<wp:positionV\b[^>]*>[\s\S]*?<wp:align>([^<]+)<\/wp:align>/i)?.[1];
+  const xOffsetRaw = positionHBlock?.match(/<wp:posOffset>(-?\d+)<\/wp:posOffset>/i)?.[1];
+  const yOffsetRaw = positionVBlock?.match(/<wp:posOffset>(-?\d+)<\/wp:posOffset>/i)?.[1];
+  const horizontalAlignRaw = positionHBlock?.match(/<wp:align>([^<]+)<\/wp:align>/i)?.[1];
+  const verticalAlignRaw = positionVBlock?.match(/<wp:align>([^<]+)<\/wp:align>/i)?.[1];
   const distLRaw = getAttribute(anchorTag, "distL");
   const distRRaw = getAttribute(anchorTag, "distR");
   const distTRaw = getAttribute(anchorTag, "distT");
@@ -2719,6 +3115,81 @@ function parseTextBoxParagraphs(
   }
 
   return resolved;
+}
+
+function parseDrawingImageCssFilter(runXml: string): string | undefined {
+  const filters: string[] = [];
+
+  if (/<a14:artisticPastelsSmooth\b/i.test(runXml)) {
+    filters.push("saturate(0.76)", "contrast(0.94)", "brightness(1.04)");
+  }
+
+  const colorTemperatureRaw = runXml.match(/<a14:colorTemperature\b[^>]*colorTemp="(\d+)"/i)?.[1];
+  const colorTemperature = colorTemperatureRaw ? Number(colorTemperatureRaw) : undefined;
+  if (Number.isFinite(colorTemperature)) {
+    if ((colorTemperature as number) >= 9000) {
+      filters.push("hue-rotate(-6deg)", "saturate(1.04)");
+    } else if ((colorTemperature as number) <= 4500) {
+      filters.push("sepia(0.1)", "saturate(1.02)");
+    }
+  }
+
+  const hasDuotoneAccent3 = /<a:duotone>[\s\S]*?<a:schemeClr\b[^>]*val="accent3"/i.test(runXml);
+  if (hasDuotoneAccent3) {
+    filters.push("grayscale(1)", "sepia(0.55)", "hue-rotate(35deg)", "saturate(1.55)", "brightness(0.9)");
+  }
+
+  return filters.length > 0 ? filters.join(" ") : undefined;
+}
+
+function parseDrawingImageOpacity(runXml: string): number | undefined {
+  const alphaRaw = runXml.match(/<a:alphaModFix\b[^>]*amt="(\d+)"/i)?.[1];
+  if (!alphaRaw) {
+    return undefined;
+  }
+
+  const alpha = Number(alphaRaw);
+  if (!Number.isFinite(alpha)) {
+    return undefined;
+  }
+
+  return Math.max(0, Math.min(1, alpha / 100000));
+}
+
+function parseDrawingImageCrop(
+  runXml: string
+): ImageRunNode["crop"] | undefined {
+  const srcRectTag =
+    runXml.match(/<a:srcRect\b[^>]*\/>/i)?.[0] ??
+    runXml.match(/<a:srcRect\b[^>]*>[\s\S]*?<\/a:srcRect>/i)?.[0];
+  if (!srcRectTag) {
+    return undefined;
+  }
+
+  const parseCropFraction = (attributeName: string): number | undefined => {
+    const rawValue = getAttribute(srcRectTag, attributeName);
+    if (!rawValue) {
+      return undefined;
+    }
+
+    const value = Number(rawValue);
+    if (!Number.isFinite(value)) {
+      return undefined;
+    }
+
+    return Math.max(0, Math.min(1, value / 100000));
+  };
+
+  const crop = {
+    leftFraction: parseCropFraction("l"),
+    topFraction: parseCropFraction("t"),
+    rightFraction: parseCropFraction("r"),
+    bottomFraction: parseCropFraction("b")
+  };
+
+  return Object.values(crop).some((value) => Number.isFinite(value) && (value as number) > 0)
+    ? crop
+    : undefined;
 }
 
 function renderTextBoxSvg(
@@ -3277,6 +3748,9 @@ function parseRunImage(runXml: string, context: ParseContext): ImageRunNode | un
 
   const contentType = partName ? contentTypeForPart(partName, context.contentTypes) : undefined;
   const binary = partName ? context.binaryAssets.get(partName) : undefined;
+  const crop = parseDrawingImageCrop(activeRunXml);
+  const cssFilter = parseDrawingImageCssFilter(activeRunXml);
+  const cssOpacity = parseDrawingImageOpacity(activeRunXml);
 
   const likelyChartPart =
     Boolean(chartRelationshipId) ||
@@ -3298,12 +3772,33 @@ function parseRunImage(runXml: string, context: ParseContext): ImageRunNode | un
         widthPx,
         heightPx,
         contentType: "image/svg+xml",
+        sourceXml: activeRunXml,
+        crop,
+        cssFilter,
+        cssOpacity,
         floating
       };
     }
   }
 
   if (!relationshipId) {
+    const standaloneShapeSvg = renderStandaloneWordShapeSvg(activeRunXml, widthPx, heightPx, context);
+    if (standaloneShapeSvg) {
+      return {
+        type: "image",
+        src: svgDataUri(standaloneShapeSvg),
+        alt: alt ?? "Shape",
+        widthPx,
+        heightPx,
+        contentType: "image/svg+xml",
+        sourceXml: activeRunXml,
+        crop,
+        cssFilter,
+        cssOpacity,
+        floating
+      };
+    }
+
     const textBoxParagraphs = parseTextBoxParagraphs(activeRunXml, context);
     if (textBoxParagraphs.length === 0) {
       return undefined;
@@ -3317,6 +3812,10 @@ function parseRunImage(runXml: string, context: ParseContext): ImageRunNode | un
       widthPx,
       heightPx,
       contentType: "image/svg+xml",
+      sourceXml: activeRunXml,
+      crop,
+      cssFilter,
+      cssOpacity,
       floating,
       syntheticTextBox: true
     };
@@ -3337,6 +3836,10 @@ function parseRunImage(runXml: string, context: ParseContext): ImageRunNode | un
     partName,
     contentType,
     data: binary ? new Uint8Array(binary) : undefined,
+    sourceXml: activeRunXml,
+    crop,
+    cssFilter,
+    cssOpacity,
     floating
   };
 }
@@ -5869,6 +6372,10 @@ function cloneParagraph(paragraph: ParagraphNode): ParagraphNode {
         partName: child.partName,
         contentType: child.contentType,
         data: child.data ? new Uint8Array(child.data) : undefined,
+        sourceXml: child.sourceXml,
+        crop: child.crop ? { ...child.crop } : undefined,
+        cssFilter: child.cssFilter,
+        cssOpacity: child.cssOpacity,
         floating: child.floating ? { ...child.floating } : undefined,
         syntheticTextBox: child.syntheticTextBox
       };

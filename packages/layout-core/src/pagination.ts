@@ -31,6 +31,45 @@ export interface ResolvedModelSection {
   footerSections: FooterSection[];
 }
 
+function normalizeSectionReferenceType(referenceType?: string): string {
+  const normalized = referenceType?.trim().toLowerCase();
+  return normalized && normalized.length > 0 ? normalized : "default";
+}
+
+function inheritSectionReferences<T extends HeaderSection | FooterSection>(
+  sections: ResolvedModelSection[],
+  sectionKey: "headerSections" | "footerSections"
+): ResolvedModelSection[] {
+  const inheritedByType = new Map<string, T>();
+
+  return sections.map((section) => {
+    const explicitSections = section[sectionKey] as T[];
+    if (explicitSections.length > 0) {
+      explicitSections.forEach((entry) => {
+        inheritedByType.set(normalizeSectionReferenceType(entry.referenceType), entry);
+      });
+    }
+
+    return {
+      ...section,
+      [sectionKey]: [...inheritedByType.values()]
+    };
+  });
+}
+
+function resolveInheritedSectionHeaderFooterReferences(
+  sections: ResolvedModelSection[]
+): ResolvedModelSection[] {
+  if (sections.length === 0) {
+    return sections;
+  }
+
+  return inheritSectionReferences(
+    inheritSectionReferences(sections, "headerSections"),
+    "footerSections"
+  );
+}
+
 export interface PaginationSectionMetrics {
   startNodeIndex: number;
   pageContentWidthPx: number;
@@ -255,7 +294,7 @@ export function resolveDocumentSectionsFromMetadata(
         footerSections: normalizedSections[0].footerSections
       });
     }
-    return normalizedSections;
+    return resolveInheritedSectionHeaderFooterReferences(normalizedSections);
   }
 
   return [
