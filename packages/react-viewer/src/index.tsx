@@ -483,6 +483,7 @@ export {
   type UseDocxParagraphStylesResult,
   type UseDocxTrackChangesResult,
   defaultStarterModel,
+  paragraphLetterheadFloatSideAtNodeIndex,
   useDocxDocumentTheme,
   useDocxBorders,
   useDocxLineSpacing,

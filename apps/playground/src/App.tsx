@@ -12,6 +12,7 @@ import {
   type DocxTableContextMenuRenderProps,
   type DocxTextRange,
   type DocxTrackedChangeCardRenderProps,
+  paragraphLetterheadFloatSideAtNodeIndex,
   useDocxBorders,
   useDocxDocumentTheme,
   useDocxEditor,
@@ -1363,16 +1364,23 @@ export function App(): React.JSX.Element {
       editor.selection.kind === "paragraph"
         ? editor.selection.nodeIndex
         : editor.selection.tableIndex;
+    const letterheadColumns =
+      editor.selection.kind === "paragraph" &&
+      paragraphLetterheadFloatSideAtNodeIndex(editor.model.nodes, editor.selection.nodeIndex)
+        ? { count: 2, gapPx: 28 }
+        : undefined;
     const sections = editor.model.metadata.sections ?? [];
     const activeSection = sections
       .filter((section) => section.startNodeIndex <= activeNodeIndex)
       .at(-1);
     return (
+      letterheadColumns ??
       parseToolbarSectionColumns(activeSection?.sectionPropertiesXml) ??
       parseToolbarSectionColumns(editor.model.metadata.sectionPropertiesXml) ??
       pageLayout.columns
     );
   }, [
+    editor.model.nodes,
     editor.model.metadata.sectionPropertiesXml,
     editor.model.metadata.sections,
     editor.selection,

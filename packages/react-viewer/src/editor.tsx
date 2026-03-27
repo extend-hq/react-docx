@@ -187,6 +187,10 @@ const DEFAULT_TAB_STOP_PX = 48;
 const TAB_LEADER_ZONE_GAP_PX = 20;
 const EMPTY_PARAGRAPH_EXTRA_HEIGHT_PX = 0;
 const HEADER_FOOTER_INACTIVE_OPACITY = 0.5;
+const LETTERHEAD_INDENT_MIN_TWIPS = 900;
+const LETTERHEAD_INDENT_MAX_TWIPS = 4200;
+const LETTERHEAD_MAX_TEXT_LENGTH = 96;
+const LETTERHEAD_FRAME_NEARBY_NODE_DISTANCE = 3;
 
 const paragraphBreakFlagsBySourceXml = new Map<
   string,
@@ -373,6 +377,206 @@ function paragraphDropCap(paragraph: ParagraphNode): { type: "drop" | "margin"; 
   };
   setCacheEntry(paragraphDropCapBySourceXml, xml, resolved);
   return resolved;
+}
+
+type LetterheadFloatSide = "left" | "right";
+
+interface LetterheadColumnGroup {
+  startOffset: number;
+  endOffset: number;
+  leftSegments: DocumentPageNodeSegment[];
+  rightSegments: DocumentPageNodeSegment[];
+  entries: Array<{
+    segment: DocumentPageNodeSegment;
+    side: LetterheadFloatSide;
+  }>;
+}
+
+function paragraphHasLegacyFrame(paragraph: ParagraphNode): boolean {
+  const xml = paragraph.sourceXml ?? "";
+  if (!xml) {
+    return false;
+  }
+
+  return /<w:framePr\b[^>]*\/?>/i.test(xml);
+}
+
+function paragraphLetterheadSideFromIndent(paragraph: ParagraphNode): LetterheadFloatSide | undefined {
+  const leftIndentTwipsRaw = paragraph.style?.indent?.leftTwips;
+  const rightIndentTwipsRaw = paragraph.style?.indent?.rightTwips;
+  const leftIndentTwips =
+    Number.isFinite(leftIndentTwipsRaw) && (leftIndentTwipsRaw as number) > 0
+      ? Math.round(leftIndentTwipsRaw as number)
+      : 0;
+  const rightIndentTwips =
+    Number.isFinite(rightIndentTwipsRaw) && (rightIndentTwipsRaw as number) > 0
+      ? Math.round(rightIndentTwipsRaw as number)
+      : 0;
+  const leftCandidate =
+    rightIndentTwips >= LETTERHEAD_INDENT_MIN_TWIPS &&
+    rightIndentTwips <= LETTERHEAD_INDENT_MAX_TWIPS;
+  const rightCandidate =
+    leftIndentTwips >= LETTERHEAD_INDENT_MIN_TWIPS &&
+    leftIndentTwips <= LETTERHEAD_INDENT_MAX_TWIPS;
+
+  if (leftCandidate && !rightCandidate) {
+    return "left";
+  }
+
+  if (rightCandidate && !leftCandidate) {
+    return "right";
+  }
+
+  if (leftCandidate && rightCandidate) {
+    return rightIndentTwips >= leftIndentTwips ? "left" : "right";
+  }
+
+  return undefined;
+}
+
+function paragraphHasNearbyLegacyFrame(nodes: DocModel["nodes"], nodeIndex: number): boolean {
+  const startIndex = Math.max(0, nodeIndex - LETTERHEAD_FRAME_NEARBY_NODE_DISTANCE);
+  const endIndex = Math.min(
+    nodes.length - 1,
+    nodeIndex + LETTERHEAD_FRAME_NEARBY_NODE_DISTANCE
+  );
+
+  for (let index = startIndex; index <= endIndex; index += 1) {
+    const node = nodes[index];
+    if (!node || node.type !== "paragraph") {
+      continue;
+    }
+    if (paragraphHasLegacyFrame(node)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+export function paragraphLetterheadFloatSideAtNodeIndex(
+  nodes: DocModel["nodes"],
+  nodeIndex: number
+): LetterheadFloatSide | undefined {
+  const node = nodes[nodeIndex];
+  if (!node || node.type !== "paragraph") {
+    return undefined;
+  }
+
+  const side = paragraphLetterheadSideFromIndent(node);
+  if (!side) {
+    return undefined;
+  }
+
+  const normalizedText = paragraphText(node).replace(/\s+/g, " ").trim();
+  if (normalizedText.length > LETTERHEAD_MAX_TEXT_LENGTH) {
+    return undefined;
+  }
+
+  if (paragraphHasLegacyFrame(node) || paragraphHasNearbyLegacyFrame(nodes, nodeIndex)) {
+    return side;
+  }
+
+  return undefined;
+}
+
+export function paragraphLetterheadColumnGroupAtSegmentOffset(
+  nodes: DocModel["nodes"],
+  nodeSegments: DocumentPageNodeSegment[],
+  startOffset: number
+): LetterheadColumnGroup | undefined {
+  if (startOffset < 0 || startOffset >= nodeSegments.length) {
+    return undefined;
+  }
+
+  const leftSegments: DocumentPageNodeSegment[] = [];
+  const rightSegments: DocumentPageNodeSegment[] = [];
+  const entries: Array<{
+    segment: DocumentPageNodeSegment;
+    side: LetterheadFloatSide;
+  }> = [];
+  let cursor = startOffset;
+
+  while (cursor < nodeSegments.length) {
+    const segment = nodeSegments[cursor];
+    if (
+      !segment ||
+      segment.tableRowRange ||
+      paragraphSegmentHasPartialLineRange(segment.paragraphLineRange)
+    ) {
+      break;
+    }
+
+    const side = paragraphLetterheadFloatSideAtNodeIndex(nodes, segment.nodeIndex);
+    if (!side) {
+      break;
+    }
+
+    if (side === "left") {
+      leftSegments.push(segment);
+    } else {
+      rightSegments.push(segment);
+    }
+    entries.push({
+      segment,
+      side
+    });
+    cursor += 1;
+  }
+
+  if (cursor <= startOffset || leftSegments.length === 0 || rightSegments.length === 0) {
+    return undefined;
+  }
+
+  return {
+    startOffset,
+    endOffset: cursor,
+    leftSegments,
+    rightSegments,
+    entries
+  };
+}
+
+export function letterheadColumnGroupContainerStyle(): React.CSSProperties {
+  return {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    gap: 28,
+    width: "100%",
+    maxWidth: "100%",
+    boxSizing: "border-box"
+  };
+}
+
+export function letterheadColumnStackStyle(): React.CSSProperties {
+  return {
+    display: "inline-grid",
+    alignContent: "start",
+    minWidth: 0,
+    maxWidth: "calc(50% - 14px)"
+  };
+}
+
+export function letterheadParagraphStyleAdjustments(
+  side: LetterheadFloatSide,
+  oppositeSide?: LetterheadFloatSide,
+  options?: {
+    suppressLetterheadColumnLayout?: boolean;
+  }
+): React.CSSProperties {
+  void side;
+  void oppositeSide;
+  if (options?.suppressLetterheadColumnLayout) {
+    return {
+      width: "100%",
+      boxSizing: "border-box",
+      marginLeft: 0,
+      marginRight: 0
+    };
+  }
+
+  return {};
 }
 
 function clampNumber(value: number, min: number, max: number): number {
@@ -6476,6 +6680,11 @@ interface PageFieldValueToken {
   rawText: string;
 }
 
+interface StyleRefFieldValueToken {
+  target: string;
+  rawText: string;
+}
+
 function decodeXmlText(text: string): string {
   if (!text) {
     return text;
@@ -7100,6 +7309,17 @@ function instructionTextToPageFieldKind(rawInstruction: string): PageFieldKind |
   return undefined;
 }
 
+function instructionTextToStyleRefTarget(rawInstruction: string): string | undefined {
+  const normalized = decodeXmlText(rawInstruction).replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return undefined;
+  }
+
+  const match = normalized.match(/\bSTYLEREF\b\s+(?:"([^"]+)"|([^\s\\]+))/i);
+  const target = (match?.[1] ?? match?.[2] ?? "").trim();
+  return target.length > 0 ? target : undefined;
+}
+
 function paragraphPageFieldSequence(paragraph: ParagraphNode): PageFieldKind[] {
   const xml = paragraph.sourceXml ?? "";
   if (!xml) {
@@ -7219,6 +7439,146 @@ function paragraphPageFieldValueSequence(paragraph: ParagraphNode): PageFieldVal
   return values;
 }
 
+function paragraphStyleRefFieldValueSequence(paragraph: ParagraphNode): StyleRefFieldValueToken[] {
+  const xml = paragraph.sourceXml ?? "";
+  if (!xml) {
+    return [];
+  }
+
+  const values: StyleRefFieldValueToken[] = [];
+  const fieldStack: Array<{ target?: string; inResult: boolean }> = [];
+  const tokenPattern =
+    /<w:fldSimple\b[^>]*\bw:instr="([^"]+)"[^>]*>[\s\S]*?<\/w:fldSimple>|<w:r\b[\s\S]*?<\/w:r>/gi;
+
+  for (const tokenMatch of xml.matchAll(tokenPattern)) {
+    const tokenXml = tokenMatch[0] ?? "";
+    if (!tokenXml) {
+      continue;
+    }
+
+    if (/^<w:fldSimple\b/i.test(tokenXml)) {
+      const target = instructionTextToStyleRefTarget(tokenMatch[1] ?? "");
+      if (!target) {
+        continue;
+      }
+
+      for (const textMatch of tokenXml.matchAll(/<w:t\b[^>]*>([\s\S]*?)<\/w:t>/gi)) {
+        values.push({
+          target,
+          rawText: decodeXmlText(textMatch[1] ?? "")
+        });
+      }
+      continue;
+    }
+
+    const beginCount =
+      tokenXml.match(/<w:fldChar\b[^>]*\bw:fldCharType="begin"[^>]*\/?>/gi)?.length ?? 0;
+    for (let index = 0; index < beginCount; index += 1) {
+      fieldStack.push({ inResult: false });
+    }
+
+    for (const instructionMatch of tokenXml.matchAll(/<w:instrText\b[^>]*>([\s\S]*?)<\/w:instrText>/gi)) {
+      const target = instructionTextToStyleRefTarget(instructionMatch[1] ?? "");
+      if (!target || fieldStack.length === 0) {
+        continue;
+      }
+
+      let assigned = false;
+      for (let stackIndex = fieldStack.length - 1; stackIndex >= 0; stackIndex -= 1) {
+        if (fieldStack[stackIndex].target === undefined) {
+          fieldStack[stackIndex].target = target;
+          assigned = true;
+          break;
+        }
+      }
+      if (!assigned) {
+        fieldStack[fieldStack.length - 1].target = target;
+      }
+    }
+
+    const separateCount =
+      tokenXml.match(/<w:fldChar\b[^>]*\bw:fldCharType="separate"[^>]*\/?>/gi)?.length ?? 0;
+    for (let index = 0; index < separateCount; index += 1) {
+      for (let stackIndex = fieldStack.length - 1; stackIndex >= 0; stackIndex -= 1) {
+        if (!fieldStack[stackIndex].inResult) {
+          fieldStack[stackIndex].inResult = true;
+          break;
+        }
+      }
+    }
+
+    const activeFieldTarget = (() => {
+      for (let stackIndex = fieldStack.length - 1; stackIndex >= 0; stackIndex -= 1) {
+        const stackEntry = fieldStack[stackIndex];
+        if (stackEntry.inResult && stackEntry.target) {
+          return stackEntry.target;
+        }
+      }
+      return undefined;
+    })();
+
+    if (activeFieldTarget) {
+      for (const textMatch of tokenXml.matchAll(/<w:t\b[^>]*>([\s\S]*?)<\/w:t>/gi)) {
+        values.push({
+          target: activeFieldTarget,
+          rawText: decodeXmlText(textMatch[1] ?? "")
+        });
+      }
+    }
+
+    const endCount = tokenXml.match(/<w:fldChar\b[^>]*\bw:fldCharType="end"[^>]*\/?>/gi)?.length ?? 0;
+    for (let index = 0; index < endCount; index += 1) {
+      fieldStack.pop();
+    }
+  }
+
+  return values;
+}
+
+function normalizeStyleRefTarget(value: string): string {
+  return value.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function paragraphStyledRunText(paragraph: ParagraphNode, styleRefTarget: string): string | undefined {
+  const xml = paragraph.sourceXml ?? "";
+  if (!xml) {
+    return undefined;
+  }
+
+  const normalizedTarget = normalizeStyleRefTarget(styleRefTarget);
+  if (!normalizedTarget) {
+    return undefined;
+  }
+
+  const textChunks: string[] = [];
+  for (const runMatch of xml.matchAll(/<w:r\b[\s\S]*?<\/w:r>/gi)) {
+    const runXml = runMatch[0] ?? "";
+    if (!runXml) {
+      continue;
+    }
+
+    const runStyleTag = runXml.match(/<w:rStyle\b[^>]*>/i)?.[0] ?? "";
+    const runStyleValue = xmlAttribute(runStyleTag, "w:val");
+    if (normalizeStyleRefTarget(runStyleValue ?? "") !== normalizedTarget) {
+      continue;
+    }
+
+    for (const textMatch of runXml.matchAll(/<w:t\b[^>]*>([\s\S]*?)<\/w:t>/gi)) {
+      const value = decodeXmlText(textMatch[1] ?? "");
+      if (value.length > 0) {
+        textChunks.push(value);
+      }
+    }
+
+    if (/<w:tab\b[^>]*\/?>/i.test(runXml)) {
+      textChunks.push("\t");
+    }
+  }
+
+  const joined = textChunks.join("").trim();
+  return joined.length > 0 ? joined : undefined;
+}
+
 function tabLeaderStyle(leader: string | undefined, color: string | undefined): React.CSSProperties {
   const normalizedLeader = leader === "middleDot" ? "dot" : leader;
   const resolvedColor = color || "currentColor";
@@ -7306,6 +7666,7 @@ interface ParagraphRunRenderOptions {
   trackedMarkupMode?: "inline" | "gutter";
   withinHeaderFooter?: boolean;
   pageNumberFormat?: string;
+  resolveStyleRefFieldValue?: (target: string) => string | undefined;
   floatingAnchorOriginCorrectionXPx?: number;
   sectionImageInteraction?: HeaderFooterImageInteraction;
 }
@@ -7346,8 +7707,11 @@ function renderParagraphRuns(
   const useAnchoredTabLayout = useCenterRightTabLayout || useCenterTabLayout || useRightTabLayout;
   const pageFieldSequence = paragraphPageFieldSequence(paragraph);
   const pageFieldValueSequence = paragraphPageFieldValueSequence(paragraph);
+  const styleRefFieldValueSequence = paragraphStyleRefFieldValueSequence(paragraph);
   const hasPageField = pageFieldSequence.length > 0 || pageFieldValueSequence.length > 0;
+  const hasStyleRefField = styleRefFieldValueSequence.length > 0;
   let consumedPageFieldValues = 0;
+  let consumedStyleRefFieldValues = 0;
   const tabStop = paragraphLeadingTabStop(paragraph);
   const tabStopPositionsPx = (paragraph.style?.tabStops ?? [])
     .map((tabStopEntry) => twipsToPixels(tabStopEntry.positionTwips))
@@ -7546,6 +7910,35 @@ function renderParagraphRuns(
         : String(normalizedValue);
     return `${leadingWhitespace}${formattedFieldValue}${trailingWhitespace}`;
   };
+  const resolveStyleRefFieldText = (value: string): string => {
+    if (!hasStyleRefField || value.trim().length === 0) {
+      return value;
+    }
+
+    const valueToken = styleRefFieldValueSequence[consumedStyleRefFieldValues];
+    if (!valueToken) {
+      return value;
+    }
+
+    if (
+      normalizeFieldComparableText(value) !==
+      normalizeFieldComparableText(valueToken.rawText)
+    ) {
+      return value;
+    }
+
+    const resolvedValue = options?.resolveStyleRefFieldValue?.(valueToken.target)?.trim();
+    if (!resolvedValue) {
+      return value;
+    }
+
+    consumedStyleRefFieldValues += 1;
+    const leadingWhitespace = value.match(/^\s*/)?.[0] ?? "";
+    const trailingWhitespace = value.match(/\s*$/)?.[0] ?? "";
+    return `${leadingWhitespace}${resolvedValue}${trailingWhitespace}`;
+  };
+  const resolveFieldText = (value: string, preferredZone?: number): string =>
+    resolvePageFieldText(resolveStyleRefFieldText(value), preferredZone);
 
   const trackedLinkStyle = (
     style: TextRunNode["style"] | FormFieldRunNode["style"] | undefined,
@@ -8011,7 +8404,7 @@ function renderParagraphRuns(
         child.type === "text" ? child.text : child.type === "form-field" ? formFieldDisplayValue(child) : undefined;
       if (typeof rawText !== "string" || !rawText.includes("\t")) {
         if (child.type === "text") {
-          const resolvedText = resolvePageFieldText(rawText ?? "", zoneIndex);
+          const resolvedText = resolveFieldText(rawText ?? "", zoneIndex);
           renderRun(
             zoneTarget,
             child,
@@ -8035,7 +8428,7 @@ function renderParagraphRuns(
             zones[currentZone],
             child,
             `${key}-part-${partIndex}`,
-            resolvePageFieldText(part, currentZone),
+            resolveFieldText(part, currentZone),
             trackedInlineChange,
             childIndex
           );
@@ -8105,7 +8498,7 @@ function renderParagraphRuns(
             runsLeft,
             child,
             `${keyPrefix}-run-${childIndex}-left`,
-            resolvePageFieldText(leftText, 0),
+            resolveFieldText(leftText, 0),
             trackedInlineChange,
             childIndex
           );
@@ -8114,7 +8507,7 @@ function renderParagraphRuns(
           runsRight,
           child,
           `${keyPrefix}-run-${childIndex}-right`,
-          resolvePageFieldText(rightText, 1),
+          resolveFieldText(rightText, 1),
           trackedInlineChange,
           childIndex
         );
@@ -8124,7 +8517,7 @@ function renderParagraphRuns(
       }
 
       if (child.type === "text") {
-        const resolvedText = resolvePageFieldText(child.text);
+        const resolvedText = resolveFieldText(child.text);
         renderRun(
           target,
           child,
@@ -17721,6 +18114,77 @@ export function DocxEditorViewer({
     pageNodeSegmentsByPage,
     primarySectionPropertiesXml
   ]);
+  const resolveStyleRefFieldValueForPage = React.useMemo(() => {
+    const valueCache = new Map<string, string | undefined>();
+    const nodes = editor.model.nodes;
+
+    const resolveFromParagraph = (
+      paragraph: ParagraphNode,
+      target: string,
+      normalizedTarget: string
+    ): string | undefined => {
+      const paragraphStyleId = normalizeStyleRefTarget(paragraph.style?.styleId ?? "");
+      const paragraphStyleName = normalizeStyleRefTarget(paragraph.style?.styleName ?? "");
+      if (paragraphStyleId === normalizedTarget || paragraphStyleName === normalizedTarget) {
+        const resolvedParagraphText = paragraphText(paragraph).replace(/\s+/g, " ").trim();
+        if (resolvedParagraphText.length > 0) {
+          return resolvedParagraphText;
+        }
+      }
+
+      return paragraphStyledRunText(paragraph, target);
+    };
+
+    return (pageIndex: number, target: string): string | undefined => {
+      const normalizedTarget = normalizeStyleRefTarget(target);
+      if (!normalizedTarget) {
+        return undefined;
+      }
+
+      const cacheKey = `${pageIndex}:${normalizedTarget}`;
+      if (valueCache.has(cacheKey)) {
+        return valueCache.get(cacheKey);
+      }
+
+      const pageSegments = pageNodeSegmentsByPage[pageIndex] ?? [];
+      const visitedNodeIndexes = new Set<number>();
+      for (const segment of pageSegments) {
+        if (!Number.isFinite(segment.nodeIndex) || visitedNodeIndexes.has(segment.nodeIndex)) {
+          continue;
+        }
+        visitedNodeIndexes.add(segment.nodeIndex);
+        const node = nodes[segment.nodeIndex];
+        if (!node || node.type !== "paragraph") {
+          continue;
+        }
+        const resolved = resolveFromParagraph(node, target, normalizedTarget);
+        if (resolved) {
+          valueCache.set(cacheKey, resolved);
+          return resolved;
+        }
+      }
+
+      const fallbackStartNodeIndex = pageSegments[0]?.nodeIndex;
+      const fallbackStart =
+        Number.isFinite(fallbackStartNodeIndex) && (fallbackStartNodeIndex as number) > 0
+          ? Math.min(nodes.length - 1, Math.round(fallbackStartNodeIndex as number) - 1)
+          : nodes.length - 1;
+      for (let nodeIndex = fallbackStart; nodeIndex >= 0; nodeIndex -= 1) {
+        const node = nodes[nodeIndex];
+        if (!node || node.type !== "paragraph") {
+          continue;
+        }
+        const resolved = resolveFromParagraph(node, target, normalizedTarget);
+        if (resolved) {
+          valueCache.set(cacheKey, resolved);
+          return resolved;
+        }
+      }
+
+      valueCache.set(cacheKey, undefined);
+      return undefined;
+    };
+  }, [editor.model.nodes, pageNodeSegmentsByPage]);
   const pageCount = pageNodeSegmentsByPage.length;
   const normalizedVisiblePageRange = React.useMemo(() => {
     if (pageCount <= 0) {
@@ -18042,9 +18506,22 @@ export function DocxEditorViewer({
           sectionPageIndex
         );
 
+        const paragraphHasVisibleBorder = (paragraph: ParagraphNode): boolean =>
+          paragraphBorderVisible(paragraph.style?.borders?.top) ||
+          paragraphBorderVisible(paragraph.style?.borders?.right) ||
+          paragraphBorderVisible(paragraph.style?.borders?.bottom) ||
+          paragraphBorderVisible(paragraph.style?.borders?.left) ||
+          paragraphBorderVisible(paragraph.style?.borders?.between) ||
+          paragraphBorderVisible(paragraph.style?.borders?.bar);
+
         const filterVisibleNodes = (nodes: DocModel["nodes"]): DocModel["nodes"] =>
           nodes.filter((node) =>
-            node.type === "paragraph" ? paragraphHasImage(node) || paragraphHasVisibleText(node) : true
+            node.type === "paragraph"
+              ? paragraphHasImage(node) ||
+                paragraphHasVisibleText(node) ||
+                paragraphHasFormField(node) ||
+                paragraphHasVisibleBorder(node)
+              : true
           );
 
         return {
@@ -24249,11 +24726,20 @@ export function DocxEditorViewer({
     ...(isDragOverCanvas ? { boxShadow: "0 0 0 2px rgba(59,130,246,0.4)" } : undefined),
     boxSizing: "border-box"
   };
+
+  interface RenderDocumentNodeOptions {
+    letterheadFloatSide?: LetterheadFloatSide;
+    oppositeLetterheadFloatSide?: LetterheadFloatSide;
+    suppressLetterheadColumnLayout?: boolean;
+    isFirstInLetterheadColumn?: boolean;
+  }
+
   const renderDocumentNode = (
     node: DocModel["nodes"][number],
     nodeIndex: number,
     tableRowRange?: TableRowRange,
-    paragraphLineRange?: ParagraphLineRange
+    paragraphLineRange?: ParagraphLineRange,
+    options?: RenderDocumentNodeOptions
   ): React.ReactNode => {
     const nodeDocGridLinePitchPx = docGridLinePitchPxByNodeIndex.get(nodeIndex);
     if (node.type === "paragraph") {
@@ -24309,6 +24795,15 @@ export function DocxEditorViewer({
         headingStyles,
         nodeDocGridLinePitchPx
       );
+      const letterheadStyleAdjustments = options?.letterheadFloatSide
+        ? letterheadParagraphStyleAdjustments(
+            options.letterheadFloatSide,
+            options.oppositeLetterheadFloatSide,
+            {
+              suppressLetterheadColumnLayout: options.suppressLetterheadColumnLayout === true
+            }
+          )
+        : undefined;
       const paragraphStyle: React.CSSProperties = {
         ...baseParagraphStyle,
         ...(hasPartialLineRange
@@ -24317,6 +24812,10 @@ export function DocxEditorViewer({
               marginBottom:
                 paragraphSegmentEndLine >= paragraphSegmentTotalLines ? afterSpacingPx : 0
             }
+          : undefined),
+        ...(letterheadStyleAdjustments ?? undefined),
+        ...(options?.suppressLetterheadColumnLayout && options?.isFirstInLetterheadColumn
+          ? { marginTop: 0 }
           : undefined),
         ...(requiresPageAbsoluteContext
           ? { position: "static" }
@@ -26473,6 +26972,137 @@ export function DocxEditorViewer({
       const rendered: React.ReactNode[] = [];
 
       for (let offset = 0; offset < nodeSegments.length; offset += 1) {
+        const letterheadGroup = paragraphLetterheadColumnGroupAtSegmentOffset(
+          editor.model.nodes,
+          nodeSegments,
+          offset
+        );
+        if (letterheadGroup) {
+          const renderLetterheadSegment = (
+            segment: DocumentPageNodeSegment,
+            side: LetterheadFloatSide,
+            oppositeSide: LetterheadFloatSide,
+            isFirstInColumn: boolean
+          ): React.ReactNode => {
+            const groupNode = editor.model.nodes[segment.nodeIndex];
+            if (!groupNode) {
+              return null;
+            }
+
+            const segmentKeySuffix = segment.tableRowRange
+              ? `rows-${segment.tableRowRange.startRowIndex}-${segment.tableRowRange.endRowIndex}`
+              : segment.paragraphLineRange
+                ? `lines-${segment.paragraphLineRange.startLineIndex}-${segment.paragraphLineRange.endLineIndex}`
+                : "all";
+
+            return (
+              <React.Fragment
+                key={`letterhead-segment-${side}-${segment.nodeIndex}-${segmentKeySuffix}`}
+              >
+                {renderDocumentNode(
+                  groupNode,
+                  segment.nodeIndex,
+                  segment.tableRowRange,
+                  segment.paragraphLineRange,
+                  {
+                    letterheadFloatSide: side,
+                    oppositeLetterheadFloatSide: oppositeSide,
+                    suppressLetterheadColumnLayout: true,
+                    isFirstInLetterheadColumn: isFirstInColumn
+                  }
+                )}
+              </React.Fragment>
+            );
+          };
+
+          const letterheadEntryHasVisibleContent = (
+            entry: (typeof letterheadGroup.entries)[number]
+          ): boolean => {
+            const entryNode = editor.model.nodes[entry.segment.nodeIndex];
+            return (
+              entryNode?.type === "paragraph" &&
+              (paragraphHasVisibleText(entryNode) ||
+                paragraphHasImage(entryNode) ||
+                paragraphHasFormField(entryNode))
+            );
+          };
+
+          const leadingSpacerEntries: typeof letterheadGroup.entries = [];
+          for (const entry of letterheadGroup.entries) {
+            if (letterheadEntryHasVisibleContent(entry)) {
+              break;
+            }
+            leadingSpacerEntries.push(entry);
+          }
+
+          const sharedLeadingSpacerHeightPx = leadingSpacerEntries.reduce((sum, entry) => {
+            const entryNode = editor.model.nodes[entry.segment.nodeIndex];
+            if (!entryNode || entryNode.type !== "paragraph") {
+              return sum;
+            }
+            return (
+              sum +
+              estimateParagraphHeightPx(
+                entryNode,
+                undefined,
+                editor.model.metadata.numberingDefinitions,
+                docGridLinePitchPxByNodeIndex.get(entry.segment.nodeIndex)
+              )
+            );
+          }, 0);
+
+          const leadingSpacerNodeIndexes = new Set(
+            leadingSpacerEntries.map((entry) => entry.segment.nodeIndex)
+          );
+          const leftSegments = letterheadGroup.leftSegments.filter(
+            (segment) => !leadingSpacerNodeIndexes.has(segment.nodeIndex)
+          );
+          const rightSegments = letterheadGroup.rightSegments.filter(
+            (segment) => !leadingSpacerNodeIndexes.has(segment.nodeIndex)
+          );
+
+          rendered.push(
+            <div
+              key={`letterhead-group-${letterheadGroup.startOffset}-${letterheadGroup.endOffset}`}
+              style={letterheadColumnGroupContainerStyle()}
+            >
+              <div
+                style={{
+                  ...letterheadColumnStackStyle(),
+                  paddingTop: sharedLeadingSpacerHeightPx > 0 ? sharedLeadingSpacerHeightPx : undefined
+                }}
+              >
+                {leftSegments.map((segment, index) =>
+                  renderLetterheadSegment(
+                    segment,
+                    "left",
+                    "right",
+                    index === 0
+                  )
+                )}
+              </div>
+              <div
+                style={{
+                  ...letterheadColumnStackStyle(),
+                  paddingTop: sharedLeadingSpacerHeightPx > 0 ? sharedLeadingSpacerHeightPx : undefined
+                }}
+              >
+                {rightSegments.map((segment, index) =>
+                  renderLetterheadSegment(
+                    segment,
+                    "right",
+                    "left",
+                    index === 0
+                  )
+                )}
+              </div>
+            </div>
+          );
+
+          offset = letterheadGroup.endOffset - 1;
+          continue;
+        }
+
         const segment = nodeSegments[offset];
         const nodeIndex = segment.nodeIndex;
         const node = editor.model.nodes[nodeIndex];
@@ -26826,12 +27456,12 @@ export function DocxEditorViewer({
         const pageNumberFormat = parseSectionPageNumberFormat(
           pageInfo?.section.sectionPropertiesXml ?? editor.model.metadata.sectionPropertiesXml
         );
-        const pageHeaderFooterRunRenderOptions = pageNumberFormat
-          ? {
-              ...paragraphRunRenderOptions,
-              pageNumberFormat
-            }
-          : paragraphRunRenderOptions;
+        const pageHeaderFooterRunRenderOptions: ParagraphRunRenderOptions = {
+          ...paragraphRunRenderOptions,
+          resolveStyleRefFieldValue: (target: string) =>
+            resolveStyleRefFieldValueForPage(pageIndex, target),
+          ...(pageNumberFormat ? { pageNumberFormat } : undefined)
+        };
         const pageFootnotes = pageFootnotesByIndex[pageIndex] ?? [];
         const isLastPage = pageIndex === pageCount - 1;
         const headerFooterBodyDimmed = pageHeaderFooterEditActive;
@@ -26883,7 +27513,7 @@ export function DocxEditorViewer({
                 }}
                 style={{
                   display: "grid",
-                  gap: 8,
+                  gap: 0,
                   width: "100%",
                   maxWidth: "100%",
                   boxSizing: "border-box",

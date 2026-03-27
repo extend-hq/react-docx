@@ -76,6 +76,38 @@ describe("letterhead float layout", () => {
     expect(paragraphLetterheadFloatSideAtNodeIndex(nodes, 1)).toBe("right");
   });
 
+  it("keeps delayed right-column names in the same grouped block after framed left-column spacer rows", () => {
+    const frameXml =
+      '<w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:pPr><w:framePr w:xAlign="left"/></w:pPr></w:p>';
+    const nodes: DocModel["nodes"] = [
+      paragraph("", { rightTwips: 2790 }),
+      paragraph("MAURA T. HEALEY", { rightTwips: 2340 }),
+      paragraph("Governor", { rightTwips: 2340, sourceXml: frameXml }),
+      paragraph("", { rightTwips: 2340, sourceXml: frameXml }),
+      paragraph("", { rightTwips: 2340, sourceXml: frameXml }),
+      paragraph("", { rightTwips: 2340, sourceXml: frameXml }),
+      paragraph("KATHLEEN E. WALSH", { leftTwips: 1980 }),
+      paragraph("Secretary", { leftTwips: 1980, sourceXml: frameXml }),
+      paragraph("September 26, 2023")
+    ];
+    const segments = nodes.map((_, nodeIndex) => ({ nodeIndex }));
+    const group = paragraphLetterheadColumnGroupAtSegmentOffset(nodes, segments, 0);
+
+    expect(paragraphLetterheadFloatSideAtNodeIndex(nodes, 1)).toBe("left");
+    expect(paragraphLetterheadFloatSideAtNodeIndex(nodes, 6)).toBe("right");
+    expect(group).toBeDefined();
+    expect(group?.entries.map((entry) => entry.side)).toEqual([
+      "left",
+      "left",
+      "left",
+      "left",
+      "left",
+      "left",
+      "right",
+      "right"
+    ]);
+  });
+
   it("does not classify long indented body paragraphs as letterhead columns", () => {
     const nodes: DocModel["nodes"] = [
       paragraph(
@@ -113,7 +145,13 @@ describe("letterhead float layout", () => {
       startOffset: 0,
       endOffset: 4,
       leftSegments: [{ nodeIndex: 0 }, { nodeIndex: 1 }],
-      rightSegments: [{ nodeIndex: 2 }, { nodeIndex: 3 }]
+      rightSegments: [{ nodeIndex: 2 }, { nodeIndex: 3 }],
+      entries: [
+        { segment: { nodeIndex: 0 }, side: "left" },
+        { segment: { nodeIndex: 1 }, side: "left" },
+        { segment: { nodeIndex: 2 }, side: "right" },
+        { segment: { nodeIndex: 3 }, side: "right" }
+      ]
     });
   });
 
