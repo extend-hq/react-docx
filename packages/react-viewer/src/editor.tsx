@@ -55,7 +55,7 @@ import {
   unsupportedImageFallbackLabel
 } from "./image-render";
 import {
-  layoutTextWithPretextAroundExclusion,
+  layoutTextWithPretextAroundExclusions,
   type PretextExclusionRect,
   type PretextLineFragment,
   type PretextVariableWidthLayout
@@ -888,8 +888,7 @@ const DEFAULT_CONTEXT_MENU_IMAGE_LAYER_ACTIONS: DocxContextMenuAction[] = [
     label: "Bring to Front",
     children: [
       { id: "image-bring-to-front", label: "Bring to Front" },
-      { id: "image-bring-forward", label: "Bring Forward" },
-      { id: "image-in-front-of-text", label: "In Front of Text" }
+      { id: "image-bring-forward", label: "Bring Forward" }
     ]
   },
   {
@@ -897,9 +896,86 @@ const DEFAULT_CONTEXT_MENU_IMAGE_LAYER_ACTIONS: DocxContextMenuAction[] = [
     label: "Send to Back",
     children: [
       { id: "image-send-to-back", label: "Send to Back" },
-      { id: "image-send-backward", label: "Send Backward" },
-      { id: "image-behind-text", label: "Behind Text" }
+      { id: "image-send-backward", label: "Send Backward" }
     ]
+  }
+];
+
+export type DocxImageWrapMode =
+  | "inline"
+  | "square"
+  | "tight"
+  | "through"
+  | "topAndBottom"
+  | "behindText"
+  | "inFrontOfText";
+
+export interface DocxImageWrapState {
+  mode: DocxImageWrapMode;
+  moveWithText: boolean;
+  fixedPositionOnPage: boolean;
+}
+
+export interface DocxImageWrapMenuOption {
+  actionId: DocxContextMenuActionId | (string & {});
+  label: string;
+  checked: boolean;
+  disabled?: boolean;
+  onSelect: () => void;
+}
+
+export interface UseDocxImageWrapMenuResult {
+  state: DocxImageWrapState;
+  wrapOptions: DocxImageWrapMenuOption[];
+  positioningOptions: DocxImageWrapMenuOption[];
+  editWrapBoundaryOption: DocxImageWrapMenuOption;
+  moreLayoutOptionsOption: DocxImageWrapMenuOption;
+  setMode: (mode: DocxImageWrapMode) => void;
+  setMoveWithText: (moveWithText: boolean) => void;
+}
+
+const DOCX_IMAGE_WRAP_MODE_ACTIONS: Array<{
+  actionId: DocxContextMenuActionId;
+  label: string;
+  mode: DocxImageWrapMode;
+  separatorBefore?: boolean;
+}> = [
+  {
+    actionId: "image-wrap-inline",
+    label: "In Line with Text",
+    mode: "inline",
+    separatorBefore: true
+  },
+  {
+    actionId: "image-wrap-square",
+    label: "Square",
+    mode: "square"
+  },
+  {
+    actionId: "image-wrap-tight",
+    label: "Tight",
+    mode: "tight"
+  },
+  {
+    actionId: "image-wrap-through",
+    label: "Through",
+    mode: "through"
+  },
+  {
+    actionId: "image-wrap-top-and-bottom",
+    label: "Top and Bottom",
+    mode: "topAndBottom"
+  },
+  {
+    actionId: "image-wrap-behind-text",
+    label: "Behind Text",
+    mode: "behindText",
+    separatorBefore: true
+  },
+  {
+    actionId: "image-wrap-in-front-of-text",
+    label: "In Front of Text",
+    mode: "inFrontOfText"
   }
 ];
 
@@ -2439,6 +2515,11 @@ export interface DocxEditorController {
   insertImageFile: (file: File) => Promise<void>;
   appendParagraph: (text?: string) => number;
   resizeImage: (location: DocxImageLocation, widthPx: number, heightPx: number) => void;
+  setImageWrapMode: (
+    location: DocxImageLocation,
+    mode: DocxImageWrapMode,
+    seedFloating?: Partial<NonNullable<ImageRunNode["floating"]>>
+  ) => void;
   moveFloatingImage: (
     location: DocxImageLocation,
     patch: Partial<NonNullable<ImageRunNode["floating"]>>
@@ -2499,6 +2580,17 @@ export type DocxContextMenuActionId =
   | "cut"
   | "copy"
   | "paste"
+  | "image-wrap-inline"
+  | "image-wrap-square"
+  | "image-wrap-tight"
+  | "image-wrap-through"
+  | "image-wrap-top-and-bottom"
+  | "image-wrap-behind-text"
+  | "image-wrap-in-front-of-text"
+  | "image-edit-wrap-boundary"
+  | "image-move-with-text"
+  | "image-fix-position-on-page"
+  | "image-more-layout-options"
   | "image-bring-to-front"
   | "image-bring-forward"
   | "image-in-front-of-text"
@@ -2524,6 +2616,8 @@ export interface DocxContextMenuAction {
   shortcut?: string;
   destructive?: boolean;
   disabled?: boolean;
+  checked?: boolean;
+  separatorBefore?: boolean;
   children?: DocxContextMenuAction[];
 }
 
@@ -2548,6 +2642,7 @@ export interface DocxContextMenuContext {
     | {
         location: DocxImageLocation;
         floating?: NonNullable<ImageRunNode["floating"]>;
+        wrap?: DocxImageWrapState;
       }
     | undefined;
 }
@@ -3309,9 +3404,198 @@ interface DualWrappedFloatingImageGeometry {
 
 interface ParagraphDualWrappedTextLayout {
   source: ParagraphPretextLayoutSource;
-  geometry: DualWrappedFloatingImageGeometry;
+  geometries: DualWrappedFloatingImageGeometry[];
   lineHeightPx: number;
   layout: PretextVariableWidthLayout;
+}
+
+function imageWrapModeFromFloating(
+  floating?: ImageRunNode["floating"]
+): DocxImageWrapMode {
+  if (!floating) {
+    return "inline";
+  }
+
+  const wrapType = floating.wrapType;
+  if (!wrapType || wrapType === "none") {
+    return floating.behindDocument ? "behindText" : "inFrontOfText";
+  }
+
+  if (
+    wrapType === "square" ||
+    wrapType === "tight" ||
+    wrapType === "through" ||
+    wrapType === "topAndBottom"
+  ) {
+    return wrapType;
+  }
+
+  return "square";
+}
+
+function floatingImageMovesWithText(
+  floating?: ImageRunNode["floating"]
+): boolean {
+  if (!floating) {
+    return true;
+  }
+
+  const verticalRelativeTo = floating.verticalRelativeTo?.trim().toLowerCase();
+  return verticalRelativeTo !== "page" && verticalRelativeTo !== "margin";
+}
+
+export function resolveDocxImageWrapState(
+  floating?: ImageRunNode["floating"]
+): DocxImageWrapState {
+  const moveWithText = floatingImageMovesWithText(floating);
+  return {
+    mode: imageWrapModeFromFloating(floating),
+    moveWithText,
+    fixedPositionOnPage: !moveWithText
+  };
+}
+
+function imageWrapModeActionId(
+  mode: DocxImageWrapMode
+): DocxContextMenuActionId {
+  switch (mode) {
+    case "inline":
+      return "image-wrap-inline";
+    case "square":
+      return "image-wrap-square";
+    case "tight":
+      return "image-wrap-tight";
+    case "through":
+      return "image-wrap-through";
+    case "topAndBottom":
+      return "image-wrap-top-and-bottom";
+    case "behindText":
+      return "image-wrap-behind-text";
+    case "inFrontOfText":
+      return "image-wrap-in-front-of-text";
+    default:
+      return "image-wrap-square";
+  }
+}
+
+function imageWrapModeFromActionId(
+  actionId: DocxContextMenuActionId | (string & {})
+): DocxImageWrapMode | undefined {
+  switch (actionId) {
+    case "image-wrap-inline":
+      return "inline";
+    case "image-wrap-square":
+      return "square";
+    case "image-wrap-tight":
+      return "tight";
+    case "image-wrap-through":
+      return "through";
+    case "image-wrap-top-and-bottom":
+      return "topAndBottom";
+    case "image-wrap-behind-text":
+    case "image-behind-text":
+      return "behindText";
+    case "image-wrap-in-front-of-text":
+    case "image-in-front-of-text":
+      return "inFrontOfText";
+    default:
+      return undefined;
+  }
+}
+
+function resolveFloatingForImageWrapMode(
+  mode: DocxImageWrapMode,
+  currentFloating?: NonNullable<ImageRunNode["floating"]>,
+  seedFloating?: Partial<NonNullable<ImageRunNode["floating"]>>
+): NonNullable<ImageRunNode["floating"]> | undefined {
+  if (mode === "inline") {
+    return undefined;
+  }
+
+  const currentZIndex = Number.isFinite(currentFloating?.zIndex)
+    ? clampNumber(
+        Math.round(currentFloating?.zIndex as number),
+        WORD_IMAGE_Z_INDEX_MIN,
+        WORD_IMAGE_Z_INDEX_MAX
+      )
+    : WORD_IMAGE_Z_INDEX_DEFAULT;
+
+  const base: NonNullable<ImageRunNode["floating"]> = {
+    ...(currentFloating ?? {}),
+    ...(seedFloating ?? {}),
+    distLPx: Math.max(
+      0,
+      Math.round(seedFloating?.distLPx ?? currentFloating?.distLPx ?? 8)
+    ),
+    distRPx: Math.max(
+      0,
+      Math.round(seedFloating?.distRPx ?? currentFloating?.distRPx ?? 8)
+    ),
+    distTPx: Math.max(
+      0,
+      Math.round(seedFloating?.distTPx ?? currentFloating?.distTPx ?? 2)
+    ),
+    distBPx: Math.max(
+      0,
+      Math.round(seedFloating?.distBPx ?? currentFloating?.distBPx ?? 4)
+    ),
+    horizontalRelativeTo:
+      seedFloating?.horizontalRelativeTo ??
+      currentFloating?.horizontalRelativeTo ??
+      "column",
+    verticalRelativeTo:
+      seedFloating?.verticalRelativeTo ??
+      currentFloating?.verticalRelativeTo ??
+      "paragraph",
+    wrapText:
+      seedFloating?.wrapText ?? currentFloating?.wrapText ?? "bothSides",
+    behindDocument:
+      seedFloating?.behindDocument ?? currentFloating?.behindDocument ?? false,
+    zIndex: Number.isFinite(seedFloating?.zIndex)
+      ? clampNumber(
+          Math.round(seedFloating?.zIndex as number),
+          WORD_IMAGE_Z_INDEX_MIN,
+          WORD_IMAGE_Z_INDEX_MAX
+        )
+      : currentZIndex
+  };
+
+  switch (mode) {
+    case "behindText":
+      return {
+        ...base,
+        wrapType: "none",
+        behindDocument: true,
+        zIndex: WORD_IMAGE_Z_INDEX_MIN
+      };
+    case "inFrontOfText":
+      return {
+        ...base,
+        wrapType: "none",
+        behindDocument: false,
+        zIndex: Math.max(WORD_IMAGE_Z_INDEX_STEP, currentZIndex)
+      };
+    case "topAndBottom":
+      return {
+        ...base,
+        wrapType: "topAndBottom",
+        behindDocument: false
+      };
+    case "square":
+    case "tight":
+    case "through":
+      return {
+        ...base,
+        wrapType: mode,
+        behindDocument: false
+      };
+    default:
+      return {
+        ...base,
+        wrapType: "square",
+        behindDocument: false
+      };
+  }
 }
 
 function buildParagraphPretextLayoutSource(
@@ -3367,29 +3651,16 @@ export function resolveDualWrappedFloatingImageGeometry(
     deltaY?: number;
     widthPx?: number;
     heightPx?: number;
+    baseLeftPx?: number;
+    baseTopPx?: number;
   }
 ): DualWrappedFloatingImageGeometry | undefined {
-  if (!shouldRenderWrappedFloatingImage(image)) {
-    return undefined;
-  }
-
   const floating = image.floating;
-  if (!floating || floating.wrapType === "topAndBottom") {
-    return undefined;
-  }
-
-  const wrapText = floating.wrapText ?? "bothSides";
-  if (wrapText !== "bothSides") {
-    return undefined;
-  }
-
-  const horizontalAlign = floating.horizontalAlign?.trim().toLowerCase();
-  if (
-    horizontalAlign === "left" ||
-    horizontalAlign === "right" ||
-    horizontalAlign === "inside" ||
-    horizontalAlign === "outside"
-  ) {
+  const isWrappedFloatingImage = shouldRenderWrappedFloatingImage(image);
+  const hasExplicitBaseLeftPx = Number.isFinite(options?.baseLeftPx);
+  const hasExplicitBaseTopPx = Number.isFinite(options?.baseTopPx);
+  const isInlinePreview = !floating && hasExplicitBaseLeftPx && hasExplicitBaseTopPx;
+  if (!isWrappedFloatingImage && !isInlinePreview) {
     return undefined;
   }
 
@@ -3414,22 +3685,57 @@ export function resolveDualWrappedFloatingImageGeometry(
   );
   const deltaX = Number.isFinite(options?.deltaX) ? Math.round(options?.deltaX as number) : 0;
   const deltaY = Number.isFinite(options?.deltaY) ? Math.round(options?.deltaY as number) : 0;
-  const baseLeftPx = Number.isFinite(floating.xPx) ? Math.round(floating.xPx as number) : 0;
-  const baseTopPx = Number.isFinite(floating.yPx) ? Math.round(floating.yPx as number) : 0;
+  const wrapType = floating?.wrapType;
+  const horizontalAlign = floating?.horizontalAlign?.trim().toLowerCase();
+  const distLPx = Math.max(0, Math.round(floating?.distLPx ?? 0));
+  const distRPx = Math.max(0, Math.round(floating?.distRPx ?? 0));
+  const distTPx = Math.max(0, Math.round(floating?.distTPx ?? 0));
+  const distBPx = Math.max(0, Math.round(floating?.distBPx ?? 0));
+  const baseLeftPx = hasExplicitBaseLeftPx
+    ? Math.round(options?.baseLeftPx as number)
+    : Number.isFinite(floating?.xPx)
+      ? Math.round(floating?.xPx as number)
+      : horizontalAlign === "right" || horizontalAlign === "outside"
+        ? safeContainerWidthPx - distRPx - imageWidthPx
+        : horizontalAlign === "center"
+          ? Math.round((safeContainerWidthPx - imageWidthPx) / 2)
+          : distLPx;
+  const baseTopPx = hasExplicitBaseTopPx
+    ? Math.round(options?.baseTopPx as number)
+    : Number.isFinite(floating?.yPx)
+      ? Math.round(floating?.yPx as number)
+      : 0;
   const imageLeftPx = clampNumber(baseLeftPx + deltaX, 0, Math.max(0, safeContainerWidthPx - imageWidthPx));
-  const distLPx = Math.max(0, Math.round(floating.distLPx ?? 0));
-  const distRPx = Math.max(0, Math.round(floating.distRPx ?? 0));
-  const distTPx = Math.max(0, Math.round(floating.distTPx ?? 0));
-  const distBPx = Math.max(0, Math.round(floating.distBPx ?? 0));
-  const exclusionLeftPx = Math.max(0, imageLeftPx - distLPx);
-  const exclusionRightPx = Math.min(safeContainerWidthPx, imageLeftPx + imageWidthPx + distRPx);
-  const leftBandWidthPx = exclusionLeftPx;
-  const rightBandWidthPx = Math.max(0, safeContainerWidthPx - exclusionRightPx);
-  if (leftBandWidthPx < 24 || rightBandWidthPx < 24) {
-    return undefined;
+  const imageTopPx = Math.max(
+    0,
+    (hasExplicitBaseTopPx ? baseTopPx : baseTopPx + (isInlinePreview ? 0 : distTPx)) + deltaY
+  );
+
+  let exclusionLeftPx = Math.max(0, imageLeftPx - distLPx);
+  let exclusionRightPx = Math.min(safeContainerWidthPx, imageLeftPx + imageWidthPx + distRPx);
+  if (wrapType === "topAndBottom") {
+    exclusionLeftPx = 0;
+    exclusionRightPx = safeContainerWidthPx;
+  } else if (horizontalAlign === "left" || horizontalAlign === "inside") {
+    exclusionLeftPx = 0;
+  } else if (horizontalAlign === "right" || horizontalAlign === "outside") {
+    exclusionRightPx = safeContainerWidthPx;
   }
 
-  const imageTopPx = Math.max(0, baseTopPx + deltaY + distTPx);
+  if (!isInlinePreview && wrapType !== "topAndBottom") {
+    const leftBandWidthPx = exclusionLeftPx;
+    const rightBandWidthPx = Math.max(0, safeContainerWidthPx - exclusionRightPx);
+    const spansInteriorGap =
+      exclusionLeftPx > 0 &&
+      exclusionRightPx < safeContainerWidthPx &&
+      leftBandWidthPx >= 24 &&
+      rightBandWidthPx >= 24;
+    const spansSideFloat =
+      exclusionLeftPx === 0 || exclusionRightPx === safeContainerWidthPx;
+    if (!spansInteriorGap && !spansSideFloat) {
+      return undefined;
+    }
+  }
 
   return {
     image,
@@ -3457,10 +3763,30 @@ export function resolveParagraphDualWrappedTextLayout(
     deltaY?: number;
     widthPxByImageIndex?: Map<number, number>;
     heightPxByImageIndex?: Map<number, number>;
+    movePreviewByImageIndex?: Map<
+      number,
+      {
+        deltaX: number;
+        deltaY: number;
+        baseLeftPx?: number;
+        baseTopPx?: number;
+      }
+    >;
   }
 ): ParagraphDualWrappedTextLayout | undefined {
   const source = buildParagraphPretextLayoutSource(paragraph);
   if (!source) {
+    return undefined;
+  }
+
+  const hasUnmanagedInlineImage = paragraph.children.some((child, childIndex) => {
+    if (child.type !== "image" || child.floating) {
+      return false;
+    }
+
+    return !options?.movePreviewByImageIndex?.has(childIndex);
+  });
+  if (hasUnmanagedInlineImage) {
     return undefined;
   }
 
@@ -3470,26 +3796,29 @@ export function resolveParagraphDualWrappedTextLayout(
         return undefined;
       }
 
+      const movePreview = options?.movePreviewByImageIndex?.get(childIndex);
       return resolveDualWrappedFloatingImageGeometry(child, containerWidthPx, {
         imageIndex: childIndex,
-        deltaX: options?.deltaX,
-        deltaY: options?.deltaY,
+        deltaX: movePreview?.deltaX ?? options?.deltaX,
+        deltaY: movePreview?.deltaY ?? options?.deltaY,
         widthPx: options?.widthPxByImageIndex?.get(childIndex),
-        heightPx: options?.heightPxByImageIndex?.get(childIndex)
+        heightPx: options?.heightPxByImageIndex?.get(childIndex),
+        baseLeftPx: movePreview?.baseLeftPx,
+        baseTopPx: movePreview?.baseTopPx
       });
     })
     .filter((candidate): candidate is DualWrappedFloatingImageGeometry => Boolean(candidate));
-  if (geometries.length !== 1) {
+  if (geometries.length === 0) {
     return undefined;
   }
 
   const font = resolveMeasureFont(firstRunStyle(paragraph), paragraphBaseFontSizePx(paragraph));
-  const layout = layoutTextWithPretextAroundExclusion(
+  const layout = layoutTextWithPretextAroundExclusions(
     source.text,
     font,
-    geometries[0].containerWidthPx,
+    Math.max(...geometries.map((geometry) => geometry.containerWidthPx)),
     lineHeightPx,
-    geometries[0].exclusion
+    geometries.map((geometry) => geometry.exclusion)
   );
   if (!layout || layout.lineCount <= 0) {
     return undefined;
@@ -3497,7 +3826,7 @@ export function resolveParagraphDualWrappedTextLayout(
 
   return {
     source,
-    geometry: geometries[0],
+    geometries,
     lineHeightPx,
     layout
   };
@@ -6299,7 +6628,7 @@ function wrappedFloatingImageDualExclusionLayout(
   return undefined;
 }
 
-function absoluteFloatingImageStyle(
+export function absoluteFloatingImageStyle(
   image: ImageRunNode,
   options?: {
     pageOriginLeft?: number;
@@ -6330,8 +6659,11 @@ function absoluteFloatingImageStyle(
   const resolvedZIndex =
     floating.behindDocument
       ? Number.isFinite(floating.zIndex)
-        ? Math.max(0, Math.round(floating.zIndex as number))
-        : 0
+        ? -Math.max(
+            1,
+            Math.min(65535, Math.round((floating.zIndex as number) / WORD_IMAGE_Z_INDEX_STEP) + 1)
+          )
+        : -1
       : normalizedZIndex ?? 4;
 
   const resolvedLeft =
@@ -6392,6 +6724,70 @@ function absoluteFloatingImageStyle(
   }
 
   return style;
+}
+
+interface AbsoluteFloatingDropRect {
+  left: number;
+  top: number;
+  width?: number;
+  height?: number;
+}
+
+export function resolveAbsoluteFloatingImageDropPatch(
+  floating: NonNullable<ImageRunNode["floating"]> | undefined,
+  layout: Pick<DocumentLayoutMetrics, "marginsPx" | "pageWidthPx" | "pageHeightPx">,
+  options: {
+    wrapperRect: AbsoluteFloatingDropRect;
+    pageSurfaceRect?: AbsoluteFloatingDropRect;
+    deltaX: number;
+    deltaY: number;
+  }
+): Partial<NonNullable<ImageRunNode["floating"]>> {
+  const nextLeftPx = options.wrapperRect.left + Math.round(options.deltaX);
+  const nextTopPx = options.wrapperRect.top + Math.round(options.deltaY);
+  const imageWidthPx = Number.isFinite(options.wrapperRect.width)
+    ? Math.max(1, Math.round(options.wrapperRect.width as number))
+    : undefined;
+  const imageHeightPx = Number.isFinite(options.wrapperRect.height)
+    ? Math.max(1, Math.round(options.wrapperRect.height as number))
+    : undefined;
+
+  if (!options.pageSurfaceRect) {
+    return {
+      xPx: Math.round((floating?.xPx ?? 0) + options.deltaX),
+      yPx: Math.round((floating?.yPx ?? 0) + options.deltaY),
+      horizontalAlign: undefined,
+      verticalAlign: undefined,
+      horizontalRelativeTo: "margin",
+      verticalRelativeTo: "margin"
+    };
+  }
+
+  const minimumXPx = -Math.round(layout.marginsPx.left);
+  const minimumYPx = -Math.round(layout.marginsPx.top);
+  const maximumXPx = Number.isFinite(imageWidthPx)
+    ? Math.round(layout.pageWidthPx - layout.marginsPx.left - (imageWidthPx as number))
+    : Math.round(layout.pageWidthPx - layout.marginsPx.left);
+  const maximumYPx = Number.isFinite(imageHeightPx)
+    ? Math.round(layout.pageHeightPx - layout.marginsPx.top - (imageHeightPx as number))
+    : Math.round(layout.pageHeightPx - layout.marginsPx.top);
+
+  return {
+    xPx: clampNumber(
+      Math.round(nextLeftPx - options.pageSurfaceRect.left - layout.marginsPx.left),
+      minimumXPx,
+      maximumXPx
+    ),
+    yPx: clampNumber(
+      Math.round(nextTopPx - options.pageSurfaceRect.top - layout.marginsPx.top),
+      minimumYPx,
+      maximumYPx
+    ),
+    horizontalAlign: undefined,
+    verticalAlign: undefined,
+    horizontalRelativeTo: "margin",
+    verticalRelativeTo: "margin"
+  };
 }
 
 function resolvePageSpanningAbsoluteFloatingDimensions(
@@ -16568,6 +16964,53 @@ export function useDocxEditor(options: UseDocxEditorOptions = {}): DocxEditorCon
     [applyModelChange]
   );
 
+  const setImageWrapMode = React.useCallback(
+    (
+      location: DocxImageLocation,
+      mode: DocxImageWrapMode,
+      seedFloating?: Partial<NonNullable<ImageRunNode["floating"]>>
+    ): void => {
+      applyModelChange((current) => {
+        const next = cloneDocModel(current);
+        const { paragraph, tableNode } = getParagraphAtLocation(
+          next,
+          imageLocationToParagraphLocation(location)
+        );
+        if (!paragraph) {
+          return current;
+        }
+
+        const child = paragraph.children[location.childIndex];
+        if (!child || child.type !== "image") {
+          return current;
+        }
+
+        const nextFloating = resolveFloatingForImageWrapMode(
+          mode,
+          child.floating,
+          seedFloating
+        );
+        const currentFloatingJson = JSON.stringify(child.floating ?? null);
+        const nextFloatingJson = JSON.stringify(nextFloating ?? null);
+        if (
+          resolveDocxImageWrapState(child.floating).mode === mode &&
+          currentFloatingJson === nextFloatingJson
+        ) {
+          return current;
+        }
+
+        child.floating = nextFloating;
+        paragraph.sourceXml = undefined;
+        if (tableNode) {
+          tableNode.sourceXml = undefined;
+        }
+
+        return next;
+      }, "Updated image wrap");
+    },
+    [applyModelChange]
+  );
+
   const moveFloatingImage = React.useCallback(
     (
       location: DocxImageLocation,
@@ -17413,6 +17856,7 @@ export function useDocxEditor(options: UseDocxEditorOptions = {}): DocxEditorCon
     insertImageFile,
     appendParagraph,
     resizeImage,
+    setImageWrapMode,
     moveFloatingImage,
     moveSectionFloatingImage,
     moveImage,
@@ -17482,6 +17926,76 @@ export function useDocxParagraphStyles(
     }),
     [editor.availableParagraphStyles, editor.selectedParagraphStyleId, setParagraphStyle]
   );
+}
+
+export function useDocxImageWrapMenu(
+  menu: Pick<DocxContextMenuRenderProps, "context" | "runAction">
+): UseDocxImageWrapMenuResult | undefined {
+  const wrapState =
+    menu.context.kind === "image"
+      ? menu.context.image?.wrap ?? resolveDocxImageWrapState(menu.context.image?.floating)
+      : undefined;
+
+  const setMode = React.useCallback(
+    (mode: DocxImageWrapMode): void => {
+      menu.runAction(imageWrapModeActionId(mode));
+    },
+    [menu]
+  );
+  const setMoveWithText = React.useCallback(
+    (moveWithText: boolean): void => {
+      menu.runAction(moveWithText ? "image-move-with-text" : "image-fix-position-on-page");
+    },
+    [menu]
+  );
+
+  return React.useMemo(() => {
+    if (!wrapState) {
+      return undefined;
+    }
+
+    return {
+      state: wrapState,
+      wrapOptions: DOCX_IMAGE_WRAP_MODE_ACTIONS.map((action) => ({
+        actionId: action.actionId,
+        label: action.label,
+        checked: wrapState.mode === action.mode,
+        onSelect: () => menu.runAction(action.actionId)
+      })),
+      positioningOptions: [
+        {
+          actionId: "image-move-with-text",
+          label: "Move with Text",
+          checked: wrapState.moveWithText,
+          disabled: wrapState.mode === "inline",
+          onSelect: () => menu.runAction("image-move-with-text")
+        },
+        {
+          actionId: "image-fix-position-on-page",
+          label: "Fix Position on Page",
+          checked: wrapState.fixedPositionOnPage,
+          disabled: wrapState.mode === "inline",
+          onSelect: () => menu.runAction("image-fix-position-on-page")
+        }
+      ],
+      editWrapBoundaryOption: {
+        actionId: "image-edit-wrap-boundary",
+        label: "Edit Wrap Boundary",
+        checked: false,
+        disabled: true,
+        onSelect: () => menu.runAction("image-edit-wrap-boundary")
+      },
+      moreLayoutOptionsOption: {
+        actionId: "image-more-layout-options",
+        label: "More Layout Options...",
+        checked: false,
+        disabled: true,
+        onSelect: () => menu.runAction("image-more-layout-options")
+      },
+      setMode,
+      setMoveWithText
+    };
+  }, [menu, setMode, setMoveWithText, wrapState]);
 }
 
 export function useDocxLineSpacing(
@@ -17696,6 +18210,8 @@ interface HeaderFooterImageInteraction {
     imageKey: string;
     deltaX: number;
     deltaY: number;
+    baseLeftPx?: number;
+    baseTopPx?: number;
   };
   imageLocationForChild?: (childIndex: number) => DocxSectionImageLocation | undefined;
   onImagePointerDown?: (
@@ -18731,6 +19247,8 @@ export function DocxEditorViewer({
         imageKey: string;
         deltaX: number;
         deltaY: number;
+        baseLeftPx?: number;
+        baseTopPx?: number;
       }
     | undefined
   >();
@@ -22483,14 +23001,13 @@ export function DocxEditorViewer({
       }
 
       const floating = context.image?.floating;
+      const wrapState = context.image?.wrap ?? resolveDocxImageWrapState(floating);
       const hasFloatingImage = Boolean(floating);
       const normalizedZIndex = Number.isFinite(floating?.zIndex)
         ? clampNumber(Math.round(floating?.zIndex as number), WORD_IMAGE_Z_INDEX_MIN, WORD_IMAGE_Z_INDEX_MAX)
         : WORD_IMAGE_Z_INDEX_DEFAULT;
       const bringForwardDisabled = !hasFloatingImage || normalizedZIndex >= WORD_IMAGE_Z_INDEX_MAX;
       const sendBackwardDisabled = !hasFloatingImage || normalizedZIndex <= WORD_IMAGE_Z_INDEX_MIN;
-      const inFrontOfTextDisabled = !hasFloatingImage && context.kind === "image";
-      const behindTextDisabled = !hasFloatingImage && context.kind === "image";
 
       const layerActionDisabledById = (
         actionId: DocxContextMenuActionId | (string & {})
@@ -22500,19 +23017,48 @@ export function DocxEditorViewer({
             return !hasFloatingImage || normalizedZIndex >= WORD_IMAGE_Z_INDEX_MAX;
           case "image-bring-forward":
             return bringForwardDisabled;
-          case "image-in-front-of-text":
-            return inFrontOfTextDisabled;
           case "image-send-to-back":
             return !hasFloatingImage || normalizedZIndex <= WORD_IMAGE_Z_INDEX_MIN;
           case "image-send-backward":
             return sendBackwardDisabled;
-          case "image-behind-text":
-            return behindTextDisabled;
           default:
             return false;
         }
       };
 
+      const wrapActions = DOCX_IMAGE_WRAP_MODE_ACTIONS.map((action) => ({
+        id: action.actionId,
+        label: action.label,
+        checked: wrapState.mode === action.mode,
+        separatorBefore: action.separatorBefore
+      }));
+      const positioningActions: DocxContextMenuAction[] = [
+        {
+          id: "image-edit-wrap-boundary",
+          label: "Edit Wrap Boundary",
+          disabled: true,
+          separatorBefore: true
+        },
+        {
+          id: "image-move-with-text",
+          label: "Move with Text",
+          checked: wrapState.moveWithText,
+          disabled: wrapState.mode === "inline",
+          separatorBefore: true
+        },
+        {
+          id: "image-fix-position-on-page",
+          label: "Fix Position on Page",
+          checked: wrapState.fixedPositionOnPage,
+          disabled: wrapState.mode === "inline"
+        },
+        {
+          id: "image-more-layout-options",
+          label: "More Layout Options...",
+          disabled: true,
+          separatorBefore: true
+        }
+      ];
       const layerActions = DEFAULT_CONTEXT_MENU_IMAGE_LAYER_ACTIONS.map((action) => {
         const children = action.children?.map((child) => ({
           ...child,
@@ -22520,12 +23066,13 @@ export function DocxEditorViewer({
         }));
         return {
           ...action,
+          separatorBefore: true,
           disabled: children ? children.every((child) => Boolean(child.disabled)) : layerActionDisabledById(action.id),
           children
         };
       });
 
-      return [...clipboardActions, ...layerActions];
+      return [...clipboardActions, ...wrapActions, ...positioningActions, ...layerActions];
     },
     [tableContextMenuActions]
   );
@@ -22714,6 +23261,129 @@ export function DocxEditorViewer({
           image: child
         };
       };
+      const resolveContextImagePlacement = (
+        imageLocation: DocxImageLocation
+      ): {
+        paragraphLeftPx?: number;
+        paragraphTopPx?: number;
+        pageLeftPx?: number;
+        pageTopPx?: number;
+      } => {
+        if (typeof document === "undefined") {
+          return {};
+        }
+
+        const imageElement = document.querySelector<HTMLElement>(
+          `[data-docx-image-location="${imageLocationKey(imageLocation)}"]`
+        );
+        if (!imageElement) {
+          return {};
+        }
+
+        const imageRect = imageElement.getBoundingClientRect();
+        const paragraphHost = imageElement.closest<HTMLElement>("[data-docx-paragraph-host='true']");
+        const paragraphRect = paragraphHost?.getBoundingClientRect();
+        const pageSurface = imageElement.closest<HTMLElement>("[data-docx-page-surface='true']");
+        const pageSurfaceRect = pageSurface?.getBoundingClientRect();
+
+        return {
+          paragraphLeftPx: paragraphRect
+            ? Math.round(imageRect.left - paragraphRect.left)
+            : undefined,
+          paragraphTopPx: paragraphRect
+            ? Math.round(imageRect.top - paragraphRect.top)
+            : undefined,
+          pageLeftPx: pageSurfaceRect
+            ? Math.round(
+                imageRect.left - pageSurfaceRect.left - documentLayout.marginsPx.left
+              )
+            : undefined,
+          pageTopPx: pageSurfaceRect
+            ? Math.round(
+                imageRect.top - pageSurfaceRect.top - documentLayout.marginsPx.top
+              )
+            : undefined
+        };
+      };
+      const resolveContextImageWrapSeed = (
+        resolvedImage: { location: DocxImageLocation; image: ImageRunNode },
+        mode: DocxImageWrapMode
+      ): Partial<NonNullable<ImageRunNode["floating"]>> | undefined => {
+        if (mode === "inline") {
+          return undefined;
+        }
+
+        const currentWrapState = resolveDocxImageWrapState(resolvedImage.image.floating);
+        const placement = resolveContextImagePlacement(resolvedImage.location);
+        const fixedPositionOnPage =
+          currentWrapState.fixedPositionOnPage ||
+          mode === "behindText" ||
+          mode === "inFrontOfText";
+        return {
+          horizontalRelativeTo: fixedPositionOnPage ? "margin" : "column",
+          verticalRelativeTo: fixedPositionOnPage ? "margin" : "paragraph",
+          ...(Number.isFinite(fixedPositionOnPage ? placement.pageLeftPx : placement.paragraphLeftPx)
+            ? {
+                xPx: Math.round(
+                  (fixedPositionOnPage ? placement.pageLeftPx : placement.paragraphLeftPx) as number
+                )
+              }
+            : undefined),
+          ...(Number.isFinite(fixedPositionOnPage ? placement.pageTopPx : placement.paragraphTopPx)
+            ? {
+                yPx: Math.round(
+                  (fixedPositionOnPage ? placement.pageTopPx : placement.paragraphTopPx) as number
+                )
+              }
+            : undefined),
+          ...(fixedPositionOnPage
+            ? {
+                horizontalAlign: undefined,
+                verticalAlign: undefined
+              }
+            : undefined)
+        };
+      };
+      const resolveContextImageAnchorPatch = (
+        resolvedImage: { location: DocxImageLocation; image: ImageRunNode },
+        moveWithText: boolean
+      ): Partial<NonNullable<ImageRunNode["floating"]>> | undefined => {
+        const floating = resolvedImage.image.floating;
+        if (!floating) {
+          return undefined;
+        }
+
+        const placement = resolveContextImagePlacement(resolvedImage.location);
+        const wrapMode = resolveDocxImageWrapState(floating).mode;
+        const isAbsoluteOverlay = wrapMode === "behindText" || wrapMode === "inFrontOfText";
+        return moveWithText
+          ? isAbsoluteOverlay
+            ? {
+                xPx: placement.paragraphLeftPx ?? floating.xPx ?? 0,
+                yPx: placement.paragraphTopPx ?? floating.yPx ?? 0,
+                horizontalAlign: undefined,
+                verticalAlign: undefined,
+                horizontalRelativeTo: "column",
+                verticalRelativeTo: "paragraph"
+              }
+            : {
+                yPx: placement.paragraphTopPx ?? floating.yPx ?? 0,
+                verticalRelativeTo: "paragraph"
+              }
+          : isAbsoluteOverlay
+            ? {
+                xPx: placement.pageLeftPx ?? floating.xPx ?? 0,
+                yPx: placement.pageTopPx ?? floating.yPx ?? 0,
+                horizontalAlign: undefined,
+                verticalAlign: undefined,
+                horizontalRelativeTo: "margin",
+                verticalRelativeTo: "margin"
+              }
+            : {
+                yPx: placement.pageTopPx ?? floating.yPx ?? 0,
+                verticalRelativeTo: "margin"
+              };
+      };
 
       const tryCopySelectionWithLegacyCommand = (): boolean => {
         if (typeof document.execCommand !== "function") {
@@ -22824,9 +23494,45 @@ export function DocxEditorViewer({
           case "image-in-front-of-text":
           case "image-send-to-back":
           case "image-send-backward":
-          case "image-behind-text": {
+          case "image-behind-text":
+          case "image-wrap-inline":
+          case "image-wrap-square":
+          case "image-wrap-tight":
+          case "image-wrap-through":
+          case "image-wrap-top-and-bottom":
+          case "image-wrap-behind-text":
+          case "image-wrap-in-front-of-text":
+          case "image-move-with-text":
+          case "image-fix-position-on-page":
+          case "image-edit-wrap-boundary":
+          case "image-more-layout-options": {
             const resolvedImage = resolveContextImage();
-            if (!resolvedImage || !resolvedImage.image.floating) {
+            if (!resolvedImage) {
+              break;
+            }
+
+            const wrapMode = imageWrapModeFromActionId(actionId);
+            if (wrapMode) {
+              editor.setImageWrapMode(
+                resolvedImage.location,
+                wrapMode,
+                resolveContextImageWrapSeed(resolvedImage, wrapMode)
+              );
+              break;
+            }
+
+            if (actionId === "image-move-with-text" || actionId === "image-fix-position-on-page") {
+              const anchorPatch = resolveContextImageAnchorPatch(
+                resolvedImage,
+                actionId === "image-move-with-text"
+              );
+              if (anchorPatch) {
+                editor.moveFloatingImage(resolvedImage.location, anchorPatch);
+              }
+              break;
+            }
+
+            if (!resolvedImage.image.floating) {
               break;
             }
 
@@ -22853,13 +23559,6 @@ export function DocxEditorViewer({
                   )
                 };
                 break;
-              case "image-in-front-of-text":
-                patch = {
-                  behindDocument: false,
-                  wrapType: "none",
-                  zIndex: Math.max(WORD_IMAGE_Z_INDEX_STEP, currentZIndex)
-                };
-                break;
               case "image-send-to-back":
                 patch = {
                   behindDocument: false,
@@ -22874,13 +23573,6 @@ export function DocxEditorViewer({
                     WORD_IMAGE_Z_INDEX_MIN,
                     WORD_IMAGE_Z_INDEX_MAX
                   )
-                };
-                break;
-              case "image-behind-text":
-                patch = {
-                  behindDocument: true,
-                  wrapType: "none",
-                  zIndex: WORD_IMAGE_Z_INDEX_MIN
                 };
                 break;
               default:
@@ -24573,6 +25265,8 @@ export function DocxEditorViewer({
       const startY = event.clientY;
       const wrapperElement = event.currentTarget;
       const wrapperRect = wrapperElement.getBoundingClientRect();
+      const pageSurface = wrapperElement.closest("[data-docx-page-surface='true']") as HTMLElement | null;
+      const pageSurfaceRect = pageSurface?.getBoundingClientRect();
       const paragraphHost = wrapperElement.closest("[data-docx-paragraph-host='true']") as HTMLElement | null;
       const paragraphRect = paragraphHost?.getBoundingClientRect();
       const baseFloating = image.floating ? { ...image.floating } : {};
@@ -24587,7 +25281,13 @@ export function DocxEditorViewer({
         setFloatingMovePreview({
           imageKey,
           deltaX: latestDeltaX,
-          deltaY: latestDeltaY
+          deltaY: latestDeltaY,
+          ...(paragraphRect
+            ? {
+                baseLeftPx: Math.round(wrapperRect.left - paragraphRect.left),
+                baseTopPx: Math.round(wrapperRect.top - paragraphRect.top)
+              }
+            : undefined)
         });
       };
 
@@ -24676,28 +25376,41 @@ export function DocxEditorViewer({
           const hostWidth = paragraphRect?.width ?? DEFAULT_DOC_PAGE_WIDTH;
           const imageWidth = image.widthPx ?? Math.max(24, Math.round(wrapperRect.width));
           const imageHeight = image.heightPx ?? Math.max(24, Math.round(wrapperRect.height));
-          const pointerX = startX + latestDeltaX;
-          const pointerY = startY + latestDeltaY;
-          const leftInHost = paragraphRect
-            ? pointerX - paragraphRect.left - imageWidth / 2
-            : (baseFloating.xPx ?? 0) + latestDeltaX;
-          const topInHost = paragraphRect
-            ? pointerY - paragraphRect.top - imageHeight / 2
-            : (baseFloating.distTPx ?? 2) + latestDeltaY;
-          const clampedLeft = Math.max(0, Math.min(leftInHost, Math.max(0, hostWidth - imageWidth)));
-          const clampedTop = Math.max(0, topInHost);
+          const baseGeometry = resolveDualWrappedFloatingImageGeometry(image, hostWidth, {
+            widthPx: imageWidth,
+            heightPx: imageHeight,
+            ...(paragraphRect
+              ? {
+                  baseLeftPx: Math.round(wrapperRect.left - paragraphRect.left),
+                  baseTopPx: Math.round(wrapperRect.top - paragraphRect.top)
+                }
+              : undefined)
+          });
+          const movedLeft = clampNumber(
+            (baseGeometry?.imageLeftPx ?? 0) + latestDeltaX,
+            0,
+            Math.max(0, hostWidth - imageWidth)
+          );
+          const movedTop = Math.max(0, (baseGeometry?.imageTopPx ?? 0) + latestDeltaY);
           const side: "left" | "right" =
-            clampedLeft + imageWidth / 2 <= hostWidth / 2 ? "left" : "right";
+            movedLeft + imageWidth / 2 <= hostWidth / 2 ? "left" : "right";
           const wrapText = baseFloating.wrapText ?? "bothSides";
           const keepFreeHorizontalPlacement =
             wrapText === "bothSides" || wrapText === "largest";
+          const preserveAlignedHorizontalPlacement =
+            (baseFloating.wrapType ?? "").trim().toLowerCase() === "topandbottom" &&
+            Boolean(baseFloating.horizontalAlign);
 
           editor.moveFloatingImage(location, {
             wrapType: baseFloating.wrapType ?? "square",
             wrapText,
-            horizontalAlign: keepFreeHorizontalPlacement ? undefined : side,
-            xPx: Math.round(clampedLeft),
-            yPx: Math.round(clampedTop),
+            horizontalAlign: preserveAlignedHorizontalPlacement
+              ? baseFloating.horizontalAlign
+              : keepFreeHorizontalPlacement
+                ? undefined
+                : side,
+            xPx: preserveAlignedHorizontalPlacement ? undefined : Math.round(movedLeft),
+            yPx: Math.round(movedTop),
             distLPx: Math.max(4, Math.round(baseFloating.distLPx ?? 8)),
             distRPx: Math.max(4, Math.round(baseFloating.distRPx ?? 8)),
             distTPx: Math.max(0, Math.round(baseFloating.distTPx ?? 2)),
@@ -24710,10 +25423,15 @@ export function DocxEditorViewer({
         }
 
         if (isAbsoluteFloatingImage) {
-          editor.moveFloatingImage(location, {
-            xPx: Math.max(0, Math.round((baseFloating.xPx ?? 0) + latestDeltaX)),
-            yPx: Math.max(0, Math.round((baseFloating.yPx ?? 0) + latestDeltaY))
-          });
+          editor.moveFloatingImage(
+            location,
+            resolveAbsoluteFloatingImageDropPatch(baseFloating, documentLayout, {
+              wrapperRect,
+              pageSurfaceRect,
+              deltaX: latestDeltaX,
+              deltaY: latestDeltaY
+            })
+          );
           return;
         }
       };
@@ -24722,7 +25440,7 @@ export function DocxEditorViewer({
       window.addEventListener("pointerup", onPointerUp, { once: true });
       window.addEventListener("pointercancel", onPointerUp, { once: true });
     },
-    [editor, isReadOnly]
+    [documentLayout, editor, isReadOnly]
   );
 
   const beginSectionFloatingImageMove = React.useCallback(
@@ -24769,6 +25487,8 @@ export function DocxEditorViewer({
       const startY = event.clientY;
       const wrapperElement = event.currentTarget;
       const wrapperRect = wrapperElement.getBoundingClientRect();
+      const pageSurface = wrapperElement.closest("[data-docx-page-surface='true']") as HTMLElement | null;
+      const pageSurfaceRect = pageSurface?.getBoundingClientRect();
       const paragraphHost = wrapperElement.closest(
         "[data-docx-section-paragraph-host='true']"
       ) as HTMLElement | null;
@@ -24783,7 +25503,13 @@ export function DocxEditorViewer({
         setFloatingMovePreview({
           imageKey,
           deltaX: latestDeltaX,
-          deltaY: latestDeltaY
+          deltaY: latestDeltaY,
+          ...(paragraphRect
+            ? {
+                baseLeftPx: Math.round(wrapperRect.left - paragraphRect.left),
+                baseTopPx: Math.round(wrapperRect.top - paragraphRect.top)
+              }
+            : undefined)
         });
       };
 
@@ -24816,27 +25542,44 @@ export function DocxEditorViewer({
           const hostWidth = paragraphRect?.width ?? documentLayout.pageWidthPx;
           const imageWidth = image.widthPx ?? Math.max(24, Math.round(wrapperRect.width));
           const imageHeight = image.heightPx ?? Math.max(24, Math.round(wrapperRect.height));
-          const pointerX = startX + latestDeltaX;
-          const pointerY = startY + latestDeltaY;
-          const leftInHost = paragraphRect
-            ? pointerX - paragraphRect.left - imageWidth / 2
-            : (baseFloating.xPx ?? 0) + latestDeltaX;
-          const topInHost = paragraphRect
-            ? pointerY - paragraphRect.top - imageHeight / 2
-            : (baseFloating.distTPx ?? 2) + latestDeltaY;
-          const movedLeft = Math.round(leftInHost);
-          const movedTop = Math.round(topInHost);
+          const baseGeometry = resolveDualWrappedFloatingImageGeometry(image, hostWidth, {
+            widthPx: imageWidth,
+            heightPx: imageHeight,
+            ...(paragraphRect
+              ? {
+                  baseLeftPx: Math.round(wrapperRect.left - paragraphRect.left),
+                  baseTopPx: Math.round(wrapperRect.top - paragraphRect.top)
+                }
+              : undefined)
+          });
+          const movedLeft = Math.round(
+            clampNumber(
+              (baseGeometry?.imageLeftPx ?? 0) + latestDeltaX,
+              0,
+              Math.max(0, hostWidth - imageWidth)
+            )
+          );
+          const movedTop = Math.round(
+            Math.max(0, (baseGeometry?.imageTopPx ?? 0) + latestDeltaY)
+          );
           const side: "left" | "right" =
             movedLeft + imageWidth / 2 <= hostWidth / 2 ? "left" : "right";
           const wrapText = baseFloating.wrapText ?? "bothSides";
           const keepFreeHorizontalPlacement =
             wrapText === "bothSides" || wrapText === "largest";
+          const preserveAlignedHorizontalPlacement =
+            (baseFloating.wrapType ?? "").trim().toLowerCase() === "topandbottom" &&
+            Boolean(baseFloating.horizontalAlign);
 
           editor.moveSectionFloatingImage(location, {
             wrapType: baseFloating.wrapType ?? "square",
             wrapText,
-            horizontalAlign: keepFreeHorizontalPlacement ? undefined : side,
-            xPx: movedLeft,
+            horizontalAlign: preserveAlignedHorizontalPlacement
+              ? baseFloating.horizontalAlign
+              : keepFreeHorizontalPlacement
+                ? undefined
+                : side,
+            xPx: preserveAlignedHorizontalPlacement ? undefined : movedLeft,
             yPx: movedTop,
             distLPx: Math.max(4, Math.round(baseFloating.distLPx ?? 8)),
             distRPx: Math.max(4, Math.round(baseFloating.distRPx ?? 8)),
@@ -24850,10 +25593,15 @@ export function DocxEditorViewer({
         }
 
         if (isAbsoluteFloatingImage) {
-          editor.moveSectionFloatingImage(location, {
-            xPx: Math.round((baseFloating.xPx ?? 0) + latestDeltaX),
-            yPx: Math.round((baseFloating.yPx ?? 0) + latestDeltaY)
-          });
+          editor.moveSectionFloatingImage(
+            location,
+            resolveAbsoluteFloatingImageDropPatch(baseFloating, documentLayout, {
+              wrapperRect,
+              pageSurfaceRect,
+              deltaX: latestDeltaX,
+              deltaY: latestDeltaY
+            })
+          );
         }
       };
 
@@ -24861,7 +25609,7 @@ export function DocxEditorViewer({
       window.addEventListener("pointerup", onPointerUp, { once: true });
       window.addEventListener("pointercancel", onPointerUp, { once: true });
     },
-    [activeHeaderFooterEdit, documentLayout.pageWidthPx, editor, isReadOnly]
+    [activeHeaderFooterEdit, documentLayout, editor, isReadOnly]
   );
 
   const onSectionImageClick = React.useCallback(
@@ -25499,8 +26247,15 @@ export function DocxEditorViewer({
       );
       const resizedWidthPxByImageIndex = new Map<number, number>();
       const resizedHeightPxByImageIndex = new Map<number, number>();
-      let dualWrapMoveDeltaX = 0;
-      let dualWrapMoveDeltaY = 0;
+      const movePreviewByImageIndex = new Map<
+        number,
+        {
+          deltaX: number;
+          deltaY: number;
+          baseLeftPx?: number;
+          baseTopPx?: number;
+        }
+      >();
       paragraph.children.forEach((child, childIndex) => {
         if (child.type !== "image") {
           return;
@@ -25525,8 +26280,16 @@ export function DocxEditorViewer({
           resizedHeightPxByImageIndex.set(childIndex, Math.round(heightPx as number));
         }
         if (movePreview) {
-          dualWrapMoveDeltaX = Math.round(movePreview.deltaX);
-          dualWrapMoveDeltaY = Math.round(movePreview.deltaY);
+          movePreviewByImageIndex.set(childIndex, {
+            deltaX: Math.round(movePreview.deltaX),
+            deltaY: Math.round(movePreview.deltaY),
+            ...(Number.isFinite(movePreview.baseLeftPx)
+              ? { baseLeftPx: Math.round(movePreview.baseLeftPx as number) }
+              : undefined),
+            ...(Number.isFinite(movePreview.baseTopPx)
+              ? { baseTopPx: Math.round(movePreview.baseTopPx as number) }
+              : undefined)
+          });
         }
       });
       const anchoredTabLayout = paragraphAnchoredTabLayout(paragraph);
@@ -25560,22 +26323,114 @@ export function DocxEditorViewer({
             paragraphRenderTextWidthPx,
             estimateParagraphLineHeightPx(paragraph),
             {
-              deltaX: dualWrapMoveDeltaX,
-              deltaY: dualWrapMoveDeltaY,
               widthPxByImageIndex: resizedWidthPxByImageIndex,
-              heightPxByImageIndex: resizedHeightPxByImageIndex
+              heightPxByImageIndex: resizedHeightPxByImageIndex,
+              movePreviewByImageIndex
             }
           )
         : undefined;
       if (manualDualWrappedLayout) {
-        const manualImageIndex = manualDualWrappedLayout.geometry.imageIndex;
-        const manualImageLocation: DocxImageLocation = { ...location, childIndex: manualImageIndex };
-        const manualImageKey = imageLocationKey(manualImageLocation);
-        const manualImage = paragraph.children[manualImageIndex];
-        if (manualImage?.type === "image") {
+        const manualGeometryImageIndexes = new Set(
+          manualDualWrappedLayout.geometries.map((geometry) => geometry.imageIndex)
+        );
+        const renderManualFragment = (
+          fragment: PretextLineFragment,
+          lineIndex: number
+        ): React.ReactNode => {
+          const pieces = manualDualWrappedLayout.source.runs
+            .map((run) => {
+              const overlapStart = Math.max(fragment.startOffset, run.startOffset);
+              const overlapEnd = Math.min(fragment.endOffset, run.endOffset);
+              if (overlapStart >= overlapEnd) {
+                return undefined;
+              }
+
+              const slice = run.text.slice(
+                overlapStart - run.startOffset,
+                overlapEnd - run.startOffset
+              );
+              if (!slice) {
+                return undefined;
+              }
+
+              const textStyle = run.link
+                ? {
+                    ...linkStyleToCss(run.style, editor.documentTheme),
+                    whiteSpace: "pre"
+                  }
+                : {
+                    ...runStyleToCss(run.style, editor.documentTheme),
+                    whiteSpace: "pre"
+                  };
+
+              return run.link ? (
+                <a
+                  key={`${keyPrefix}-dual-line-${lineIndex}-${run.key}-${overlapStart}`}
+                  href={run.link}
+                  target={run.link.startsWith("#") ? undefined : "_blank"}
+                  rel={run.link.startsWith("#") ? undefined : "noreferrer noopener"}
+                  onMouseDown={(event) => {
+                    if (!run.link?.startsWith("#")) {
+                      return;
+                    }
+
+                    event.preventDefault();
+                    event.stopPropagation();
+                  }}
+                  onClick={(event) => {
+                    if (!run.link?.startsWith("#")) {
+                      return;
+                    }
+
+                    event.preventDefault();
+                    event.stopPropagation();
+                    scrollToBookmark(run.link.slice(1));
+                  }}
+                  style={textStyle}
+                >
+                  {slice}
+                </a>
+              ) : (
+                <span
+                  key={`${keyPrefix}-dual-line-${lineIndex}-${run.key}-${overlapStart}`}
+                  style={textStyle}
+                >
+                  {slice}
+                </span>
+              );
+            })
+            .filter(Boolean);
+
+          return (
+            <span
+              key={`${keyPrefix}-dual-fragment-${lineIndex}-${fragment.startOffset}-${fragment.endOffset}`}
+              style={{
+                position: "absolute",
+                left: fragment.x,
+                top: manualDualWrappedLayout.layout.lines[lineIndex]?.y ?? 0,
+                display: "inline-block",
+                whiteSpace: "pre",
+                lineHeight: `${manualDualWrappedLayout.lineHeightPx}px`
+              }}
+            >
+              {pieces}
+            </span>
+          );
+        };
+
+        const renderManualImage = (
+          geometry: DualWrappedFloatingImageGeometry
+        ): React.ReactNode => {
+          const manualImage = paragraph.children[geometry.imageIndex];
+          if (manualImage?.type !== "image") {
+            return null;
+          }
+
+          const manualImageLocation: DocxImageLocation = { ...location, childIndex: geometry.imageIndex };
+          const manualImageKey = imageLocationKey(manualImageLocation);
           const isSelectedImage = selectedImage ? imageLocationKey(selectedImage) === manualImageKey : false;
-          const widthPx = manualDualWrappedLayout.geometry.imageWidthPx;
-          const heightPx = manualDualWrappedLayout.geometry.imageHeightPx;
+          const widthPx = geometry.imageWidthPx;
+          const heightPx = geometry.imageHeightPx;
           const renderableImageSrc =
             syntheticTextBoxSvg(
               manualImage,
@@ -25587,284 +26442,391 @@ export function DocxEditorViewer({
             resolveRenderableImageSource(manualImage);
           const showsUnsupportedFallback =
             imageUsesPlaceholderFallback(manualImage) || (manualImage.src && !renderableImageSrc);
-          const renderManualFragment = (
-            fragment: PretextLineFragment,
-            lineIndex: number
-          ): React.ReactNode => {
-            const pieces = manualDualWrappedLayout.source.runs
-              .map((run) => {
-                const overlapStart = Math.max(fragment.startOffset, run.startOffset);
-                const overlapEnd = Math.min(fragment.endOffset, run.endOffset);
-                if (overlapStart >= overlapEnd) {
-                  return undefined;
-                }
-
-                const slice = run.text.slice(
-                  overlapStart - run.startOffset,
-                  overlapEnd - run.startOffset
-                );
-                if (!slice) {
-                  return undefined;
-                }
-
-                const textStyle = run.link
-                  ? {
-                      ...linkStyleToCss(run.style, editor.documentTheme),
-                      whiteSpace: "pre"
-                    }
-                  : {
-                      ...runStyleToCss(run.style, editor.documentTheme),
-                      whiteSpace: "pre"
-                    };
-
-                return run.link ? (
-                  <a
-                    key={`${keyPrefix}-dual-line-${lineIndex}-${run.key}-${overlapStart}`}
-                    href={run.link}
-                    target={run.link.startsWith("#") ? undefined : "_blank"}
-                    rel={run.link.startsWith("#") ? undefined : "noreferrer noopener"}
-                    onMouseDown={(event) => {
-                      if (!run.link?.startsWith("#")) {
-                        return;
-                      }
-
-                      event.preventDefault();
-                      event.stopPropagation();
-                    }}
-                    onClick={(event) => {
-                      if (!run.link?.startsWith("#")) {
-                        return;
-                      }
-
-                      event.preventDefault();
-                      event.stopPropagation();
-                      scrollToBookmark(run.link.slice(1));
-                    }}
-                    style={textStyle}
-                  >
-                    {slice}
-                  </a>
-                ) : (
-                  <span
-                    key={`${keyPrefix}-dual-line-${lineIndex}-${run.key}-${overlapStart}`}
-                    style={textStyle}
-                  >
-                    {slice}
-                  </span>
-                );
-              })
-              .filter(Boolean);
-
-            return (
-              <span
-                key={`${keyPrefix}-dual-fragment-${lineIndex}-${fragment.startOffset}-${fragment.endOffset}`}
-                style={{
-                  position: "absolute",
-                  left: fragment.x,
-                  top: manualDualWrappedLayout.layout.lines[lineIndex]?.y ?? 0,
-                  display: "inline-block",
-                  whiteSpace: "pre",
-                  lineHeight: `${manualDualWrappedLayout.lineHeightPx}px`
-                }}
-              >
-                {pieces}
-              </span>
-            );
-          };
+          const isWrappedFloatingImage = shouldRenderWrappedFloatingImage(manualImage) || !manualImage.floating;
 
           return (
             <span
-              key={`${keyPrefix}-dual-wrap-manual`}
+              key={`${keyPrefix}-manual-image-${geometry.imageIndex}`}
               contentEditable={false}
+              data-docx-image-location={manualImageKey}
               style={{
-                display: "block",
-                position: "relative",
-                minHeight: manualDualWrappedLayout.layout.height
+                display: "inline-block",
+                position: "absolute",
+                left: geometry.imageLeftPx,
+                top: geometry.imageTopPx,
+                width: widthPx ? `${widthPx}px` : undefined,
+                height: heightPx ? `${heightPx}px` : undefined,
+                zIndex: 3
+              }}
+              onPointerDown={(event) =>
+                isReadOnly
+                  ? undefined
+                  : beginFloatingImageMove(
+                      event,
+                      manualImageLocation,
+                      manualImage,
+                      isWrappedFloatingImage,
+                      false
+                    )
+              }
+              onClick={(event) => {
+                event.stopPropagation();
+                if (!isReadOnly) {
+                  setSelectedImage(manualImageLocation);
+                }
+              }}
+              onContextMenu={(event) => {
+                if (isReadOnly) {
+                  return;
+                }
+
+                event.preventDefault();
+                event.stopPropagation();
+                clearTableCellSelection();
+                setSelectedSectionImageKey(undefined);
+                setSelectedImage(manualImageLocation);
+                openContextMenu(
+                  {
+                    kind: "image",
+                    activeTextRange: resolveActiveRangeFromDomSelection(),
+                    location: cloneTextRangeLocation(imageLocationToParagraphLocation(manualImageLocation)),
+                    image: {
+                      location: manualImageLocation,
+                      floating: manualImage.floating ? { ...manualImage.floating } : undefined
+                    }
+                  },
+                  {
+                    x: event.clientX,
+                    y: event.clientY
+                  }
+                );
               }}
             >
-              {manualDualWrappedLayout.layout.lines.map((line, lineIndex) =>
-                line.fragments.map((fragment) => renderManualFragment(fragment, lineIndex))
-              )}
-              <span
-                contentEditable={false}
-                data-docx-image-location={manualImageKey}
-                style={{
-                  display: "inline-block",
-                  position: "absolute",
-                  left: manualDualWrappedLayout.geometry.imageLeftPx,
-                  top: manualDualWrappedLayout.geometry.imageTopPx,
-                  width: widthPx ? `${widthPx}px` : undefined,
-                  height: heightPx ? `${heightPx}px` : undefined,
-                  zIndex: 3
-                }}
-                onPointerDown={(event) =>
-                  isReadOnly
-                    ? undefined
-                    : beginFloatingImageMove(
-                        event,
-                        manualImageLocation,
-                        manualImage,
-                        true,
-                        false
-                      )
-                }
-                onClick={(event) => {
-                  event.stopPropagation();
-                  if (!isReadOnly) {
-                    setSelectedImage(manualImageLocation);
-                  }
-                }}
-                onContextMenu={(event) => {
-                  if (isReadOnly) {
-                    return;
-                  }
+              {renderableImageSrc && !showsUnsupportedFallback ? (
+                (() => {
+                  const cropLayout = imageCropLayout(manualImage, widthPx, heightPx);
+                  const imageVisualStyle: React.CSSProperties = {
+                    filter: manualImage.cssFilter,
+                    opacity: manualImage.cssOpacity
+                  };
 
-                  event.preventDefault();
-                  event.stopPropagation();
-                  clearTableCellSelection();
-                  setSelectedSectionImageKey(undefined);
-                  setSelectedImage(manualImageLocation);
-                  openContextMenu(
-                    {
-                      kind: "image",
-                      activeTextRange: resolveActiveRangeFromDomSelection(),
-                      location: cloneTextRangeLocation(imageLocationToParagraphLocation(manualImageLocation)),
-                      image: {
-                        location: manualImageLocation,
-                        floating: manualImage.floating ? { ...manualImage.floating } : undefined
-                      }
-                    },
-                    {
-                      x: event.clientX,
-                      y: event.clientY
-                    }
-                  );
-                }}
-              >
-                {renderableImageSrc && !showsUnsupportedFallback ? (
-                  (() => {
-                    const cropLayout = imageCropLayout(manualImage, widthPx, heightPx);
-                    const imageVisualStyle: React.CSSProperties = {
-                      filter: manualImage.cssFilter,
-                      opacity: manualImage.cssOpacity
-                    };
-
-                    if (cropLayout) {
-                      return (
-                        <span
-                          style={{
-                            width: `${cropLayout.frameWidthPx}px`,
-                            height: `${cropLayout.frameHeightPx}px`,
-                            overflow: "hidden",
-                            display: "block"
-                          }}
-                        >
-                          <img
-                            src={renderableImageSrc}
-                            alt={manualImage.alt ?? "DOCX image"}
-                            draggable={false}
-                            style={{
-                              width: `${cropLayout.imageWidthPx}px`,
-                              height: `${cropLayout.imageHeightPx}px`,
-                              maxWidth: "none",
-                              verticalAlign: "middle",
-                              display: "block",
-                              transform: `translate(${-cropLayout.offsetXPx}px, ${-cropLayout.offsetYPx}px)`,
-                              cursor: isReadOnly ? "default" : "move",
-                              ...imageVisualStyle
-                            }}
-                          />
-                        </span>
-                      );
-                    }
-
+                  if (cropLayout) {
                     return (
-                      <img
-                        src={renderableImageSrc}
-                        alt={manualImage.alt ?? "DOCX image"}
-                        draggable={false}
-                        style={{
-                          width: widthPx ? `${widthPx}px` : undefined,
-                          height: heightPx ? `${heightPx}px` : undefined,
-                          verticalAlign: "middle",
-                          display: "block",
-                          cursor: isReadOnly ? "default" : "move",
-                          ...imageVisualStyle
-                        }}
-                      />
-                    );
-                  })()
-                ) : showsUnsupportedFallback ? (
-                  <span
-                    role="img"
-                    aria-label={manualImage.alt ?? "DOCX image"}
-                    style={{
-                      display: "inline-flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      width: widthPx ? `${widthPx}px` : "1.8em",
-                      height: heightPx ? `${heightPx}px` : "1.8em",
-                      minWidth: 16,
-                      minHeight: 16,
-                      border: "1px solid #d1d5db",
-                      borderRadius: 3,
-                      backgroundColor: "#ffffff",
-                      color: "#0f172a",
-                      fontSize: (widthPx ?? 0) <= 56 && (heightPx ?? 0) <= 56 ? 12 : 10,
-                      fontWeight: 700,
-                      textTransform: "lowercase",
-                      fontFamily: "Arial, sans-serif",
-                      lineHeight: 1
-                    }}
-                  >
-                    {unsupportedImageFallbackLabel(manualImage, widthPx, heightPx)}
-                  </span>
-                ) : null}
-
-                {!isReadOnly && isSelectedImage ? (
-                  <>
-                    {[
-                      { key: "top-left", left: -5, top: -5, cursor: "nwse-resize", xDirection: -1, yDirection: -1 },
-                      { key: "top-right", right: -5, top: -5, cursor: "nesw-resize", xDirection: 1, yDirection: -1 },
-                      { key: "bottom-left", left: -5, bottom: -5, cursor: "nesw-resize", xDirection: -1, yDirection: 1 },
-                      { key: "bottom-right", right: -5, bottom: -5, cursor: "nwse-resize", xDirection: 1, yDirection: 1 }
-                    ].map((handle) => (
                       <span
-                        key={`${keyPrefix}-dual-${handle.key}`}
-                        contentEditable={false}
-                        data-image-resize-handle="true"
                         style={{
-                          position: "absolute",
-                          width: 10,
-                          height: 10,
-                          borderRadius: 3,
-                          border: "1px solid #d4d4d8",
-                          backgroundColor: "#ffffff",
-                          boxShadow: "0 1px 2px rgba(0, 0, 0, 0.14)",
-                          cursor: handle.cursor,
-                          ...(handle.left !== undefined ? { left: handle.left } : undefined),
-                          ...(handle.right !== undefined ? { right: handle.right } : undefined),
-                          ...(handle.top !== undefined ? { top: handle.top } : undefined),
-                          ...(handle.bottom !== undefined ? { bottom: handle.bottom } : undefined)
+                          width: `${cropLayout.frameWidthPx}px`,
+                          height: `${cropLayout.frameHeightPx}px`,
+                          overflow: "hidden",
+                          display: "block"
                         }}
-                        onPointerDown={(event) => {
-                          beginImageResize(
-                            event,
-                            manualImageLocation,
-                            widthPx,
-                            heightPx,
-                            handle.xDirection as -1 | 1,
-                            handle.yDirection as -1 | 1
-                          );
-                        }}
-                      />
-                    ))}
-                  </>
-                ) : null}
-              </span>
+                      >
+                        <img
+                          src={renderableImageSrc}
+                          alt={manualImage.alt ?? "DOCX image"}
+                          draggable={false}
+                          style={{
+                            width: `${cropLayout.imageWidthPx}px`,
+                            height: `${cropLayout.imageHeightPx}px`,
+                            maxWidth: "none",
+                            verticalAlign: "middle",
+                            display: "block",
+                            transform: `translate(${-cropLayout.offsetXPx}px, ${-cropLayout.offsetYPx}px)`,
+                            cursor: isReadOnly ? "default" : "move",
+                            ...imageVisualStyle
+                          }}
+                        />
+                      </span>
+                    );
+                  }
+
+                  return (
+                    <img
+                      src={renderableImageSrc}
+                      alt={manualImage.alt ?? "DOCX image"}
+                      draggable={false}
+                      style={{
+                        width: widthPx ? `${widthPx}px` : undefined,
+                        height: heightPx ? `${heightPx}px` : undefined,
+                        verticalAlign: "middle",
+                        display: "block",
+                        cursor: isReadOnly ? "default" : "move",
+                        ...imageVisualStyle
+                      }}
+                    />
+                  );
+                })()
+              ) : showsUnsupportedFallback ? (
+                <span
+                  role="img"
+                  aria-label={manualImage.alt ?? "DOCX image"}
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    width: widthPx ? `${widthPx}px` : "1.8em",
+                    height: heightPx ? `${heightPx}px` : "1.8em",
+                    minWidth: 16,
+                    minHeight: 16,
+                    border: "1px solid #d1d5db",
+                    borderRadius: 3,
+                    backgroundColor: "#ffffff",
+                    color: "#0f172a",
+                    fontSize: (widthPx ?? 0) <= 56 && (heightPx ?? 0) <= 56 ? 12 : 10,
+                    fontWeight: 700,
+                    textTransform: "lowercase",
+                    fontFamily: "Arial, sans-serif",
+                    lineHeight: 1
+                  }}
+                >
+                  {unsupportedImageFallbackLabel(manualImage, widthPx, heightPx)}
+                </span>
+              ) : null}
+
+              {!isReadOnly && isSelectedImage ? (
+                <>
+                  {[
+                    { key: "top-left", left: -5, top: -5, cursor: "nwse-resize", xDirection: -1, yDirection: -1 },
+                    { key: "top-right", right: -5, top: -5, cursor: "nesw-resize", xDirection: 1, yDirection: -1 },
+                    { key: "bottom-left", left: -5, bottom: -5, cursor: "nesw-resize", xDirection: -1, yDirection: 1 },
+                    { key: "bottom-right", right: -5, bottom: -5, cursor: "nwse-resize", xDirection: 1, yDirection: 1 }
+                  ].map((handle) => (
+                    <span
+                      key={`${keyPrefix}-dual-${geometry.imageIndex}-${handle.key}`}
+                      contentEditable={false}
+                      data-image-resize-handle="true"
+                      style={{
+                        position: "absolute",
+                        width: 10,
+                        height: 10,
+                        borderRadius: 3,
+                        border: "1px solid #d4d4d8",
+                        backgroundColor: "#ffffff",
+                        boxShadow: "0 1px 2px rgba(0, 0, 0, 0.14)",
+                        cursor: handle.cursor,
+                        ...(handle.left !== undefined ? { left: handle.left } : undefined),
+                        ...(handle.right !== undefined ? { right: handle.right } : undefined),
+                        ...(handle.top !== undefined ? { top: handle.top } : undefined),
+                        ...(handle.bottom !== undefined ? { bottom: handle.bottom } : undefined)
+                      }}
+                      onPointerDown={(event) => {
+                        beginImageResize(
+                          event,
+                          manualImageLocation,
+                          widthPx,
+                          heightPx,
+                          handle.xDirection as -1 | 1,
+                          handle.yDirection as -1 | 1
+                        );
+                      }}
+                    />
+                  ))}
+                </>
+              ) : null}
             </span>
           );
-        }
+        };
+
+        const renderManualAbsoluteImage = (
+          manualImage: ImageRunNode,
+          childIndex: number
+        ): React.ReactNode => {
+          const manualImageLocation: DocxImageLocation = { ...location, childIndex };
+          const manualImageKey = imageLocationKey(manualImageLocation);
+          const isSelectedImage = selectedImage ? imageLocationKey(selectedImage) === manualImageKey : false;
+          const movePreview = movePreviewByImageIndex.get(childIndex);
+          const widthPx =
+            resizedWidthPxByImageIndex.get(childIndex) ?? manualImage.widthPx;
+          const heightPx =
+            resizedHeightPxByImageIndex.get(childIndex) ?? manualImage.heightPx;
+          const floatingStyle = absoluteFloatingImageStyle(manualImage, {
+            pageOriginLeft: interactiveBodyFloatingPageOriginPx?.left ?? 0,
+            pageOriginTop: interactiveBodyFloatingPageOriginPx?.top ?? 0,
+            deltaX: movePreview?.deltaX ?? 0,
+            deltaY: movePreview?.deltaY ?? 0
+          });
+          const renderableImageSrc =
+            syntheticTextBoxSvg(
+              manualImage,
+              undefined,
+              undefined,
+              undefined,
+              undefined
+            ) ??
+            resolveRenderableImageSource(manualImage);
+          const showsUnsupportedFallback =
+            imageUsesPlaceholderFallback(manualImage) || (manualImage.src && !renderableImageSrc);
+
+          return (
+            <span
+              key={`${keyPrefix}-manual-absolute-${childIndex}`}
+              contentEditable={false}
+              data-docx-image-location={manualImageKey}
+              style={{
+                display: "inline-block",
+                position: "absolute",
+                width: widthPx ? `${widthPx}px` : undefined,
+                height: heightPx ? `${heightPx}px` : undefined,
+                ...floatingStyle
+              }}
+              onPointerDown={(event) =>
+                isReadOnly
+                  ? undefined
+                  : beginFloatingImageMove(
+                      event,
+                      manualImageLocation,
+                      manualImage,
+                      false,
+                      true
+                    )
+              }
+              onClick={(event) => {
+                event.stopPropagation();
+                if (!isReadOnly) {
+                  setSelectedImage(manualImageLocation);
+                }
+              }}
+              onContextMenu={(event) => {
+                if (isReadOnly) {
+                  return;
+                }
+
+                event.preventDefault();
+                event.stopPropagation();
+                clearTableCellSelection();
+                setSelectedSectionImageKey(undefined);
+                setSelectedImage(manualImageLocation);
+                openContextMenu(
+                  {
+                    kind: "image",
+                    activeTextRange: resolveActiveRangeFromDomSelection(),
+                    location: cloneTextRangeLocation(imageLocationToParagraphLocation(manualImageLocation)),
+                    image: {
+                      location: manualImageLocation,
+                      floating: manualImage.floating ? { ...manualImage.floating } : undefined
+                    }
+                  },
+                  {
+                    x: event.clientX,
+                    y: event.clientY
+                  }
+                );
+              }}
+            >
+              {renderableImageSrc && !showsUnsupportedFallback ? (
+                <img
+                  src={renderableImageSrc}
+                  alt={manualImage.alt ?? "DOCX image"}
+                  draggable={false}
+                  style={{
+                    width: widthPx ? `${widthPx}px` : undefined,
+                    height: heightPx ? `${heightPx}px` : undefined,
+                    maxWidth: "none",
+                    verticalAlign: "middle",
+                    display: "block",
+                    cursor: isReadOnly ? "default" : "move",
+                    filter: manualImage.cssFilter,
+                    opacity: manualImage.cssOpacity
+                  }}
+                />
+              ) : showsUnsupportedFallback ? (
+                <span
+                  role="img"
+                  aria-label={manualImage.alt ?? "DOCX image"}
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    width: widthPx ? `${widthPx}px` : "1.8em",
+                    height: heightPx ? `${heightPx}px` : "1.8em",
+                    minWidth: 16,
+                    minHeight: 16,
+                    border: "1px solid #d1d5db",
+                    borderRadius: 3,
+                    backgroundColor: "#ffffff",
+                    color: "#0f172a",
+                    fontSize: (widthPx ?? 0) <= 56 && (heightPx ?? 0) <= 56 ? 12 : 10,
+                    fontWeight: 700,
+                    textTransform: "lowercase",
+                    fontFamily: "Arial, sans-serif",
+                    lineHeight: 1
+                  }}
+                >
+                  {unsupportedImageFallbackLabel(manualImage, widthPx, heightPx)}
+                </span>
+              ) : null}
+
+              {!isReadOnly && isSelectedImage ? (
+                <>
+                  {[
+                    { key: "top-left", left: -5, top: -5, cursor: "nwse-resize", xDirection: -1, yDirection: -1 },
+                    { key: "top-right", right: -5, top: -5, cursor: "nesw-resize", xDirection: 1, yDirection: -1 },
+                    { key: "bottom-left", left: -5, bottom: -5, cursor: "nesw-resize", xDirection: -1, yDirection: 1 },
+                    { key: "bottom-right", right: -5, bottom: -5, cursor: "nwse-resize", xDirection: 1, yDirection: 1 }
+                  ].map((handle) => (
+                    <span
+                      key={`${keyPrefix}-manual-absolute-${childIndex}-${handle.key}`}
+                      contentEditable={false}
+                      data-image-resize-handle="true"
+                      style={{
+                        position: "absolute",
+                        width: 10,
+                        height: 10,
+                        borderRadius: 3,
+                        border: "1px solid #d4d4d8",
+                        backgroundColor: "#ffffff",
+                        boxShadow: "0 1px 2px rgba(0, 0, 0, 0.14)",
+                        cursor: handle.cursor,
+                        ...(handle.left !== undefined ? { left: handle.left } : undefined),
+                        ...(handle.right !== undefined ? { right: handle.right } : undefined),
+                        ...(handle.top !== undefined ? { top: handle.top } : undefined),
+                        ...(handle.bottom !== undefined ? { bottom: handle.bottom } : undefined)
+                      }}
+                      onPointerDown={(event) => {
+                        const resizeWidth = widthPx ?? manualImage.widthPx ?? 240;
+                        const resizeHeight =
+                          heightPx ??
+                          manualImage.heightPx ??
+                          Math.round(resizeWidth * 0.62);
+                        beginImageResize(
+                          event,
+                          manualImageLocation,
+                          resizeWidth,
+                          resizeHeight,
+                          handle.xDirection as -1 | 1,
+                          handle.yDirection as -1 | 1
+                        );
+                      }}
+                    />
+                  ))}
+                </>
+              ) : null}
+            </span>
+          );
+        };
+
+        return (
+          <span
+            key={`${keyPrefix}-dual-wrap-manual`}
+            contentEditable={false}
+            style={{
+              display: "block",
+              position: "relative",
+              minHeight: manualDualWrappedLayout.layout.height
+            }}
+          >
+            {manualDualWrappedLayout.layout.lines.map((line, lineIndex) =>
+              line.fragments.map((fragment) => renderManualFragment(fragment, lineIndex))
+            )}
+            {manualDualWrappedLayout.geometries.map((geometry) => renderManualImage(geometry))}
+            {paragraph.children.map((child, childIndex) =>
+              child.type === "image" &&
+              !manualGeometryImageIndexes.has(childIndex) &&
+              shouldRenderAbsoluteFloatingImage(child)
+                ? renderManualAbsoluteImage(child, childIndex)
+                : null
+            )}
+          </span>
+        );
       }
 
       if (numberingLabel) {
@@ -25972,6 +26934,41 @@ export function DocxEditorViewer({
             resolveRenderableImageSource(child);
           const showsUnsupportedFallback =
             imageUsesPlaceholderFallback(child) || (child.src && !renderableImageSrc);
+          const isBehindTextAbsoluteImage =
+            isAbsoluteFloatingImage && child.floating?.behindDocument === true;
+          const imageFrameStyle: React.CSSProperties = {
+            display: "inline-block",
+            position: isAbsoluteFloatingImage || Boolean(dualWrapExclusionLayout) ? "absolute" : "relative",
+            verticalAlign: "middle",
+            marginInline: isWrappedFloatingImage || isAbsoluteFloatingImage ? undefined : 0,
+            width:
+              isWrappedFloatingImage || isAbsoluteFloatingImage
+                ? widthPx
+                  ? `${widthPx}px`
+                  : undefined
+                : undefined,
+            height:
+              isWrappedFloatingImage || isAbsoluteFloatingImage
+                ? heightPx
+                  ? `${heightPx}px`
+                  : undefined
+                : undefined
+          };
+          const resizeHandles: Array<{
+            key: string;
+            left?: number;
+            right?: number;
+            top?: number;
+            bottom?: number;
+            cursor: string;
+            xDirection: -1 | 1;
+            yDirection: -1 | 1;
+          }> = [
+            { key: "top-left", left: -5, top: -5, cursor: "nwse-resize", xDirection: -1, yDirection: -1 },
+            { key: "top-right", right: -5, top: -5, cursor: "nesw-resize", xDirection: 1, yDirection: -1 },
+            { key: "bottom-left", left: -5, bottom: -5, cursor: "nesw-resize", xDirection: -1, yDirection: 1 },
+            { key: "bottom-right", right: -5, bottom: -5, cursor: "nwse-resize", xDirection: 1, yDirection: 1 }
+          ];
 
           if (dualWrapExclusionLayout) {
             hasDualWrapSpacer = true;
@@ -25999,23 +26996,9 @@ export function DocxEditorViewer({
               contentEditable={false}
               data-docx-image-location={imageKey}
               style={{
-                display: "inline-block",
-                position: isAbsoluteFloatingImage || Boolean(dualWrapExclusionLayout) ? "absolute" : "relative",
-                verticalAlign: "middle",
-                marginInline: isWrappedFloatingImage || isAbsoluteFloatingImage ? undefined : 0,
-                width:
-                  isWrappedFloatingImage || isAbsoluteFloatingImage
-                    ? widthPx
-                      ? `${widthPx}px`
-                      : undefined
-                    : undefined,
-                height:
-                  isWrappedFloatingImage || isAbsoluteFloatingImage
-                    ? heightPx
-                      ? `${heightPx}px`
-                      : undefined
-                    : undefined,
-                ...floatingStyle
+                ...imageFrameStyle,
+                ...floatingStyle,
+                ...(isBehindTextAbsoluteImage ? { pointerEvents: "none" } : undefined)
               }}
               onPointerDown={(event) =>
                 isReadOnly
@@ -26188,14 +27171,9 @@ export function DocxEditorViewer({
                 </span>
               )}
 
-              {!isReadOnly && isSelectedImage ? (
+              {!isReadOnly && isSelectedImage && !isBehindTextAbsoluteImage ? (
                 <>
-                  {[
-                    { key: "top-left", left: -5, top: -5, cursor: "nwse-resize", xDirection: -1, yDirection: -1 },
-                    { key: "top-right", right: -5, top: -5, cursor: "nesw-resize", xDirection: 1, yDirection: -1 },
-                    { key: "bottom-left", left: -5, bottom: -5, cursor: "nesw-resize", xDirection: -1, yDirection: 1 },
-                    { key: "bottom-right", right: -5, bottom: -5, cursor: "nwse-resize", xDirection: 1, yDirection: 1 }
-                  ].map((handle) => (
+                  {resizeHandles.map((handle) => (
                     <span
                       key={`${runKey}-${handle.key}`}
                       contentEditable={false}
@@ -26239,6 +27217,101 @@ export function DocxEditorViewer({
               ) : null}
             </span>
           );
+          if (isBehindTextAbsoluteImage && !isReadOnly) {
+            nodes.push(
+              <span
+                key={`${runKey}-hit-target`}
+                contentEditable={false}
+                aria-hidden="true"
+                style={{
+                  ...imageFrameStyle,
+                  ...floatingStyle,
+                  zIndex: 8,
+                  backgroundColor: "transparent",
+                  cursor: "move",
+                  ...(isSelectedImage
+                    ? {
+                        boxShadow: "inset 0 0 0 1px rgba(37, 99, 235, 0.8)"
+                      }
+                    : undefined)
+                }}
+                onPointerDown={(event) =>
+                  beginFloatingImageMove(
+                    event,
+                    imageLocation,
+                    child,
+                    isWrappedFloatingImage,
+                    isAbsoluteFloatingImage
+                  )
+                }
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setSelectedImage(imageLocation);
+                }}
+                onContextMenu={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  clearTableCellSelection();
+                  setSelectedSectionImageKey(undefined);
+                  setSelectedImage(imageLocation);
+                  openContextMenu(
+                    {
+                      kind: "image",
+                      activeTextRange: resolveActiveRangeFromDomSelection(),
+                      location: cloneTextRangeLocation(imageLocationToParagraphLocation(imageLocation)),
+                      image: {
+                        location: imageLocation,
+                        floating: child.floating ? { ...child.floating } : undefined
+                      }
+                    },
+                    {
+                      x: event.clientX,
+                      y: event.clientY
+                    }
+                  );
+                }}
+              >
+                {isSelectedImage
+                  ? resizeHandles.map((handle) => (
+                      <span
+                        key={`${runKey}-hit-${handle.key}`}
+                        contentEditable={false}
+                        data-image-resize-handle="true"
+                        style={{
+                          position: "absolute",
+                          width: 10,
+                          height: 10,
+                          borderRadius: 3,
+                          border: "1px solid #d4d4d8",
+                          backgroundColor: "#ffffff",
+                          boxShadow: "0 1px 2px rgba(0, 0, 0, 0.14)",
+                          cursor: handle.cursor,
+                          ...(handle.left !== undefined ? { left: handle.left } : undefined),
+                          ...(handle.right !== undefined ? { right: handle.right } : undefined),
+                          ...(handle.top !== undefined ? { top: handle.top } : undefined),
+                          ...(handle.bottom !== undefined ? { bottom: handle.bottom } : undefined)
+                        }}
+                        onPointerDown={(event) => {
+                          const overlayWidth = widthPx ?? child.widthPx ?? 240;
+                          const overlayHeight =
+                            heightPx ??
+                            child.heightPx ??
+                            Math.round((overlayWidth ?? 240) * 0.62);
+                          beginImageResize(
+                            event,
+                            imageLocation,
+                            overlayWidth,
+                            overlayHeight,
+                            handle.xDirection as -1 | 1,
+                            handle.yDirection as -1 | 1
+                          );
+                        }}
+                      />
+                    ))
+                  : null}
+              </span>
+            );
+          }
           if (!isWrappedFloatingImage && !isAbsoluteFloatingImage) {
             trackInlineAdvance(widthPx ?? 0);
           }
@@ -29880,6 +30953,7 @@ export function DocxEditorViewer({
                   }
                 }}
                 style={{
+                  isolation: "isolate",
                   opacity: headerFooterBodyDimmed ? 0.5 : 1,
                   transition: "opacity 120ms ease"
                 }}
@@ -30445,14 +31519,24 @@ export function DocxEditorViewer({
                 location: tableContext ? firstParagraphLocationInTable(editor.model, tableContext.tableIndex) : undefined,
                 activeTextRange: editor.activeTextRange
               } satisfies DocxContextMenuContext);
+          const resolvedContext =
+            context.kind === "image" && context.image
+              ? {
+                  ...context,
+                  image: {
+                    ...context.image,
+                    wrap: resolveDocxImageWrapState(context.image.floating)
+                  }
+                }
+              : context;
           const menuState = contextMenuState ?? tableContextMenuState;
           if (!menuState) {
             return null;
           }
 
-          const isImageContext = context.kind === "image";
+          const isImageContext = resolvedContext.kind === "image";
           const estimatedWidth = isImageContext ? 252 : 228;
-          const estimatedHeight = isImageContext ? 344 : 260;
+          const estimatedHeight = isImageContext ? 460 : 260;
           const position = {
             x:
               typeof window === "undefined"
@@ -30463,12 +31547,12 @@ export function DocxEditorViewer({
                 ? menuState.clientY
                 : clampNumber(menuState.clientY, 8, Math.max(8, window.innerHeight - estimatedHeight))
           };
-          const actions = resolveContextMenuActions(context);
+          const actions = resolveContextMenuActions(resolvedContext);
           const menuProps: DocxContextMenuRenderProps = {
-            context,
+            context: resolvedContext,
             actions,
             runAction: (actionId) => {
-              runContextMenuAction(actionId, context);
+              runContextMenuAction(actionId, resolvedContext);
             },
             closeMenu: contextMenuState ? closeContextMenu : closeTableContextMenu,
             position,
@@ -30499,15 +31583,27 @@ export function DocxEditorViewer({
                     : "0 8px 20px rgba(15, 23, 42, 0.16)"
               }}
             >
-              {actions.map((action) => {
+              {actions.map((action, actionIndex) => {
                 const childActions = action.children ?? [];
                 const hasChildren = childActions.length > 0;
                 return (
                   <div key={String(action.id)} style={{ display: "grid", gap: 2 }}>
+                    {action.separatorBefore && actionIndex > 0 ? (
+                      <div
+                        style={{
+                          height: 1,
+                          margin: "4px 2px",
+                          backgroundColor:
+                            editor.documentTheme === "dark"
+                              ? "rgba(148, 163, 184, 0.24)"
+                              : "rgba(15, 23, 42, 0.08)"
+                        }}
+                      />
+                    ) : null}
                     <button
                       type="button"
                       disabled={action.disabled || hasChildren}
-                      onClick={() => runContextMenuAction(action.id, context)}
+                      onClick={() => runContextMenuAction(action.id, resolvedContext)}
                       style={{
                         appearance: "none",
                         border: "none",
@@ -30531,7 +31627,24 @@ export function DocxEditorViewer({
                         gap: 8
                       }}
                     >
-                      <span>{action.label}</span>
+                      <span
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 8
+                        }}
+                      >
+                        <span
+                          style={{
+                            display: "inline-flex",
+                            width: 12,
+                            justifyContent: "center"
+                          }}
+                        >
+                          {action.checked ? "✓" : ""}
+                        </span>
+                        <span>{action.label}</span>
+                      </span>
                       {action.shortcut ? (
                         <span style={{ fontSize: 11, color: menuMutedTextColor }}>{action.shortcut}</span>
                       ) : hasChildren ? (
@@ -30557,7 +31670,7 @@ export function DocxEditorViewer({
                             key={String(childAction.id)}
                             type="button"
                             disabled={childAction.disabled}
-                            onClick={() => runContextMenuAction(childAction.id, context)}
+                            onClick={() => runContextMenuAction(childAction.id, resolvedContext)}
                             style={{
                               appearance: "none",
                               border: "none",
@@ -30581,7 +31694,24 @@ export function DocxEditorViewer({
                               gap: 8
                             }}
                           >
-                            <span>{childAction.label}</span>
+                            <span
+                              style={{
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: 8
+                              }}
+                            >
+                              <span
+                                style={{
+                                  display: "inline-flex",
+                                  width: 12,
+                                  justifyContent: "center"
+                                }}
+                              >
+                                {childAction.checked ? "✓" : ""}
+                              </span>
+                              <span>{childAction.label}</span>
+                            </span>
                             {childAction.shortcut ? (
                               <span style={{ fontSize: 11, color: menuMutedTextColor }}>
                                 {childAction.shortcut}

@@ -33,6 +33,7 @@ import {
   AlignRight,
   Bold,
   Columns2,
+  Check,
   Download,
   FileDiff,
   Highlighter,
@@ -815,6 +816,10 @@ function shouldShowActionSeparator(
     return false;
   }
 
+  if (action.separatorBefore) {
+    return true;
+  }
+
   const actionId = String(action.id);
   const previousActionId = String(previousAction.id);
   const startsImageGroup = actionId.startsWith("image-") && !previousActionId.startsWith("image-");
@@ -826,7 +831,9 @@ function renderMenuAction(
   action: DocxContextMenuRenderProps["actions"][number],
   runAction: DocxContextMenuRenderProps["runAction"]
 ): React.ReactNode {
-  const icon = contextActionIcon(action.id);
+  const icon = action.checked
+    ? <Check className="size-4" />
+    : contextActionIcon(action.id);
   if (action.children && action.children.length > 0) {
     return (
       <ContextMenuSub key={String(action.id)}>
