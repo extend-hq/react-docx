@@ -54,6 +54,12 @@ import {
   resolveRenderableImageSource,
   unsupportedImageFallbackLabel
 } from "./image-render";
+import {
+  layoutTextWithPretextAroundExclusion,
+  type PretextExclusionRect,
+  type PretextLineFragment,
+  type PretextVariableWidthLayout
+} from "./pretext-layout";
 
 const HIGHLIGHT_TO_CSS: Record<string, string> = {
   yellow: "#fff59d",
@@ -3276,6 +3282,227 @@ function paragraphLooksLikeCheckboxChoiceRow(paragraph: ParagraphNode): boolean 
   return normalized.includes("yes") && normalized.includes("no");
 }
 
+interface ParagraphPretextLayoutRun {
+  key: string;
+  text: string;
+  startOffset: number;
+  endOffset: number;
+  style?: TextRunNode["style"];
+  link?: string;
+}
+
+interface ParagraphPretextLayoutSource {
+  text: string;
+  runs: ParagraphPretextLayoutRun[];
+}
+
+interface DualWrappedFloatingImageGeometry {
+  image: ImageRunNode;
+  imageIndex: number;
+  containerWidthPx: number;
+  imageLeftPx: number;
+  imageTopPx: number;
+  imageWidthPx: number;
+  imageHeightPx: number;
+  exclusion: PretextExclusionRect;
+}
+
+interface ParagraphDualWrappedTextLayout {
+  source: ParagraphPretextLayoutSource;
+  geometry: DualWrappedFloatingImageGeometry;
+  lineHeightPx: number;
+  layout: PretextVariableWidthLayout;
+}
+
+function buildParagraphPretextLayoutSource(
+  paragraph: ParagraphNode
+): ParagraphPretextLayoutSource | undefined {
+  if (paragraphHasNumbering(paragraph) || paragraphHasFormField(paragraph)) {
+    return undefined;
+  }
+
+  const runs: ParagraphPretextLayoutRun[] = [];
+  let combinedText = "";
+
+  for (let childIndex = 0; childIndex < paragraph.children.length; childIndex += 1) {
+    const child = paragraph.children[childIndex];
+    if (!child || child.type === "image") {
+      continue;
+    }
+    if (child.type !== "text") {
+      return undefined;
+    }
+    if (child.noteReference || child.text.includes("\t")) {
+      return undefined;
+    }
+
+    const startOffset = combinedText.length;
+    combinedText += child.text;
+    runs.push({
+      key: `run-${childIndex}`,
+      text: child.text,
+      startOffset,
+      endOffset: combinedText.length,
+      style: child.style,
+      link: child.link
+    });
+  }
+
+  if (combinedText.length === 0) {
+    return undefined;
+  }
+
+  return {
+    text: combinedText,
+    runs
+  };
+}
+
+export function resolveDualWrappedFloatingImageGeometry(
+  image: ImageRunNode,
+  containerWidthPx: number,
+  options?: {
+    imageIndex?: number;
+    deltaX?: number;
+    deltaY?: number;
+    widthPx?: number;
+    heightPx?: number;
+  }
+): DualWrappedFloatingImageGeometry | undefined {
+  if (!shouldRenderWrappedFloatingImage(image)) {
+    return undefined;
+  }
+
+  const floating = image.floating;
+  if (!floating || floating.wrapType === "topAndBottom") {
+    return undefined;
+  }
+
+  const wrapText = floating.wrapText ?? "bothSides";
+  if (wrapText !== "bothSides") {
+    return undefined;
+  }
+
+  const horizontalAlign = floating.horizontalAlign?.trim().toLowerCase();
+  if (
+    horizontalAlign === "left" ||
+    horizontalAlign === "right" ||
+    horizontalAlign === "inside" ||
+    horizontalAlign === "outside"
+  ) {
+    return undefined;
+  }
+
+  const safeContainerWidthPx = Math.max(1, Math.round(containerWidthPx));
+  const imageWidthPx = Math.max(
+    1,
+    Math.round(
+      (options?.widthPx ??
+        image.widthPx ??
+        image.heightPx ??
+        MIN_PARAGRAPH_LINE_HEIGHT_PX) as number
+    )
+  );
+  const imageHeightPx = Math.max(
+    1,
+    Math.round(
+      (options?.heightPx ??
+        image.heightPx ??
+        image.widthPx ??
+        MIN_PARAGRAPH_LINE_HEIGHT_PX) as number
+    )
+  );
+  const deltaX = Number.isFinite(options?.deltaX) ? Math.round(options?.deltaX as number) : 0;
+  const deltaY = Number.isFinite(options?.deltaY) ? Math.round(options?.deltaY as number) : 0;
+  const baseLeftPx = Number.isFinite(floating.xPx) ? Math.round(floating.xPx as number) : 0;
+  const baseTopPx = Number.isFinite(floating.yPx) ? Math.round(floating.yPx as number) : 0;
+  const imageLeftPx = clampNumber(baseLeftPx + deltaX, 0, Math.max(0, safeContainerWidthPx - imageWidthPx));
+  const distLPx = Math.max(0, Math.round(floating.distLPx ?? 0));
+  const distRPx = Math.max(0, Math.round(floating.distRPx ?? 0));
+  const distTPx = Math.max(0, Math.round(floating.distTPx ?? 0));
+  const distBPx = Math.max(0, Math.round(floating.distBPx ?? 0));
+  const exclusionLeftPx = Math.max(0, imageLeftPx - distLPx);
+  const exclusionRightPx = Math.min(safeContainerWidthPx, imageLeftPx + imageWidthPx + distRPx);
+  const leftBandWidthPx = exclusionLeftPx;
+  const rightBandWidthPx = Math.max(0, safeContainerWidthPx - exclusionRightPx);
+  if (leftBandWidthPx < 24 || rightBandWidthPx < 24) {
+    return undefined;
+  }
+
+  const imageTopPx = Math.max(0, baseTopPx + deltaY + distTPx);
+
+  return {
+    image,
+    imageIndex: options?.imageIndex ?? 0,
+    containerWidthPx: safeContainerWidthPx,
+    imageLeftPx,
+    imageTopPx,
+    imageWidthPx,
+    imageHeightPx,
+    exclusion: {
+      left: exclusionLeftPx,
+      right: exclusionRightPx,
+      top: imageTopPx,
+      bottom: imageTopPx + imageHeightPx + distBPx
+    }
+  };
+}
+
+export function resolveParagraphDualWrappedTextLayout(
+  paragraph: ParagraphNode,
+  containerWidthPx: number,
+  lineHeightPx: number,
+  options?: {
+    deltaX?: number;
+    deltaY?: number;
+    widthPxByImageIndex?: Map<number, number>;
+    heightPxByImageIndex?: Map<number, number>;
+  }
+): ParagraphDualWrappedTextLayout | undefined {
+  const source = buildParagraphPretextLayoutSource(paragraph);
+  if (!source) {
+    return undefined;
+  }
+
+  const geometries = paragraph.children
+    .map((child, childIndex) => {
+      if (child.type !== "image") {
+        return undefined;
+      }
+
+      return resolveDualWrappedFloatingImageGeometry(child, containerWidthPx, {
+        imageIndex: childIndex,
+        deltaX: options?.deltaX,
+        deltaY: options?.deltaY,
+        widthPx: options?.widthPxByImageIndex?.get(childIndex),
+        heightPx: options?.heightPxByImageIndex?.get(childIndex)
+      });
+    })
+    .filter((candidate): candidate is DualWrappedFloatingImageGeometry => Boolean(candidate));
+  if (geometries.length !== 1) {
+    return undefined;
+  }
+
+  const font = resolveMeasureFont(firstRunStyle(paragraph), paragraphBaseFontSizePx(paragraph));
+  const layout = layoutTextWithPretextAroundExclusion(
+    source.text,
+    font,
+    geometries[0].containerWidthPx,
+    lineHeightPx,
+    geometries[0].exclusion
+  );
+  if (!layout || layout.lineCount <= 0) {
+    return undefined;
+  }
+
+  return {
+    source,
+    geometry: geometries[0],
+    lineHeightPx,
+    layout
+  };
+}
+
 function checkboxChoiceRowTabWidthPx(paragraph: ParagraphNode): number {
   const checkboxCount = paragraph.children.filter(
     (child) => child.type === "form-field" && child.fieldType === "checkbox"
@@ -4283,6 +4510,14 @@ function paragraphLineCountWithinWidth(
     availableWidthPx as number,
     numberingDefinitions
   );
+  const dualWrappedLayout = resolveParagraphDualWrappedTextLayout(
+    paragraph,
+    effectiveWidthPx,
+    estimateParagraphLineHeightPx(paragraph)
+  );
+  if (dualWrappedLayout) {
+    return dualWrappedLayout.layout.lineCount;
+  }
   return estimateWrappedLineCountForParagraph(paragraph, effectiveWidthPx);
 }
 
@@ -4535,6 +4770,18 @@ function estimateParagraphHeightPx(
     docGridLinePitchPx,
     disableDocGridSnap
   );
+  const effectiveWidthPx =
+    Number.isFinite(availableWidthPx) && (availableWidthPx as number) > 0
+      ? paragraphAvailableTextWidthPx(
+          paragraph,
+          availableWidthPx as number,
+          numberingDefinitions
+        )
+      : undefined;
+  const dualWrappedLayout =
+    effectiveWidthPx !== undefined
+      ? resolveParagraphDualWrappedTextLayout(paragraph, effectiveWidthPx, lineHeightPx)
+      : undefined;
   const lineCount = paragraphLineCountWithinWidth(
     paragraph,
     availableWidthPx,
@@ -4572,7 +4819,7 @@ function estimateParagraphHeightPx(
 
   const contentHeightPx = Math.max(
     lineHeightPx,
-    lineHeightPx * lineCount,
+    dualWrappedLayout?.layout.height ?? lineHeightPx * lineCount,
     inlineImageHeightPx,
     wrappedFloatingImageHeightPx,
     absoluteFloatingImageHeightPx,
@@ -25245,6 +25492,43 @@ export function DocxEditorViewer({
               pageWidth: documentLayout.pageWidthPx
             }
           : undefined;
+      const paragraphRenderTextWidthPx = paragraphAvailableTextWidthPx(
+        paragraph,
+        documentContentWidthPx,
+        editor.model.metadata.numberingDefinitions
+      );
+      const resizedWidthPxByImageIndex = new Map<number, number>();
+      const resizedHeightPxByImageIndex = new Map<number, number>();
+      let dualWrapMoveDeltaX = 0;
+      let dualWrapMoveDeltaY = 0;
+      paragraph.children.forEach((child, childIndex) => {
+        if (child.type !== "image") {
+          return;
+        }
+
+        const imageLocation: DocxImageLocation = { ...location, childIndex };
+        const imageKey = imageLocationKey(imageLocation);
+        const preview = resizePreview?.imageKey === imageKey ? resizePreview : undefined;
+        const movePreview = floatingMovePreview?.imageKey === imageKey ? floatingMovePreview : undefined;
+        let widthPx = preview?.widthPx ?? child.widthPx;
+        let heightPx = preview?.heightPx ?? child.heightPx;
+        ({ widthPx, heightPx } = resolvePageSpanningAbsoluteFloatingDimensions(
+          child,
+          widthPx,
+          heightPx,
+          interactiveBodyFloatingPageOriginPx
+        ));
+        if (Number.isFinite(widthPx)) {
+          resizedWidthPxByImageIndex.set(childIndex, Math.round(widthPx as number));
+        }
+        if (Number.isFinite(heightPx)) {
+          resizedHeightPxByImageIndex.set(childIndex, Math.round(heightPx as number));
+        }
+        if (movePreview) {
+          dualWrapMoveDeltaX = Math.round(movePreview.deltaX);
+          dualWrapMoveDeltaY = Math.round(movePreview.deltaY);
+        }
+      });
       const anchoredTabLayout = paragraphAnchoredTabLayout(paragraph);
       const useSpecialTabLayout =
         paragraphUsesTabLeaders(paragraph) ||
@@ -25268,6 +25552,319 @@ export function DocxEditorViewer({
             tocLinkColorByLevel
           }
         );
+      }
+
+      const manualDualWrappedLayout = !numberingLabel
+        ? resolveParagraphDualWrappedTextLayout(
+            paragraph,
+            paragraphRenderTextWidthPx,
+            estimateParagraphLineHeightPx(paragraph),
+            {
+              deltaX: dualWrapMoveDeltaX,
+              deltaY: dualWrapMoveDeltaY,
+              widthPxByImageIndex: resizedWidthPxByImageIndex,
+              heightPxByImageIndex: resizedHeightPxByImageIndex
+            }
+          )
+        : undefined;
+      if (manualDualWrappedLayout) {
+        const manualImageIndex = manualDualWrappedLayout.geometry.imageIndex;
+        const manualImageLocation: DocxImageLocation = { ...location, childIndex: manualImageIndex };
+        const manualImageKey = imageLocationKey(manualImageLocation);
+        const manualImage = paragraph.children[manualImageIndex];
+        if (manualImage?.type === "image") {
+          const isSelectedImage = selectedImage ? imageLocationKey(selectedImage) === manualImageKey : false;
+          const widthPx = manualDualWrappedLayout.geometry.imageWidthPx;
+          const heightPx = manualDualWrappedLayout.geometry.imageHeightPx;
+          const renderableImageSrc =
+            syntheticTextBoxSvg(
+              manualImage,
+              undefined,
+              undefined,
+              undefined,
+              undefined
+            ) ??
+            resolveRenderableImageSource(manualImage);
+          const showsUnsupportedFallback =
+            imageUsesPlaceholderFallback(manualImage) || (manualImage.src && !renderableImageSrc);
+          const renderManualFragment = (
+            fragment: PretextLineFragment,
+            lineIndex: number
+          ): React.ReactNode => {
+            const pieces = manualDualWrappedLayout.source.runs
+              .map((run) => {
+                const overlapStart = Math.max(fragment.startOffset, run.startOffset);
+                const overlapEnd = Math.min(fragment.endOffset, run.endOffset);
+                if (overlapStart >= overlapEnd) {
+                  return undefined;
+                }
+
+                const slice = run.text.slice(
+                  overlapStart - run.startOffset,
+                  overlapEnd - run.startOffset
+                );
+                if (!slice) {
+                  return undefined;
+                }
+
+                const textStyle = run.link
+                  ? {
+                      ...linkStyleToCss(run.style, editor.documentTheme),
+                      whiteSpace: "pre"
+                    }
+                  : {
+                      ...runStyleToCss(run.style, editor.documentTheme),
+                      whiteSpace: "pre"
+                    };
+
+                return run.link ? (
+                  <a
+                    key={`${keyPrefix}-dual-line-${lineIndex}-${run.key}-${overlapStart}`}
+                    href={run.link}
+                    target={run.link.startsWith("#") ? undefined : "_blank"}
+                    rel={run.link.startsWith("#") ? undefined : "noreferrer noopener"}
+                    onMouseDown={(event) => {
+                      if (!run.link?.startsWith("#")) {
+                        return;
+                      }
+
+                      event.preventDefault();
+                      event.stopPropagation();
+                    }}
+                    onClick={(event) => {
+                      if (!run.link?.startsWith("#")) {
+                        return;
+                      }
+
+                      event.preventDefault();
+                      event.stopPropagation();
+                      scrollToBookmark(run.link.slice(1));
+                    }}
+                    style={textStyle}
+                  >
+                    {slice}
+                  </a>
+                ) : (
+                  <span
+                    key={`${keyPrefix}-dual-line-${lineIndex}-${run.key}-${overlapStart}`}
+                    style={textStyle}
+                  >
+                    {slice}
+                  </span>
+                );
+              })
+              .filter(Boolean);
+
+            return (
+              <span
+                key={`${keyPrefix}-dual-fragment-${lineIndex}-${fragment.startOffset}-${fragment.endOffset}`}
+                style={{
+                  position: "absolute",
+                  left: fragment.x,
+                  top: manualDualWrappedLayout.layout.lines[lineIndex]?.y ?? 0,
+                  display: "inline-block",
+                  whiteSpace: "pre",
+                  lineHeight: `${manualDualWrappedLayout.lineHeightPx}px`
+                }}
+              >
+                {pieces}
+              </span>
+            );
+          };
+
+          return (
+            <span
+              key={`${keyPrefix}-dual-wrap-manual`}
+              contentEditable={false}
+              style={{
+                display: "block",
+                position: "relative",
+                minHeight: manualDualWrappedLayout.layout.height
+              }}
+            >
+              {manualDualWrappedLayout.layout.lines.map((line, lineIndex) =>
+                line.fragments.map((fragment) => renderManualFragment(fragment, lineIndex))
+              )}
+              <span
+                contentEditable={false}
+                data-docx-image-location={manualImageKey}
+                style={{
+                  display: "inline-block",
+                  position: "absolute",
+                  left: manualDualWrappedLayout.geometry.imageLeftPx,
+                  top: manualDualWrappedLayout.geometry.imageTopPx,
+                  width: widthPx ? `${widthPx}px` : undefined,
+                  height: heightPx ? `${heightPx}px` : undefined,
+                  zIndex: 3
+                }}
+                onPointerDown={(event) =>
+                  isReadOnly
+                    ? undefined
+                    : beginFloatingImageMove(
+                        event,
+                        manualImageLocation,
+                        manualImage,
+                        true,
+                        false
+                      )
+                }
+                onClick={(event) => {
+                  event.stopPropagation();
+                  if (!isReadOnly) {
+                    setSelectedImage(manualImageLocation);
+                  }
+                }}
+                onContextMenu={(event) => {
+                  if (isReadOnly) {
+                    return;
+                  }
+
+                  event.preventDefault();
+                  event.stopPropagation();
+                  clearTableCellSelection();
+                  setSelectedSectionImageKey(undefined);
+                  setSelectedImage(manualImageLocation);
+                  openContextMenu(
+                    {
+                      kind: "image",
+                      activeTextRange: resolveActiveRangeFromDomSelection(),
+                      location: cloneTextRangeLocation(imageLocationToParagraphLocation(manualImageLocation)),
+                      image: {
+                        location: manualImageLocation,
+                        floating: manualImage.floating ? { ...manualImage.floating } : undefined
+                      }
+                    },
+                    {
+                      x: event.clientX,
+                      y: event.clientY
+                    }
+                  );
+                }}
+              >
+                {renderableImageSrc && !showsUnsupportedFallback ? (
+                  (() => {
+                    const cropLayout = imageCropLayout(manualImage, widthPx, heightPx);
+                    const imageVisualStyle: React.CSSProperties = {
+                      filter: manualImage.cssFilter,
+                      opacity: manualImage.cssOpacity
+                    };
+
+                    if (cropLayout) {
+                      return (
+                        <span
+                          style={{
+                            width: `${cropLayout.frameWidthPx}px`,
+                            height: `${cropLayout.frameHeightPx}px`,
+                            overflow: "hidden",
+                            display: "block"
+                          }}
+                        >
+                          <img
+                            src={renderableImageSrc}
+                            alt={manualImage.alt ?? "DOCX image"}
+                            draggable={false}
+                            style={{
+                              width: `${cropLayout.imageWidthPx}px`,
+                              height: `${cropLayout.imageHeightPx}px`,
+                              maxWidth: "none",
+                              verticalAlign: "middle",
+                              display: "block",
+                              transform: `translate(${-cropLayout.offsetXPx}px, ${-cropLayout.offsetYPx}px)`,
+                              cursor: isReadOnly ? "default" : "move",
+                              ...imageVisualStyle
+                            }}
+                          />
+                        </span>
+                      );
+                    }
+
+                    return (
+                      <img
+                        src={renderableImageSrc}
+                        alt={manualImage.alt ?? "DOCX image"}
+                        draggable={false}
+                        style={{
+                          width: widthPx ? `${widthPx}px` : undefined,
+                          height: heightPx ? `${heightPx}px` : undefined,
+                          verticalAlign: "middle",
+                          display: "block",
+                          cursor: isReadOnly ? "default" : "move",
+                          ...imageVisualStyle
+                        }}
+                      />
+                    );
+                  })()
+                ) : showsUnsupportedFallback ? (
+                  <span
+                    role="img"
+                    aria-label={manualImage.alt ?? "DOCX image"}
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      width: widthPx ? `${widthPx}px` : "1.8em",
+                      height: heightPx ? `${heightPx}px` : "1.8em",
+                      minWidth: 16,
+                      minHeight: 16,
+                      border: "1px solid #d1d5db",
+                      borderRadius: 3,
+                      backgroundColor: "#ffffff",
+                      color: "#0f172a",
+                      fontSize: (widthPx ?? 0) <= 56 && (heightPx ?? 0) <= 56 ? 12 : 10,
+                      fontWeight: 700,
+                      textTransform: "lowercase",
+                      fontFamily: "Arial, sans-serif",
+                      lineHeight: 1
+                    }}
+                  >
+                    {unsupportedImageFallbackLabel(manualImage, widthPx, heightPx)}
+                  </span>
+                ) : null}
+
+                {!isReadOnly && isSelectedImage ? (
+                  <>
+                    {[
+                      { key: "top-left", left: -5, top: -5, cursor: "nwse-resize", xDirection: -1, yDirection: -1 },
+                      { key: "top-right", right: -5, top: -5, cursor: "nesw-resize", xDirection: 1, yDirection: -1 },
+                      { key: "bottom-left", left: -5, bottom: -5, cursor: "nesw-resize", xDirection: -1, yDirection: 1 },
+                      { key: "bottom-right", right: -5, bottom: -5, cursor: "nwse-resize", xDirection: 1, yDirection: 1 }
+                    ].map((handle) => (
+                      <span
+                        key={`${keyPrefix}-dual-${handle.key}`}
+                        contentEditable={false}
+                        data-image-resize-handle="true"
+                        style={{
+                          position: "absolute",
+                          width: 10,
+                          height: 10,
+                          borderRadius: 3,
+                          border: "1px solid #d4d4d8",
+                          backgroundColor: "#ffffff",
+                          boxShadow: "0 1px 2px rgba(0, 0, 0, 0.14)",
+                          cursor: handle.cursor,
+                          ...(handle.left !== undefined ? { left: handle.left } : undefined),
+                          ...(handle.right !== undefined ? { right: handle.right } : undefined),
+                          ...(handle.top !== undefined ? { top: handle.top } : undefined),
+                          ...(handle.bottom !== undefined ? { bottom: handle.bottom } : undefined)
+                        }}
+                        onPointerDown={(event) => {
+                          beginImageResize(
+                            event,
+                            manualImageLocation,
+                            widthPx,
+                            heightPx,
+                            handle.xDirection as -1 | 1,
+                            handle.yDirection as -1 | 1
+                          );
+                        }}
+                      />
+                    ))}
+                  </>
+                ) : null}
+              </span>
+            </span>
+          );
+        }
       }
 
       if (numberingLabel) {
@@ -25330,7 +25927,7 @@ export function DocxEditorViewer({
           const isAbsoluteFloatingImage = shouldRenderAbsoluteFloatingImage(child);
           const dualWrapExclusionLayout = isWrappedFloatingImage
             ? wrappedFloatingImageDualExclusionLayout(child, {
-                containerWidthPx: documentContentWidthPx,
+                containerWidthPx: paragraphRenderTextWidthPx,
                 deltaX: movePreview?.deltaX ?? 0,
                 deltaY: movePreview?.deltaY ?? 0
               })
@@ -25345,7 +25942,7 @@ export function DocxEditorViewer({
           ));
           const floatingStyle: React.CSSProperties = isWrappedFloatingImage
             ? dualWrapExclusionLayout?.imageStyle ?? wrappedFloatingImageStyle(child, {
-                containerWidthPx: documentContentWidthPx,
+                containerWidthPx: paragraphRenderTextWidthPx,
                 deltaX: movePreview?.deltaX ?? 0,
                 deltaY: movePreview?.deltaY ?? 0
               })
@@ -26268,20 +26865,23 @@ export function DocxEditorViewer({
       const paragraphSegmentTranslateYPx = paragraphSegmentStartLine * paragraphSegmentLineHeightPx;
       const shouldTrackParagraphElement = !hasPartialLineRange || paragraphSegmentStartLine === 0;
       const isManualPageBreakParagraph = paragraphIsOnlyExplicitPageBreak(node);
+      const paragraphRenderTextWidthPx = paragraphAvailableTextWidthPx(
+        node,
+        documentContentWidthPx,
+        editor.model.metadata.numberingDefinitions
+      );
       const editable =
         !hasImage &&
         !isReadOnly &&
         !hasPartialLineRange &&
         !isManualPageBreakParagraph;
       const requiresPageAbsoluteContext = paragraphNeedsPageAnchoredAbsolutePositioningContext(node);
-      const hasDualWrappedFloatingImage = node.children.some(
-        (child) =>
-          child.type === "image" &&
-          Boolean(
-            wrappedFloatingImageDualExclusionLayout(child, {
-              containerWidthPx: documentContentWidthPx
-            })
-          )
+      const hasDualWrappedFloatingImage = Boolean(
+        resolveParagraphDualWrappedTextLayout(
+          node,
+          paragraphRenderTextWidthPx,
+          paragraphSegmentLineHeightPx
+        )
       );
       const beforeSpacingPx = effectiveParagraphBeforeSpacingPx(
         editor.model,
