@@ -166,6 +166,7 @@ const FLOATING_HEADER_FOOTER_CLEARANCE_BUFFER_PX = 18;
 const MEASURED_PAGE_FOOTER_CLEARANCE_BUFFER_PX = 24;
 const UNOVERLAPPED_FOOTER_MIN_CLEARANCE_PX = 16;
 const FLOATING_FOOTER_BASELINE_CLEARANCE_RESERVE_PX = 16;
+const PAGINATION_MEASUREMENT_INTERACTION_DEBOUNCE_MS = 180;
 const WORD_TABLE_CELL_PARAGRAPH_AUTO_LINE_TWIPS = 240;
 const WORD_TABLE_CELL_PARAGRAPH_AFTER_TWIPS = 0;
 const DEFAULT_SPLIT_PARAGRAPH_LINE_TWIPS = 259;
@@ -197,6 +198,21 @@ const LETTERHEAD_INDENT_MIN_TWIPS = 900;
 const LETTERHEAD_INDENT_MAX_TWIPS = 4200;
 const LETTERHEAD_MAX_TEXT_LENGTH = 96;
 const LETTERHEAD_FRAME_NEARBY_NODE_DISTANCE = 3;
+const ACTIVE_RANGE_SYNC_KEYS = new Set([
+  "ArrowLeft",
+  "ArrowRight",
+  "ArrowUp",
+  "ArrowDown",
+  "Home",
+  "End",
+  "PageUp",
+  "PageDown",
+  "Backspace",
+  "Delete",
+  "Enter",
+  "Tab"
+]);
+const MODIFIER_ONLY_KEYS = new Set(["Shift", "Control", "Meta", "Alt", "CapsLock"]);
 
 const paragraphBreakFlagsBySourceXml = new Map<
   string,
@@ -1258,6 +1274,87 @@ function sectionHasVisibleFooterContent(section: ResolvedDocumentSection): boole
   );
 }
 
+function resolveHeaderFooterAbsoluteFloatingTopPx(
+  image: ImageRunNode,
+  layout: Pick<DocumentLayoutMetrics, "marginsPx">
+): number | undefined {
+  if (!shouldRenderAbsoluteFloatingImage(image) || !image.floating) {
+    return undefined;
+  }
+
+  const floating = image.floating;
+  const verticalRelativeTo = floating.verticalRelativeTo?.trim().toLowerCase();
+  if (!Number.isFinite(floating.yPx)) {
+    return undefined;
+  }
+
+  if (verticalRelativeTo === "page") {
+    return Math.round(floating.yPx as number);
+  }
+
+  if (verticalRelativeTo === "margin") {
+    return Math.round((floating.yPx as number) + layout.marginsPx.top);
+  }
+
+  return undefined;
+}
+
+function resolveFooterParagraphFloatingBoundaryTopPx(
+  paragraph: ParagraphNode,
+  layout: Pick<DocumentLayoutMetrics, "marginsPx">
+): number | undefined {
+  if (!paragraphHasImage(paragraph)) {
+    return undefined;
+  }
+
+  let boundaryTopPx: number | undefined;
+
+  paragraph.children.forEach((child) => {
+    if (child.type !== "image" || !child.floating) {
+      return;
+    }
+
+    const imageTopPx = resolveHeaderFooterAbsoluteFloatingTopPx(child, layout);
+    if (!Number.isFinite(imageTopPx)) {
+      return;
+    }
+
+    const distTPx = Math.max(0, Math.round(child.floating.distTPx ?? 0));
+    const candidateTopPx = Math.max(0, Math.round((imageTopPx as number) - distTPx));
+    boundaryTopPx =
+      boundaryTopPx === undefined
+        ? candidateTopPx
+        : Math.min(boundaryTopPx, candidateTopPx);
+  });
+
+  return boundaryTopPx;
+}
+
+function resolveFooterNodesFloatingBoundaryTopPx(
+  footerNodes: DocModel["nodes"],
+  layout: Pick<DocumentLayoutMetrics, "marginsPx">
+): number | undefined {
+  let boundaryTopPx: number | undefined;
+
+  footerNodes.forEach((node) => {
+    if (node.type !== "paragraph") {
+      return;
+    }
+
+    const paragraphBoundaryTopPx = resolveFooterParagraphFloatingBoundaryTopPx(node, layout);
+    if (!Number.isFinite(paragraphBoundaryTopPx)) {
+      return;
+    }
+
+    boundaryTopPx =
+      boundaryTopPx === undefined
+        ? Math.round(paragraphBoundaryTopPx as number)
+        : Math.min(boundaryTopPx, Math.round(paragraphBoundaryTopPx as number));
+  });
+
+  return boundaryTopPx;
+}
+
 function estimateHeaderFooterParagraphFloatingReservePx(
   paragraph: ParagraphNode,
   layout: Pick<DocumentLayoutMetrics, "pageHeightPx" | "marginsPx">,
@@ -1270,48 +1367,44 @@ function estimateHeaderFooterParagraphFloatingReservePx(
   const nominalBodyTopPx = layout.marginsPx.top;
   const nominalBodyBottomPx = layout.pageHeightPx - layout.marginsPx.bottom;
 
+  if (region === "footer") {
+    const floatingBoundaryTopPx = resolveFooterParagraphFloatingBoundaryTopPx(paragraph, layout);
+    return Number.isFinite(floatingBoundaryTopPx)
+      ? Math.max(
+          0,
+          nominalBodyBottomPx -
+            Math.round(floatingBoundaryTopPx as number) +
+            FLOATING_HEADER_FOOTER_CLEARANCE_BUFFER_PX
+        )
+      : 0;
+  }
+
   return paragraph.children.reduce((largest, child) => {
     if (child.type !== "image" || !shouldRenderAbsoluteFloatingImage(child) || !child.floating) {
       return largest;
     }
 
     const floating = child.floating;
-    const verticalRelativeTo = floating.verticalRelativeTo?.trim().toLowerCase();
     const imageHeightPx =
       Number.isFinite(child.heightPx) && (child.heightPx as number) > 0
         ? Math.round(child.heightPx as number)
         : Number.isFinite(child.widthPx) && (child.widthPx as number) > 0
           ? Math.round(child.widthPx as number)
-          : MIN_PARAGRAPH_LINE_HEIGHT_PX;
+            : MIN_PARAGRAPH_LINE_HEIGHT_PX;
     const distTPx = Math.max(0, Math.round(floating.distTPx ?? 0));
     const distBPx = Math.max(0, Math.round(floating.distBPx ?? 0));
 
-    let topPx: number | undefined;
-    if (Number.isFinite(floating.yPx)) {
-      if (verticalRelativeTo === "page") {
-        topPx = Math.round(floating.yPx as number);
-      } else if (verticalRelativeTo === "margin") {
-        topPx = Math.round((floating.yPx as number) + layout.marginsPx.top);
-      }
-    }
-
+    const topPx = resolveHeaderFooterAbsoluteFloatingTopPx(child, layout);
     if (!Number.isFinite(topPx)) {
       return largest;
-    }
-
-    if (region === "header") {
-      const bottomPx = Math.round((topPx as number) + imageHeightPx + distTPx + distBPx);
-      return Math.max(
-        largest,
-        Math.max(0, bottomPx - nominalBodyTopPx + FLOATING_HEADER_FOOTER_CLEARANCE_BUFFER_PX)
-      );
     }
 
     return Math.max(
       largest,
       Math.max(
         0,
-        nominalBodyBottomPx - Math.round((topPx as number) - distTPx) +
+        Math.round((topPx as number) + imageHeightPx + distTPx + distBPx) -
+          nominalBodyTopPx +
           FLOATING_HEADER_FOOTER_CLEARANCE_BUFFER_PX
       )
     );
@@ -1425,6 +1518,23 @@ export function resolveFooterPaginationReservePx(
     return 0;
   }
 
+  const nominalBodyBottomPx = layout.pageHeightPx - layout.marginsPx.bottom;
+  const floatingFooterBoundaryTopPx = visibleFooterSections.reduce<number | undefined>(
+    (smallestTopPx, footerSection) => {
+      const sectionFloatingTopPx = resolveFooterNodesFloatingBoundaryTopPx(
+        footerSection.nodes ?? [],
+        layout
+      );
+      if (!Number.isFinite(sectionFloatingTopPx)) {
+        return smallestTopPx;
+      }
+
+      return smallestTopPx === undefined
+        ? Math.round(sectionFloatingTopPx as number)
+        : Math.min(smallestTopPx, Math.round(sectionFloatingTopPx as number));
+    },
+    undefined
+  );
   const hasFloatingFooterBodyIntrusionRisk = visibleFooterSections.some((footerSection) =>
     (footerSection.nodes ?? []).some(
       (node) =>
@@ -1436,15 +1546,26 @@ export function resolveFooterPaginationReservePx(
   const footerBodyOverlapPx =
     estimatedFooterHeightPx + layout.footerDistancePx - layout.marginsPx.bottom;
   const explicitFooterOverlapReservePx = Math.max(0, Math.round(footerBodyOverlapPx));
-  if (explicitFooterOverlapReservePx > 0) {
-    return explicitFooterOverlapReservePx;
-  }
+  const floatingFooterBoundaryReservePx = Number.isFinite(floatingFooterBoundaryTopPx)
+    ? Math.max(
+        0,
+        Math.round(
+          nominalBodyBottomPx -
+            Math.round(floatingFooterBoundaryTopPx as number) +
+            UNOVERLAPPED_FOOTER_MIN_CLEARANCE_PX
+        )
+      )
+    : 0;
 
   if (hasFloatingFooterBodyIntrusionRisk) {
-    return FLOATING_FOOTER_BASELINE_CLEARANCE_RESERVE_PX;
+    return Math.max(
+      explicitFooterOverlapReservePx,
+      floatingFooterBoundaryReservePx,
+      FLOATING_FOOTER_BASELINE_CLEARANCE_RESERVE_PX
+    );
   }
 
-  return 0;
+  return Math.max(explicitFooterOverlapReservePx, floatingFooterBoundaryReservePx);
 }
 
 export function resolveMeasuredPageContentHeightPx(params: {
@@ -3095,6 +3216,27 @@ function sectionNodesNeedPageWideLayout(
 
   return nodes.some((node) =>
     node.type === "paragraph" ? paragraphNeedsWideLayout(node) : tableNeedsWideLayout(node)
+  );
+}
+
+function sectionNodesNeedFullPageFooterOverlay(nodes: DocModel["nodes"]): boolean {
+  const paragraphNeedsFullPageFooterOverlay = (paragraph: ParagraphNode): boolean =>
+    paragraphHasPageAnchoredAbsoluteFloatingImage(paragraph);
+  const tableNeedsFullPageFooterOverlay = (table: TableNode): boolean =>
+    table.rows.some((row) =>
+      row.cells.some((cell) =>
+        cell.nodes.some((cellNode) =>
+          cellNode.type === "paragraph"
+            ? paragraphNeedsFullPageFooterOverlay(cellNode)
+            : tableNeedsFullPageFooterOverlay(cellNode)
+        )
+      )
+    );
+
+  return nodes.some((node) =>
+    node.type === "paragraph"
+      ? paragraphNeedsFullPageFooterOverlay(node)
+      : tableNeedsFullPageFooterOverlay(node)
   );
 }
 
@@ -6118,6 +6260,12 @@ function isPageOrMarginAnchoredAbsoluteFloatingImage(image: ImageRunNode): boole
 }
 
 function paragraphNeedsPageAnchoredAbsolutePositioningContext(paragraph: ParagraphNode): boolean {
+  return paragraph.children.some(
+    (child) => child.type === "image" && isPageOrMarginAnchoredAbsoluteFloatingImage(child)
+  );
+}
+
+function paragraphHasPageAnchoredAbsoluteFloatingImage(paragraph: ParagraphNode): boolean {
   return paragraph.children.some(
     (child) => child.type === "image" && isPageOrMarginAnchoredAbsoluteFloatingImage(child)
   );
@@ -12920,6 +13068,67 @@ function sameTextRange(a?: DocxTextRange, b?: DocxTextRange): boolean {
   );
 }
 
+function shouldSyncActiveRangeOnKeyUp(event: React.KeyboardEvent<HTMLElement>): boolean {
+  const nativeKeyboardEvent = event.nativeEvent as KeyboardEvent | undefined;
+  if (nativeKeyboardEvent?.isComposing) {
+    return false;
+  }
+
+  if (MODIFIER_ONLY_KEYS.has(event.key)) {
+    return false;
+  }
+
+  if (ACTIVE_RANGE_SYNC_KEYS.has(event.key)) {
+    return true;
+  }
+
+  if (event.ctrlKey || event.metaKey) {
+    const normalizedKey = event.key.toLowerCase();
+    return normalizedKey === "a" || normalizedKey === "x" || normalizedKey === "z" || normalizedKey === "y";
+  }
+
+  return false;
+}
+
+function isCollapsedSelectionAtElementStart(
+  element: HTMLElement,
+  range: Range,
+  pointX?: number
+): boolean {
+  if (!range.collapsed) {
+    return false;
+  }
+
+  if (range.startContainer === element && range.startOffset === 0) {
+    return true;
+  }
+
+  if (!element.contains(range.startContainer)) {
+    return false;
+  }
+
+  try {
+    const offsetProbe = document.createRange();
+    offsetProbe.selectNodeContents(element);
+    offsetProbe.setEnd(range.startContainer, range.startOffset);
+    const textOffset = offsetProbe.toString().length;
+    if (textOffset !== 0) {
+      return false;
+    }
+
+    if (Number.isFinite(pointX)) {
+      const elementRect = element.getBoundingClientRect();
+      if ((pointX as number) <= elementRect.left + 12) {
+        return false;
+      }
+    }
+
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function imageLocationToParagraphLocation(location: DocxImageLocation): ParagraphLocation {
   if (location.kind === "paragraph") {
     return {
@@ -14321,10 +14530,15 @@ export function useDocxEditor(options: UseDocxEditorOptions = {}): DocxEditorCon
   const setActiveTextRange = React.useCallback((range?: DocxTextRange): void => {
     const currentRange = cloneTextRange(activeTextRangeRef.current);
     if (!range) {
-      setActiveTextRangeState(undefined);
-      if (currentRange) {
-        setPendingRunStyle(undefined);
+      if (!currentRange) {
+        return;
       }
+
+      activeTextRangeRef.current = undefined;
+      React.startTransition(() => {
+        setActiveTextRangeState(undefined);
+      });
+      setPendingRunStyle(undefined);
       return;
     }
 
@@ -14339,12 +14553,19 @@ export function useDocxEditor(options: UseDocxEditorOptions = {}): DocxEditorCon
       }
     });
 
-    setActiveTextRangeState(normalized);
-    if (!sameTextRange(currentRange, normalized)) {
-      // Pending typing style should only survive while the caret stays in the
-      // same spot immediately after a toolbar style toggle.
-      setPendingRunStyle(undefined);
+    if (sameTextRange(currentRange, normalized)) {
+      return;
     }
+
+    const nextRange = cloneTextRange(normalized);
+    activeTextRangeRef.current = nextRange;
+    lastInViewerActiveTextRangeRef.current = cloneTextRange(nextRange);
+    React.startTransition(() => {
+      setActiveTextRangeState(cloneTextRange(nextRange));
+    });
+    // Pending typing style should only survive while the caret stays in the
+    // same spot immediately after a toolbar style toggle.
+    setPendingRunStyle(undefined);
   }, []);
 
   const applySelectedStyleChange = React.useCallback(
@@ -18245,6 +18466,8 @@ export function DocxEditorViewer({
   const previousBodyNodeCountRef = React.useRef<number>(editor.model.nodes.length);
   const fileDragDepthRef = React.useRef(0);
   const tableDraftLayoutRefreshRafRef = React.useRef<number | null>(null);
+  const activeRangeFlushFrameRef = React.useRef<number | null>(null);
+  const deferredCollapsedSelectionSyncTimeoutRef = React.useRef<number | null>(null);
 
   const [isDragOverCanvas, setIsDragOverCanvas] = React.useState(false);
   const [isDraggingImage, setIsDraggingImage] = React.useState(false);
@@ -18281,7 +18504,28 @@ export function DocxEditorViewer({
     number[]
   >([]);
   React.useEffect(() => {
+    // Import/new-document should start from a clean viewer layout state.
+    // Stale per-page/per-table measurements from a previous document can
+    // otherwise leak into pagination and footer placement.
     setMeasuredPageContentHeightByIndex([]);
+    setTableMeasuredRowHeights({});
+    setTableRowHeights({});
+    setTableColumnWidths({});
+    setEmbeddedTableColumnWidths({});
+    setEmbeddedTableRowHeights({});
+    setSelectedImage(undefined);
+    setSelectedSectionImageKey(undefined);
+    setResizePreview(undefined);
+    setFloatingMovePreview(undefined);
+    setActiveDropTarget(undefined);
+    setIsDraggingImage(false);
+    setActiveHeaderFooterEdit(undefined);
+    paragraphDraftsRef.current.clear();
+    tableCellDraftsRef.current.clear();
+    tableCellParagraphDraftsRef.current.clear();
+    sectionParagraphDraftsRef.current.clear();
+    pendingTableCellFocusRef.current = undefined;
+    pendingSectionParagraphFocusRef.current = undefined;
   }, [editor.documentLoadNonce]);
   const [activeRowResize, setActiveRowResize] = React.useState<
     { tableIndex: number; boundaryRowIndex: number } | undefined
@@ -18387,6 +18631,33 @@ export function DocxEditorViewer({
     (value: number) => value + 1,
     0
   );
+  const [paginationMeasurementEpoch, bumpPaginationMeasurementEpoch] = React.useReducer(
+    (value: number) => value + 1,
+    0
+  );
+  const paginationMeasurementSuspendUntilRef = React.useRef(0);
+  const paginationMeasurementResumeTimeoutRef = React.useRef<number | null>(null);
+
+  const schedulePaginationMeasurementResume = React.useCallback((delayMs?: number): void => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const safeDelayMs = Math.max(
+      48,
+      Math.round(delayMs ?? PAGINATION_MEASUREMENT_INTERACTION_DEBOUNCE_MS)
+    );
+    paginationMeasurementSuspendUntilRef.current = Date.now() + safeDelayMs;
+
+    if (paginationMeasurementResumeTimeoutRef.current !== null) {
+      window.clearTimeout(paginationMeasurementResumeTimeoutRef.current);
+    }
+
+    paginationMeasurementResumeTimeoutRef.current = window.setTimeout(() => {
+      paginationMeasurementResumeTimeoutRef.current = null;
+      bumpPaginationMeasurementEpoch();
+    }, safeDelayMs + 16);
+  }, []);
 
   const requestTableDraftLayoutRefresh = React.useCallback((): void => {
     if (typeof window === "undefined" || typeof window.requestAnimationFrame !== "function") {
@@ -18422,6 +18693,29 @@ export function DocxEditorViewer({
         window.cancelAnimationFrame(pendingHeaderFooterDeactivateFrameRef.current);
       }
       pendingHeaderFooterDeactivateFrameRef.current = null;
+      if (
+        paginationMeasurementResumeTimeoutRef.current !== null &&
+        typeof window !== "undefined"
+      ) {
+        window.clearTimeout(paginationMeasurementResumeTimeoutRef.current);
+      }
+      paginationMeasurementResumeTimeoutRef.current = null;
+      if (
+        activeRangeFlushFrameRef.current !== null &&
+        typeof window !== "undefined" &&
+        typeof window.cancelAnimationFrame === "function"
+      ) {
+        window.cancelAnimationFrame(activeRangeFlushFrameRef.current);
+      }
+      activeRangeFlushFrameRef.current = null;
+      if (
+        deferredCollapsedSelectionSyncTimeoutRef.current !== null &&
+        typeof window !== "undefined" &&
+        typeof window.clearTimeout === "function"
+      ) {
+        window.clearTimeout(deferredCollapsedSelectionSyncTimeoutRef.current);
+      }
+      deferredCollapsedSelectionSyncTimeoutRef.current = null;
     };
   }, []);
 
@@ -18729,10 +19023,19 @@ export function DocxEditorViewer({
         paginationSectionMetrics[metricsIndex]?.pageContentHeightPx ?? pageContentHeightPx;
       return (measuredHeightPx as number) < sectionHeightPx - 4;
     });
+    const hasPageAnchoredFloatingFooterContent = documentSections.some((section) =>
+      (section.footerSections ?? []).some((footerSection) =>
+        (footerSection.nodes ?? []).some(
+          (node) =>
+            node.type === "paragraph" && paragraphHasPageAnchoredAbsoluteFloatingImage(node)
+        )
+      )
+    );
     const allowStoredPageCountReconciliation =
       !editor.canUndo &&
       !editor.canRedo &&
-      !measuredPageHeightOverridesReduceContent;
+      !measuredPageHeightOverridesReduceContent &&
+      !hasPageAnchoredFloatingFooterContent;
     if (!allowStoredPageCountReconciliation) {
       return appendTrailingEndnotePage(estimatedPages);
     }
@@ -19067,6 +19370,9 @@ export function DocxEditorViewer({
   const [headerBodyClearanceByPage, setHeaderBodyClearanceByPage] = React.useState<
     Record<number, number>
   >({});
+  React.useEffect(() => {
+    setHeaderBodyClearanceByPage({});
+  }, [editor.documentLoadNonce]);
   const [trackedChangeCardHeightsByPage, setTrackedChangeCardHeightsByPage] = React.useState<
     Array<Map<string, number>>
   >([]);
@@ -19450,6 +19756,10 @@ export function DocxEditorViewer({
       return;
     }
 
+    if (Date.now() < paginationMeasurementSuspendUntilRef.current) {
+      return;
+    }
+
     const zoomScale = resolveEffectiveZoomScale(rootElement);
     const nextMeasuredHeights = pageNodeSegmentsByPage.map((_, pageIndex) => {
       const pageLayout = pageSectionInfoByIndex[pageIndex]?.layout ?? documentLayout;
@@ -19469,7 +19779,13 @@ export function DocxEditorViewer({
         ? Math.max(0, Math.round(headerElement.getBoundingClientRect().height / zoomScale))
         : 0;
 
-      let footerTopPx: number | undefined;
+      const docxFooterTopPx = resolveFooterNodesFloatingBoundaryTopPx(
+        pageHeaderAndFooterNodes[pageIndex]?.footerNodes ?? [],
+        pageLayout
+      );
+      let footerTopPx = Number.isFinite(docxFooterTopPx)
+        ? Math.round(docxFooterTopPx as number)
+        : undefined;
       if (footerElement) {
         const pageRect = pageElement.getBoundingClientRect();
         const maxOverflowCapPx = Math.max(
@@ -19480,7 +19796,15 @@ export function DocxEditorViewer({
           )
         );
         const footerFlowBoundaryTopPx = Math.max(0, pageLayout.pageHeightPx - Math.max(0, pageLayout.footerDistancePx));
-        const minimumRelevantFooterTopPx = Math.max(0, footerFlowBoundaryTopPx - maxOverflowCapPx);
+        const minimumRelevantFooterTopPx = Number.isFinite(docxFooterTopPx)
+          ? Math.max(
+              0,
+              Math.min(
+                Math.max(0, footerFlowBoundaryTopPx - maxOverflowCapPx),
+                Math.round((docxFooterTopPx as number) - maxOverflowCapPx)
+              )
+            )
+          : Math.max(0, footerFlowBoundaryTopPx - maxOverflowCapPx);
         let visualTop = Number.POSITIVE_INFINITY;
         footerElement.querySelectorAll<HTMLElement>("*").forEach((element) => {
           if (!element.isConnected) {
@@ -19501,7 +19825,10 @@ export function DocxEditorViewer({
         });
 
         if (Number.isFinite(visualTop)) {
-          footerTopPx = (visualTop - pageRect.top) / zoomScale;
+          const measuredFooterTopPx = (visualTop - pageRect.top) / zoomScale;
+          footerTopPx = Number.isFinite(footerTopPx)
+            ? Math.min(Math.round(footerTopPx as number), Math.round(measuredFooterTopPx))
+            : Math.round(measuredFooterTopPx);
         }
       }
 
@@ -19570,6 +19897,7 @@ export function DocxEditorViewer({
   }, [
     documentLayout,
     measuredPageContentHeightByIndex,
+    paginationMeasurementEpoch,
     pageCount,
     pageNodeSegmentsByPage,
     pageSectionInfoByIndex,
@@ -20083,6 +20411,14 @@ export function DocxEditorViewer({
         return;
       }
 
+      const collapseAtStart = (): void => {
+        const range = document.createRange();
+        range.selectNodeContents(element);
+        range.collapse(true);
+        selection.removeAllRanges();
+        selection.addRange(range);
+      };
+
       const collapseAtEnd = (): void => {
         const range = document.createRange();
         range.selectNodeContents(element);
@@ -20096,7 +20432,6 @@ export function DocxEditorViewer({
         return;
       }
 
-      let range: Range | undefined;
       const documentWithCaret = document as Document & {
         caretPositionFromPoint?: (
           x: number,
@@ -20108,23 +20443,177 @@ export function DocxEditorViewer({
         caretRangeFromPoint?: (x: number, y: number) => Range | null;
       };
 
-      if (typeof documentWithCaret.caretPositionFromPoint === "function") {
-        const position = documentWithCaret.caretPositionFromPoint(point.x, point.y);
-        if (position) {
-          range = document.createRange();
-          range.setStart(position.offsetNode, position.offset);
-          range.collapse(true);
+      const resolveCollapsedRangeAtPoint = (x: number, y: number): Range | undefined => {
+        let range: Range | undefined;
+        if (typeof documentWithCaret.caretPositionFromPoint === "function") {
+          const position = documentWithCaret.caretPositionFromPoint(x, y);
+          if (position) {
+            range = document.createRange();
+            range.setStart(position.offsetNode, position.offset);
+            range.collapse(true);
+          }
+        } else if (typeof documentWithCaret.caretRangeFromPoint === "function") {
+          const pointRange = documentWithCaret.caretRangeFromPoint(x, y);
+          if (pointRange) {
+            range = pointRange;
+            range.collapse(true);
+          }
         }
-      } else if (typeof documentWithCaret.caretRangeFromPoint === "function") {
-        const pointRange = documentWithCaret.caretRangeFromPoint(point.x, point.y);
-        if (pointRange) {
-          range = pointRange;
-          range.collapse(true);
+        return range;
+      };
+
+      const resolveRangeByNearestTextPosition = (x: number, y: number): Range | undefined => {
+        const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+        const caretProbe = document.createRange();
+        const glyphProbe = document.createRange();
+        let bestRange: Range | undefined;
+        let bestDistance = Number.POSITIVE_INFINITY;
+        let node: Node | null = walker.nextNode();
+
+        while (node) {
+          if (
+            node instanceof Text &&
+            node.parentElement?.closest("[data-docx-numbering-label='true']")
+          ) {
+            node = walker.nextNode();
+            continue;
+          }
+
+          if (!(node instanceof Text)) {
+            node = walker.nextNode();
+            continue;
+          }
+
+          const textLength = node.textContent?.length ?? 0;
+          for (let offset = 0; offset <= textLength; offset += 1) {
+            try {
+              caretProbe.setStart(node, offset);
+              caretProbe.collapse(true);
+            } catch {
+              continue;
+            }
+
+            let caretX = 0;
+            let rectTop = 0;
+            let rectBottom = 0;
+            if (textLength > 0) {
+              const glyphStart = Math.max(
+                0,
+                Math.min(textLength - 1, offset === textLength ? offset - 1 : offset)
+              );
+              const glyphEnd = Math.min(textLength, glyphStart + 1);
+              if (glyphEnd <= glyphStart) {
+                continue;
+              }
+
+              let glyphRect: DOMRect;
+              try {
+                glyphProbe.setStart(node, glyphStart);
+                glyphProbe.setEnd(node, glyphEnd);
+                glyphRect = glyphProbe.getBoundingClientRect();
+              } catch {
+                continue;
+              }
+
+              if (glyphRect.width === 0 && glyphRect.height === 0) {
+                continue;
+              }
+
+              caretX = offset === textLength ? glyphRect.right : glyphRect.left;
+              rectTop = glyphRect.top;
+              rectBottom = glyphRect.bottom;
+            } else {
+              const caretRect = caretProbe.getBoundingClientRect();
+              if (caretRect.width === 0 && caretRect.height === 0) {
+                continue;
+              }
+              caretX = caretRect.left;
+              rectTop = caretRect.top;
+              rectBottom = caretRect.bottom;
+            }
+
+            const dx = Math.abs(x - caretX);
+            const dy = y < rectTop ? rectTop - y : y > rectBottom ? y - rectBottom : 0;
+            const distance = dx * dx + dy * dy;
+            if (distance < bestDistance) {
+              bestDistance = distance;
+              bestRange = caretProbe.cloneRange();
+            }
+          }
+
+          node = walker.nextNode();
+        }
+
+        return bestRange;
+      };
+
+      let range = resolveCollapsedRangeAtPoint(point.x, point.y);
+      const elementRect = element.getBoundingClientRect();
+      // WebKit/Chromium can return the paragraph container itself (offset 0)
+      // when clicking around styled runs. Probe nearby x-positions to recover
+      // the nearest text-node caret instead of forcing insertion at line start.
+      if (range && range.startContainer === element) {
+        const MAX_DELTA = 36;
+        for (let delta = 1; delta <= MAX_DELTA; delta += 1) {
+          const candidates = [
+            resolveCollapsedRangeAtPoint(point.x + delta, point.y),
+            resolveCollapsedRangeAtPoint(point.x - delta, point.y),
+            resolveCollapsedRangeAtPoint(point.x, point.y + delta),
+            resolveCollapsedRangeAtPoint(point.x, point.y - delta),
+            resolveCollapsedRangeAtPoint(point.x + delta, point.y + delta),
+            resolveCollapsedRangeAtPoint(point.x - delta, point.y - delta),
+            resolveCollapsedRangeAtPoint(point.x + delta, point.y - delta),
+            resolveCollapsedRangeAtPoint(point.x - delta, point.y + delta)
+          ];
+          const resolvedCandidate = candidates.find(
+            (candidateRange) =>
+              candidateRange &&
+              element.contains(candidateRange.startContainer) &&
+              candidateRange.startContainer !== element
+          );
+          if (resolvedCandidate) {
+            range = resolvedCandidate;
+            break;
+          }
+        }
+      }
+
+      const suspiciousStartResolvedRange = Boolean(
+        range &&
+          range.collapsed &&
+          point.x > elementRect.left + 12 &&
+          ((range.startContainer === element && range.startOffset === 0) ||
+            (range.startContainer instanceof Text && range.startOffset === 0))
+      );
+      if (
+        !range ||
+        !element.contains(range.startContainer) ||
+        range.startContainer === element ||
+        suspiciousStartResolvedRange
+      ) {
+        const resolvedByGeometry = resolveRangeByNearestTextPosition(point.x, point.y);
+        if (resolvedByGeometry && element.contains(resolvedByGeometry.startContainer)) {
+          range = resolvedByGeometry;
         }
       }
 
       if (!range || !element.contains(range.startContainer)) {
-        collapseAtEnd();
+        const shouldCollapseAtStart = point.x <= elementRect.left + 12;
+        if (shouldCollapseAtStart) {
+          collapseAtStart();
+        } else {
+          collapseAtEnd();
+        }
+        return;
+      }
+
+      if (range.startContainer === element) {
+        const shouldCollapseAtStart = point.x <= elementRect.left + 12;
+        if (shouldCollapseAtStart) {
+          collapseAtStart();
+        } else {
+          collapseAtEnd();
+        }
         return;
       }
 
@@ -20769,10 +21258,31 @@ export function DocxEditorViewer({
   }, [clearTableCellSelection, editor, resolveActiveRangeFromDomSelection]);
 
   const flushActiveRangeFromSelection = React.useCallback((): void => {
-    window.requestAnimationFrame(() => {
+    if (deferredCollapsedSelectionSyncTimeoutRef.current !== null) {
+      window.clearTimeout(deferredCollapsedSelectionSyncTimeoutRef.current);
+      deferredCollapsedSelectionSyncTimeoutRef.current = null;
+    }
+
+    if (activeRangeFlushFrameRef.current !== null) {
+      return;
+    }
+
+    activeRangeFlushFrameRef.current = window.requestAnimationFrame(() => {
+      activeRangeFlushFrameRef.current = null;
       setActiveRangeFromSelection();
     });
   }, [setActiveRangeFromSelection]);
+
+  const scheduleDeferredCollapsedSelectionSync = React.useCallback((): void => {
+    if (deferredCollapsedSelectionSyncTimeoutRef.current !== null) {
+      window.clearTimeout(deferredCollapsedSelectionSyncTimeoutRef.current);
+    }
+
+    deferredCollapsedSelectionSyncTimeoutRef.current = window.setTimeout(() => {
+      deferredCollapsedSelectionSyncTimeoutRef.current = null;
+      flushActiveRangeFromSelection();
+    }, 80);
+  }, [flushActiveRangeFromSelection]);
 
   React.useEffect(() => {
     const restoreRequest = editor.historyRestoreRequest;
@@ -20939,11 +21449,30 @@ export function DocxEditorViewer({
       // can race those updates and cause transient flicker.
       const crossNodeDrag = tableSelectionDragRef.current;
       if (crossNodeDrag?.hasMoved) {
+        schedulePaginationMeasurementResume();
         return;
       }
 
       const tableCellDrag = tableCellSelectionDragRef.current;
       if (tableCellDrag?.isSelectingAcrossNodes || tableCellDrag?.isSelectingCells) {
+        schedulePaginationMeasurementResume();
+        return;
+      }
+
+      schedulePaginationMeasurementResume(
+        selectionRange.collapsed ? 120 : PAGINATION_MEASUREMENT_INTERACTION_DEBOUNCE_MS
+      );
+
+      const activeElement = document.activeElement;
+      const collapsedCaretInsideEditableHost = Boolean(
+        selectionRange.collapsed &&
+          activeElement instanceof HTMLElement &&
+          activeElement.isContentEditable &&
+          rootElement.contains(activeElement) &&
+          activeElement.contains(selectionRange.startContainer)
+      );
+      if (collapsedCaretInsideEditableHost) {
+        scheduleDeferredCollapsedSelectionSync();
         return;
       }
 
@@ -20954,7 +21483,11 @@ export function DocxEditorViewer({
     return () => {
       document.removeEventListener("selectionchange", handleSelectionChange);
     };
-  }, [editor, flushActiveRangeFromSelection]);
+  }, [
+    flushActiveRangeFromSelection,
+    scheduleDeferredCollapsedSelectionSync,
+    schedulePaginationMeasurementResume
+  ]);
 
   const beginCrossNodeSelectionDrag = React.useCallback(
     (startBoundary: DocxTextRangeBoundary, pointerId: number, startX: number, startY: number): void => {
@@ -21536,6 +22069,17 @@ export function DocxEditorViewer({
       selectAllDocumentText,
       syncSelectionFromDocxRange
     ]
+  );
+
+  const onViewerKeyUp = React.useCallback(
+    (event: React.KeyboardEvent<HTMLDivElement>): void => {
+      if (!shouldSyncActiveRangeOnKeyUp(event)) {
+        return;
+      }
+
+      flushActiveRangeFromSelection();
+    },
+    [flushActiveRangeFromSelection]
   );
 
   const handleDeleteAcrossSelection = React.useCallback(
@@ -23148,6 +23692,10 @@ export function DocxEditorViewer({
   );
 
   React.useLayoutEffect(() => {
+    if (Date.now() < paginationMeasurementSuspendUntilRef.current) {
+      return;
+    }
+
     const nextMeasuredHeights: Record<number, number[]> = {};
     tableElementsRef.current.forEach((tableContainer, tableIndex) => {
       const tableNode = editor.model.nodes[tableIndex];
@@ -23214,6 +23762,7 @@ export function DocxEditorViewer({
     });
   }, [
     editor.model.nodes,
+    paginationMeasurementEpoch,
     tableColumnWidths,
     tableRowHeights,
     tableDraftLayoutEpoch,
@@ -25935,19 +26484,21 @@ export function DocxEditorViewer({
             }
 
             const selection = window.getSelection();
+            const selectedRange =
+              selection && selection.rangeCount > 0 ? selection.getRangeAt(0) : undefined;
             const rangeInsideParagraph =
-              selection &&
-              selection.rangeCount > 0 &&
-              (() => {
-                const range = selection.getRangeAt(0);
-                return (
-                  event.currentTarget.contains(range.startContainer) ||
-                  event.currentTarget.contains(range.endContainer)
-                );
-              })();
-            // Some DOCX layouts (tabs/large spacing spans) can absorb clicks without
-            // moving DOM selection. In that case, place caret at the click point.
-            if (!rangeInsideParagraph) {
+              selectedRange &&
+              (event.currentTarget.contains(selectedRange.startContainer) ||
+                event.currentTarget.contains(selectedRange.endContainer));
+            const rangeCollapsedAtParagraphStart = Boolean(
+              selectedRange &&
+                isCollapsedSelectionAtElementStart(
+                  event.currentTarget,
+                  selectedRange,
+                  event.clientX
+                )
+            );
+            if (!rangeInsideParagraph || rangeCollapsedAtParagraphStart) {
               placeCaretInsideElement(event.currentTarget, {
                 x: event.clientX,
                 y: event.clientY
@@ -25962,10 +26513,32 @@ export function DocxEditorViewer({
               return;
             }
 
+            const selection = window.getSelection();
+            const selectedRange =
+              selection && selection.rangeCount > 0 ? selection.getRangeAt(0) : undefined;
+            const rangeInsideParagraph =
+              selectedRange &&
+              (event.currentTarget.contains(selectedRange.startContainer) ||
+                event.currentTarget.contains(selectedRange.endContainer));
+            const rangeCollapsedAtParagraphStart = Boolean(
+              selectedRange &&
+                isCollapsedSelectionAtElementStart(
+                  event.currentTarget,
+                  selectedRange,
+                  event.clientX
+                )
+            );
+            if (!rangeInsideParagraph || rangeCollapsedAtParagraphStart) {
+              placeCaretInsideElement(event.currentTarget, {
+                x: event.clientX,
+                y: event.clientY
+              });
+            }
+
             flushActiveRangeFromSelection();
           }}
           onKeyUp={(event) => {
-            if (!editable) {
+            if (!editable || !shouldSyncActiveRangeOnKeyUp(event)) {
               return;
             }
 
@@ -25979,6 +26552,7 @@ export function DocxEditorViewer({
               return;
             }
 
+            schedulePaginationMeasurementResume();
             paragraphDraftsRef.current.set(nodeIndex, event.currentTarget.innerHTML);
           }}
           onPaste={(event) => {
@@ -27274,6 +27848,7 @@ export function DocxEditorViewer({
                                   }
                                 }}
                                 onInput={(event) => {
+                                  schedulePaginationMeasurementResume();
                                   tableCellDraftsRef.current.set(cellDraftKey, event.currentTarget.innerHTML);
                                   requestTableDraftLayoutRefresh();
                                 }}
@@ -27327,18 +27902,28 @@ export function DocxEditorViewer({
                                     }, paragraphs[0]);
                                   })();
                                   const selection = window.getSelection();
+                                  const selectedRange =
+                                    selection && selection.rangeCount > 0
+                                      ? selection.getRangeAt(0)
+                                      : undefined;
                                   const rangeInsideParagraph =
-                                    selection &&
-                                    selection.rangeCount > 0 &&
+                                    selectedRange &&
                                     fallbackParagraph &&
-                                    (() => {
-                                      const range = selection.getRangeAt(0);
-                                      return (
-                                        fallbackParagraph.contains(range.startContainer) ||
-                                        fallbackParagraph.contains(range.endContainer)
-                                      );
-                                    })();
-                                  if (fallbackParagraph && !rangeInsideParagraph) {
+                                    (fallbackParagraph.contains(selectedRange.startContainer) ||
+                                      fallbackParagraph.contains(selectedRange.endContainer));
+                                  const rangeCollapsedAtParagraphStart = Boolean(
+                                    fallbackParagraph &&
+                                      selectedRange &&
+                                      isCollapsedSelectionAtElementStart(
+                                        fallbackParagraph,
+                                        selectedRange,
+                                        event.clientX
+                                      )
+                                  );
+                                  if (
+                                    fallbackParagraph &&
+                                    (!rangeInsideParagraph || rangeCollapsedAtParagraphStart)
+                                  ) {
                                     placeCaretInsideElement(fallbackParagraph, {
                                       x: event.clientX,
                                       y: event.clientY
@@ -27368,6 +27953,58 @@ export function DocxEditorViewer({
                                   tableCellDraftsRef.current.delete(cellDraftKey);
                                 }}
                                 onMouseUp={(event) => {
+                                  const paragraphSelector =
+                                    `[data-docx-paragraph-kind='table-cell']` +
+                                    `[data-docx-table-index='${nodeIndex}']` +
+                                    `[data-docx-row-index='${rowIndex}']` +
+                                    `[data-docx-cell-index='${cellIndex}']` +
+                                    `[data-docx-table-paragraph-index]`;
+                                  const selection = window.getSelection();
+                                  const selectedRange =
+                                    selection && selection.rangeCount > 0
+                                      ? selection.getRangeAt(0)
+                                      : undefined;
+                                  const paragraphElements = Array.from(
+                                    event.currentTarget.querySelectorAll<HTMLElement>(paragraphSelector)
+                                  );
+                                  const fallbackParagraph =
+                                    paragraphElements.length > 0
+                                      ? paragraphElements.reduce<HTMLElement>((closest, candidate) => {
+                                          const closestRect = closest.getBoundingClientRect();
+                                          const candidateRect = candidate.getBoundingClientRect();
+                                          const closestDistance = Math.abs(
+                                            event.clientY - (closestRect.top + closestRect.height / 2)
+                                          );
+                                          const candidateDistance = Math.abs(
+                                            event.clientY - (candidateRect.top + candidateRect.height / 2)
+                                          );
+                                          return candidateDistance < closestDistance ? candidate : closest;
+                                        }, paragraphElements[0])
+                                      : undefined;
+                                  const rangeInsideParagraph =
+                                    selectedRange &&
+                                    fallbackParagraph &&
+                                    (fallbackParagraph.contains(selectedRange.startContainer) ||
+                                      fallbackParagraph.contains(selectedRange.endContainer));
+                                  const rangeCollapsedAtParagraphStart = Boolean(
+                                    fallbackParagraph &&
+                                      selectedRange &&
+                                      isCollapsedSelectionAtElementStart(
+                                        fallbackParagraph,
+                                        selectedRange,
+                                        event.clientX
+                                      )
+                                  );
+                                  if (
+                                    fallbackParagraph &&
+                                    (!rangeInsideParagraph || rangeCollapsedAtParagraphStart)
+                                  ) {
+                                    placeCaretInsideElement(fallbackParagraph, {
+                                      x: event.clientX,
+                                      y: event.clientY
+                                    });
+                                  }
+
                                   updateActiveTextRangeFromTableCell(
                                     event.currentTarget,
                                     nodeIndex,
@@ -27376,6 +28013,10 @@ export function DocxEditorViewer({
                                   );
                                 }}
                                 onKeyUp={(event) => {
+                                  if (!shouldSyncActiveRangeOnKeyUp(event)) {
+                                    return;
+                                  }
+
                                   updateActiveTextRangeFromTableCell(
                                     event.currentTarget,
                                     nodeIndex,
@@ -28325,7 +28966,7 @@ export function DocxEditorViewer({
       onPointerLeave={onViewerPointerLeave}
       onMouseUp={flushActiveRangeFromSelection}
       onPointerUp={flushActiveRangeFromSelection}
-      onKeyUp={flushActiveRangeFromSelection}
+      onKeyUp={onViewerKeyUp}
       onKeyDownCapture={onViewerKeyDown}
       onContextMenu={onViewerContextMenu}
     >
@@ -28459,6 +29100,9 @@ export function DocxEditorViewer({
           pageLayout.pageWidthPx,
           pageContentWidthPx
         );
+        const footerNeedsFullPageOverlay = sectionNodesNeedFullPageFooterOverlay(
+          pageSections.footerNodes
+        );
         const headerOverlayTop = Math.max(0, pageLayout.headerDistancePx);
         const footerOverlayBottom = Math.max(0, pageLayout.footerDistancePx);
         const headerTopOffsetPx = headerOverlayTop - pageLayout.marginsPx.top;
@@ -28548,6 +29192,7 @@ export function DocxEditorViewer({
                     if (!pageHeaderFooterEditActive || !pageSections.headerPartName) {
                       return;
                     }
+                    schedulePaginationMeasurementResume();
                     updateSectionParagraphDraftFromTarget(event.target);
                   }}
                   onBlurCapture={(event) => {
@@ -28836,15 +29481,21 @@ export function DocxEditorViewer({
                   position: "absolute",
                   left: 0,
                   right: 0,
-                  top: 0,
-                  bottom: 0,
+                  ...(footerNeedsFullPageOverlay
+                    ? {
+                        top: 0,
+                        bottom: 0,
+                        alignContent: "end"
+                      }
+                    : {
+                        bottom: footerBottomOffsetPx
+                      }),
                   width: "100%",
                   maxWidth: "100%",
                   boxSizing: "border-box",
-                  alignContent: "end",
                   paddingLeft: footerNeedsPageWideLayout ? 0 : pageLayout.marginsPx.left,
                   paddingRight: footerNeedsPageWideLayout ? 0 : pageLayout.marginsPx.right,
-                  paddingBottom: footerBottomOffsetPx,
+                  paddingBottom: footerNeedsFullPageOverlay ? footerBottomOffsetPx : 0,
                   pointerEvents: isReadOnly || pageHeaderFooterEditActive ? "auto" : "none",
                   opacity: pageHeaderFooterEditActive || isReadOnly ? 1 : HEADER_FOOTER_INACTIVE_OPACITY,
                   transition: "opacity 120ms ease",
@@ -28863,6 +29514,7 @@ export function DocxEditorViewer({
                     if (!pageHeaderFooterEditActive || !pageSections.footerPartName) {
                       return;
                     }
+                    schedulePaginationMeasurementResume();
                     updateSectionParagraphDraftFromTarget(event.target);
                   }}
                   onBlurCapture={(event) => {

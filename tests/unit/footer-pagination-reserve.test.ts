@@ -36,6 +36,29 @@ function borderedFooterParagraph(text: string) {
   };
 }
 
+function floatingFooterImageParagraph(yPx: number, heightPx = 24) {
+  return {
+    type: "paragraph" as const,
+    style: undefined,
+    children: [
+      {
+        type: "image" as const,
+        src: "data:image/svg+xml;charset=utf-8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22120%22%20height%3D%2224%22%3E%3Crect%20width%3D%22120%22%20height%3D%2224%22%20fill%3D%22%23007acc%22%2F%3E%3C%2Fsvg%3E",
+        widthPx: 120,
+        heightPx,
+        floating: {
+          xPx: 96,
+          yPx,
+          horizontalRelativeTo: "page" as const,
+          verticalRelativeTo: "page" as const,
+          wrapType: "none" as const,
+          behindDocument: true,
+        },
+      },
+    ],
+  };
+}
+
 describe("footer pagination reserve", () => {
   it("reserves body height when footer content would rise into the bottom margin", () => {
     const footerSections: FooterSection[] = [
@@ -187,6 +210,29 @@ describe("footer pagination reserve", () => {
     expect(reserveWithRaisedFooter).toBe(reserveWithMatchingMargin + 24);
   });
 
+  it("uses page-relative footer anchor geometry from the footer part as reserve context", () => {
+    const footerSections: FooterSection[] = [
+      {
+        type: "default",
+        partName: "footer1.xml",
+        nodes: [floatingFooterImageParagraph(900)],
+      },
+    ];
+
+    expect(
+      resolveFooterPaginationReservePx(footerSections, {
+        pageWidthPx: 794,
+        pageHeightPx: 1100,
+        marginsPx: {
+          left: 45,
+          right: 45,
+          bottom: 96,
+        },
+        footerDistancePx: 48,
+      })
+    ).toBe(120);
+  });
+
   it("caps the measured page content budget at the visible footer boundary", () => {
     expect(
       resolveMeasuredPageContentHeightPx({
@@ -203,7 +249,7 @@ describe("footer pagination reserve", () => {
         bodyRenderedBottomPx: 960,
         footerTopPx: 960,
       })
-    ).toBe(820);
+    ).toBe(816);
   });
 
   it("shrinks the measured body budget further when rendered body content already overruns the footer", () => {
@@ -222,7 +268,7 @@ describe("footer pagination reserve", () => {
         bodyRenderedBottomPx: 970,
         footerTopPx: 960,
       })
-    ).toBe(810);
+    ).toBe(806);
   });
 
   it("continues shrinking a measured page budget when the same page still overruns the footer", () => {
@@ -242,7 +288,7 @@ describe("footer pagination reserve", () => {
         bodyRenderedBottomPx: 970,
         footerTopPx: 960,
       })
-    ).toBe(792);
+    ).toBe(788);
   });
 
   it("ignores editor chrome when measuring the rendered body bottom", () => {

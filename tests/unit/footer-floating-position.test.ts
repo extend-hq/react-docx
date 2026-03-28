@@ -23,6 +23,36 @@ function FooterViewer({
 }
 
 describe("footer floating positioning", () => {
+  it("anchors non-page-relative footer content to the page bottom instead of using a full-page overlay", () => {
+    const model = cloneDocModel(defaultStarterModel);
+    model.nodes = [
+      {
+        type: "paragraph",
+        children: [{ type: "text", text: "Body" }]
+      }
+    ];
+    model.metadata.footerSections = [
+      {
+        partName: "word/footer1.xml",
+        referenceType: "default",
+        nodes: [
+          {
+            type: "paragraph",
+            children: [{ type: "text", text: "Footer text" }]
+          }
+        ]
+      }
+    ];
+
+    const html = renderToStaticMarkup(React.createElement(FooterViewer, { model }));
+
+    expect(html).toContain('data-docx-header-footer-region="footer"');
+    expect(html).toContain(
+      'style="display:grid;gap:8px;position:absolute;left:0;right:0;bottom:56px;width:100%;max-width:100%;box-sizing:border-box;padding-left:56px;padding-right:56px;padding-bottom:0;pointer-events:auto;opacity:1;transition:opacity 120ms ease;outline:none;box-shadow:none;z-index:1" contentEditable="false" data-docx-header-footer-region="footer"'
+    );
+    expect(html).not.toContain('data-docx-header-footer-region="footer" style="display:grid;gap:8px;position:absolute;left:0;right:0;top:0;bottom:0');
+  });
+
   it("uses the page surface as the positioning space for page-relative footer images", () => {
     const model = cloneDocModel(defaultStarterModel);
     model.nodes = [
