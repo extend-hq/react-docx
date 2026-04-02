@@ -1481,11 +1481,16 @@ function estimateHeaderFooterParagraphFloatingReservePx(
       return largest;
     }
 
+    const resolvedTopPx = Math.round(topPx as number);
+    if (resolvedTopPx >= nominalBodyTopPx) {
+      return largest;
+    }
+
     return Math.max(
       largest,
       Math.max(
         0,
-        Math.round((topPx as number) + imageHeightPx + distTPx + distBPx) -
+        resolvedTopPx + imageHeightPx + distTPx + distBPx -
           nominalBodyTopPx +
           FLOATING_HEADER_FOOTER_CLEARANCE_BUFFER_PX
       )
@@ -1658,6 +1663,7 @@ export function resolveMeasuredPageContentHeightPx(params: {
   bodyTopPx?: number;
   bodyRenderedBottomPx?: number;
   footerTopPx?: number;
+  skipBodyBottomAdjustment?: boolean;
 }): number {
   const {
     pageLayout,
@@ -1666,8 +1672,15 @@ export function resolveMeasuredPageContentHeightPx(params: {
     currentMeasuredHeightPx,
     bodyTopPx,
     bodyRenderedBottomPx,
-    footerTopPx
+    footerTopPx,
+    skipBodyBottomAdjustment = false
   } = params;
+  const effectiveBodyRenderedBottomPx = skipBodyBottomAdjustment
+    ? undefined
+    : bodyRenderedBottomPx;
+  const effectiveCurrentMeasuredHeightPx = skipBodyBottomAdjustment
+    ? undefined
+    : currentMeasuredHeightPx;
 
   const nominalBodyBottomPx = pageLayout.pageHeightPx - pageLayout.marginsPx.bottom;
   const footerOverlapPx = Number.isFinite(footerTopPx)
@@ -1681,11 +1694,17 @@ export function resolveMeasuredPageContentHeightPx(params: {
   const guardedAllowedBodyBottomPx = Number.isFinite(hardFooterBottomLimitPx)
     ? Math.min(allowedBodyBottomPx, hardFooterBottomLimitPx as number)
     : allowedBodyBottomPx;
-  const renderedBodyOverrunPx = Number.isFinite(bodyRenderedBottomPx)
-    ? Math.max(0, Math.round((bodyRenderedBottomPx as number) - guardedAllowedBodyBottomPx))
+  const renderedBodyOverrunPx = Number.isFinite(effectiveBodyRenderedBottomPx)
+    ? Math.max(
+        0,
+        Math.round((effectiveBodyRenderedBottomPx as number) - guardedAllowedBodyBottomPx)
+      )
     : 0;
-  const measuredBodyToFooterGapPx = Number.isFinite(bodyRenderedBottomPx)
-    ? Math.max(0, Math.round(guardedAllowedBodyBottomPx - (bodyRenderedBottomPx as number)))
+  const measuredBodyToFooterGapPx = Number.isFinite(effectiveBodyRenderedBottomPx)
+    ? Math.max(
+        0,
+        Math.round(guardedAllowedBodyBottomPx - (effectiveBodyRenderedBottomPx as number))
+      )
     : undefined;
   const measuredFooterClearanceBufferPx =
     Number.isFinite(footerTopPx) && Number.isFinite(measuredBodyToFooterGapPx)
@@ -1702,12 +1721,12 @@ export function resolveMeasuredPageContentHeightPx(params: {
   );
   const iterativeMeasuredHeightPx =
     renderedBodyOverrunPx > 0 &&
-    Number.isFinite(currentMeasuredHeightPx) &&
-    (currentMeasuredHeightPx as number) > 0
+    Number.isFinite(effectiveCurrentMeasuredHeightPx) &&
+    (effectiveCurrentMeasuredHeightPx as number) > 0
       ? Math.max(
           120,
           Math.round(
-            (currentMeasuredHeightPx as number) -
+            (effectiveCurrentMeasuredHeightPx as number) -
               renderedBodyOverrunPx -
               measuredFooterClearanceBufferPx
           )
@@ -3156,6 +3175,30 @@ function paragraphIsFloatingImageAnchorOnly(paragraph: ParagraphNode): boolean {
   }
 
   return hasFloatingImage;
+}
+
+function paragraphIsAbsoluteFloatingImageAnchorOnly(paragraph: ParagraphNode): boolean {
+  if (paragraphHasVisibleText(paragraph) || paragraphHasFormField(paragraph)) {
+    return false;
+  }
+
+  let hasAbsoluteFloatingImage = false;
+  for (const child of paragraph.children) {
+    if (child.type === "text") {
+      if (child.text.trim().length > 0) {
+        return false;
+      }
+      continue;
+    }
+
+    if (child.type !== "image" || !shouldRenderAbsoluteFloatingImage(child)) {
+      return false;
+    }
+
+    hasAbsoluteFloatingImage = true;
+  }
+
+  return hasAbsoluteFloatingImage;
 }
 
 function paragraphNeedsPageWidthAnchorHost(
@@ -4900,26 +4943,10 @@ function estimateAbsoluteFloatingImageFootprintPx(
     return 0;
   }
 
-  const verticalRelativeTo = floating.verticalRelativeTo?.trim().toLowerCase();
-  const lineAnchored = verticalRelativeTo === "line" || verticalRelativeTo === "paragraph";
-  if (!lineAnchored && paragraphHasVisibleText(paragraph)) {
-    return 0;
-  }
-
-  const imageHeightPx =
-    Number.isFinite(image.heightPx) && (image.heightPx as number) > 0
-      ? Math.round(image.heightPx as number)
-      : Number.isFinite(image.widthPx) && (image.widthPx as number) > 0
-        ? Math.round(image.widthPx as number)
-        : MIN_PARAGRAPH_LINE_HEIGHT_PX;
-  const distTPx = Math.max(0, Math.round(floating.distTPx ?? 0));
-  const distBPx = Math.max(0, Math.round(floating.distBPx ?? 0));
-  const verticalOffsetPx = Math.max(0, Math.round(floating.yPx ?? 0));
-
-  return Math.max(
-    MIN_PARAGRAPH_LINE_HEIGHT_PX,
-    imageHeightPx + distTPx + distBPx + verticalOffsetPx
-  );
+  // Word treats absolute wrapNone anchors as overlay content, even when the
+  // object is paragraph/line anchored and moves with text. They should not add
+  // synthetic flow height to the anchor paragraph.
+  return 0;
 }
 
 function resolveAutoLineSpacingMultiple(
@@ -5116,6 +5143,9 @@ function estimateParagraphHeightPx(
     availableWidthPx,
     numberingDefinitions
   );
+  const absoluteFloatingAnchorOnlyParagraph = paragraphIsAbsoluteFloatingImageAnchorOnly(
+    paragraph
+  );
   const inlineImageHeightPx = paragraph.children.reduce((largest, child) => {
     if (child.type !== "image") {
       return largest;
@@ -5145,10 +5175,13 @@ function estimateParagraphHeightPx(
     : 0;
   const topBorderInsetPx = paragraphBorderInsetPx(paragraph.style?.borders?.top);
   const bottomBorderInsetPx = paragraphBorderInsetPx(paragraph.style?.borders?.bottom);
+  const textFlowHeightPx = absoluteFloatingAnchorOnlyParagraph
+    ? 0
+    : dualWrappedLayout?.layout.height ?? lineHeightPx * lineCount;
 
   const contentHeightPx = Math.max(
-    lineHeightPx,
-    dualWrappedLayout?.layout.height ?? lineHeightPx * lineCount,
+    absoluteFloatingAnchorOnlyParagraph ? 0 : lineHeightPx,
+    textFlowHeightPx,
     inlineImageHeightPx,
     wrappedFloatingImageHeightPx,
     absoluteFloatingImageHeightPx,
@@ -5852,7 +5885,7 @@ function fitTableRowsWithinHeightPx(
   return rowCursor;
 }
 
-function buildDocumentPageNodeSegments(
+export function buildDocumentPageNodeSegments(
   model: DocModel,
   pageContentHeightPx: number,
   pageContentWidthPx: number,
@@ -5913,7 +5946,6 @@ function buildDocumentPageNodeSegments(
     currentPageSegments = [];
     currentPageIndex += 1;
   };
-
   if (!Number.isFinite(pageContentHeightPx) || pageContentHeightPx <= 0) {
     return [model.nodes.map((_, nodeIndex) => ({ nodeIndex }))];
   }
@@ -20602,6 +20634,10 @@ export function DocxEditorViewer({
       const bodyTopPx = bodyRect
         ? Math.max(0, Math.round((bodyRect.top - pageRect.top) / zoomScale))
         : undefined;
+      const bodyImageCount = bodyElement?.querySelectorAll("[data-docx-image-location]").length ?? 0;
+      const bodyTextTrimmedLength =
+        bodyElement?.textContent?.replace(/\s+/g, "").length ?? 0;
+      const skipBodyBottomAdjustment = bodyImageCount > 0 && bodyTextTrimmedLength === 0;
       const visualBodyBottom = bodyElement && bodyRect
         ? resolveMeasuredBodyRenderedBottomPx(
             Array.from(bodyElement.querySelectorAll<HTMLElement>("*")).map((element) => {
@@ -20630,7 +20666,8 @@ export function DocxEditorViewer({
         currentMeasuredHeightPx: measuredPageContentHeightByIndex?.[pageIndex],
         bodyTopPx,
         bodyRenderedBottomPx,
-        footerTopPx
+        footerTopPx,
+        skipBodyBottomAdjustment
       });
     });
 

@@ -291,6 +291,26 @@ describe("footer pagination reserve", () => {
     ).toBe(788);
   });
 
+  it("does not shrink image-only body pages based on a sparse measured body bottom", () => {
+    expect(
+      resolveMeasuredPageContentHeightPx({
+        pageLayout: {
+          pageHeightPx: 1123,
+          marginsPx: {
+            bottom: 96
+          },
+          footerDistancePx: 19
+        },
+        fallbackHeightPx: 931,
+        headerHeightPx: 0,
+        bodyTopPx: 96,
+        bodyRenderedBottomPx: 170,
+        footerTopPx: 1093,
+        skipBodyBottomAdjustment: true
+      })
+    ).toBe(931);
+  });
+
   it("ignores editor chrome when measuring the rendered body bottom", () => {
     expect(
       resolveMeasuredBodyRenderedBottomPx([

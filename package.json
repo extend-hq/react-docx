@@ -18,6 +18,7 @@
     "test:docx-regression": "pnpm run test:docx-regression:visual",
     "test:docx-regression:visual": "playwright test tests/visual/docx-regression.spec.ts --pass-with-no-tests",
     "test:docx-regression:update": "pnpm run test:docx-regression:visual --update-snapshots",
+    "test:docx-ground-truth:local": "node scripts/check-local-docx-visual-fidelity.mjs",
     "changeset": "changeset",
     "version-packages": "changeset version",
     "publish-packages": "changeset publish"
