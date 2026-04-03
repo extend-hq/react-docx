@@ -4758,7 +4758,10 @@ function sectionTitlePageEnabled(sectionPropertiesXml?: string): boolean {
 function selectSectionVariantForPage<T extends HeaderSection | FooterSection>(
   sections: T[],
   sectionPropertiesXml: string | undefined,
-  pageIndex: number
+  pageIndex: number,
+  options?: {
+    evenAndOddHeaders?: boolean;
+  }
 ): T | undefined {
   if (sections.length === 0) {
     return undefined;
@@ -4772,6 +4775,7 @@ function selectSectionVariantForPage<T extends HeaderSection | FooterSection>(
     return referenceType === "default" || referenceType === "";
   });
   const even = sections.find((section) => normalizeType(section.referenceType) === "even");
+  const evenAndOddHeadersEnabled = options?.evenAndOddHeaders ?? true;
 
   const safePageIndex = Number.isFinite(pageIndex) ? Math.max(0, Math.round(pageIndex)) : 0;
   const oddPageNumber = safePageIndex % 2 === 0;
@@ -4780,7 +4784,7 @@ function selectSectionVariantForPage<T extends HeaderSection | FooterSection>(
     return first;
   }
 
-  if (!oddPageNumber && even) {
+  if (evenAndOddHeadersEnabled && !oddPageNumber && even) {
     return even;
   }
 
@@ -7515,6 +7519,8 @@ export function absoluteFloatingImageStyle(
   options?: {
     pageOriginLeft?: number;
     pageOriginTop?: number;
+    columnOriginLeft?: number;
+    columnOriginTop?: number;
     deltaX?: number;
     deltaY?: number;
   }
@@ -7552,12 +7558,16 @@ export function absoluteFloatingImageStyle(
     floating.xPx !== undefined
       ? horizontalRelativeTo === "margin"
         ? floating.xPx + (options?.pageOriginLeft ?? 0)
+        : horizontalRelativeTo === "column"
+          ? floating.xPx + (options?.columnOriginLeft ?? 0)
         : floating.xPx
       : undefined;
   const resolvedTop =
     floating.yPx !== undefined
       ? verticalRelativeTo === "margin"
         ? floating.yPx + (options?.pageOriginTop ?? 0)
+        : verticalRelativeTo === "column"
+          ? floating.yPx + (options?.columnOriginTop ?? 0)
         : floating.yPx
       : undefined;
 
@@ -10236,6 +10246,8 @@ function renderParagraphRuns(
   floatingPageOriginPx?: {
     left: number;
     top: number;
+    columnLeft?: number;
+    columnTop?: number;
     pageWidth?: number;
   },
   noteMarkerIndexes?: {
@@ -10633,6 +10645,8 @@ function renderParagraphRuns(
           ? absoluteFloatingImageStyle(child, {
               pageOriginLeft: floatingPageOriginPx?.left,
               pageOriginTop: floatingPageOriginPx?.top,
+              columnOriginLeft: floatingPageOriginPx?.columnLeft ?? floatingPageOriginPx?.left,
+              columnOriginTop: floatingPageOriginPx?.columnTop ?? floatingPageOriginPx?.top,
               deltaX: (movePreview?.deltaX ?? 0) + horizontalAnchorCorrectionPx,
               deltaY: movePreview?.deltaY ?? 0
             })
@@ -19569,6 +19583,8 @@ function renderHeaderNode(
   floatingPageOriginPx?: {
     left: number;
     top: number;
+    columnLeft?: number;
+    columnTop?: number;
     pageWidth?: number;
   },
   noteMarkerIndexes: {
@@ -22018,15 +22034,23 @@ export function DocxEditorViewer({
         const sectionPropertiesXml =
           sectionInfo?.section.sectionPropertiesXml ?? editor.model.metadata.sectionPropertiesXml;
         const sectionPageIndex = sectionInfo?.pageIndexWithinSection ?? pageIndex;
+        const evenAndOddHeadersEnabled =
+          editor.model.metadata.compatibility?.evenAndOddHeaders === true;
         const headerSection = selectSectionVariantForPage(
           sectionHeaderSections,
           sectionPropertiesXml,
-          sectionPageIndex
+          sectionPageIndex,
+          {
+            evenAndOddHeaders: evenAndOddHeadersEnabled
+          }
         );
         const footerSection = selectSectionVariantForPage(
           sectionFooterSections,
           sectionPropertiesXml,
-          sectionPageIndex
+          sectionPageIndex,
+          {
+            evenAndOddHeaders: evenAndOddHeadersEnabled
+          }
         );
 
         const paragraphHasVisibleBorder = (paragraph: ParagraphNode): boolean =>
@@ -29870,6 +29894,8 @@ export function DocxEditorViewer({
           const floatingStyle = absoluteFloatingImageStyle(manualImage, {
             pageOriginLeft: interactiveBodyFloatingPageOriginPx?.left ?? 0,
             pageOriginTop: interactiveBodyFloatingPageOriginPx?.top ?? 0,
+            columnOriginLeft: interactiveBodyFloatingPageOriginPx?.left ?? 0,
+            columnOriginTop: interactiveBodyFloatingPageOriginPx?.top ?? 0,
             deltaX: movePreview?.deltaX ?? 0,
             deltaY: movePreview?.deltaY ?? 0
           });
@@ -30155,6 +30181,8 @@ export function DocxEditorViewer({
               ? absoluteFloatingImageStyle(child, {
                   pageOriginLeft: interactiveBodyFloatingPageOriginPx?.left ?? 0,
                   pageOriginTop: interactiveBodyFloatingPageOriginPx?.top ?? 0,
+                  columnOriginLeft: interactiveBodyFloatingPageOriginPx?.left ?? 0,
+                  columnOriginTop: interactiveBodyFloatingPageOriginPx?.top ?? 0,
                   deltaX: movePreview?.deltaX ?? 0,
                   deltaY: movePreview?.deltaY ?? 0
                 })
@@ -34756,6 +34784,8 @@ export function DocxEditorViewer({
                     {
                       left: pageLayout.marginsPx.left,
                       top: pageLayout.marginsPx.top,
+                      columnLeft: pageLayout.marginsPx.left,
+                      columnTop: pageLayout.marginsPx.top,
                       pageWidth: pageLayout.pageWidthPx
                     },
                     {
@@ -35079,6 +35109,8 @@ export function DocxEditorViewer({
 	                    {
 	                      left: footerNeedsPageWideLayout ? 0 : pageLayout.marginsPx.left,
 	                      top: pageLayout.marginsPx.top,
+                        columnLeft: pageLayout.marginsPx.left,
+                        columnTop: pageLayout.marginsPx.top,
 	                      pageWidth: pageLayout.pageWidthPx
 	                    },
                     {

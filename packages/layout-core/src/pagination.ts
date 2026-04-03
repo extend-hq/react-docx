@@ -343,7 +343,10 @@ export function sectionTitlePageEnabled(sectionPropertiesXml?: string): boolean 
 export function selectSectionVariantForPage<T extends HeaderSection | FooterSection>(
   sections: T[],
   sectionPropertiesXml: string | undefined,
-  pageIndex: number
+  pageIndex: number,
+  options?: {
+    evenAndOddHeaders?: boolean;
+  }
 ): T | undefined {
   if (sections.length === 0) {
     return undefined;
@@ -357,6 +360,7 @@ export function selectSectionVariantForPage<T extends HeaderSection | FooterSect
     return referenceType === "default" || referenceType === "";
   });
   const even = sections.find((section) => normalizeType(section.referenceType) === "even");
+  const evenAndOddHeadersEnabled = options?.evenAndOddHeaders ?? true;
 
   const safePageIndex = Number.isFinite(pageIndex) ? Math.max(0, Math.round(pageIndex)) : 0;
   const oddPageNumber = safePageIndex % 2 === 0;
@@ -365,7 +369,7 @@ export function selectSectionVariantForPage<T extends HeaderSection | FooterSect
     return first;
   }
 
-  if (!oddPageNumber && even) {
+  if (evenAndOddHeadersEnabled && !oddPageNumber && even) {
     return even;
   }
 

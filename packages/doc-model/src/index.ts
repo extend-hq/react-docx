@@ -459,6 +459,7 @@ export interface DocumentCompatibilitySettings {
   useFixedHtmlParagraphSpacing?: boolean;
   doNotBreakWrappedTables?: boolean;
   doNotBreakConstrainedForcedTable?: boolean;
+  evenAndOddHeaders?: boolean;
 }
 
 export interface DocModel {
@@ -6419,13 +6420,15 @@ function parseDocumentCompatibilitySettings(
     "doNotBreakConstrainedForcedTable",
     "dontBreakConstrainedForcedTable"
   ]);
+  const evenAndOddHeaders = parseFirstOnOffSetting(settingsXml, ["evenAndOddHeaders"]);
 
   if (
     suppressSpacingBeforeAfterPageBreak === undefined &&
     usePrinterMetrics === undefined &&
     useFixedHtmlParagraphSpacing === undefined &&
     doNotBreakWrappedTables === undefined &&
-    doNotBreakConstrainedForcedTable === undefined
+    doNotBreakConstrainedForcedTable === undefined &&
+    evenAndOddHeaders === undefined
   ) {
     return undefined;
   }
@@ -6435,7 +6438,8 @@ function parseDocumentCompatibilitySettings(
     usePrinterMetrics,
     useFixedHtmlParagraphSpacing,
     doNotBreakWrappedTables,
-    doNotBreakConstrainedForcedTable
+    doNotBreakConstrainedForcedTable,
+    evenAndOddHeaders
   };
 }
 

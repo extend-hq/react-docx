@@ -354,6 +354,16 @@ describe("layout-core", () => {
     ).toBe("header-default");
     expect(
       selectSectionVariantForPage(
+        headerSections,
+        `<w:sectPr><w:titlePg/></w:sectPr>`,
+        1,
+        {
+          evenAndOddHeaders: false
+        }
+      )?.partName
+    ).toBe("header-default");
+    expect(
+      selectSectionVariantForPage(
         headerSections.filter((section) => section.referenceType !== "first"),
         `<w:sectPr><w:titlePg/></w:sectPr>`,
         0
