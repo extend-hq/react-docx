@@ -172,6 +172,46 @@ describe("editor-ops", () => {
     });
   });
 
+  it("preserves inline images when updating paragraph text around them", () => {
+    const model: DocModel = {
+      nodes: [
+        {
+          type: "paragraph",
+          children: [
+            { type: "text", text: "Before " },
+            {
+              type: "image",
+              src: "data:image/png;base64,abc",
+              widthPx: 64,
+              heightPx: 64
+            },
+            { type: "text", text: " after" }
+          ]
+        }
+      ],
+      metadata: {
+        sourceParts: 1,
+        warnings: [],
+        headerSections: [],
+        footerSections: [],
+        paragraphStyles: [],
+        defaultParagraphStyleId: "Normal"
+      }
+    };
+
+    const edited = updateParagraphText(model, 0, "Before inserted after");
+    const paragraph = edited.nodes[0];
+    expect(paragraph.type).toBe("paragraph");
+    if (paragraph.type !== "paragraph") {
+      return;
+    }
+
+    expect(paragraph.children).toHaveLength(3);
+    expect(paragraph.children[0]).toMatchObject({ type: "text", text: "Before inserted" });
+    expect(paragraph.children[1]).toMatchObject({ type: "image", widthPx: 64, heightPx: 64 });
+    expect(paragraph.children[2]).toMatchObject({ type: "text", text: " after" });
+  });
+
   it("updates all table-cell paragraphs without duplicating text into the first paragraph", () => {
     const model: DocModel = {
       nodes: [

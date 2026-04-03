@@ -381,6 +381,86 @@ function distributeTextAcrossParagraphChildren(
   }
   textGroups.push(currentGroup);
 
+  const allAnchorsAreImages = anchors.length > 0 && anchors.every((anchor) => anchor.type === "image");
+  if (allAnchorsAreImages) {
+    const originalSegmentTexts = textGroups.map((group) => group.map((run) => run.text).join(""));
+    const originalText = originalSegmentTexts.join("");
+    const originalAnchorOffsets: number[] = [];
+    let originalOffsetCursor = 0;
+    for (let index = 0; index < anchors.length; index += 1) {
+      originalOffsetCursor += originalSegmentTexts[index]?.length ?? 0;
+      originalAnchorOffsets.push(originalOffsetCursor);
+    }
+
+    const prefixLength = (() => {
+      const limit = Math.min(originalText.length, text.length);
+      let index = 0;
+      while (index < limit && originalText[index] === text[index]) {
+        index += 1;
+      }
+      return index;
+    })();
+    const suffixLength = (() => {
+      const remainingOriginal = originalText.length - prefixLength;
+      const remainingNext = text.length - prefixLength;
+      const limit = Math.min(remainingOriginal, remainingNext);
+      let index = 0;
+      while (
+        index < limit &&
+        originalText[originalText.length - 1 - index] === text[text.length - 1 - index]
+      ) {
+        index += 1;
+      }
+      return index;
+    })();
+    const replacedOriginalStart = prefixLength;
+    const replacedOriginalEnd = Math.max(replacedOriginalStart, originalText.length - suffixLength);
+    const replacedNextEnd = Math.max(replacedOriginalStart, text.length - suffixLength);
+    const delta = replacedNextEnd - replacedOriginalEnd;
+    const remappedAnchorOffsets = originalAnchorOffsets.map((anchorOffset) => {
+      if (anchorOffset < replacedOriginalStart) {
+        return anchorOffset;
+      }
+      if (anchorOffset >= replacedOriginalEnd) {
+        return anchorOffset + delta;
+      }
+      return replacedOriginalStart;
+    });
+
+    const segments: string[] = [];
+    let cursor = 0;
+    remappedAnchorOffsets.forEach((anchorOffset) => {
+      const safeAnchorOffset = Math.max(cursor, Math.min(anchorOffset, text.length));
+      segments.push(text.slice(cursor, safeAnchorOffset));
+      cursor = safeAnchorOffset;
+    });
+    segments.push(text.slice(cursor));
+
+    const nextChildren: ParagraphNode["children"] = [];
+    for (let index = 0; index < textGroups.length; index += 1) {
+      const templateRuns = textGroups[index];
+      const segmentText = segments[index] ?? "";
+
+      if (templateRuns.length > 0) {
+        nextChildren.push(...distributeTextAcrossRuns(segmentText, templateRuns, options));
+      } else if (segmentText.length > 0) {
+        nextChildren.push({
+          type: "text",
+          text: segmentText,
+          style: cloneTextStyle(options?.insertedStyle)
+        });
+      }
+
+      if (index < anchors.length) {
+        nextChildren.push(cloneParagraphChildRun(anchors[index]));
+      }
+    }
+
+    if (nextChildren.length > 0) {
+      return nextChildren;
+    }
+  }
+
   const segments: string[] = [];
   let cursor = 0;
   for (let index = 0; index < anchors.length; index += 1) {
