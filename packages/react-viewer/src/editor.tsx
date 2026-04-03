@@ -23428,8 +23428,10 @@ export function DocxEditorViewer({
       const textLength =
         options?.textLength ??
         (options?.textOverride?.length ?? (paragraph ? paragraphText(paragraph).length : 0));
-      const safeStart = Math.max(0, Math.min(Math.round(startOffset), textLength));
-      const safeEnd = Math.max(safeStart, Math.min(Math.round(endOffset), textLength));
+      const clampedStart = Math.max(0, Math.min(Math.round(startOffset), textLength));
+      const clampedEnd = Math.max(0, Math.min(Math.round(endOffset), textLength));
+      const safeStart = Math.min(clampedStart, clampedEnd);
+      const safeEnd = Math.max(clampedStart, clampedEnd);
       const locationKey = paragraphLocationKey(location);
       const sessionText = options?.textOverride ?? (paragraph ? paragraphText(paragraph) : "");
       wrappedParagraphPendingSelectionRef.current = {
@@ -24466,10 +24468,6 @@ export function DocxEditorViewer({
 
       const normalizedRange = normalizeTextRange(activeRange);
       if (compareTextRangeBoundaries(normalizedRange.start, normalizedRange.end) >= 0) {
-        return false;
-      }
-
-      if (sameParagraphLocation(normalizedRange.start.location, normalizedRange.end.location)) {
         return false;
       }
 
@@ -28011,6 +28009,7 @@ export function DocxEditorViewer({
             wrappedParagraphSelectionDragRef.current = undefined;
             event.currentTarget.releasePointerCapture(event.pointerId);
           }
+          focusWrappedParagraphTextarea();
         }}
         onDoubleClick={(event) => {
           if (isReadOnly) {
@@ -28286,10 +28285,23 @@ export function DocxEditorViewer({
                 return;
               }
             }}
-            onBlur={() => {
-              setActiveWrappedParagraphSession((current) =>
-                current && current.locationKey === locationKey ? undefined : current
-              );
+            onBlur={(event) => {
+              const currentTarget = event.currentTarget;
+              const wrappedParagraphRoot =
+                currentTarget.closest<HTMLElement>("[data-docx-wrapped-paragraph-root='true']");
+              window.requestAnimationFrame(() => {
+                const activeElement = document.activeElement;
+                if (
+                  activeElement &&
+                  (activeElement === currentTarget ||
+                    wrappedParagraphRoot?.contains(activeElement))
+                ) {
+                  return;
+                }
+                setActiveWrappedParagraphSession((current) =>
+                  current && current.locationKey === locationKey ? undefined : current
+                );
+              });
             }}
             style={{
               position: "absolute",
