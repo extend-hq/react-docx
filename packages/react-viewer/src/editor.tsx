@@ -58,7 +58,11 @@ import {
   layoutTextWithPretextAroundExclusions,
   type PretextExclusionRect,
   type PretextLineFragment,
-  type PretextVariableWidthLayout
+  type PretextSelectionRect,
+  type PretextVariableWidthLayout,
+  resolveCaretRectAtOffset,
+  resolveOffsetAtPoint,
+  resolveSelectionRects
 } from "./pretext-layout";
 
 const HIGHLIGHT_TO_CSS: Record<string, string> = {
@@ -3600,6 +3604,22 @@ interface ParagraphPretextLayoutSource {
   runs: ParagraphPretextLayoutRun[];
 }
 
+interface WrappedParagraphEditingSession {
+  location: ParagraphLocation;
+  locationKey: string;
+  text: string;
+  selectionStart: number;
+  selectionEnd: number;
+  isComposing: boolean;
+  preferredCaretX?: number;
+}
+
+interface WrappedParagraphSelectionDragState {
+  pointerId: number;
+  locationKey: string;
+  anchorOffset: number;
+}
+
 interface DualWrappedFloatingImageGeometry {
   image: ImageRunNode;
   imageIndex: number;
@@ -3851,6 +3871,66 @@ function buildParagraphPretextLayoutSource(
     text: combinedText,
     runs
   };
+}
+
+function buildSyntheticPretextLayoutSource(
+  text: string,
+  style?: TextRunNode["style"]
+): ParagraphPretextLayoutSource {
+  return {
+    text,
+    runs: [
+      {
+        key: "synthetic-0",
+        text,
+        startOffset: 0,
+        endOffset: text.length,
+        style
+      }
+    ]
+  };
+}
+
+function expandOffsetToWord(text: string, offset: number): {
+  start: number;
+  end: number;
+} {
+  const safeOffset = Math.max(0, Math.min(Math.round(offset), text.length));
+  if (!text) {
+    return { start: 0, end: 0 };
+  }
+
+  const characterAt = (index: number): string => text.slice(index, index + 1);
+  const isWordCharacter = (value: string): boolean => /[0-9A-Za-z_]/.test(value);
+  let probeIndex = safeOffset;
+  if (probeIndex > 0 && probeIndex === text.length) {
+    probeIndex -= 1;
+  }
+  if (
+    !isWordCharacter(characterAt(probeIndex)) &&
+    probeIndex > 0 &&
+    isWordCharacter(characterAt(probeIndex - 1))
+  ) {
+    probeIndex -= 1;
+  }
+
+  if (!isWordCharacter(characterAt(probeIndex))) {
+    return {
+      start: safeOffset,
+      end: safeOffset
+    };
+  }
+
+  let start = probeIndex;
+  let end = probeIndex + 1;
+  while (start > 0 && isWordCharacter(characterAt(start - 1))) {
+    start -= 1;
+  }
+  while (end < text.length && isWordCharacter(characterAt(end))) {
+    end += 1;
+  }
+
+  return { start, end };
 }
 
 function pixelsToTwips(valuePx: number): number {
@@ -20134,6 +20214,8 @@ export function DocxEditorViewer({
   const [selectedSectionImageKey, setSelectedSectionImageKey] = React.useState<string | undefined>();
   const [selectedDropCapNodeIndex, setSelectedDropCapNodeIndex] = React.useState<number | undefined>();
   const [hoveredDropCapNodeIndex, setHoveredDropCapNodeIndex] = React.useState<number | undefined>();
+  const [activeWrappedParagraphSession, setActiveWrappedParagraphSession] =
+    React.useState<WrappedParagraphEditingSession | undefined>();
   const [resizePreview, setResizePreview] = React.useState<{
     imageKey: string;
     widthPx: number;
@@ -20183,6 +20265,18 @@ export function DocxEditorViewer({
   const [activeEditableParagraphSegment, setActiveEditableParagraphSegment] = React.useState<
     ParagraphSegmentIdentity | undefined
   >(undefined);
+  const wrappedParagraphTextareaRef = React.useRef<HTMLTextAreaElement | null>(null);
+  const wrappedParagraphPendingSelectionRef = React.useRef<
+    | {
+        locationKey: string;
+        start: number;
+        end: number;
+      }
+    | undefined
+  >(undefined);
+  const wrappedParagraphSelectionDragRef = React.useRef<
+    WrappedParagraphSelectionDragState | undefined
+  >(undefined);
   const [isInitialPaginationSettled, setIsInitialPaginationSettled] = React.useState(
     !deferInitialPaginationPaint
   );
@@ -20200,6 +20294,7 @@ export function DocxEditorViewer({
     setSelectedSectionImageKey(undefined);
     setSelectedDropCapNodeIndex(undefined);
     setHoveredDropCapNodeIndex(undefined);
+    setActiveWrappedParagraphSession(undefined);
     setResizePreview(undefined);
     setFloatingMovePreview(undefined);
     setDropCapMovePreview(undefined);
@@ -20440,6 +20535,7 @@ export function DocxEditorViewer({
     setSelectedSectionImageKey(undefined);
     setSelectedDropCapNodeIndex(undefined);
     setHoveredDropCapNodeIndex(undefined);
+    setActiveWrappedParagraphSession(undefined);
     setResizePreview(undefined);
     setFloatingMovePreview(undefined);
     setDropCapMovePreview(undefined);
@@ -23307,12 +23403,130 @@ export function DocxEditorViewer({
       setSelectedSectionImageKey(undefined);
       setSelectedDropCapNodeIndex(undefined);
       setHoveredDropCapNodeIndex(undefined);
+      setActiveWrappedParagraphSession(undefined);
 
       if (editor.selection.kind === "table-cell") {
         editor.selectParagraph(nodeIndex);
       }
     },
     [clearTableCellSelection, editor]
+  );
+
+  const syncWrappedParagraphRange = React.useCallback(
+    (
+      location: ParagraphLocation,
+      startOffset: number,
+      endOffset: number,
+      options?: {
+        textLength?: number;
+        preferredCaretX?: number;
+        textOverride?: string;
+        isComposing?: boolean;
+      }
+    ): void => {
+      const paragraph = getParagraphAtLocation(editor.model, location).paragraph;
+      const textLength =
+        options?.textLength ??
+        (options?.textOverride?.length ?? (paragraph ? paragraphText(paragraph).length : 0));
+      const safeStart = Math.max(0, Math.min(Math.round(startOffset), textLength));
+      const safeEnd = Math.max(safeStart, Math.min(Math.round(endOffset), textLength));
+      const locationKey = paragraphLocationKey(location);
+      const sessionText = options?.textOverride ?? (paragraph ? paragraphText(paragraph) : "");
+      wrappedParagraphPendingSelectionRef.current = {
+        locationKey,
+        start: safeStart,
+        end: safeEnd
+      };
+
+      setActiveWrappedParagraphSession((current) => ({
+        location,
+        locationKey,
+        text: sessionText,
+        selectionStart: safeStart,
+        selectionEnd: safeEnd,
+        isComposing: options?.isComposing ?? current?.isComposing ?? false,
+        preferredCaretX:
+          options?.preferredCaretX ??
+          (safeStart === safeEnd ? current?.preferredCaretX : undefined)
+      }));
+
+      if (location.kind === "paragraph") {
+        editor.selectParagraph(location.nodeIndex);
+      } else {
+        editor.selectTableCell(location.tableIndex, location.rowIndex, location.cellIndex);
+      }
+      editor.setActiveTextRange({
+        start: {
+          location: cloneTextRangeLocation(location),
+          offset: safeStart
+        },
+        end: {
+          location: cloneTextRangeLocation(location),
+          offset: safeEnd
+        }
+      });
+    },
+    [editor]
+  );
+
+  const focusWrappedParagraphTextarea = React.useCallback((): void => {
+    scheduleDomWrite(() => {
+      const textarea = wrappedParagraphTextareaRef.current;
+      if (!textarea || !textarea.isConnected) {
+        return;
+      }
+      textarea.focus();
+      const pendingSelection = wrappedParagraphPendingSelectionRef.current;
+      const session = activeWrappedParagraphSession;
+      const selectionSource =
+        pendingSelection &&
+        (!session || pendingSelection.locationKey === session.locationKey)
+          ? pendingSelection
+          : session
+            ? {
+                locationKey: session.locationKey,
+                start: session.selectionStart,
+                end: session.selectionEnd
+              }
+            : undefined;
+      if (!selectionSource) {
+        return;
+      }
+
+      const safeStart = Math.max(0, Math.min(selectionSource.start, textarea.value.length));
+      const safeEnd = Math.max(safeStart, Math.min(selectionSource.end, textarea.value.length));
+      try {
+        textarea.setSelectionRange(safeStart, safeEnd);
+        if (
+          pendingSelection &&
+          pendingSelection.locationKey === selectionSource.locationKey &&
+          pendingSelection.start === selectionSource.start &&
+          pendingSelection.end === selectionSource.end
+        ) {
+          wrappedParagraphPendingSelectionRef.current = undefined;
+        }
+      } catch {
+        // Ignore selection sync failures; focus alone is still better than dropping the session.
+      }
+    });
+  }, [activeWrappedParagraphSession]);
+
+  const commitWrappedParagraphTextAtLocation = React.useCallback(
+    (location: ParagraphLocation, text: string): void => {
+      if (location.kind === "paragraph") {
+        editor.commitParagraphText(location.nodeIndex, text);
+        return;
+      }
+
+      editor.commitTableCellParagraphTextRecursive(
+        location.tableIndex,
+        location.rowIndex,
+        location.cellIndex,
+        location.paragraphIndex,
+        text
+      );
+    },
+    [editor]
   );
 
   const focusDropCapWrappedParagraph = React.useCallback(
@@ -25012,6 +25226,7 @@ export function DocxEditorViewer({
     setSelectedDropCapNodeIndex(undefined);
     setHoveredDropCapNodeIndex(undefined);
     setDropCapMovePreview(undefined);
+    setActiveWrappedParagraphSession(undefined);
   }, [selectedImage, selectedSectionImageKey]);
 
   React.useEffect(() => {
@@ -25026,6 +25241,43 @@ export function DocxEditorViewer({
       setDropCapMovePreview(undefined);
     }
   }, [editor.model, selectedDropCapNodeIndex]);
+
+  React.useEffect(() => {
+    if (!activeWrappedParagraphSession) {
+      return;
+    }
+
+    const paragraph = getParagraphAtLocation(editor.model, activeWrappedParagraphSession.location).paragraph;
+    if (!paragraph) {
+      setActiveWrappedParagraphSession(undefined);
+      return;
+    }
+
+    const modelText = paragraphText(paragraph);
+    if (
+      modelText !== activeWrappedParagraphSession.text &&
+      !activeWrappedParagraphSession.isComposing
+    ) {
+      setActiveWrappedParagraphSession((current) =>
+        current && current.locationKey === activeWrappedParagraphSession.locationKey
+          ? {
+              ...current,
+              text: modelText,
+              selectionStart: Math.max(0, Math.min(current.selectionStart, modelText.length)),
+              selectionEnd: Math.max(0, Math.min(current.selectionEnd, modelText.length))
+            }
+          : current
+      );
+    }
+  }, [activeWrappedParagraphSession, editor.model]);
+
+  React.useEffect(() => {
+    if (!activeWrappedParagraphSession) {
+      return;
+    }
+
+    focusWrappedParagraphTextarea();
+  }, [activeWrappedParagraphSession, focusWrappedParagraphTextarea]);
 
   const focusParagraphAtOffset = React.useCallback(
     (paragraphIndex: number, offset: number): void => {
@@ -27552,6 +27804,518 @@ export function DocxEditorViewer({
     [activeDropTarget, isDraggingImage, isReadOnly, onDropImageAtTarget]
   );
 
+  const renderWrappedPretextParagraph = (params: {
+    location: ParagraphLocation;
+    keyPrefix: string;
+    source: ParagraphPretextLayoutSource;
+    layout: PretextVariableWidthLayout;
+    lineHeightPx: number;
+    baseTextStyle?: TextRunNode["style"];
+    blockHeightPx?: number;
+    obstacleNodes?: React.ReactNode;
+  }): React.ReactNode => {
+    const {
+      location,
+      keyPrefix,
+      source,
+      layout,
+      lineHeightPx,
+      baseTextStyle,
+      blockHeightPx,
+      obstacleNodes
+    } = params;
+    const locationKey = paragraphLocationKey(location);
+    const activeSession =
+      activeWrappedParagraphSession?.locationKey === locationKey
+        ? activeWrappedParagraphSession
+        : undefined;
+    const activeRange =
+      editor.activeTextRange &&
+      sameParagraphLocation(editor.activeTextRange.start.location, location) &&
+      sameParagraphLocation(editor.activeTextRange.end.location, location)
+        ? normalizeTextRange(editor.activeTextRange)
+        : undefined;
+    const selectionStart = activeSession?.selectionStart ?? activeRange?.start.offset;
+    const selectionEnd = activeSession?.selectionEnd ?? activeRange?.end.offset;
+    const selectionRects =
+      selectionStart !== undefined && selectionEnd !== undefined
+        ? resolveSelectionRects(layout, selectionStart, selectionEnd)
+        : [];
+    const caretRect =
+      activeSession && activeSession.selectionStart === activeSession.selectionEnd
+        ? resolveCaretRectAtOffset(layout, activeSession.selectionEnd)
+        : activeRange && compareTextRangeBoundaries(activeRange.start, activeRange.end) === 0
+          ? resolveCaretRectAtOffset(layout, activeRange.end.offset)
+          : undefined;
+
+    const renderFragment = (fragment: PretextLineFragment, lineIndex: number): React.ReactNode => {
+      const pieces = source.runs
+        .map((run) => {
+          const overlapStart = Math.max(fragment.startOffset, run.startOffset);
+          const overlapEnd = Math.min(fragment.endOffset, run.endOffset);
+          if (overlapStart >= overlapEnd) {
+            return undefined;
+          }
+
+          const slice = run.text.slice(
+            overlapStart - run.startOffset,
+            overlapEnd - run.startOffset
+          );
+          if (!slice) {
+            return undefined;
+          }
+
+          const textStyle = run.link
+            ? {
+                ...linkStyleToCss(run.style, editor.documentTheme),
+                whiteSpace: "pre"
+              }
+            : {
+                ...runStyleToCss(run.style, editor.documentTheme),
+                whiteSpace: "pre"
+              };
+
+          if (activeSession) {
+            return (
+              <span
+                key={`${keyPrefix}-active-${lineIndex}-${run.key}-${overlapStart}`}
+                style={textStyle}
+              >
+                {slice}
+              </span>
+            );
+          }
+
+          return run.link ? (
+            <a
+              key={`${keyPrefix}-fragment-${lineIndex}-${run.key}-${overlapStart}`}
+              href={run.link}
+              target={run.link.startsWith("#") ? undefined : "_blank"}
+              rel={run.link.startsWith("#") ? undefined : "noreferrer noopener"}
+              onMouseDown={(event) => {
+                if (!run.link?.startsWith("#")) {
+                  return;
+                }
+                event.preventDefault();
+                event.stopPropagation();
+              }}
+              onClick={(event) => {
+                if (!run.link?.startsWith("#")) {
+                  return;
+                }
+                event.preventDefault();
+                event.stopPropagation();
+                scrollToBookmark(run.link.slice(1));
+              }}
+              style={textStyle}
+            >
+              {slice}
+            </a>
+          ) : (
+            <span
+              key={`${keyPrefix}-fragment-${lineIndex}-${run.key}-${overlapStart}`}
+              style={textStyle}
+            >
+              {slice}
+            </span>
+          );
+        })
+        .filter(Boolean);
+
+      return (
+        <span
+          key={`${keyPrefix}-frag-${lineIndex}-${fragment.startOffset}-${fragment.endOffset}`}
+          style={{
+            position: "absolute",
+            left: fragment.x,
+            top: layout.lines[lineIndex]?.y ?? 0,
+            display: "inline-block",
+            whiteSpace: "pre",
+            lineHeight: `${lineHeightPx}px`,
+            pointerEvents: activeSession ? "none" : undefined
+          }}
+        >
+          {pieces}
+        </span>
+      );
+    };
+
+    const handlePointerSelection = (event: React.PointerEvent<HTMLSpanElement>): void => {
+      if (isReadOnly) {
+        return;
+      }
+
+      const rect = event.currentTarget.getBoundingClientRect();
+      const textValue = activeSession?.text ?? source.text;
+      const offset = resolveOffsetAtPoint(
+        layout,
+        event.clientX - rect.left,
+        event.clientY - rect.top
+      );
+      const anchorOffset = event.shiftKey && activeSession ? activeSession.selectionStart : offset;
+      wrappedParagraphSelectionDragRef.current = {
+        pointerId: event.pointerId,
+        locationKey,
+        anchorOffset
+      };
+      event.currentTarget.setPointerCapture(event.pointerId);
+      syncWrappedParagraphRange(location, anchorOffset, offset, {
+        textOverride: textValue,
+        textLength: textValue.length
+      });
+      focusWrappedParagraphTextarea();
+    };
+
+    return (
+      <span
+        data-docx-wrapped-paragraph-root="true"
+        contentEditable={false}
+        style={{
+          display: "block",
+          position: "relative",
+          minHeight: blockHeightPx ?? layout.height
+        }}
+        onPointerDown={(event) => {
+          const target = event.target;
+          if (
+            target instanceof Element &&
+            target.closest(
+              "[data-docx-image-location],[data-docx-drop-cap='true'],[data-docx-table-move-handle='true'],[data-image-resize-handle='true']"
+            )
+          ) {
+            return;
+          }
+          event.preventDefault();
+          event.stopPropagation();
+          handlePointerSelection(event);
+        }}
+        onPointerMove={(event) => {
+          const dragState = wrappedParagraphSelectionDragRef.current;
+          if (!dragState || dragState.pointerId !== event.pointerId || dragState.locationKey !== locationKey) {
+            return;
+          }
+          const rect = event.currentTarget.getBoundingClientRect();
+          const textValue = activeSession?.text ?? source.text;
+          const focusOffset = resolveOffsetAtPoint(
+            layout,
+            event.clientX - rect.left,
+            event.clientY - rect.top
+          );
+          syncWrappedParagraphRange(location, dragState.anchorOffset, focusOffset, {
+            textOverride: textValue,
+            textLength: textValue.length
+          });
+        }}
+        onPointerUp={(event) => {
+          if (wrappedParagraphSelectionDragRef.current?.pointerId === event.pointerId) {
+            wrappedParagraphSelectionDragRef.current = undefined;
+            event.currentTarget.releasePointerCapture(event.pointerId);
+          }
+        }}
+        onDoubleClick={(event) => {
+          if (isReadOnly) {
+            return;
+          }
+          const rect = event.currentTarget.getBoundingClientRect();
+          const textValue = activeSession?.text ?? source.text;
+          const offset = resolveOffsetAtPoint(
+            layout,
+            event.clientX - rect.left,
+            event.clientY - rect.top
+          );
+          const wordRange = expandOffsetToWord(textValue, offset);
+          syncWrappedParagraphRange(location, wordRange.start, wordRange.end, {
+            textOverride: textValue,
+            textLength: textValue.length
+          });
+          focusWrappedParagraphTextarea();
+        }}
+      >
+        {obstacleNodes}
+        {selectionRects.map((rect, index) => (
+          <span
+            key={`${keyPrefix}-sel-${index}`}
+            contentEditable={false}
+            style={{
+              position: "absolute",
+              left: rect.left,
+              top: rect.top,
+              width: rect.width,
+              height: rect.height,
+              backgroundColor: "rgba(59, 130, 246, 0.25)",
+              pointerEvents: "none",
+              zIndex: 2
+            }}
+          />
+        ))}
+        {layout.lines.map((line, lineIndex) =>
+          line.fragments.map((fragment) => renderFragment(fragment, lineIndex))
+        )}
+        {activeSession && caretRect ? (
+          <span
+            contentEditable={false}
+            style={{
+              position: "absolute",
+              left: caretRect.left,
+              top: caretRect.top,
+              width: Math.max(1, caretRect.width),
+              height: caretRect.height,
+              backgroundColor: "#2563eb",
+              pointerEvents: "none",
+              zIndex: 4
+            }}
+          />
+        ) : null}
+        {activeSession && caretRect ? (
+          <textarea
+            ref={(element) => {
+              if (activeSession.locationKey === locationKey) {
+                wrappedParagraphTextareaRef.current = element;
+                if (element) {
+                  const pendingSelection = wrappedParagraphPendingSelectionRef.current;
+                  const safeStart = Math.max(
+                    0,
+                    Math.min(
+                      pendingSelection?.locationKey === locationKey
+                        ? pendingSelection.start
+                        : activeSession.selectionStart,
+                      element.value.length
+                    )
+                  );
+                  const safeEnd = Math.max(
+                    safeStart,
+                    Math.min(
+                      pendingSelection?.locationKey === locationKey
+                        ? pendingSelection.end
+                        : activeSession.selectionEnd,
+                      element.value.length
+                    )
+                  );
+                  try {
+                    element.setSelectionRange(safeStart, safeEnd);
+                  } catch {
+                    // Ignore mount-time selection sync failures.
+                  }
+                }
+              }
+            }}
+            value={activeSession.text}
+            spellCheck={false}
+            aria-label="Wrapped paragraph text"
+            onChange={(event) => {
+              const nextText = event.currentTarget.value.replace(/\r\n?/g, "\n");
+              const nextStart = event.currentTarget.selectionStart ?? nextText.length;
+              const nextEnd = event.currentTarget.selectionEnd ?? nextStart;
+              syncWrappedParagraphRange(location, nextStart, nextEnd, {
+                textOverride: nextText,
+                textLength: nextText.length
+              });
+              commitWrappedParagraphTextAtLocation(location, nextText);
+              schedulePaginationMeasurementResume();
+            }}
+            onSelect={(event) => {
+              const nextStart = event.currentTarget.selectionStart ?? 0;
+              const nextEnd = event.currentTarget.selectionEnd ?? nextStart;
+              syncWrappedParagraphRange(location, nextStart, nextEnd, {
+                textOverride: event.currentTarget.value,
+                textLength: event.currentTarget.value.length
+              });
+            }}
+            onCompositionStart={() => {
+              setActiveWrappedParagraphSession((current) =>
+                current && current.locationKey === locationKey
+                  ? { ...current, isComposing: true }
+                  : current
+              );
+            }}
+            onCompositionEnd={(event) => {
+              const nextText = event.currentTarget.value.replace(/\r\n?/g, "\n");
+              const nextStart = event.currentTarget.selectionStart ?? nextText.length;
+              const nextEnd = event.currentTarget.selectionEnd ?? nextStart;
+              setActiveWrappedParagraphSession((current) =>
+                current && current.locationKey === locationKey
+                  ? {
+                      ...current,
+                      isComposing: false,
+                      text: nextText,
+                      selectionStart: nextStart,
+                      selectionEnd: nextEnd
+                    }
+                  : current
+              );
+            }}
+            onKeyDown={(event) => {
+              const textarea = event.currentTarget;
+              const currentText = textarea.value.replace(/\r\n?/g, "\n");
+              const nextParagraph = getParagraphAtLocation(editor.model, location).paragraph;
+              const selectionStart = textarea.selectionStart ?? 0;
+              const selectionEnd = textarea.selectionEnd ?? selectionStart;
+              const isCollapsedSelection = selectionStart === selectionEnd;
+              const font =
+                layout.font ??
+                resolveMeasureFont(
+                  baseTextStyle,
+                  nextParagraph ? paragraphBaseFontSizePx(nextParagraph) : 16
+                );
+              const currentLayout =
+                layoutTextWithPretextAroundExclusions(
+                  currentText,
+                  font,
+                  layout.containerWidthPx ?? 1,
+                  layout.lineHeightPx ?? lineHeightPx,
+                  layout.exclusions
+                ) ?? layout;
+              const currentCaretRect = resolveCaretRectAtOffset(currentLayout, selectionEnd);
+              const isPlainEnterKey =
+                event.key === "Enter" && !event.metaKey && !event.ctrlKey && !event.altKey;
+              const isListParagraph =
+                location.kind === "paragraph" && nextParagraph
+                  ? paragraphIsList(nextParagraph, currentText)
+                  : false;
+              const updateSelection = (startOffset: number, endOffset: number): void => {
+                syncWrappedParagraphRange(location, startOffset, endOffset, {
+                  textOverride: currentText,
+                  textLength: currentText.length,
+                  preferredCaretX: currentCaretRect?.left
+                });
+                scheduleDomWrite(() => {
+                  const latestTextarea = wrappedParagraphTextareaRef.current;
+                  if (!latestTextarea) {
+                    return;
+                  }
+                  latestTextarea.setSelectionRange(startOffset, endOffset);
+                });
+              };
+
+              if (
+                (event.key === "Home" || event.key === "End") &&
+                !event.metaKey &&
+                !event.ctrlKey &&
+                !event.altKey
+              ) {
+                event.preventDefault();
+                const currentLine =
+                  currentLayout.lines.find((line) =>
+                    line.fragments.some(
+                      (fragment) => selectionEnd >= fragment.startOffset && selectionEnd <= fragment.endOffset
+                    )
+                  ) ?? currentLayout.lines[0];
+                const targetOffset =
+                  event.key === "Home"
+                    ? currentLine?.fragments[0]?.startOffset ?? 0
+                    : currentLine?.fragments[currentLine.fragments.length - 1]?.endOffset ?? currentText.length;
+                const anchorOffset = event.shiftKey ? selectionStart : targetOffset;
+                updateSelection(anchorOffset, targetOffset);
+                return;
+              }
+
+              if (
+                (event.key === "ArrowUp" || event.key === "ArrowDown") &&
+                !event.metaKey &&
+                !event.ctrlKey &&
+                !event.altKey &&
+                isCollapsedSelection
+              ) {
+                event.preventDefault();
+                const preferredCaretX =
+                  activeSession?.preferredCaretX ?? currentCaretRect?.left ?? 0;
+                const probeY =
+                  (currentCaretRect?.top ?? 0) +
+                  (event.key === "ArrowUp"
+                    ? -(currentLayout.lineHeightPx ?? lineHeightPx)
+                    : currentLayout.lineHeightPx ?? lineHeightPx) +
+                  Math.max(1, (currentLayout.lineHeightPx ?? lineHeightPx) / 2);
+                const targetOffset = resolveOffsetAtPoint(currentLayout, preferredCaretX, probeY);
+                updateSelection(targetOffset, targetOffset);
+                return;
+              }
+
+              if (
+                event.key === "Tab" &&
+                !event.metaKey &&
+                !event.ctrlKey &&
+                !event.altKey &&
+                isListParagraph &&
+                location.kind === "paragraph"
+              ) {
+                event.preventDefault();
+                const changed = editor.adjustSelectedListDepth(event.shiftKey ? -1 : 1, currentText);
+                if (changed) {
+                  updateSelection(selectionEnd, selectionEnd);
+                }
+                return;
+              }
+
+              if (
+                isPlainEnterKey &&
+                !event.shiftKey &&
+                location.kind === "paragraph" &&
+                isListParagraph
+              ) {
+                event.preventDefault();
+                const inserted = editor.insertListItemAfterSelection(
+                  currentText,
+                  selectionStart,
+                  selectionEnd,
+                  location
+                );
+                if (inserted) {
+                  setActiveWrappedParagraphSession(undefined);
+                  focusParagraphAtOffset(inserted.paragraphIndex, inserted.caretOffset);
+                }
+                return;
+              }
+
+              if (
+                isPlainEnterKey &&
+                !event.shiftKey &&
+                location.kind === "paragraph" &&
+                !isListParagraph
+              ) {
+                event.preventDefault();
+                const split = editor.splitParagraphAtSelection(
+                  currentText,
+                  selectionStart,
+                  selectionEnd,
+                  location
+                );
+                if (split) {
+                  setActiveWrappedParagraphSession(undefined);
+                  focusParagraphAtOffset(split.paragraphIndex, split.caretOffset);
+                }
+                return;
+              }
+            }}
+            onBlur={() => {
+              setActiveWrappedParagraphSession((current) =>
+                current && current.locationKey === locationKey ? undefined : current
+              );
+            }}
+            style={{
+              position: "absolute",
+              left: caretRect.left,
+              top: caretRect.top,
+              width: 1,
+              minWidth: 1,
+              height: Math.max(lineHeightPx, caretRect.height),
+              opacity: 0,
+              color: "transparent",
+              caretColor: "transparent",
+              background: "transparent",
+              border: "none",
+              padding: 0,
+              margin: 0,
+              resize: "none",
+              overflow: "hidden",
+              outline: "none",
+              zIndex: 5
+            }}
+          />
+        ) : null}
+      </span>
+    );
+  };
+
   const renderInteractiveParagraphRuns = React.useCallback(
     (paragraph: ParagraphNode, keyPrefix: string, location: ParagraphLocation): React.ReactNode => {
       const nodes: React.ReactNode[] = [];
@@ -28272,29 +29036,47 @@ export function DocxEditorViewer({
           );
         };
 
-        return (
-          <span
-            key={`${keyPrefix}-dual-wrap-manual`}
-            contentEditable={false}
-            style={{
-              display: "block",
-              position: "relative",
-              minHeight: manualDualWrappedLayout.layout.height
-            }}
-          >
-            {manualDualWrappedLayout.layout.lines.map((line, lineIndex) =>
-              line.fragments.map((fragment) => renderManualFragment(fragment, lineIndex))
-            )}
-            {manualDualWrappedLayout.geometries.map((geometry) => renderManualImage(geometry))}
-            {previewParagraph.children.map((child, childIndex) =>
-              child.type === "image" &&
-              !manualGeometryImageIndexes.has(childIndex) &&
-              shouldRenderAbsoluteFloatingImage(child)
-                ? renderManualAbsoluteImage(child, childIndex)
-                : null
-            )}
-          </span>
-        );
+        const activeSession =
+          activeWrappedParagraphSession?.locationKey === paragraphLocationKey(location)
+            ? activeWrappedParagraphSession
+            : undefined;
+        const activeWrappedSource = activeSession
+          ? buildSyntheticPretextLayoutSource(activeSession.text, firstRunStyle(previewParagraph))
+          : manualDualWrappedLayout.source;
+        const activeWrappedLayout = activeSession
+          ? layoutTextWithPretextAroundExclusions(
+              activeSession.text,
+              resolveMeasureFont(firstRunStyle(previewParagraph), paragraphBaseFontSizePx(previewParagraph)),
+              paragraphRenderTextWidthPx,
+              manualDualWrappedLayout.lineHeightPx,
+              manualDualWrappedLayout.geometries.map((geometry) => geometry.exclusion)
+            ) ?? manualDualWrappedLayout.layout
+          : manualDualWrappedLayout.layout;
+
+        return renderWrappedPretextParagraph({
+          location,
+          keyPrefix: `${keyPrefix}-dual-wrap-manual`,
+          source: activeWrappedSource,
+          layout: activeWrappedLayout,
+          lineHeightPx: manualDualWrappedLayout.lineHeightPx,
+          blockHeightPx: Math.max(
+            activeWrappedLayout.height,
+            ...manualDualWrappedLayout.geometries.map((geometry) => geometry.exclusion.bottom),
+            0
+          ),
+          obstacleNodes: (
+            <>
+              {manualDualWrappedLayout.geometries.map((geometry) => renderManualImage(geometry))}
+              {previewParagraph.children.map((child, childIndex) =>
+                child.type === "image" &&
+                !manualGeometryImageIndexes.has(childIndex) &&
+                shouldRenderAbsoluteFloatingImage(child)
+                  ? renderManualAbsoluteImage(child, childIndex)
+                  : null
+              )}
+            </>
+          )
+        });
       }
 
       if (numberingLabel) {
@@ -32049,22 +32831,6 @@ export function DocxEditorViewer({
                 dropCapMovePreview?.nodeIndex === nodeIndex ||
                 dropCapResizePreview?.nodeIndex === nodeIndex);
 
-            const nextParagraphElement = paragraphElementsRef.current.get(nextNodeIndex);
-            const dropCapParagraphContainsFocus =
-              typeof document !== "undefined" &&
-              nextParagraphElement instanceof HTMLElement &&
-              document.activeElement instanceof Node &&
-              nextParagraphElement.contains(document.activeElement);
-            const dropCapParagraphHasActiveRange =
-              (editor.activeTextRange?.start.location.kind === "paragraph" &&
-                editor.activeTextRange.start.location.nodeIndex === nextNodeIndex) ||
-              (editor.activeTextRange?.end.location.kind === "paragraph" &&
-                editor.activeTextRange.end.location.nodeIndex === nextNodeIndex);
-            const dropCapParagraphActiveForEditing =
-              dropCapParagraphContainsFocus ||
-              dropCapParagraphHasActiveRange ||
-              paragraphDraftsRef.current.has(nextNodeIndex) ||
-              activeEditableParagraphSegment?.nodeIndex === nextNodeIndex;
             const dropCapWrapSource = buildParagraphPretextLayoutSource(nextNode);
             const dropCapWrapExclusion = floatRight
               ? {
@@ -32085,16 +32851,15 @@ export function DocxEditorViewer({
                     dropCapHeightPx +
                     Math.max(0, twipsToPixels(dropCap.verticalSpaceTwips) ?? 0)
                 };
-            const dropCapManualWrapLayout =
-              !dropCapParagraphActiveForEditing && dropCapWrapSource
-                ? resolveParagraphPretextExclusionLayout(
-                    nextNode,
-                    dropCapWrapSource,
-                    nextParagraphWidthPx,
-                    lineHeightPx,
-                    [dropCapWrapExclusion]
-                  )
-                : undefined;
+            const dropCapManualWrapLayout = dropCapWrapSource
+              ? resolveParagraphPretextExclusionLayout(
+                  nextNode,
+                  dropCapWrapSource,
+                  nextParagraphWidthPx,
+                  lineHeightPx,
+                  [dropCapWrapExclusion]
+                )
+              : undefined;
             const dropCapBlockHeightPx = Math.max(
               dropCapManualWrapLayout?.height ?? 0,
               dropCapWrapExclusion.bottom
@@ -32288,295 +33053,196 @@ export function DocxEditorViewer({
                   </span>
                 ) : null}
                 {dropCapManualWrapLayout && dropCapWrapSource ? (
-                  <span
-                    contentEditable={false}
-                    style={{
-                      display: "block",
-                      position: "relative",
-                      minHeight: dropCapBlockHeightPx
-                    }}
-                    onPointerEnter={() => {
-                      if (!isReadOnly) {
-                        setHoveredDropCapNodeIndex(nodeIndex);
-                      }
-                    }}
-                    onPointerLeave={() => {
-                      setHoveredDropCapNodeIndex((current) =>
-                        current === nodeIndex ? undefined : current
-                      );
-                    }}
-                    onPointerDown={(event) => {
-                      if (isReadOnly) {
-                        return;
-                      }
-                      const target = event.target;
-                      if (
-                        target instanceof Element &&
-                        target.closest(
-                          "[data-docx-drop-cap='true'],[data-docx-table-move-handle='true'],[data-image-resize-handle='true']"
-                        )
-                      ) {
-                        return;
-                      }
-                      event.preventDefault();
-                      event.stopPropagation();
-                      focusDropCapWrappedParagraph(nextNodeIndex, {
-                        x: event.clientX,
-                        y: event.clientY
-                      });
-                    }}
-                  >
-                    {dropCapText.length > 0 ? (
-                      <span
-                        data-docx-drop-cap="true"
-                        data-docx-drop-cap-node-index={nodeIndex}
-                        contentEditable={false}
-                        style={{
-                          position: "absolute",
-                          left: movedLeftPx,
-                          top: movedTopPx,
-                          zIndex: 3,
-                          width: dropCapWidthPx,
-                          minHeight: dropCapHeightPx,
-                          display: "inline-flex",
-                          alignItems: "stretch",
-                          touchAction: "none",
-                          userSelect: "none"
-                        }}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          if (isReadOnly) {
-                            return;
-                          }
-                          clearTableCellSelection();
-                          setSelectedImage(undefined);
-                          setSelectedSectionImageKey(undefined);
-                          setSelectedDropCapNodeIndex(nodeIndex);
-                        }}
-                        onPointerEnter={() => {
-                          if (!isReadOnly) {
-                            setHoveredDropCapNodeIndex(nodeIndex);
-                          }
-                        }}
-                        onPointerLeave={() => {
-                          setHoveredDropCapNodeIndex((current) =>
-                            current === nodeIndex ? undefined : current
-                          );
-                        }}
-                      >
-                        <input
-                          type="text"
-                          value={dropCapText}
-                          readOnly={isReadOnly}
-                          spellCheck={false}
-                          aria-label="Drop cap text"
-                          onChange={(event) => {
-                            if (isReadOnly) {
-                              return;
-                            }
-                            editor.setParagraphDropCapText(nodeIndex, event.currentTarget.value);
-                          }}
-                          onPointerDown={(event) => {
-                            event.stopPropagation();
-                            if (!isReadOnly) {
-                              setSelectedDropCapNodeIndex(nodeIndex);
-                            }
+                  (() => {
+                    const activeSession =
+                      activeWrappedParagraphSession?.locationKey === `p:${nextNodeIndex}`
+                        ? activeWrappedParagraphSession
+                        : undefined;
+                    const activeSource = activeSession
+                      ? buildSyntheticPretextLayoutSource(activeSession.text, firstRunStyle(nextNode))
+                      : dropCapWrapSource;
+                    const activeLayout = activeSession
+                      ? layoutTextWithPretextAroundExclusions(
+                          activeSession.text,
+                          resolveMeasureFont(firstRunStyle(nextNode), paragraphBaseFontSizePx(nextNode)),
+                          nextParagraphWidthPx,
+                          lineHeightPx,
+                          [dropCapWrapExclusion]
+                        ) ?? dropCapManualWrapLayout
+                      : dropCapManualWrapLayout;
+                    return renderWrappedPretextParagraph({
+                      location: { kind: "paragraph", nodeIndex: nextNodeIndex },
+                      keyPrefix: `dropcap-wrap-${nodeIndex}-${nextNodeIndex}`,
+                      source: activeSource,
+                      layout: activeLayout,
+                      lineHeightPx,
+                      blockHeightPx: dropCapBlockHeightPx,
+                      obstacleNodes: dropCapText.length > 0 ? (
+                        <span
+                          data-docx-drop-cap="true"
+                          data-docx-drop-cap-node-index={nodeIndex}
+                          contentEditable={false}
+                          style={{
+                            position: "absolute",
+                            left: movedLeftPx,
+                            top: movedTopPx,
+                            zIndex: 3,
+                            width: dropCapWidthPx,
+                            minHeight: dropCapHeightPx,
+                            display: "inline-flex",
+                            alignItems: "stretch",
+                            touchAction: "none",
+                            userSelect: "none"
                           }}
                           onClick={(event) => {
                             event.stopPropagation();
+                            if (isReadOnly) {
+                              return;
+                            }
+                            clearTableCellSelection();
+                            setSelectedImage(undefined);
+                            setSelectedSectionImageKey(undefined);
+                            setSelectedDropCapNodeIndex(nodeIndex);
                           }}
-                          onKeyDown={(event) => {
-                            if (event.key === "Enter") {
-                              event.preventDefault();
+                          onPointerEnter={() => {
+                            if (!isReadOnly) {
+                              setHoveredDropCapNodeIndex(nodeIndex);
                             }
                           }}
-                          style={{
-                            ...runStyleToCss(dropCapTextStyle, editor.documentTheme),
-                            width: "100%",
-                            minHeight: dropCapHeightPx,
-                            border: isSelectedDropCap ? "1px solid rgba(37, 99, 235, 0.8)" : "1px solid transparent",
-                            borderRadius: 4,
-                            backgroundColor: "transparent",
-                            outline: "none",
-                            padding: 0,
-                            margin: 0,
-                            lineHeight: 1,
-                            whiteSpace: "pre",
-                            overflow: "visible",
-                            boxSizing: "border-box",
-                            boxShadow: isSelectedDropCap
-                              ? "0 0 0 2px rgba(191, 219, 254, 0.65)"
-                              : undefined,
-                            color: themedRunColor(dropCapTextStyle.color, editor.documentTheme) ?? undefined,
-                            fontFamily: cssFontFamily(dropCapTextStyle.fontFamily) ?? undefined
-                          }}
-                        />
-                        {showDropCapHandles ? (
-                          <span
-                            contentEditable={false}
-                            data-docx-table-move-handle="true"
-                            title="Move drop cap"
-                            style={{
-                              position: "absolute",
-                              top: -TABLE_MOVE_HANDLE_HIT_SIZE - 4,
-                              left: -TABLE_MOVE_HANDLE_HIT_SIZE - 4,
-                              width: TABLE_MOVE_HANDLE_HIT_SIZE,
-                              height: TABLE_MOVE_HANDLE_HIT_SIZE,
-                              display: "grid",
-                              placeItems: "center",
-                              cursor: "move",
-                              zIndex: 7,
-                              touchAction: "none",
-                              userSelect: "none"
-                            }}
-                            onPointerDown={(event) => beginDropCapMove(event, nodeIndex, dropCap)}
-                          >
-                            <span
-                              style={{
-                                ...TABLE_MOVE_HANDLE_STYLE
-                              }}
-                            >
-                              <svg
-                                width="11"
-                                height="11"
-                                viewBox="0 0 24 24"
-                                fill="none"
-                                stroke="currentColor"
-                                strokeWidth="2"
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                                aria-hidden="true"
-                              >
-                                <path d="M12 2v20" />
-                                <path d="m7 7 5-5 5 5" />
-                                <path d="m7 17 5 5-5 5" />
-                                <path d="M2 12h20" />
-                                <path d="m7 7-5 5 5 5" />
-                                <path d="m17 7 5 5-5 5" />
-                              </svg>
-                            </span>
-                          </span>
-                        ) : null}
-                        {showDropCapHandles ? (
-                          <span
-                            contentEditable={false}
-                            data-image-resize-handle="true"
-                            title="Resize drop cap"
-                            style={{
-                              position: "absolute",
-                              right: -TABLE_HANDLE_SAFEZONE_RIGHT_PX,
-                              bottom: -TABLE_HANDLE_SAFEZONE_BOTTOM_PX,
-                              width: TABLE_RESIZE_HANDLE_HIT_SIZE + TABLE_HANDLE_SAFEZONE_RIGHT_PX,
-                              height: TABLE_RESIZE_HANDLE_HIT_SIZE + TABLE_HANDLE_SAFEZONE_BOTTOM_PX,
-                              display: "grid",
-                              placeItems: "end",
-                              zIndex: 7,
-                              cursor: "nwse-resize",
-                              touchAction: "none",
-                              userSelect: "none"
-                            }}
-                            onPointerDown={(event) =>
-                              beginDropCapResize(
-                                event,
-                                nodeIndex,
-                                dropCapFontSizePx,
-                                dropCapWidthPx,
-                                dropCapHeightPx
-                              )
-                            }
-                          >
-                            <span
-                              style={{
-                                ...TABLE_RESIZE_HANDLE_STYLE,
-                                pointerEvents: "auto"
-                              }}
-                            />
-                          </span>
-                        ) : null}
-                      </span>
-                    ) : null}
-                    {dropCapManualWrapLayout.lines.map((line, lineIndex) =>
-                      line.fragments.map((fragment) => {
-                        const pieces = dropCapWrapSource.runs
-                          .map((run) => {
-                            const overlapStart = Math.max(fragment.startOffset, run.startOffset);
-                            const overlapEnd = Math.min(fragment.endOffset, run.endOffset);
-                            if (overlapStart >= overlapEnd) {
-                              return undefined;
-                            }
-
-                            const slice = run.text.slice(
-                              overlapStart - run.startOffset,
-                              overlapEnd - run.startOffset
+                          onPointerLeave={() => {
+                            setHoveredDropCapNodeIndex((current) =>
+                              current === nodeIndex ? undefined : current
                             );
-                            if (!slice) {
-                              return undefined;
-                            }
-
-                            const textStyle = run.link
-                              ? {
-                                  ...linkStyleToCss(run.style, editor.documentTheme),
-                                  whiteSpace: "pre"
-                                }
-                              : {
-                                  ...runStyleToCss(run.style, editor.documentTheme),
-                                  whiteSpace: "pre"
-                                };
-
-                            return run.link ? (
-                              <a
-                                key={`dropcap-wrap-${nodeIndex}-${lineIndex}-${run.key}-${overlapStart}`}
-                                href={run.link}
-                                target={run.link.startsWith("#") ? undefined : "_blank"}
-                                rel={run.link.startsWith("#") ? undefined : "noreferrer noopener"}
-                                onMouseDown={(event) => {
-                                  if (!run.link?.startsWith("#")) {
-                                    return;
-                                  }
-                                  event.preventDefault();
-                                  event.stopPropagation();
-                                }}
-                                onClick={(event) => {
-                                  if (!run.link?.startsWith("#")) {
-                                    return;
-                                  }
-                                  event.preventDefault();
-                                  event.stopPropagation();
-                                  scrollToBookmark(run.link.slice(1));
-                                }}
-                                style={textStyle}
-                              >
-                                {slice}
-                              </a>
-                            ) : (
-                              <span
-                                key={`dropcap-wrap-${nodeIndex}-${lineIndex}-${run.key}-${overlapStart}`}
-                                style={textStyle}
-                              >
-                                {slice}
-                              </span>
-                            );
-                          })
-                          .filter(Boolean);
-
-                        return (
-                          <span
-                            key={`dropcap-wrap-fragment-${nodeIndex}-${lineIndex}-${fragment.startOffset}-${fragment.endOffset}`}
+                          }}
+                        >
+                          <input
+                            type="text"
+                            value={dropCapText}
+                            readOnly={isReadOnly}
+                            spellCheck={false}
+                            aria-label="Drop cap text"
+                            onChange={(event) => {
+                              if (!isReadOnly) {
+                                editor.setParagraphDropCapText(nodeIndex, event.currentTarget.value);
+                              }
+                            }}
+                            onPointerDown={(event) => {
+                              event.stopPropagation();
+                              if (!isReadOnly) {
+                                setSelectedDropCapNodeIndex(nodeIndex);
+                              }
+                            }}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                            }}
+                            onKeyDown={(event) => {
+                              if (event.key === "Enter") {
+                                event.preventDefault();
+                              }
+                            }}
                             style={{
-                              position: "absolute",
-                              left: fragment.x,
-                              top: line.y,
-                              display: "inline-block",
+                              ...runStyleToCss(dropCapTextStyle, editor.documentTheme),
+                              width: "100%",
+                              minHeight: dropCapHeightPx,
+                              border: isSelectedDropCap ? "1px solid rgba(37, 99, 235, 0.8)" : "1px solid transparent",
+                              borderRadius: 4,
+                              backgroundColor: "transparent",
+                              outline: "none",
+                              padding: 0,
+                              margin: 0,
+                              lineHeight: 1,
                               whiteSpace: "pre",
-                              lineHeight: `${lineHeightPx}px`
+                              overflow: "visible",
+                              boxSizing: "border-box",
+                              boxShadow: isSelectedDropCap
+                                ? "0 0 0 2px rgba(191, 219, 254, 0.65)"
+                                : undefined,
+                              color: themedRunColor(dropCapTextStyle.color, editor.documentTheme) ?? undefined,
+                              fontFamily: cssFontFamily(dropCapTextStyle.fontFamily) ?? undefined
                             }}
-                          >
-                            {pieces}
-                          </span>
-                        );
-                      })
-                    )}
-                  </span>
+                          />
+                          {showDropCapHandles ? (
+                            <span
+                              contentEditable={false}
+                              data-docx-table-move-handle="true"
+                              title="Move drop cap"
+                              style={{
+                                position: "absolute",
+                                top: -TABLE_MOVE_HANDLE_HIT_SIZE - 4,
+                                left: -TABLE_MOVE_HANDLE_HIT_SIZE - 4,
+                                width: TABLE_MOVE_HANDLE_HIT_SIZE,
+                                height: TABLE_MOVE_HANDLE_HIT_SIZE,
+                                display: "grid",
+                                placeItems: "center",
+                                cursor: "move",
+                                zIndex: 7,
+                                touchAction: "none",
+                                userSelect: "none"
+                              }}
+                              onPointerDown={(event) => beginDropCapMove(event, nodeIndex, dropCap)}
+                            >
+                              <span style={{ ...TABLE_MOVE_HANDLE_STYLE }}>
+                                <svg
+                                  width="11"
+                                  height="11"
+                                  viewBox="0 0 24 24"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  strokeWidth="2"
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                  aria-hidden="true"
+                                >
+                                  <path d="M12 2v20" />
+                                  <path d="m7 7 5-5 5 5" />
+                                  <path d="m7 17 5 5-5 5" />
+                                  <path d="M2 12h20" />
+                                  <path d="m7 7-5 5 5 5" />
+                                  <path d="m17 7 5 5-5 5" />
+                                </svg>
+                              </span>
+                            </span>
+                          ) : null}
+                          {showDropCapHandles ? (
+                            <span
+                              contentEditable={false}
+                              data-image-resize-handle="true"
+                              title="Resize drop cap"
+                              style={{
+                                position: "absolute",
+                                right: -TABLE_HANDLE_SAFEZONE_RIGHT_PX,
+                                bottom: -TABLE_HANDLE_SAFEZONE_BOTTOM_PX,
+                                width: TABLE_RESIZE_HANDLE_HIT_SIZE + TABLE_HANDLE_SAFEZONE_RIGHT_PX,
+                                height: TABLE_RESIZE_HANDLE_HIT_SIZE + TABLE_HANDLE_SAFEZONE_BOTTOM_PX,
+                                display: "grid",
+                                placeItems: "end",
+                                zIndex: 7,
+                                cursor: "nwse-resize",
+                                touchAction: "none",
+                                userSelect: "none"
+                              }}
+                              onPointerDown={(event) =>
+                                beginDropCapResize(
+                                  event,
+                                  nodeIndex,
+                                  dropCapFontSizePx,
+                                  dropCapWidthPx,
+                                  dropCapHeightPx
+                                )
+                              }
+                            >
+                              <span
+                                style={{
+                                  ...TABLE_RESIZE_HANDLE_STYLE,
+                                  pointerEvents: "auto"
+                                }}
+                              />
+                            </span>
+                          ) : null}
+                        </span>
+                      ) : undefined
+                    });
+                  })()
                 ) : renderDocumentNode(
                   nextNode,
                   nextNodeIndex,

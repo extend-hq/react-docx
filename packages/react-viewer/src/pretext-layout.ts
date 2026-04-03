@@ -35,10 +35,129 @@ export interface PretextVariableWidthLayout {
   lineCount: number;
   height: number;
   lines: PretextLineLayout[];
+  text?: string;
+  font?: string;
+  containerWidthPx?: number;
+  lineHeightPx?: number;
+  exclusions?: PretextExclusionRect[];
 }
+
+export interface PretextSelectionRect {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+let measureCanvas:
+  | OffscreenCanvas
+  | HTMLCanvasElement
+  | undefined;
+let measureCanvasContext:
+  | OffscreenCanvasRenderingContext2D
+  | CanvasRenderingContext2D
+  | null
+  | undefined;
 
 function canUsePretext(): boolean {
   return typeof OffscreenCanvas !== "undefined" || typeof document !== "undefined";
+}
+
+function getMeasureContext():
+  | OffscreenCanvasRenderingContext2D
+  | CanvasRenderingContext2D
+  | undefined {
+  if (!canUsePretext()) {
+    return undefined;
+  }
+
+  if (measureCanvasContext) {
+    return measureCanvasContext ?? undefined;
+  }
+
+  if (typeof OffscreenCanvas !== "undefined") {
+    measureCanvas = new OffscreenCanvas(1, 1);
+    measureCanvasContext = measureCanvas.getContext("2d");
+    return measureCanvasContext ?? undefined;
+  }
+
+  if (typeof document !== "undefined") {
+    measureCanvas = document.createElement("canvas");
+    measureCanvasContext = measureCanvas.getContext("2d");
+    return measureCanvasContext ?? undefined;
+  }
+
+  return undefined;
+}
+
+function measureTextWidthPx(font: string, text: string): number {
+  if (!text) {
+    return 0;
+  }
+
+  const context = getMeasureContext();
+  if (!context) {
+    return 0;
+  }
+
+  context.font = font;
+  return Math.max(0, Math.round(context.measureText(text).width));
+}
+
+function measureOffsetWidthPx(font: string, text: string, offset: number): number {
+  if (offset <= 0 || !text) {
+    return 0;
+  }
+
+  return measureTextWidthPx(font, text.slice(0, Math.max(0, Math.min(offset, text.length))));
+}
+
+function fragmentOffsetAtX(
+  font: string,
+  fragment: PretextLineFragment,
+  xWithinFragment: number
+): number {
+  if (xWithinFragment <= 0) {
+    return fragment.startOffset;
+  }
+
+  if (xWithinFragment >= fragment.width) {
+    return fragment.endOffset;
+  }
+
+  let bestOffset = fragment.startOffset;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  const localText = fragment.text;
+  for (let localOffset = 0; localOffset <= localText.length; localOffset += 1) {
+    const advancePx = measureOffsetWidthPx(font, localText, localOffset);
+    const distance = Math.abs(xWithinFragment - advancePx);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestOffset = fragment.startOffset + localOffset;
+    }
+  }
+
+  return bestOffset;
+}
+
+function nearestLineIndexForY(layout: PretextVariableWidthLayout, y: number): number {
+  const lineHeightPx = Math.max(1, Math.round(layout.lineHeightPx ?? 1));
+  if (layout.lines.length === 0) {
+    return 0;
+  }
+
+  let nearestIndex = 0;
+  let nearestDistance = Number.POSITIVE_INFINITY;
+  layout.lines.forEach((line, index) => {
+    const centerY = line.y + lineHeightPx / 2;
+    const distance = Math.abs(y - centerY);
+    if (distance < nearestDistance) {
+      nearestDistance = distance;
+      nearestIndex = index;
+    }
+  });
+
+  return nearestIndex;
 }
 
 function prepareCached(text: string, font: string): PreparedTextWithSegments | undefined {
@@ -200,7 +319,17 @@ export function layoutTextWithPretextAroundExclusions(
         0,
         ...(exclusions ?? []).map((exclusion) => Math.round(exclusion.bottom))
       ),
-      lines: []
+      lines: [],
+      text,
+      font,
+      containerWidthPx: Math.max(1, Math.round(containerWidthPx)),
+      lineHeightPx: Math.max(1, Math.round(lineHeightPx)),
+      exclusions: (exclusions ?? []).map((exclusion) => ({
+        left: Math.round(exclusion.left),
+        right: Math.round(exclusion.right),
+        top: Math.round(exclusion.top),
+        bottom: Math.round(exclusion.bottom)
+      }))
     };
   }
 
@@ -292,6 +421,165 @@ export function layoutTextWithPretextAroundExclusions(
       ...normalizedExclusions.map((exclusion) => Math.round(exclusion.bottom)),
       0
     ),
-    lines
+    lines,
+    text,
+    font,
+    containerWidthPx: safeContainerWidthPx,
+    lineHeightPx: safeLineHeightPx,
+    exclusions: normalizedExclusions
+  };
+}
+
+export function resolveOffsetAtPoint(
+  layout: PretextVariableWidthLayout,
+  x: number,
+  y: number
+): number {
+  const textLength = layout.text?.length ?? 0;
+  if (layout.lines.length === 0) {
+    return 0;
+  }
+
+  const lineIndex = nearestLineIndexForY(layout, y);
+  const line = layout.lines[lineIndex];
+  if (!line || line.fragments.length === 0) {
+    return Math.max(0, Math.min(textLength, 0));
+  }
+
+  const firstFragment = line.fragments[0]!;
+  const lastFragment = line.fragments[line.fragments.length - 1]!;
+  const font = layout.font ?? "";
+  if (x <= firstFragment.x) {
+    return firstFragment.startOffset;
+  }
+
+  if (x >= lastFragment.x + lastFragment.width) {
+    return lastFragment.endOffset;
+  }
+
+  for (let fragmentIndex = 0; fragmentIndex < line.fragments.length; fragmentIndex += 1) {
+    const fragment = line.fragments[fragmentIndex]!;
+    const fragmentLeft = fragment.x;
+    const fragmentRight = fragment.x + fragment.width;
+    if (x >= fragmentLeft && x <= fragmentRight) {
+      return fragmentOffsetAtX(font, fragment, x - fragmentLeft);
+    }
+
+    const nextFragment = line.fragments[fragmentIndex + 1];
+    if (nextFragment && x > fragmentRight && x < nextFragment.x) {
+      const gapMidpoint = fragmentRight + (nextFragment.x - fragmentRight) / 2;
+      return x < gapMidpoint ? fragment.endOffset : nextFragment.startOffset;
+    }
+  }
+
+  return Math.max(0, Math.min(textLength, lastFragment.endOffset));
+}
+
+export function resolveCaretRectAtOffset(
+  layout: PretextVariableWidthLayout,
+  offset: number
+): PretextSelectionRect | undefined {
+  if (layout.lines.length === 0) {
+    return undefined;
+  }
+
+  const safeOffset = Math.max(0, Math.min(Math.round(offset), layout.text?.length ?? 0));
+  const lineHeightPx = Math.max(1, Math.round(layout.lineHeightPx ?? 1));
+  const font = layout.font ?? "";
+
+  for (const line of layout.lines) {
+    for (const fragment of line.fragments) {
+      if (safeOffset < fragment.startOffset || safeOffset > fragment.endOffset) {
+        continue;
+      }
+
+      const localOffset = safeOffset - fragment.startOffset;
+      const left = fragment.x + measureOffsetWidthPx(font, fragment.text, localOffset);
+      return {
+        left,
+        top: line.y,
+        width: 1,
+        height: lineHeightPx
+      };
+    }
+  }
+
+  const lastLine = layout.lines[layout.lines.length - 1];
+  const lastFragment = lastLine?.fragments[lastLine.fragments.length - 1];
+  if (!lastLine || !lastFragment) {
+    return undefined;
+  }
+
+  return {
+    left: lastFragment.x + lastFragment.width,
+    top: lastLine.y,
+    width: 1,
+    height: lineHeightPx
+  };
+}
+
+export function resolveSelectionRects(
+  layout: PretextVariableWidthLayout,
+  startOffset: number,
+  endOffset: number
+): PretextSelectionRect[] {
+  const safeStart = Math.max(0, Math.min(Math.round(startOffset), layout.text?.length ?? 0));
+  const safeEnd = Math.max(safeStart, Math.min(Math.round(endOffset), layout.text?.length ?? 0));
+  if (safeStart === safeEnd) {
+    return [];
+  }
+
+  const lineHeightPx = Math.max(1, Math.round(layout.lineHeightPx ?? 1));
+  const font = layout.font ?? "";
+  const rects: PretextSelectionRect[] = [];
+
+  layout.lines.forEach((line) => {
+    line.fragments.forEach((fragment) => {
+      const overlapStart = Math.max(safeStart, fragment.startOffset);
+      const overlapEnd = Math.min(safeEnd, fragment.endOffset);
+      if (overlapStart >= overlapEnd) {
+        return;
+      }
+
+      const leadingWidthPx = measureOffsetWidthPx(font, fragment.text, overlapStart - fragment.startOffset);
+      const selectedWidthPx =
+        measureOffsetWidthPx(font, fragment.text, overlapEnd - fragment.startOffset) - leadingWidthPx;
+      rects.push({
+        left: fragment.x + leadingWidthPx,
+        top: line.y,
+        width: Math.max(1, selectedWidthPx),
+        height: lineHeightPx
+      });
+    });
+  });
+
+  return rects;
+}
+
+export function sliceLayoutToLineRange(
+  layout: PretextVariableWidthLayout,
+  startLineIndex: number,
+  endLineIndex: number
+): PretextVariableWidthLayout {
+  const safeStart = Math.max(0, Math.min(Math.round(startLineIndex), layout.lines.length));
+  const safeEnd = Math.max(safeStart, Math.min(Math.round(endLineIndex), layout.lines.length));
+  const slicedLines = layout.lines.slice(safeStart, safeEnd);
+  const yOffset = slicedLines[0]?.y ?? 0;
+  const normalizedLines = slicedLines.map((line) => ({
+    ...line,
+    y: line.y - yOffset,
+    fragments: line.fragments.map((fragment) => ({ ...fragment }))
+  }));
+  const lineHeightPx = Math.max(1, Math.round(layout.lineHeightPx ?? 1));
+  const height =
+    normalizedLines.length > 0
+      ? (normalizedLines[normalizedLines.length - 1]?.y ?? 0) + lineHeightPx
+      : 0;
+
+  return {
+    ...layout,
+    lineCount: normalizedLines.length,
+    height,
+    lines: normalizedLines
   };
 }
