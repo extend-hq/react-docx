@@ -9,6 +9,7 @@ export interface PageCountReconciliationOptions<TPage> {
   targetPageCount: number;
   buildPagesAtScale: (heightScale: number) => TPage[];
   maxDifference?: number;
+  scales?: number[];
 }
 
 function isBetterCandidate<TPage>(
@@ -38,7 +39,8 @@ export function reconcilePagesToTargetCountByScalingHeight<TPage>(
     initialPages,
     targetPageCount,
     buildPagesAtScale,
-    maxDifference = 3
+    maxDifference = 3,
+    scales: customScales
   } = options;
   const safeTargetPageCount = Math.max(1, Math.round(targetPageCount));
   const initialPageCount = initialPages.length;
@@ -54,7 +56,10 @@ export function reconcilePagesToTargetCountByScalingHeight<TPage>(
   };
   let selectedCandidate = bestCandidate;
   const needMorePages = initialPageCount < safeTargetPageCount;
-  const scales = needMorePages
+  const scales =
+    customScales && customScales.length > 0
+      ? customScales
+      : needMorePages
     ? [
         0.98, 0.96, 0.94, 0.92, 0.9, 0.88, 0.86, 0.84, 0.82, 0.8,
         0.78, 0.76, 0.74, 0.72, 0.7, 0.68, 0.66, 0.64, 0.62, 0.6,

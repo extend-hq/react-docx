@@ -20,6 +20,7 @@ export interface PretextLineFragment {
   text: string;
   width: number;
   x: number;
+  intervalWidth: number;
   startOffset: number;
   endOffset: number;
 }
@@ -203,6 +204,7 @@ export function layoutTextWithPretextAroundExclusions(
           text: line.text,
           width: line.width,
           x: interval.x,
+          intervalWidth: interval.width,
           startOffset: consumedOffset,
           endOffset: consumedOffset + line.text.length
         });

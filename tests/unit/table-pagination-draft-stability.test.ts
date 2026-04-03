@@ -44,11 +44,54 @@ describe("table pagination draft stability", () => {
         }
       )
     ).toEqual({
-      0: [24, 32]
+      0: [24, 28]
     });
   });
 
-  it("ignores live measured heights while a table cell draft is active", () => {
+  it("clamps untouched import measurements to the DOCX row estimate band", () => {
+    const nodes: DocModel["nodes"] = [
+      {
+        type: "table",
+        rows: [
+          {
+            type: "table-row",
+            cells: [
+              {
+                type: "table-cell",
+                nodes: [createParagraph("short row")]
+              }
+            ]
+          },
+          {
+            type: "table-row",
+            cells: [
+              {
+                type: "table-cell",
+                nodes: [createParagraph("second short row")]
+              }
+            ]
+          }
+        ]
+      }
+    ];
+
+    expect(
+      resolveTableMeasuredRowHeightsForPagination(
+        nodes,
+        {
+          0: [120, 96]
+        },
+        {
+          allowMeasuredImportPagination: true,
+          pageContentWidthPxByNodeIndex: new Map([[0, 400]])
+        }
+      )
+    ).toEqual({
+      0: [28, 28]
+    });
+  });
+
+  it("uses live measured heights for the actively edited table only", () => {
     const nodes: DocModel["nodes"] = [createTable(2)];
 
     expect(
@@ -62,6 +105,8 @@ describe("table pagination draft stability", () => {
           activeDraftKeys: ["0:1:0"]
         }
       )
-    ).toBeUndefined();
+    ).toEqual({
+      0: [24, 48]
+    });
   });
 });

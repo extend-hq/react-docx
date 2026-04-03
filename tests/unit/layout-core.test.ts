@@ -547,6 +547,68 @@ describe("layout-core", () => {
     });
   });
 
+  it("prefers paragraph-start rendered page breaks for untouched import pagination", () => {
+    const model: DocModel = {
+      nodes: [
+        {
+          type: "paragraph",
+          children: [{ type: "text", text: "First page" }]
+        },
+        {
+          type: "paragraph",
+          sourceXml:
+            `<w:p><w:r><w:lastRenderedPageBreak/></w:r>` +
+            `<w:r><w:t>Second page</w:t></w:r></w:p>`,
+          children: [{ type: "text", text: "Second page" }]
+        }
+      ],
+      metadata: {
+        sourceParts: 1,
+        warnings: [],
+        headerSections: [],
+        footerSections: [],
+        paragraphStyles: []
+      }
+    };
+
+    const pages = buildDocumentPageNodeSegments(
+      model,
+      500,
+      400,
+      TEST_PAGE_SEGMENTATION_CALLBACKS,
+      undefined,
+      undefined,
+      {
+        preferLastRenderedParagraphStartBreaks: true
+      }
+    );
+
+    expect(pages).toEqual([
+      [
+        {
+          nodeIndex: 0,
+          paragraphLineRange: {
+            startLineIndex: 0,
+            endLineIndex: 4,
+            totalLineCount: 4,
+            lineHeightPx: 50
+          }
+        }
+      ],
+      [
+        {
+          nodeIndex: 1,
+          paragraphLineRange: {
+            startLineIndex: 0,
+            endLineIndex: 4,
+            totalLineCount: 4,
+            lineHeightPx: 50
+          }
+        }
+      ]
+    ]);
+  });
+
   it("keeps a keepNext heading with the leading table row", () => {
     const model: DocModel = {
       nodes: [

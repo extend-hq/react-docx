@@ -9,9 +9,16 @@ const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 4173;
 const DEFAULT_MEAN_ABS_THRESHOLD = 0.085;
 const DEFAULT_MISMATCH_RATIO_THRESHOLD = 0.2;
+const DEFAULT_LAYOUT_STRUCTURE_THRESHOLD = 0.08;
+const DEFAULT_INK_COVERAGE_DIFF_THRESHOLD = 0.05;
 const DEFAULT_COMPARISON_WIDTH = 396;
 const DEFAULT_COMPARISON_HEIGHT = 560;
 const DEFAULT_TOLERANCE = 18;
+const DEFAULT_INK_THRESHOLD = 24;
+const DEFAULT_VERTICAL_BANDS = 12;
+const DEFAULT_HORIZONTAL_BANDS = 8;
+const DEFAULT_GRID_COLUMNS = 6;
+const DEFAULT_GRID_ROWS = 8;
 
 function parseArgs(argv) {
   const options = {
@@ -25,9 +32,16 @@ function parseArgs(argv) {
     noServer: false,
     meanAbsThreshold: DEFAULT_MEAN_ABS_THRESHOLD,
     mismatchRatioThreshold: DEFAULT_MISMATCH_RATIO_THRESHOLD,
+    layoutStructureThreshold: DEFAULT_LAYOUT_STRUCTURE_THRESHOLD,
+    inkCoverageDiffThreshold: DEFAULT_INK_COVERAGE_DIFF_THRESHOLD,
     comparisonWidth: DEFAULT_COMPARISON_WIDTH,
     comparisonHeight: DEFAULT_COMPARISON_HEIGHT,
-    tolerance: DEFAULT_TOLERANCE
+    tolerance: DEFAULT_TOLERANCE,
+    inkThreshold: DEFAULT_INK_THRESHOLD,
+    verticalBands: DEFAULT_VERTICAL_BANDS,
+    horizontalBands: DEFAULT_HORIZONTAL_BANDS,
+    gridColumns: DEFAULT_GRID_COLUMNS,
+    gridRows: DEFAULT_GRID_ROWS
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -71,6 +85,16 @@ function parseArgs(argv) {
           Number.parseFloat(argv[index + 1] ?? "") || options.mismatchRatioThreshold;
         index += 1;
         break;
+      case "--layout-structure-threshold":
+        options.layoutStructureThreshold =
+          Number.parseFloat(argv[index + 1] ?? "") || options.layoutStructureThreshold;
+        index += 1;
+        break;
+      case "--ink-coverage-diff-threshold":
+        options.inkCoverageDiffThreshold =
+          Number.parseFloat(argv[index + 1] ?? "") || options.inkCoverageDiffThreshold;
+        index += 1;
+        break;
       case "--comparison-width":
         options.comparisonWidth =
           Number.parseInt(argv[index + 1] ?? "", 10) || options.comparisonWidth;
@@ -84,6 +108,31 @@ function parseArgs(argv) {
       case "--tolerance":
         options.tolerance =
           Number.parseInt(argv[index + 1] ?? "", 10) || options.tolerance;
+        index += 1;
+        break;
+      case "--ink-threshold":
+        options.inkThreshold =
+          Number.parseInt(argv[index + 1] ?? "", 10) || options.inkThreshold;
+        index += 1;
+        break;
+      case "--vertical-bands":
+        options.verticalBands =
+          Number.parseInt(argv[index + 1] ?? "", 10) || options.verticalBands;
+        index += 1;
+        break;
+      case "--horizontal-bands":
+        options.horizontalBands =
+          Number.parseInt(argv[index + 1] ?? "", 10) || options.horizontalBands;
+        index += 1;
+        break;
+      case "--grid-columns":
+        options.gridColumns =
+          Number.parseInt(argv[index + 1] ?? "", 10) || options.gridColumns;
+        index += 1;
+        break;
+      case "--grid-rows":
+        options.gridRows =
+          Number.parseInt(argv[index + 1] ?? "", 10) || options.gridRows;
         index += 1;
         break;
       case "--no-server":
@@ -119,9 +168,16 @@ Options:
   --limit <count>                    Only compare the first N matching docs
   --mean-abs-threshold <ratio>       Defaults to ${DEFAULT_MEAN_ABS_THRESHOLD}
   --mismatch-ratio-threshold <ratio> Defaults to ${DEFAULT_MISMATCH_RATIO_THRESHOLD}
+  --layout-structure-threshold <r>   Defaults to ${DEFAULT_LAYOUT_STRUCTURE_THRESHOLD}
+  --ink-coverage-diff-threshold <r>  Defaults to ${DEFAULT_INK_COVERAGE_DIFF_THRESHOLD}
   --comparison-width <px>            Defaults to ${DEFAULT_COMPARISON_WIDTH}
   --comparison-height <px>           Defaults to ${DEFAULT_COMPARISON_HEIGHT}
-  --tolerance <0-255>                Defaults to ${DEFAULT_TOLERANCE}`);
+  --tolerance <0-255>                Defaults to ${DEFAULT_TOLERANCE}
+  --ink-threshold <0-255>            Defaults to ${DEFAULT_INK_THRESHOLD}
+  --vertical-bands <count>           Defaults to ${DEFAULT_VERTICAL_BANDS}
+  --horizontal-bands <count>         Defaults to ${DEFAULT_HORIZONTAL_BANDS}
+  --grid-columns <count>             Defaults to ${DEFAULT_GRID_COLUMNS}
+  --grid-rows <count>                Defaults to ${DEFAULT_GRID_ROWS}`);
 }
 
 function slugify(value) {
@@ -285,7 +341,17 @@ async function runPythonDiff(scriptPath, pairsManifestPath, outputPath, options)
         "--height",
         String(options.comparisonHeight),
         "--tolerance",
-        String(options.tolerance)
+        String(options.tolerance),
+        "--ink-threshold",
+        String(options.inkThreshold),
+        "--vertical-bands",
+        String(options.verticalBands),
+        "--horizontal-bands",
+        String(options.horizontalBands),
+        "--grid-columns",
+        String(options.gridColumns),
+        "--grid-rows",
+        String(options.gridRows)
       ],
       (error, stdout, stderr) => {
         if (stdout) {
@@ -314,6 +380,15 @@ function summarizeDoc(doc, options) {
     comparedPages.length > 0
       ? comparedPages.reduce((sum, page) => sum + page.mismatchRatio, 0) / comparedPages.length
       : undefined;
+  const layoutStructureAverage =
+    comparedPages.length > 0
+      ? comparedPages.reduce((sum, page) => sum + page.layoutStructureDiff, 0) /
+        comparedPages.length
+      : undefined;
+  const inkCoverageDiffAverage =
+    comparedPages.length > 0
+      ? comparedPages.reduce((sum, page) => sum + page.inkCoverageDiff, 0) / comparedPages.length
+      : undefined;
   const maxMeanAbs =
     comparedPages.length > 0
       ? Math.max(...comparedPages.map((page) => page.meanAbsoluteDiff))
@@ -322,12 +397,22 @@ function summarizeDoc(doc, options) {
     comparedPages.length > 0
       ? Math.max(...comparedPages.map((page) => page.mismatchRatio))
       : undefined;
+  const maxLayoutStructureDiff =
+    comparedPages.length > 0
+      ? Math.max(...comparedPages.map((page) => page.layoutStructureDiff))
+      : undefined;
+  const maxInkCoverageDiff =
+    comparedPages.length > 0
+      ? Math.max(...comparedPages.map((page) => page.inkCoverageDiff))
+      : undefined;
   const pageCountMatches = doc.expectedPages === doc.actualPages;
   const visualPass =
     pageCountMatches &&
     comparedPages.length === doc.expectedPages &&
     (maxMeanAbs ?? Number.POSITIVE_INFINITY) <= options.meanAbsThreshold &&
-    (maxMismatchRatio ?? Number.POSITIVE_INFINITY) <= options.mismatchRatioThreshold;
+    (maxMismatchRatio ?? Number.POSITIVE_INFINITY) <= options.mismatchRatioThreshold &&
+    (maxLayoutStructureDiff ?? Number.POSITIVE_INFINITY) <= options.layoutStructureThreshold &&
+    (maxInkCoverageDiff ?? Number.POSITIVE_INFINITY) <= options.inkCoverageDiffThreshold;
 
   return {
     ...doc,
@@ -337,10 +422,18 @@ function summarizeDoc(doc, options) {
       meanAbsAverage !== undefined ? Number(meanAbsAverage.toFixed(6)) : undefined,
     mismatchRatioAverage:
       mismatchRatioAverage !== undefined ? Number(mismatchRatioAverage.toFixed(6)) : undefined,
+    layoutStructureDiffAverage:
+      layoutStructureAverage !== undefined ? Number(layoutStructureAverage.toFixed(6)) : undefined,
+    inkCoverageDiffAverage:
+      inkCoverageDiffAverage !== undefined ? Number(inkCoverageDiffAverage.toFixed(6)) : undefined,
     maxMeanAbsoluteDiff:
       maxMeanAbs !== undefined ? Number(maxMeanAbs.toFixed(6)) : undefined,
     maxMismatchRatio:
       maxMismatchRatio !== undefined ? Number(maxMismatchRatio.toFixed(6)) : undefined,
+    maxLayoutStructureDiff:
+      maxLayoutStructureDiff !== undefined ? Number(maxLayoutStructureDiff.toFixed(6)) : undefined,
+    maxInkCoverageDiff:
+      maxInkCoverageDiff !== undefined ? Number(maxInkCoverageDiff.toFixed(6)) : undefined,
     visualPass
   };
 }
@@ -355,12 +448,12 @@ function buildMarkdownReport(summary, reportJsonPath) {
     `Passing docs: ${summary.passingDocs}`,
     `Failing docs: ${summary.failingDocs}`,
     `Compared pages: ${summary.totalComparedPages}`,
-    `Thresholds: mean abs <= ${summary.thresholds.meanAbsoluteDiff}, mismatch ratio <= ${summary.thresholds.mismatchRatio}`,
+    `Thresholds: mean abs <= ${summary.thresholds.meanAbsoluteDiff}, mismatch ratio <= ${summary.thresholds.mismatchRatio}, layout structure <= ${summary.thresholds.layoutStructureDiff}, ink coverage diff <= ${summary.thresholds.inkCoverageDiff}`,
     "",
     "## Worst docs",
     "",
-    "| DOCX | Expected | Actual | Avg diff | Max diff | Avg mismatch | Max mismatch | Result |",
-    "| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |"
+    "| DOCX | Expected | Actual | Avg diff | Max diff | Avg mismatch | Max mismatch | Avg layout | Max layout | Avg ink | Max ink | Result |",
+    "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |"
   ];
 
   summary.docs
@@ -369,21 +462,31 @@ function buildMarkdownReport(summary, reportJsonPath) {
       const severityLeft =
         Math.abs(left.actualPages - left.expectedPages) * 10 +
         (left.maxMismatchRatio ?? 0) * 5 +
+        (left.maxLayoutStructureDiff ?? 0) * 8 +
+        (left.maxInkCoverageDiff ?? 0) * 6 +
         (left.maxMeanAbsoluteDiff ?? 0);
       const severityRight =
         Math.abs(right.actualPages - right.expectedPages) * 10 +
         (right.maxMismatchRatio ?? 0) * 5 +
+        (right.maxLayoutStructureDiff ?? 0) * 8 +
+        (right.maxInkCoverageDiff ?? 0) * 6 +
         (right.maxMeanAbsoluteDiff ?? 0);
       return severityRight - severityLeft;
     })
     .slice(0, 20)
     .forEach((doc) => {
       lines.push(
-        `| ${path.basename(doc.input)} | ${doc.expectedPages} | ${doc.actualPages} | ${doc.meanAbsoluteDiffAverage ?? ""} | ${doc.maxMeanAbsoluteDiff ?? ""} | ${doc.mismatchRatioAverage ?? ""} | ${doc.maxMismatchRatio ?? ""} | ${doc.visualPass ? "pass" : "fail"} |`
+        `| ${path.basename(doc.input)} | ${doc.expectedPages} | ${doc.actualPages} | ${doc.meanAbsoluteDiffAverage ?? ""} | ${doc.maxMeanAbsoluteDiff ?? ""} | ${doc.mismatchRatioAverage ?? ""} | ${doc.maxMismatchRatio ?? ""} | ${doc.layoutStructureDiffAverage ?? ""} | ${doc.maxLayoutStructureDiff ?? ""} | ${doc.inkCoverageDiffAverage ?? ""} | ${doc.maxInkCoverageDiff ?? ""} | ${doc.visualPass ? "pass" : "fail"} |`
       );
     });
 
-  lines.push("", "## Worst pages", "", "| DOCX | Page | Mean diff | Mismatch ratio |", "| --- | ---: | ---: | ---: |");
+  lines.push(
+    "",
+    "## Worst pages",
+    "",
+    "| DOCX | Page | Mean diff | Mismatch ratio | Layout diff | Ink coverage diff |",
+    "| --- | ---: | ---: | ---: | ---: | ---: |"
+  );
 
   summary.docs
     .flatMap((doc) =>
@@ -393,18 +496,22 @@ function buildMarkdownReport(summary, reportJsonPath) {
           input: doc.input,
           pageNumber: page.pageNumber,
           meanAbsoluteDiff: page.meanAbsoluteDiff,
-          mismatchRatio: page.mismatchRatio
+          mismatchRatio: page.mismatchRatio,
+          layoutStructureDiff: page.layoutStructureDiff,
+          inkCoverageDiff: page.inkCoverageDiff
         }))
     )
     .sort(
       (left, right) =>
+        right.layoutStructureDiff - left.layoutStructureDiff ||
+        right.inkCoverageDiff - left.inkCoverageDiff ||
         right.mismatchRatio - left.mismatchRatio ||
         right.meanAbsoluteDiff - left.meanAbsoluteDiff
     )
     .slice(0, 30)
     .forEach((page) => {
       lines.push(
-        `| ${path.basename(page.input)} | ${page.pageNumber} | ${page.meanAbsoluteDiff} | ${page.mismatchRatio} |`
+        `| ${path.basename(page.input)} | ${page.pageNumber} | ${page.meanAbsoluteDiff} | ${page.mismatchRatio} | ${page.layoutStructureDiff} | ${page.inkCoverageDiff} |`
       );
     });
 
@@ -535,7 +642,18 @@ async function main() {
             ...page,
             meanAbsoluteDiff: metrics.meanAbsoluteDiff,
             rootMeanSquareDiff: metrics.rootMeanSquareDiff,
-            mismatchRatio: metrics.mismatchRatio
+            mismatchRatio: metrics.mismatchRatio,
+            layoutStructureDiff: metrics.layoutStructureDiff,
+            inkCoverageDiff: metrics.inkCoverageDiff,
+            verticalProfileDiff: metrics.verticalProfileDiff,
+            horizontalProfileDiff: metrics.horizontalProfileDiff,
+            gridDensityDiff: metrics.gridDensityDiff,
+            viewerInkCoverage: metrics.viewerInkCoverage,
+            groundTruthInkCoverage: metrics.groundTruthInkCoverage,
+            topInkDiff: metrics.topInkDiff,
+            bottomInkDiff: metrics.bottomInkDiff,
+            leftInkDiff: metrics.leftInkDiff,
+            rightInkDiff: metrics.rightInkDiff
           }
         : page;
     });
@@ -547,7 +665,9 @@ async function main() {
     baseUrl: options.baseUrl,
     thresholds: {
       meanAbsoluteDiff: options.meanAbsThreshold,
-      mismatchRatio: options.mismatchRatioThreshold
+      mismatchRatio: options.mismatchRatioThreshold,
+      layoutStructureDiff: options.layoutStructureThreshold,
+      inkCoverageDiff: options.inkCoverageDiffThreshold
     },
     totalDocs: summarizedDocs.length,
     passingDocs: summarizedDocs.filter((doc) => doc.visualPass).length,

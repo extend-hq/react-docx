@@ -88,6 +88,21 @@ const FIELD_HYPERLINK_DOC_XML = `<?xml version="1.0" encoding="UTF-8" standalone
   </w:body>
 </w:document>`;
 
+const DROP_CAP_DOC_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p>
+      <w:pPr>
+        <w:framePr w:dropCap="drop" w:lines="3" w:wrap="around" w:hAnchor="text" w:vAnchor="text" w:x="240" w:y="120" w:hSpace="80" w:vSpace="40"/>
+      </w:pPr>
+      <w:r><w:t>A</w:t></w:r>
+    </w:p>
+    <w:p>
+      <w:r><w:t>fter the drop cap paragraph.</w:t></w:r>
+    </w:p>
+  </w:body>
+</w:document>`;
+
 const FORM_CONTROLS_DOC_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml">
   <w:body>
@@ -2052,5 +2067,71 @@ describe("doc-model import", () => {
       doNotBreakWrappedTables: true,
       doNotBreakConstrainedForcedTable: true
     });
+  });
+
+  it("imports paragraph drop-cap frame metadata", async () => {
+    const zip = createZip([
+      { name: "[Content_Types].xml", content: CONTENT_TYPES_XML },
+      { name: "_rels/.rels", content: ROOT_RELS_XML },
+      { name: "word/document.xml", content: DROP_CAP_DOC_XML }
+    ]);
+
+    const pkg = await parseDocx(zip);
+    const model = buildDocModel(pkg);
+    const paragraph = model.nodes[0];
+    expect(paragraph?.type).toBe("paragraph");
+    if (paragraph?.type !== "paragraph") {
+      return;
+    }
+
+    expect(paragraph.style?.dropCap).toEqual({
+      type: "drop",
+      lines: 3,
+      wrap: "around",
+      horizontalAnchor: "text",
+      verticalAnchor: "text",
+      xTwips: 240,
+      yTwips: 120,
+      horizontalSpaceTwips: 80,
+      verticalSpaceTwips: 40
+    });
+  });
+
+  it("imports run character spacing", async () => {
+    const zip = createZip([
+      { name: "[Content_Types].xml", content: CONTENT_TYPES_XML },
+      { name: "_rels/.rels", content: ROOT_RELS_XML },
+      {
+        name: "word/document.xml",
+        content:
+          `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+          `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">` +
+          `<w:body>` +
+          `<w:p>` +
+          `<w:r>` +
+          `<w:rPr><w:spacing w:val="20"/></w:rPr>` +
+          `<w:t>Spaced</w:t>` +
+          `</w:r>` +
+          `</w:p>` +
+          `</w:body>` +
+          `</w:document>`
+      }
+    ]);
+
+    const pkg = await parseDocx(zip);
+    const model = buildDocModel(pkg);
+    const paragraph = model.nodes[0];
+    expect(paragraph?.type).toBe("paragraph");
+    if (paragraph?.type !== "paragraph") {
+      return;
+    }
+
+    const run = paragraph.children[0];
+    expect(run?.type).toBe("text");
+    if (run?.type !== "text") {
+      return;
+    }
+
+    expect(run.style?.characterSpacingTwips).toBe(20);
   });
 });

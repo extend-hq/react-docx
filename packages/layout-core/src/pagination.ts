@@ -234,6 +234,30 @@ export function paragraphHasLastRenderedPageBreak(paragraph: ParagraphNode): boo
   return paragraphBreakFlagsBySourceXml.get(xml)?.lastRenderedPageBreak ?? false;
 }
 
+export function paragraphStartsWithLastRenderedPageBreak(paragraph: ParagraphNode): boolean {
+  const xml = paragraph.sourceXml ?? "";
+  if (!xml || !paragraphHasLastRenderedPageBreak(paragraph)) {
+    return false;
+  }
+
+  const breakMatch = xml.match(LAST_RENDERED_PAGE_BREAK_XML_PATTERN);
+  if (!breakMatch || breakMatch.index === undefined) {
+    return false;
+  }
+
+  const leadingXml = xml
+    .slice(0, breakMatch.index)
+    .replace(/^<w:p\b[^>]*>/i, "")
+    .replace(/<w:pPr\b(?:[^/>]*\/>|[\s\S]*?<\/w:pPr>)/i, "")
+    .replace(/<w:rPr\b[\s\S]*?<\/w:rPr>/gi, "")
+    .replace(/<\/?w:r\b[^>]*>/gi, "")
+    .replace(/<w:(?:proofErr|bookmarkStart|bookmarkEnd|permStart|permEnd)\b[^>]*\/?>/gi, "")
+    .replace(/<\/?w:(?:ins|smartTag)\b[^>]*>/gi, "")
+    .replace(/\s+/g, "");
+
+  return leadingXml.length === 0;
+}
+
 export function paragraphBeforeSpacingPx(paragraph: ParagraphNode): number {
   return twipsToPixels(paragraph.style?.spacing?.beforeTwips) ?? 0;
 }

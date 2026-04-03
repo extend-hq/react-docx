@@ -12,6 +12,8 @@ const DOCUMENT_RELS_WITH_HEADER =
   '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId100" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/></Relationships>';
 const HEADER_XML =
   '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:p><w:r><w:t>Original Header</w:t></w:r></w:p></w:hdr>';
+const DOCUMENT_WITH_DROP_CAP_XML =
+  '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:pPr><w:framePr w:dropCap="drop" w:lines="3" w:wrap="around" w:hAnchor="text" w:vAnchor="text" w:x="240" w:y="120" w:hSpace="80" w:vSpace="40"/></w:pPr><w:r><w:t>A</w:t></w:r></w:p><w:p><w:r><w:t>fter paragraph.</w:t></w:r></w:p></w:body></w:document>';
 
 describe("round-trip", () => {
   it("builds model, edits it, then serializes back to document.xml", async () => {
@@ -86,6 +88,40 @@ describe("round-trip", () => {
     expect(xml).toContain('w:val="single"');
     expect(xml).toContain('w:sz="8"');
     expect(xml).toContain('w:color="2F5496"');
+  });
+
+  it("serializes parsed drop-cap metadata after editing paragraph text", async () => {
+    const seed = createMinimalDocxPackage(DOCUMENT_WITH_DROP_CAP_XML);
+    const pkg = await parseDocx(packageToArrayBuffer(seed));
+    const model = buildDocModel(pkg);
+    const paragraph = model.nodes[0];
+    expect(paragraph?.type).toBe("paragraph");
+    if (paragraph?.type !== "paragraph") {
+      return;
+    }
+
+    paragraph.children = [
+      {
+        type: "text",
+        text: "AB",
+        style: paragraph.children[0]?.type === "text" ? paragraph.children[0].style : undefined
+      }
+    ];
+    paragraph.sourceXml = undefined;
+
+    const serialized = serializeDocModel(model, pkg);
+    const xml = serialized.parts.get("word/document.xml")?.content ?? "";
+    expect(xml).toContain("<w:framePr");
+    expect(xml).toContain('w:dropCap="drop"');
+    expect(xml).toContain('w:lines="3"');
+    expect(xml).toContain('w:wrap="around"');
+    expect(xml).toContain('w:hAnchor="text"');
+    expect(xml).toContain('w:vAnchor="text"');
+    expect(xml).toContain('w:x="240"');
+    expect(xml).toContain('w:y="120"');
+    expect(xml).toContain('w:hSpace="80"');
+    expect(xml).toContain('w:vSpace="40"');
+    expect(xml).toContain("AB");
   });
 
   it("serializes hyperlink runs with hyperlink relationship entries", async () => {

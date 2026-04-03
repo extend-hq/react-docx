@@ -50,4 +50,21 @@ describe("page-count-reconciliation", () => {
 
     expect(reconciled).toBe(initialPages);
   });
+
+  it("respects custom candidate scales when narrowing an over-pagination case", () => {
+    const initialPages = [["page-1"], ["page-2"], ["page-3"]];
+    const reconciled = reconcilePagesToTargetCountByScalingHeight({
+      initialPages,
+      targetPageCount: 2,
+      scales: [1.01, 1.02, 1.03],
+      buildPagesAtScale: (scale) => {
+        if (scale >= 1.02) {
+          return [["page-1"], ["page-2"]];
+        }
+        return initialPages;
+      }
+    });
+
+    expect(reconciled).toEqual([["page-1"], ["page-2"]]);
+  });
 });

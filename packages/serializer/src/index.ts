@@ -428,6 +428,39 @@ function paragraphPropertiesXml(style: ParagraphNode["style"]): string {
     fragments.push(`<w:ind ${indentFragments.join(" ")}/>`);
   }
 
+  if (style.dropCap) {
+    const frameFragments = [`w:dropCap="${escapeXml(style.dropCap.type)}"`];
+    if (Number.isFinite(style.dropCap.lines) && (style.dropCap.lines as number) > 0) {
+      frameFragments.push(`w:lines="${Math.round(style.dropCap.lines as number)}"`);
+    }
+    if (style.dropCap.wrap) {
+      frameFragments.push(`w:wrap="${escapeXml(style.dropCap.wrap)}"`);
+    }
+    if (style.dropCap.horizontalAnchor) {
+      frameFragments.push(`w:hAnchor="${escapeXml(style.dropCap.horizontalAnchor)}"`);
+    }
+    if (style.dropCap.verticalAnchor) {
+      frameFragments.push(`w:vAnchor="${escapeXml(style.dropCap.verticalAnchor)}"`);
+    }
+    const x = twipsToXmlNonNegative(style.dropCap.xTwips);
+    const y = twipsToXmlNonNegative(style.dropCap.yTwips);
+    const hSpace = twipsToXmlNonNegative(style.dropCap.horizontalSpaceTwips);
+    const vSpace = twipsToXmlNonNegative(style.dropCap.verticalSpaceTwips);
+    if (x !== undefined) {
+      frameFragments.push(`w:x="${x}"`);
+    }
+    if (y !== undefined) {
+      frameFragments.push(`w:y="${y}"`);
+    }
+    if (hSpace !== undefined) {
+      frameFragments.push(`w:hSpace="${hSpace}"`);
+    }
+    if (vSpace !== undefined) {
+      frameFragments.push(`w:vSpace="${vSpace}"`);
+    }
+    fragments.push(`<w:framePr ${frameFragments.join(" ")}/>`);
+  }
+
   const paragraphBorderXml = paragraphBordersXml(style.borders);
   if (paragraphBorderXml) {
     fragments.push(paragraphBorderXml);

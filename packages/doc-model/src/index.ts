@@ -12,6 +12,7 @@ export interface TextStyle {
   highlight?: string;
   fontSizePt?: number;
   fontFamily?: string;
+  characterSpacingTwips?: number;
   verticalAlign?: "superscript" | "subscript";
 }
 
@@ -179,6 +180,17 @@ export interface ParagraphStyle {
   keepLines?: boolean;
   widowControl?: boolean;
   pageBreakBefore?: boolean;
+  dropCap?: {
+    type: "drop" | "margin";
+    lines?: number;
+    wrap?: string;
+    horizontalAnchor?: string;
+    verticalAnchor?: string;
+    xTwips?: number;
+    yTwips?: number;
+    horizontalSpaceTwips?: number;
+    verticalSpaceTwips?: number;
+  };
 }
 
 export interface ParagraphNode {
@@ -1867,6 +1879,9 @@ function mergeTextStyles(...styles: Array<TextStyle | undefined>): TextStyle | u
     if (style.fontFamily !== undefined) {
       merged.fontFamily = style.fontFamily;
     }
+    if (style.characterSpacingTwips !== undefined) {
+      merged.characterSpacingTwips = style.characterSpacingTwips;
+    }
     if (style.verticalAlign !== undefined) {
       merged.verticalAlign = style.verticalAlign;
     }
@@ -2028,6 +2043,43 @@ function mergeParagraphBoolean(
   return inherited;
 }
 
+function parseParagraphDropCapFromXml(
+  paragraphPropertiesXml: string
+): NonNullable<ParagraphStyle["dropCap"]> | undefined {
+  const framePrTag = paragraphPropertiesXml.match(/<w:framePr\b[^>]*\/?>/i)?.[0] ?? "";
+  if (!framePrTag) {
+    return undefined;
+  }
+
+  const dropCapRaw = getAttribute(framePrTag, "w:dropCap")?.trim().toLowerCase();
+  if (dropCapRaw !== "drop" && dropCapRaw !== "margin") {
+    return undefined;
+  }
+
+  const lines = parseIntegerAttribute(framePrTag, "w:lines");
+  const wrap = getAttribute(framePrTag, "w:wrap")?.trim();
+  const horizontalAnchor = getAttribute(framePrTag, "w:hAnchor")?.trim();
+  const verticalAnchor = getAttribute(framePrTag, "w:vAnchor")?.trim();
+  const xTwips = parseIntegerAttribute(framePrTag, "w:x");
+  const yTwips = parseIntegerAttribute(framePrTag, "w:y");
+  const horizontalSpaceTwips = parseIntegerAttribute(framePrTag, "w:hSpace");
+  const verticalSpaceTwips = parseIntegerAttribute(framePrTag, "w:vSpace");
+
+  return {
+    type: dropCapRaw,
+    ...(Number.isFinite(lines) && (lines as number) > 0
+      ? { lines: Math.round(lines as number) }
+      : undefined),
+    ...(wrap ? { wrap } : undefined),
+    ...(horizontalAnchor ? { horizontalAnchor } : undefined),
+    ...(verticalAnchor ? { verticalAnchor } : undefined),
+    ...(xTwips !== undefined ? { xTwips } : undefined),
+    ...(yTwips !== undefined ? { yTwips } : undefined),
+    ...(horizontalSpaceTwips !== undefined ? { horizontalSpaceTwips } : undefined),
+    ...(verticalSpaceTwips !== undefined ? { verticalSpaceTwips } : undefined)
+  };
+}
+
 function resolveThemeFont(themeToken: string | undefined, themeFonts: ThemeFontMap): string | undefined {
   if (!themeToken) {
     return undefined;
@@ -2068,6 +2120,7 @@ function parseTextStyleFromXml(xml: string, themeFonts: ThemeFontMap = {}): Text
 
   const colorMatch = xml.match(/<w:color\b[^>]*w:val="([^"]+)"/i);
   const highlightMatch = xml.match(/<w:highlight\b[^>]*w:val="([^"]+)"/i);
+  const characterSpacingMatch = xml.match(/<w:spacing\b[^>]*w:val="(-?\d+)"/i);
   const sizeMatch =
     xml.match(/<w:sz\b[^>]*w:val="(\d+)"/i) ??
     xml.match(/<w:szCs\b[^>]*w:val="(\d+)"/i);
@@ -2139,6 +2192,10 @@ function parseTextStyleFromXml(xml: string, themeFonts: ThemeFontMap = {}): Text
 
   if (highlightMatch?.[1]) {
     style.highlight = highlightMatch[1];
+  }
+
+  if (characterSpacingMatch?.[1]) {
+    style.characterSpacingTwips = Number(characterSpacingMatch[1]);
   }
 
   if (sizeMatch?.[1]) {
@@ -4534,6 +4591,7 @@ function parseParagraphStyle(paragraphXml: string, context: ParseContext): Parag
   const directBorders = parseParagraphBorderSetFromXml(paragraphPropertiesXml);
   const directNumbering = parseParagraphNumberingFromXml(paragraphPropertiesXml);
   const directTabStops = parseParagraphTabStopsFromXml(paragraphPropertiesXml);
+  const directDropCap = parseParagraphDropCapFromXml(paragraphPropertiesXml);
   const directContextualSpacing = parseOnOffAttribute(paragraphPropertiesXml, "contextualSpacing");
   const directKeepNext = parseOnOffAttribute(paragraphPropertiesXml, "keepNext");
   const directKeepLines = parseOnOffAttribute(paragraphPropertiesXml, "keepLines");
@@ -4610,6 +4668,7 @@ function parseParagraphStyle(paragraphXml: string, context: ParseContext): Parag
       !backgroundColor &&
       !borders &&
       (!tabStops || tabStops.length === 0) &&
+      !directDropCap &&
       contextualSpacing === undefined &&
       keepNext === undefined &&
       keepLines === undefined &&
@@ -4630,6 +4689,7 @@ function parseParagraphStyle(paragraphXml: string, context: ParseContext): Parag
     backgroundColor,
     borders,
     tabStops,
+    dropCap: directDropCap,
     contextualSpacing,
     keepNext,
     keepLines,
@@ -6293,7 +6353,12 @@ function cloneParagraphStyle(
     numbering: cloneParagraphNumbering(style.numbering),
     spacing: cloneParagraphSpacing(style.spacing),
     indent: cloneParagraphIndent(style.indent),
-    borders: cloneParagraphBorderSet(style.borders)
+    borders: cloneParagraphBorderSet(style.borders),
+    dropCap: style.dropCap
+      ? {
+          ...style.dropCap
+        }
+      : undefined
   };
 }
 

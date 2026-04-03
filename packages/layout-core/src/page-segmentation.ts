@@ -9,6 +9,7 @@ import {
   collectTableExplicitPageBreakInfo,
   paragraphAfterSpacingPx,
   paragraphBeforeSpacingPx,
+  paragraphStartsWithLastRenderedPageBreak,
   paragraphHasPageBreakBefore,
   resolvePaginationSectionMetricsIndexForNodeIndex,
   resolveParagraphBeforeSpacingPx,
@@ -96,6 +97,7 @@ export interface DocumentPageSegmentationOptions extends OverflowBreakCollection
   measuredTableRowHeightsByNodeIndex?: Record<number, number[]>;
   measuredPageContentHeightsPxByPageIndex?: number[];
   minParagraphLineHeightPx?: number;
+  preferLastRenderedParagraphStartBreaks?: boolean;
 }
 
 function paragraphSegmentHasPartialLineRange(paragraphLineRange?: ParagraphLineRange): boolean {
@@ -523,6 +525,8 @@ export function buildDocumentPageNodeSegments(
   const allowParagraphLineSplitting = options?.allowParagraphLineSplitting ?? true;
   const suppressSpacingBeforeAfterPageBreak =
     options?.suppressSpacingBeforeAfterPageBreak ?? false;
+  const preferLastRenderedParagraphStartBreaks =
+    options?.preferLastRenderedParagraphStartBreaks ?? false;
   const measuredPageContentHeightsPxByPageIndex =
     options?.measuredPageContentHeightsPxByPageIndex;
   const resolvePageContentHeightPx = (
@@ -583,6 +587,20 @@ export function buildDocumentPageNodeSegments(
       }
 
       if (paragraphHasPageBreakBefore(node) && currentPageSegments.length > 0) {
+        startNextPage();
+        pageConsumedHeightPx = 0;
+        previousParagraphAfterPx = 0;
+        currentPageContentHeightPx = resolvePageContentHeightPx(
+          currentPageIndex,
+          nodeMetrics.pageContentHeightPx
+        );
+      }
+
+      if (
+        preferLastRenderedParagraphStartBreaks &&
+        paragraphStartsWithLastRenderedPageBreak(node) &&
+        currentPageSegments.length > 0
+      ) {
         startNextPage();
         pageConsumedHeightPx = 0;
         previousParagraphAfterPx = 0;

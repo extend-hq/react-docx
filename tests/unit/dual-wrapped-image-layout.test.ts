@@ -320,4 +320,48 @@ describe("dual wrapped image layout", () => {
       bottom: 86
     });
   });
+
+  it("preserves right alignment for single-slot wrapped lines", async () => {
+    const { resolveParagraphDualWrappedTextLayout } = await import(
+      "../../packages/react-viewer/src/editor"
+    );
+
+    const paragraph: ParagraphNode = {
+      type: "paragraph",
+      style: {
+        align: "right"
+      },
+      children: [
+        {
+          type: "image",
+          widthPx: 44,
+          heightPx: 44,
+          floating: {
+            xPx: 8,
+            yPx: 0,
+            distLPx: 8,
+            distRPx: 8,
+            distTPx: 0,
+            distBPx: 0,
+            wrapType: "square",
+            wrapText: "bothSides",
+            behindDocument: false
+          }
+        },
+        {
+          type: "text",
+          text: "INVOICE"
+        }
+      ]
+    };
+
+    const layout = resolveParagraphDualWrappedTextLayout(paragraph, 320, 22);
+
+    expect(layout).toBeDefined();
+    expect(layout?.layout.lines).toHaveLength(1);
+    expect(layout?.layout.lines[0]?.fragments).toHaveLength(1);
+
+    const fragment = layout?.layout.lines[0]?.fragments[0];
+    expect(fragment?.x ?? 0).toBeGreaterThan(200);
+  });
 });
