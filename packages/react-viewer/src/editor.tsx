@@ -206,6 +206,7 @@ const EMPTY_PARAGRAPH_EXTRA_HEIGHT_PX = 0;
 const PARAGRAPH_SEGMENT_TOP_BLEED_PX = 10;
 const PARAGRAPH_SEGMENT_DESCENDER_BLEED_PX = 3;
 const INITIAL_PAGINATION_PREMEASURE_PAGE_LIMIT = 8;
+const TOP_AND_BOTTOM_VERTICAL_DRAG_SNAP_PX = 10;
 const HEADER_FOOTER_INACTIVE_OPACITY = 0.5;
 const LETTERHEAD_INDENT_MIN_TWIPS = 900;
 const LETTERHEAD_INDENT_MAX_TWIPS = 4200;
@@ -3637,6 +3638,16 @@ interface WrappedParagraphSelectionDragState {
   pointerId: number;
   locationKey: string;
   anchorOffset: number;
+  anchorBoundary: DocxTextRangeBoundary;
+  startX: number;
+  startY: number;
+}
+
+interface WrappedParagraphSurfaceRegistration {
+  location: ParagraphLocation;
+  element: HTMLElement;
+  layout: PretextVariableWidthLayout;
+  textLength: number;
 }
 
 interface DualWrappedFloatingImageGeometry {
@@ -7158,7 +7169,11 @@ function mergeTrailingPagesToTargetCount(
 
 function shouldRenderWrappedFloatingImage(image: ImageRunNode): boolean {
   const floating = image.floating;
-  if (!floating || image.syntheticTextBox) {
+  if (!floating) {
+    return false;
+  }
+
+  if (image.syntheticTextBox && !syntheticTextBoxContainsPictureLayer(image)) {
     return false;
   }
 
@@ -7621,7 +7636,13 @@ export function resolveWrappedFloatingImageDropPatch(
     previewGeometry === undefined ||
     previewGeometry.exclusion.left <= 0 ||
     previewGeometry.exclusion.right >= hostWidth;
-  const explicitTopPx = Math.max(0, Math.round(movedTop - Math.round(baseFloating.distTPx ?? 0)));
+  const rawExplicitTopPx = Math.max(0, Math.round(movedTop - Math.round(baseFloating.distTPx ?? 0)));
+  const currentTopPx = Math.max(0, Math.round(baseFloating.yPx ?? 0));
+  const explicitTopPx =
+    wrapType.trim().toLowerCase() === "topandbottom" &&
+    Math.abs(rawExplicitTopPx - currentTopPx) < TOP_AND_BOTTOM_VERTICAL_DRAG_SNAP_PX
+      ? currentTopPx
+      : rawExplicitTopPx;
 
   return {
     wrapType,
@@ -9295,7 +9316,7 @@ function syntheticTextBoxSvg(
   // Grouped drawings that already import as a combined SVG image + textbox
   // should keep that original synthetic SVG. Rebuilding them here from only
   // the textbox XML drops the picture layer and regresses letterhead/logo art.
-  if (/<pic:pic\b|<a:blip\b/i.test(image.sourceXml)) {
+  if (syntheticTextBoxContainsPictureLayer(image)) {
     return undefined;
   }
 
@@ -9414,6 +9435,14 @@ function syntheticTextBoxSvg(
       ""
     )}</svg>`
   );
+}
+
+function syntheticTextBoxContainsPictureLayer(image: ImageRunNode): boolean {
+  if (!image.syntheticTextBox || !image.sourceXml) {
+    return false;
+  }
+
+  return /<pic:pic\b|<a:blip\b/i.test(image.sourceXml);
 }
 
 function summarizeChangeFeatures(prefix: string, features: string[], fallback: string): string {
@@ -20440,6 +20469,9 @@ export function DocxEditorViewer({
   const [hoveredDropCapNodeIndex, setHoveredDropCapNodeIndex] = React.useState<number | undefined>();
   const [activeWrappedParagraphSession, setActiveWrappedParagraphSession] =
     React.useState<WrappedParagraphEditingSession | undefined>();
+  const activeWrappedParagraphSessionRef = React.useRef<WrappedParagraphEditingSession | undefined>(
+    undefined
+  );
   const [resizePreview, setResizePreview] = React.useState<{
     imageKey: string;
     widthPx: number;
@@ -20501,6 +20533,9 @@ export function DocxEditorViewer({
   const wrappedParagraphSelectionDragRef = React.useRef<
     WrappedParagraphSelectionDragState | undefined
   >(undefined);
+  const wrappedParagraphSurfaceRegistryRef = React.useRef<
+    Map<string, WrappedParagraphSurfaceRegistration>
+  >(new Map());
   const [isInitialPaginationSettled, setIsInitialPaginationSettled] = React.useState(
     !deferInitialPaginationPaint
   );
@@ -23515,6 +23550,49 @@ export function DocxEditorViewer({
     ]
   );
 
+  const resolveWrappedParagraphBoundaryFromPoint = React.useCallback(
+    (point: { x: number; y: number }): DocxTextRangeBoundary | undefined => {
+      const elementAtPoint = document.elementFromPoint(point.x, point.y);
+      if (!(elementAtPoint instanceof Element)) {
+        return undefined;
+      }
+
+      const wrappedRoot = elementAtPoint.closest<HTMLElement>(
+        "[data-docx-wrapped-paragraph-root='true'][data-docx-wrapped-paragraph-location-key]"
+      );
+      if (!wrappedRoot) {
+        return undefined;
+      }
+
+      const locationKey = wrappedRoot.getAttribute("data-docx-wrapped-paragraph-location-key");
+      if (!locationKey) {
+        return undefined;
+      }
+
+      const registeredSurface = wrappedParagraphSurfaceRegistryRef.current.get(locationKey);
+      if (!registeredSurface || !registeredSurface.element.isConnected) {
+        return undefined;
+      }
+
+      const surfaceRect = registeredSurface.element.getBoundingClientRect();
+      const offset = clampNumber(
+        resolveOffsetAtPoint(
+          registeredSurface.layout,
+          point.x - surfaceRect.left,
+          point.y - surfaceRect.top
+        ),
+        0,
+        registeredSurface.textLength
+      );
+
+      return {
+        location: cloneTextRangeLocation(registeredSurface.location),
+        offset
+      };
+    },
+    []
+  );
+
   const selectAllDocumentText = React.useCallback((): void => {
     const rootElement = viewerRootRef.current;
     if (!rootElement) {
@@ -23593,6 +23671,11 @@ export function DocxEditorViewer({
       point: { x: number; y: number },
       fallbackBias?: "start" | "end"
     ): DocxTextRangeBoundary | undefined => {
+      const wrappedParagraphBoundary = resolveWrappedParagraphBoundaryFromPoint(point);
+      if (wrappedParagraphBoundary) {
+        return wrappedParagraphBoundary;
+      }
+
       const documentWithCaret = document as Document & {
         caretPositionFromPoint?: (
           x: number,
@@ -23826,7 +23909,12 @@ export function DocxEditorViewer({
 
       return undefined;
     },
-    [paragraphTextLengthFromElement, resolveParagraphBoundaryFromSelectionPoint, resolveParagraphHostElement]
+    [
+      paragraphTextLengthFromElement,
+      resolveParagraphBoundaryFromSelectionPoint,
+      resolveParagraphHostElement,
+      resolveWrappedParagraphBoundaryFromPoint
+    ]
   );
 
   const resolveActiveRangeFromDomSelection = React.useCallback((): DocxTextRange | undefined => {
@@ -25876,6 +25964,10 @@ export function DocxEditorViewer({
       setResizePreview(undefined);
     }
   }, [editor.model, selectedImage]);
+
+  React.useEffect(() => {
+    activeWrappedParagraphSessionRef.current = activeWrappedParagraphSession;
+  }, [activeWrappedParagraphSession]);
 
   React.useEffect(() => {
     if (!selectedImage && !selectedSectionImageKey) {
@@ -28548,14 +28640,33 @@ export function DocxEditorViewer({
       activeWrappedParagraphSession?.locationKey === locationKey
         ? activeWrappedParagraphSession
         : undefined;
-    const activeRange =
-      editor.activeTextRange &&
-      sameParagraphLocation(editor.activeTextRange.start.location, location) &&
-      sameParagraphLocation(editor.activeTextRange.end.location, location)
-        ? normalizeTextRange(editor.activeTextRange)
+    const paragraphAtLocation = getParagraphAtLocation(editor.model, location).paragraph;
+    const normalizedActiveRange = editor.activeTextRange
+      ? normalizeTextRange(editor.activeTextRange)
+      : undefined;
+    const rangeTouchesParagraph = Boolean(
+      paragraphAtLocation &&
+        normalizedActiveRange &&
+        compareParagraphLocations(
+          paragraphLocationFromTextRangeLocation(normalizedActiveRange.start.location),
+          location
+        ) <= 0 &&
+        compareParagraphLocations(
+          location,
+          paragraphLocationFromTextRangeLocation(normalizedActiveRange.end.location)
+        ) <= 0
+    );
+    const activeRangeOffsets =
+      paragraphAtLocation && normalizedActiveRange && rangeTouchesParagraph
+        ? resolveRangeBoundaryOffsetsForParagraph(
+            location,
+            normalizedActiveRange.start,
+            normalizedActiveRange.end,
+            paragraphAtLocation
+          )
         : undefined;
-    const selectionStart = activeSession?.selectionStart ?? activeRange?.start.offset;
-    const selectionEnd = activeSession?.selectionEnd ?? activeRange?.end.offset;
+    const selectionStart = activeSession?.selectionStart ?? activeRangeOffsets?.[0];
+    const selectionEnd = activeSession?.selectionEnd ?? activeRangeOffsets?.[1];
     const selectionRects =
       selectionStart !== undefined && selectionEnd !== undefined
         ? resolveSelectionRects(layout, selectionStart, selectionEnd)
@@ -28563,15 +28674,18 @@ export function DocxEditorViewer({
     const inputAnchorRect = activeSession
       ? resolveCaretRectAtOffset(layout, activeSession.selectionEnd) ??
         resolveCaretRectAtOffset(layout, activeSession.selectionStart)
-      : activeRange && compareTextRangeBoundaries(activeRange.start, activeRange.end) === 0
-        ? resolveCaretRectAtOffset(layout, activeRange.end.offset)
+      : normalizedActiveRange &&
+          activeRangeOffsets &&
+          compareTextRangeBoundaries(normalizedActiveRange.start, normalizedActiveRange.end) === 0
+        ? resolveCaretRectAtOffset(layout, activeRangeOffsets[1])
         : undefined;
     const caretRect =
       activeSession && activeSession.selectionStart === activeSession.selectionEnd
         ? inputAnchorRect
         : !activeSession &&
-            activeRange &&
-            compareTextRangeBoundaries(activeRange.start, activeRange.end) === 0
+            normalizedActiveRange &&
+            activeRangeOffsets &&
+            compareTextRangeBoundaries(normalizedActiveRange.start, normalizedActiveRange.end) === 0
           ? inputAnchorRect
           : undefined;
 
@@ -28680,11 +28794,20 @@ export function DocxEditorViewer({
         event.clientY - rect.top
       );
       const anchorOffset = event.shiftKey && activeSession ? activeSession.selectionStart : offset;
+      const anchorBoundary: DocxTextRangeBoundary = {
+        location: cloneTextRangeLocation(location),
+        offset: anchorOffset
+      };
       wrappedParagraphSelectionDragRef.current = {
         pointerId: event.pointerId,
         locationKey,
-        anchorOffset
+        anchorOffset,
+        anchorBoundary,
+        startX: event.clientX,
+        startY: event.clientY
       };
+      cancelPendingPointerSelectionReconcile();
+      editor.beginSelectionSession("pointer", { settleAfterMs: 320 });
       event.currentTarget.setPointerCapture(event.pointerId);
       syncWrappedParagraphRange(location, anchorOffset, offset, {
         textOverride: textValue,
@@ -28696,7 +28819,20 @@ export function DocxEditorViewer({
     return (
       <span
         data-docx-wrapped-paragraph-root="true"
+        data-docx-wrapped-paragraph-location-key={locationKey}
         contentEditable={false}
+        ref={(element) => {
+          if (element) {
+            wrappedParagraphSurfaceRegistryRef.current.set(locationKey, {
+              location,
+              element,
+              layout,
+              textLength: (activeSession?.text ?? source.text).length
+            });
+          } else {
+            wrappedParagraphSurfaceRegistryRef.current.delete(locationKey);
+          }
+        }}
         style={{
           display: "block",
           position: "relative",
@@ -28723,24 +28859,55 @@ export function DocxEditorViewer({
           if (!dragState || dragState.pointerId !== event.pointerId || dragState.locationKey !== locationKey) {
             return;
           }
-          const rect = event.currentTarget.getBoundingClientRect();
-          const textValue = activeSession?.text ?? source.text;
-          const focusOffset = resolveOffsetAtPoint(
-            layout,
-            event.clientX - rect.left,
-            event.clientY - rect.top
-          );
-          syncWrappedParagraphRange(location, dragState.anchorOffset, focusOffset, {
-            textOverride: textValue,
-            textLength: textValue.length
-          });
+          const fallbackBias: "start" | "end" =
+            event.clientY < dragState.startY ||
+            (event.clientY === dragState.startY && event.clientX < dragState.startX)
+              ? "start"
+              : "end";
+          const endBoundary =
+            resolveBoundaryFromPoint(
+              {
+                x: event.clientX,
+                y: event.clientY
+              },
+              fallbackBias
+            ) ?? dragState.anchorBoundary;
+
+          if (
+            sameParagraphLocation(
+              paragraphLocationFromTextRangeLocation(dragState.anchorBoundary.location),
+              location
+            ) &&
+            sameParagraphLocation(
+              paragraphLocationFromTextRangeLocation(endBoundary.location),
+              location
+            )
+          ) {
+            const textValue = activeSession?.text ?? source.text;
+            syncWrappedParagraphRange(location, dragState.anchorOffset, endBoundary.offset, {
+              textOverride: textValue,
+              textLength: textValue.length
+            });
+            return;
+          }
+
+          wrappedParagraphPendingSelectionRef.current = undefined;
+          setActiveWrappedParagraphSession(undefined);
+          setSelectionFromDocxBoundaries(dragState.anchorBoundary, endBoundary);
         }}
         onPointerUp={(event) => {
           if (wrappedParagraphSelectionDragRef.current?.pointerId === event.pointerId) {
             wrappedParagraphSelectionDragRef.current = undefined;
             event.currentTarget.releasePointerCapture(event.pointerId);
           }
-          focusWrappedParagraphTextarea();
+          if (
+            activeWrappedParagraphSessionRef.current &&
+            activeWrappedParagraphSessionRef.current.locationKey === locationKey
+          ) {
+            focusWrappedParagraphTextarea();
+          } else {
+            editor.clearSelectionSession("pointer");
+          }
         }}
         onDoubleClick={(event) => {
           if (isReadOnly) {

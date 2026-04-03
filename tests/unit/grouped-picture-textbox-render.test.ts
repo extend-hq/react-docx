@@ -146,6 +146,7 @@ describe("grouped picture textbox render", () => {
     expect(html).toContain("data:image/svg+xml;charset=utf-8,");
     expect(html).toContain("data%3Aimage%2Fjpeg%3Bbase64%2C");
     expect(html).toContain("Commonwealth%20of%20Massachusetts");
+    expect(html).toContain("clear:both");
     expect(html).toContain("After group");
   });
 });

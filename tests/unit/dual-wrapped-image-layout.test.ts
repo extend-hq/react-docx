@@ -428,6 +428,41 @@ describe("dual wrapped image layout", () => {
     expect(style.marginLeft).toBe(36);
   });
 
+  it("ignores tiny vertical jitter when dropping top-and-bottom wrapped images", async () => {
+    const { resolveWrappedFloatingImageDropPatch } = await import(
+      "../../packages/react-viewer/src/editor"
+    );
+
+    const patch = resolveWrappedFloatingImageDropPatch(
+      {
+        type: "image",
+        widthPx: 518,
+        heightPx: 89,
+        floating: {
+          xPx: 6,
+          yPx: 30,
+          distLPx: 12,
+          distRPx: 12,
+          distTPx: 0,
+          distBPx: 0,
+          wrapType: "topAndBottom",
+          behindDocument: false
+        },
+        syntheticTextBox: true,
+        sourceXml: "<w:drawing><pic:pic/></w:drawing>"
+      },
+      640,
+      12,
+      35,
+      {
+        widthPx: 518,
+        heightPx: 89
+      }
+    );
+
+    expect(patch.yPx).toBe(30);
+  });
+
   it("preserves right alignment for single-slot wrapped lines", async () => {
     const { resolveParagraphDualWrappedTextLayout } = await import(
       "../../packages/react-viewer/src/editor"
