@@ -3610,6 +3610,8 @@ interface DualWrappedFloatingImageGeometry {
   exclusion: PretextExclusionRect;
 }
 
+const MIN_DUAL_WRAPPED_INTERIOR_BAND_PX = 72;
+
 interface ParagraphDualWrappedTextLayout {
   source: ParagraphPretextLayoutSource;
   geometries: DualWrappedFloatingImageGeometry[];
@@ -3940,8 +3942,8 @@ export function resolveDualWrappedFloatingImageGeometry(
     const spansInteriorGap =
       exclusionLeftPx > 0 &&
       exclusionRightPx < safeContainerWidthPx &&
-      leftBandWidthPx >= 24 &&
-      rightBandWidthPx >= 24;
+      leftBandWidthPx >= MIN_DUAL_WRAPPED_INTERIOR_BAND_PX &&
+      rightBandWidthPx >= MIN_DUAL_WRAPPED_INTERIOR_BAND_PX;
     const spansSideFloat =
       exclusionLeftPx === 0 || exclusionRightPx === safeContainerWidthPx;
     if (!spansInteriorGap && !spansSideFloat) {
@@ -6347,6 +6349,12 @@ interface ParagraphLineRange {
   lineHeightPx: number;
 }
 
+interface ParagraphSegmentIdentity {
+  nodeIndex: number;
+  startLineIndex: number;
+  endLineIndex: number;
+}
+
 interface DocumentPageNodeSegment {
   nodeIndex: number;
   tableRowRange?: TableRowRange;
@@ -6361,6 +6369,22 @@ function paragraphSegmentHasPartialLineRange(paragraphLineRange?: ParagraphLineR
   return (
     paragraphLineRange.startLineIndex > 0 ||
     paragraphLineRange.endLineIndex < paragraphLineRange.totalLineCount
+  );
+}
+
+function paragraphSegmentIdentityMatches(
+  segment: ParagraphSegmentIdentity | undefined,
+  nodeIndex: number,
+  paragraphLineRange?: ParagraphLineRange
+): boolean {
+  if (!segment || !paragraphLineRange) {
+    return false;
+  }
+
+  return (
+    segment.nodeIndex === nodeIndex &&
+    segment.startLineIndex === paragraphLineRange.startLineIndex &&
+    segment.endLineIndex === paragraphLineRange.endLineIndex
   );
 }
 
@@ -19829,6 +19853,18 @@ export function DocxEditorViewer({
   const tableCellParagraphDraftsRef = React.useRef<Map<string, string>>(new Map());
   const contextMenuClipboardTextRef = React.useRef("");
   const sectionParagraphDraftsRef = React.useRef<Map<string, string>>(new Map());
+  const pendingParagraphSegmentFocusRef = React.useRef<
+    | {
+        nodeIndex: number;
+        startLineIndex: number;
+        endLineIndex: number;
+        point?: {
+          x: number;
+          y: number;
+        };
+      }
+    | undefined
+  >(undefined);
   const paragraphElementsRef = React.useRef<Map<number, HTMLDivElement>>(new Map());
   const tableCellEditorElementsRef = React.useRef<Map<string, HTMLDivElement>>(new Map());
   const tableCellParagraphElementsRef = React.useRef<Map<string, HTMLDivElement>>(new Map());
@@ -19917,6 +19953,9 @@ export function DocxEditorViewer({
   const [measuredPageContentHeightByIndex, setMeasuredPageContentHeightByIndex] = React.useState<
     number[]
   >([]);
+  const [activeEditableParagraphSegment, setActiveEditableParagraphSegment] = React.useState<
+    ParagraphSegmentIdentity | undefined
+  >(undefined);
   const [isInitialPaginationSettled, setIsInitialPaginationSettled] = React.useState(
     !deferInitialPaginationPaint
   );
@@ -19943,8 +19982,10 @@ export function DocxEditorViewer({
     tableCellDraftsRef.current.clear();
     tableCellParagraphDraftsRef.current.clear();
     sectionParagraphDraftsRef.current.clear();
+    pendingParagraphSegmentFocusRef.current = undefined;
     pendingTableCellFocusRef.current = undefined;
     pendingSectionParagraphFocusRef.current = undefined;
+    setActiveEditableParagraphSegment(undefined);
   }, [editor.documentLoadNonce]);
   React.useEffect(() => {
     initialPaginationStableSignatureRef.current = undefined;
@@ -20439,9 +20480,7 @@ export function DocxEditorViewer({
         editor.model.metadata.numberingDefinitions,
         paginationSectionMetrics,
         {
-          // Partial paragraph segments are not contentEditable-safe in edit mode.
-          // Keep line-level splitting for read-only rendering paths.
-          allowParagraphLineSplitting: isReadOnly,
+          allowParagraphLineSplitting: true,
           suppressSpacingBeforeAfterPageBreak,
           preferLastRenderedParagraphStartBreaks,
           measuredTableRowHeightsByNodeIndex,
@@ -20563,7 +20602,7 @@ export function DocxEditorViewer({
               heightScale
             ),
             {
-              allowParagraphLineSplitting: isReadOnly,
+              allowParagraphLineSplitting: true,
               suppressSpacingBeforeAfterPageBreak,
               preferLastRenderedParagraphStartBreaks,
               measuredTableRowHeightsByNodeIndex,
@@ -22388,16 +22427,58 @@ export function DocxEditorViewer({
     return textLengthFromRange(range);
   }, []);
 
+  const activateEditableParagraphSegment = React.useCallback(
+    (
+      nodeIndex: number,
+      paragraphLineRange?: ParagraphLineRange,
+      point?: {
+        x: number;
+        y: number;
+      }
+    ): void => {
+      if (!paragraphSegmentHasPartialLineRange(paragraphLineRange)) {
+        pendingParagraphSegmentFocusRef.current = undefined;
+        setActiveEditableParagraphSegment((current) =>
+          current?.nodeIndex === nodeIndex ? undefined : current
+        );
+        return;
+      }
+
+      const segmentRange = paragraphLineRange!;
+
+      const nextSegment: ParagraphSegmentIdentity = {
+        nodeIndex,
+        startLineIndex: segmentRange.startLineIndex,
+        endLineIndex: segmentRange.endLineIndex
+      };
+      pendingParagraphSegmentFocusRef.current = {
+        ...nextSegment,
+        ...(point ? { point } : undefined)
+      };
+      setActiveEditableParagraphSegment((current) =>
+        paragraphSegmentIdentityMatches(current, nodeIndex, segmentRange)
+          ? current
+          : nextSegment
+      );
+    },
+    []
+  );
+
   const resolveParagraphHostElement = React.useCallback(
     (location: DocxTextRangeLocation): HTMLElement | undefined => {
       if (location.kind === "paragraph") {
-        return (
-          paragraphElementsRef.current.get(location.nodeIndex) ??
-          viewerRootRef.current?.querySelector<HTMLElement>(
+        const trackedElement = paragraphElementsRef.current.get(location.nodeIndex);
+        if (trackedElement?.isConnected) {
+          return trackedElement;
+        }
+
+        const paragraphHosts = Array.from(
+          viewerRootRef.current?.querySelectorAll<HTMLElement>(
             `[data-docx-paragraph-kind="paragraph"][data-docx-paragraph-node-index="${location.nodeIndex}"]`
-          ) ??
-          undefined
+          ) ?? []
         );
+        const editableHost = paragraphHosts.find((host) => host.isContentEditable);
+        return editableHost ?? paragraphHosts[0] ?? undefined;
       }
 
       if (!viewerRootRef.current) {
@@ -22448,6 +22529,49 @@ export function DocxEditorViewer({
       };
     },
     []
+  );
+
+  const resolveParagraphHostElementForOffset = React.useCallback(
+    (paragraphIndex: number, offset: number): HTMLElement | undefined => {
+      const rootElement = viewerRootRef.current;
+      const trackedElement = paragraphElementsRef.current.get(paragraphIndex);
+      const paragraphHosts = Array.from(
+        rootElement?.querySelectorAll<HTMLElement>(
+          `[data-docx-paragraph-kind="paragraph"][data-docx-paragraph-node-index="${paragraphIndex}"]`
+        ) ?? []
+      );
+      const candidates = [
+        ...(trackedElement ? [trackedElement] : []),
+        ...paragraphHosts
+      ].filter((candidate, index, all) => candidate.isConnected && all.indexOf(candidate) === index);
+      const safeOffset = Math.max(0, Math.round(offset));
+
+      for (const candidate of candidates) {
+        try {
+          const position = resolveDomPositionFromTextOffset(candidate, safeOffset);
+          const range = document.createRange();
+          range.setStart(position.node, position.offset);
+          range.setEnd(position.node, position.offset);
+          const caretRect = range.getClientRects().item(0) ?? range.getBoundingClientRect();
+          const hostRect = candidate.getBoundingClientRect();
+          if (
+            Number.isFinite(caretRect.top) &&
+            Number.isFinite(caretRect.bottom) &&
+            Number.isFinite(hostRect.top) &&
+            Number.isFinite(hostRect.bottom) &&
+            caretRect.bottom >= hostRect.top - 1 &&
+            caretRect.top <= hostRect.bottom + 1
+          ) {
+            return candidate;
+          }
+        } catch {
+          continue;
+        }
+      }
+
+      return candidates.find((candidate) => candidate.isContentEditable) ?? candidates[0] ?? undefined;
+    },
+    [resolveDomPositionFromTextOffset]
   );
 
   const resolveDomPositionFromBoundary = React.useCallback(
@@ -24627,7 +24751,7 @@ export function DocxEditorViewer({
   const focusParagraphAtOffset = React.useCallback(
     (paragraphIndex: number, offset: number): void => {
       const focusAttempt = (attempt: number): void => {
-        const element = paragraphElementsRef.current.get(paragraphIndex);
+        const element = resolveParagraphHostElementForOffset(paragraphIndex, offset);
         if (!element || !element.isConnected) {
           if (attempt < 6) {
             window.requestAnimationFrame(() => {
@@ -24662,7 +24786,7 @@ export function DocxEditorViewer({
         focusAttempt(0);
       });
     },
-    [setSelectionWithinElementByTextOffsets]
+    [resolveParagraphHostElementForOffset, setSelectionWithinElementByTextOffsets]
   );
 
   const focusTableCellParagraphAtOffset = React.useCallback(
@@ -28918,7 +29042,16 @@ export function DocxEditorViewer({
       );
       const paragraphSegmentVisibleHeightPx = paragraphSegmentVisibleLineCount * paragraphSegmentLineHeightPx;
       const paragraphSegmentTranslateYPx = paragraphSegmentStartLine * paragraphSegmentLineHeightPx;
-      const shouldTrackParagraphElement = !hasPartialLineRange || paragraphSegmentStartLine === 0;
+      const paragraphSegmentIsActiveEditable = paragraphSegmentIdentityMatches(
+        activeEditableParagraphSegment,
+        nodeIndex,
+        paragraphLineRange
+      );
+      const paragraphHasActiveEditableSegment = activeEditableParagraphSegment?.nodeIndex === nodeIndex;
+      const shouldTrackParagraphElement =
+        !hasPartialLineRange ||
+        paragraphSegmentIsActiveEditable ||
+        (!paragraphHasActiveEditableSegment && paragraphSegmentStartLine === 0);
       const isManualPageBreakParagraph = paragraphIsOnlyExplicitPageBreak(node);
       const paragraphRenderTextWidthPx = paragraphAvailableTextWidthPx(
         node,
@@ -28928,7 +29061,7 @@ export function DocxEditorViewer({
       const editable =
         !hasImage &&
         !isReadOnly &&
-        !hasPartialLineRange &&
+        (!hasPartialLineRange || paragraphSegmentIsActiveEditable) &&
         !isManualPageBreakParagraph;
       const requiresPageAbsoluteContext = paragraphNeedsPageAnchoredAbsolutePositioningContext(node);
       const hasDualWrappedFloatingImage = Boolean(
@@ -29048,6 +29181,8 @@ export function DocxEditorViewer({
           data-docx-paragraph-host="true"
           data-docx-paragraph-kind="paragraph"
           data-docx-paragraph-node-index={nodeIndex}
+          data-docx-paragraph-start-line={paragraphSegmentStartLine}
+          data-docx-paragraph-end-line={paragraphSegmentEndLine}
           style={paragraphStyle}
           dangerouslySetInnerHTML={
             editable
@@ -29067,6 +29202,28 @@ export function DocxEditorViewer({
 
             if (!element || !editable) {
               return;
+            }
+
+            if (
+              paragraphSegmentHasPartialLineRange(paragraphLineRange) &&
+              paragraphSegmentIdentityMatches(
+                pendingParagraphSegmentFocusRef.current,
+                nodeIndex,
+                paragraphLineRange
+              )
+            ) {
+              const pendingFocus = pendingParagraphSegmentFocusRef.current;
+              pendingParagraphSegmentFocusRef.current = undefined;
+              scheduleDomWrite(() => {
+                if (!element.isConnected) {
+                  return;
+                }
+                if (pendingFocus?.point) {
+                  placeCaretInsideElement(element, pendingFocus.point);
+                } else {
+                  placeCaretInsideElement(element);
+                }
+              });
             }
 
             const draft = paragraphDraftsRef.current.get(nodeIndex);
@@ -29129,15 +29286,28 @@ export function DocxEditorViewer({
               return;
             }
 
+            if (hasPartialLineRange) {
+              activateEditableParagraphSegment(nodeIndex, paragraphLineRange);
+            }
             clearTableCellSelection();
           }}
           onClick={(event) => {
             clearTableCellSelection();
             if (!editable) {
+              if (!isReadOnly && hasPartialLineRange && !hasImage && !isManualPageBreakParagraph) {
+                activateEditableParagraphSegment(nodeIndex, paragraphLineRange, {
+                  x: event.clientX,
+                  y: event.clientY
+                });
+                return;
+              }
               editor.selectParagraph(nodeIndex);
               return;
             }
 
+            if (hasPartialLineRange) {
+              activateEditableParagraphSegment(nodeIndex, paragraphLineRange);
+            }
             const selection = window.getSelection();
             const selectedRange =
               selection && selection.rangeCount > 0 ? selection.getRangeAt(0) : undefined;
@@ -29168,6 +29338,9 @@ export function DocxEditorViewer({
               return;
             }
 
+            if (hasPartialLineRange) {
+              activateEditableParagraphSegment(nodeIndex, paragraphLineRange);
+            }
             const selection = window.getSelection();
             const selectedRange =
               selection && selection.rangeCount > 0 ? selection.getRangeAt(0) : undefined;
@@ -29197,6 +29370,9 @@ export function DocxEditorViewer({
               return;
             }
 
+            if (hasPartialLineRange) {
+              activateEditableParagraphSegment(nodeIndex, paragraphLineRange);
+            }
             updateActiveTextRangeFromElement(event.currentTarget, {
               kind: "paragraph",
               nodeIndex
@@ -29207,6 +29383,9 @@ export function DocxEditorViewer({
               return;
             }
 
+            if (hasPartialLineRange) {
+              activateEditableParagraphSegment(nodeIndex, paragraphLineRange);
+            }
             schedulePaginationMeasurementResume();
             paragraphDraftsRef.current.set(nodeIndex, event.currentTarget.innerHTML);
           }}
@@ -29230,6 +29409,9 @@ export function DocxEditorViewer({
               return;
             }
 
+            if (hasPartialLineRange) {
+              activateEditableParagraphSegment(nodeIndex, paragraphLineRange);
+            }
             if (handleDeleteAcrossTableCellSelection(event)) {
               return;
             }

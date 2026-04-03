@@ -88,6 +88,34 @@ describe("dual wrapped image layout", () => {
     });
   });
 
+  it("keeps narrow near-edge both-sides wraps on the side-float path", async () => {
+    const { resolveDualWrappedFloatingImageGeometry } = await import(
+      "../../packages/react-viewer/src/editor"
+    );
+
+    const geometry = resolveDualWrappedFloatingImageGeometry(
+      {
+        type: "image",
+        widthPx: 284,
+        heightPx: 140,
+        floating: {
+          xPx: 40,
+          yPx: 0,
+          distLPx: 12,
+          distRPx: 12,
+          distTPx: 0,
+          distBPx: 4,
+          wrapType: "square",
+          wrapText: "bothSides",
+          behindDocument: false
+        }
+      },
+      612
+    );
+
+    expect(geometry).toBeUndefined();
+  });
+
   it("lays out text into left and right fragments beside an interior wrapped image", async () => {
     const { resolveParagraphDualWrappedTextLayout } = await import(
       "../../packages/react-viewer/src/editor"

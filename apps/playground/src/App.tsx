@@ -1142,7 +1142,7 @@ function tableCellTextFromModel(
     return "";
   }
 
-  const content = Array.isArray(cell.content) ? cell.content : [];
+  const content = Array.isArray(cell.nodes) ? cell.nodes : [];
   return content
     .map((contentNode) => paragraphTextFromNode(contentNode))
     .filter((text) => text.length > 0)
@@ -1191,7 +1191,7 @@ function findFirstTableCellTarget(model: DocModel): PlaygroundDocxTableCellTarge
       const row = tableNode.rows[rowIndex];
       for (let cellIndex = 0; cellIndex < row.cells.length; cellIndex += 1) {
         const cell = row.cells[cellIndex];
-        const content = Array.isArray(cell.content) ? cell.content : [];
+        const content = Array.isArray(cell.nodes) ? cell.nodes : [];
         for (let paragraphIndex = 0; paragraphIndex < content.length; paragraphIndex += 1) {
           const paragraphNode = content[paragraphIndex];
           if (paragraphNode?.type !== "paragraph") {
@@ -1430,7 +1430,7 @@ export function App(): React.JSX.Element {
         editor.commitTableCellText(tableIndex, rowIndex, cellIndex, text);
       },
       clearTableCellContents: (tableIndex: number, rowIndex: number, cellIndex: number) => {
-        editor.clearTableCellContents(tableIndex, rowIndex, cellIndex);
+        editor.clearTableCellContents(tableIndex, [{ rowIndex, cellIndex }]);
       },
       toggleBold: () => {
         editor.toggleBold();
