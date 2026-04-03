@@ -463,6 +463,52 @@ describe("dual wrapped image layout", () => {
     expect(patch.yPx).toBe(30);
   });
 
+  it("lets full-width top-and-bottom exclusions overflow the anchor paragraph box", async () => {
+    const {
+      resolveParagraphDualWrappedTextLayout,
+      wrappedPretextParagraphBlockHeightPx
+    } = await import("../../packages/react-viewer/src/editor");
+
+    const paragraph: ParagraphNode = {
+      type: "paragraph",
+      children: [
+        {
+          type: "image",
+          widthPx: 518,
+          heightPx: 89,
+          floating: {
+            xPx: 6,
+            yPx: 60,
+            horizontalRelativeTo: "column",
+            verticalRelativeTo: "paragraph",
+            distLPx: 12,
+            distRPx: 12,
+            distTPx: 0,
+            distBPx: 0,
+            wrapType: "topAndBottom",
+            behindDocument: false
+          },
+          syntheticTextBox: true,
+          sourceXml: "<w:drawing><pic:pic/></w:drawing>"
+        },
+        {
+          type: "text",
+          text: "Nursing Facility Bulletin 191"
+        }
+      ]
+    };
+
+    const layout = resolveParagraphDualWrappedTextLayout(paragraph, 640, 22);
+
+    expect(layout).toBeDefined();
+    if (!layout) {
+      return;
+    }
+
+    expect(layout.layout.height).toBeGreaterThan(100);
+    expect(wrappedPretextParagraphBlockHeightPx(layout.layout)).toBe(22);
+  });
+
   it("preserves right alignment for single-slot wrapped lines", async () => {
     const { resolveParagraphDualWrappedTextLayout } = await import(
       "../../packages/react-viewer/src/editor"

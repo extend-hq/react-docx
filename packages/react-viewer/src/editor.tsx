@@ -4457,6 +4457,24 @@ function paragraphCollapsesIntoPreviousParagraph(
   );
 }
 
+function paragraphIsStructuralSectionBreakSpacer(paragraph: ParagraphNode): boolean {
+  const sourceXml = paragraph.sourceXml ?? "";
+  if (!sourceXml || !SECTION_PROPERTIES_XML_PATTERN.test(sourceXml)) {
+    return false;
+  }
+
+  if (
+    !paragraphIsEffectivelyEmpty(paragraph) ||
+    paragraphHasExplicitPageBreak(paragraph) ||
+    paragraphHasPageBreakBefore(paragraph) ||
+    paragraphStartsWithLastRenderedPageBreak(paragraph)
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
 function paragraphContextualSpacingStyleKey(paragraph: ParagraphNode): string | undefined {
   const styleId = paragraph.style?.styleId?.trim().toLowerCase();
   if (styleId) {
@@ -5611,6 +5629,14 @@ function estimateWrappedFloatingImageFootprintPx(
     return 0;
   }
 
+  // For paragraphs that already have visible text, top-and-bottom wrapped
+  // objects should not force the anchor paragraph box to extend all the way to
+  // the image bottom. Word allows following text to occupy the gap above a
+  // lowered object, so keep that reserve logic only for image-only anchors.
+  if (isTopAndBottomWrap && !isImageOnlyAnchorParagraph) {
+    return 0;
+  }
+
   const floating = image.floating;
   const imageHeightPx =
     Number.isFinite(image.heightPx) && (image.heightPx as number) > 0
@@ -5626,6 +5652,41 @@ function estimateWrappedFloatingImageFootprintPx(
     MIN_PARAGRAPH_LINE_HEIGHT_PX,
     imageHeightPx + distTPx + distBPx + verticalOffsetPx
   );
+}
+
+function pretextLayoutContentBottomPx(layout: PretextVariableWidthLayout): number {
+  if (layout.lines.length === 0) {
+    return 0;
+  }
+
+  const lineHeightPx = Math.max(1, Math.round(layout.lineHeightPx ?? 1));
+  return (layout.lines[layout.lines.length - 1]?.y ?? 0) + lineHeightPx;
+}
+
+function topAndBottomExclusionCanOverflowParagraphBox(
+  layout: PretextVariableWidthLayout
+): boolean {
+  const containerWidthPx = Math.max(1, Math.round(layout.containerWidthPx ?? 0));
+  if (containerWidthPx <= 0 || layout.lines.length === 0) {
+    return false;
+  }
+
+  return (layout.exclusions ?? []).some((exclusion) => {
+    const left = Math.round(exclusion.left);
+    const right = Math.round(exclusion.right);
+    return left <= 0 && right >= containerWidthPx;
+  });
+}
+
+export function wrappedPretextParagraphBlockHeightPx(
+  layout: PretextVariableWidthLayout
+): number {
+  const contentBottomPx = pretextLayoutContentBottomPx(layout);
+  if (topAndBottomExclusionCanOverflowParagraphBox(layout)) {
+    return Math.max(1, contentBottomPx);
+  }
+
+  return Math.max(1, Math.round(layout.height));
 }
 
 function estimateAbsoluteFloatingImageFootprintPx(
@@ -5880,7 +5941,9 @@ function estimateParagraphHeightPx(
   const bottomBorderInsetPx = paragraphBorderInsetPx(paragraph.style?.borders?.bottom);
   const textFlowHeightPx = absoluteFloatingAnchorOnlyParagraph
     ? 0
-    : dualWrappedLayout?.layout.height ?? lineHeightPx * lineCount;
+    : dualWrappedLayout
+      ? wrappedPretextParagraphBlockHeightPx(dualWrappedLayout.layout)
+      : lineHeightPx * lineCount;
 
   const contentHeightPx = Math.max(
     absoluteFloatingAnchorOnlyParagraph ? 0 : lineHeightPx,
@@ -6318,6 +6381,10 @@ function collectDocxEstimatedOverflowBreakStartNodeIndexes(
     }
 
     const node = model.nodes[nodeIndex];
+    if (node.type === "paragraph" && paragraphIsStructuralSectionBreakSpacer(node)) {
+      previousParagraphAfterPx = 0;
+      continue;
+    }
     if (
       node.type === "paragraph" &&
       paragraphCollapsesIntoPreviousParagraph(node, model.nodes[nodeIndex - 1])
@@ -6740,6 +6807,13 @@ export function buildDocumentPageNodeSegments(
     }
 
     const node = model.nodes[nodeIndex];
+    if (
+      node.type === "paragraph" &&
+      paragraphIsStructuralSectionBreakSpacer(node)
+    ) {
+      previousParagraphAfterPx = 0;
+      continue;
+    }
     if (
       node.type === "paragraph" &&
       paragraphCollapsesIntoPreviousParagraph(node, model.nodes[nodeIndex - 1])
@@ -29982,11 +30056,7 @@ export function DocxEditorViewer({
           source: activeWrappedSource,
           layout: activeWrappedLayout,
           lineHeightPx: manualDualWrappedLayout.lineHeightPx,
-          blockHeightPx: Math.max(
-            activeWrappedLayout.height,
-            ...manualDualWrappedLayout.geometries.map((geometry) => geometry.exclusion.bottom),
-            0
-          ),
+          blockHeightPx: wrappedPretextParagraphBlockHeightPx(activeWrappedLayout),
           obstacleNodes: (
             <>
               {manualDualWrappedLayout.geometries.map((geometry) => renderManualImage(geometry))}
@@ -31370,6 +31440,10 @@ export function DocxEditorViewer({
             clearObjectSelectionForParagraphEntry(nodeIndex);
           }}
           onClick={(event) => {
+            if (eventTargetIsInteractiveControl(event.target)) {
+              return;
+            }
+
             clearObjectSelectionForParagraphEntry(nodeIndex);
             if (!editable) {
               if (!isReadOnly && hasPartialLineRange && !hasImage && !isManualPageBreakParagraph) {
@@ -31401,6 +31475,10 @@ export function DocxEditorViewer({
             );
           }}
           onDoubleClick={(event) => {
+            if (eventTargetIsInteractiveControl(event.target)) {
+              return;
+            }
+
             if (!editable) {
               return;
             }
