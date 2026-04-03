@@ -2709,6 +2709,7 @@ export interface DocxEditorController {
     nodeIndex: number,
     patch: Partial<NonNullable<NonNullable<ParagraphNode["style"]>["dropCap"]>>
   ) => void;
+  setParagraphDropCapFontSizePt: (nodeIndex: number, fontSizePt: number) => void;
   setParagraphDropCapText: (nodeIndex: number, text: string) => void;
   moveImage: (source: DocxImageLocation, target: DocxImageDropTarget) => void;
   setActiveTextRange: (range?: DocxTextRange) => void;
@@ -4026,13 +4027,39 @@ export function resolveParagraphDualWrappedTextLayout(
     return undefined;
   }
 
+  const layout = resolveParagraphPretextExclusionLayout(
+    paragraph,
+    source,
+    Math.max(...geometries.map((geometry) => geometry.containerWidthPx)),
+    lineHeightPx,
+    geometries.map((geometry) => geometry.exclusion)
+  );
+  if (!layout) {
+    return undefined;
+  }
+
+  return {
+    source,
+    geometries,
+    lineHeightPx,
+    layout
+  };
+}
+
+function resolveParagraphPretextExclusionLayout(
+  paragraph: ParagraphNode,
+  source: ParagraphPretextLayoutSource,
+  containerWidthPx: number,
+  lineHeightPx: number,
+  exclusions: PretextExclusionRect[]
+): PretextVariableWidthLayout | undefined {
   const font = resolveMeasureFont(firstRunStyle(paragraph), paragraphBaseFontSizePx(paragraph));
   const layout = layoutTextWithPretextAroundExclusions(
     source.text,
     font,
-    Math.max(...geometries.map((geometry) => geometry.containerWidthPx)),
+    containerWidthPx,
     lineHeightPx,
-    geometries.map((geometry) => geometry.exclusion)
+    exclusions
   );
   if (!layout || layout.lineCount <= 0) {
     return undefined;
@@ -4081,13 +4108,8 @@ export function resolveParagraphDualWrappedTextLayout(
     : layout.lines;
 
   return {
-    source,
-    geometries,
-    lineHeightPx,
-    layout: {
-      ...layout,
-      lines: alignedLines
-    }
+    ...layout,
+    lines: alignedLines
   };
 }
 
@@ -4136,6 +4158,60 @@ function runFontSizePx(style?: TextRunNode["style"] | FormFieldRunNode["style"])
   }
 
   return Math.max(9, (DEFAULT_PARAGRAPH_FONT_SIZE_PT * 96) / 72);
+}
+
+function explicitRunFontSizePx(
+  style?: TextRunNode["style"] | FormFieldRunNode["style"]
+): number | undefined {
+  if (style?.fontSizePt && Number.isFinite(style.fontSizePt) && style.fontSizePt > 0) {
+    return Math.max(9, (style.fontSizePt * 96) / 72);
+  }
+
+  return undefined;
+}
+
+export function resolveDropCapFontSizePx(
+  style: TextRunNode["style"] | undefined,
+  lineHeightPx: number,
+  lineCount: number,
+  previewFontSizePx?: number
+): number {
+  if (Number.isFinite(previewFontSizePx) && (previewFontSizePx as number) > 0) {
+    return Math.max(12, Math.round(previewFontSizePx as number));
+  }
+
+  const explicitFontSizePx = explicitRunFontSizePx(style);
+  if (Number.isFinite(explicitFontSizePx) && (explicitFontSizePx as number) > 0) {
+    return Math.max(12, Math.round(explicitFontSizePx as number));
+  }
+
+  const baseFontSizePx = runFontSizePx(style);
+  const derivedFromLinesPx = Math.max(18, Math.round(lineHeightPx * Math.max(1.6, lineCount * 0.92)));
+  return Math.max(derivedFromLinesPx, Math.round(baseFontSizePx * 1.8));
+}
+
+export function resolveDropCapVisualHeightPx(
+  style: TextRunNode["style"] | undefined,
+  lineHeightPx: number,
+  lineCount: number,
+  currentFontSizePx?: number
+): number {
+  const baseHeightPx = Math.max(18, Math.round(lineHeightPx * lineCount));
+  const baselineFontSizePx = resolveDropCapFontSizePx(style, lineHeightPx, lineCount);
+  const effectiveFontSizePx =
+    Number.isFinite(currentFontSizePx) && (currentFontSizePx as number) > 0
+      ? Math.max(12, Math.round(currentFontSizePx as number))
+      : baselineFontSizePx;
+  const scale =
+    baselineFontSizePx > 0
+      ? effectiveFontSizePx / baselineFontSizePx
+      : 1;
+
+  return Math.max(
+    18,
+    Math.round(baseHeightPx * scale),
+    Math.round(effectiveFontSizePx * 1.05)
+  );
 }
 
 function estimateTextAdvanceWidthPx(
@@ -7080,7 +7156,7 @@ function resolveWrappedFloatingSide(
   return "left";
 }
 
-function wrappedFloatingImageStyle(
+export function wrappedFloatingImageStyle(
   image: ImageRunNode,
   options?: {
     containerWidthPx?: number;
@@ -7128,7 +7204,7 @@ function wrappedFloatingImageStyle(
     ? { width: imageWidthPx }
     : { width: "fit-content" };
   const rightOffsetPx =
-    !hasExplicitHorizontalAlign &&
+    Number.isFinite(shiftedXPx) &&
     Number.isFinite(shiftedXPx) &&
     Number.isFinite(containerWidthPx) &&
     Number.isFinite(imageWidthPx)
@@ -7139,14 +7215,17 @@ function wrappedFloatingImageStyle(
             Math.round((containerWidthPx as number) - (shiftedXPx as number) - (imageWidthPx as number))
           )
       : 0;
-  const leftOffsetPx = hasExplicitHorizontalAlign ? 0 : horizontalOffset;
+  const hasExplicitHorizontalOffset = Number.isFinite(shiftedXPx);
+  const leftOffsetPx =
+    hasExplicitHorizontalAlign && !hasExplicitHorizontalOffset ? 0 : horizontalOffset;
+  const topOffsetPx = distT + verticalOffset;
 
   if (wrapType === "topAndBottom") {
     if (horizontalAlign === "center") {
       return {
         display: "block",
         ...intrinsicBlockWidthStyle,
-        marginTop: distT + verticalOffset,
+        marginTop: topOffsetPx,
         marginBottom: distB,
         marginLeft: "auto",
         marginRight: "auto",
@@ -7157,19 +7236,19 @@ function wrappedFloatingImageStyle(
       return {
         display: "block",
         ...intrinsicBlockWidthStyle,
-        marginTop: distT + verticalOffset,
+        marginTop: topOffsetPx,
         marginBottom: distB,
         marginLeft: "auto",
-        marginRight: distR,
+        marginRight: hasExplicitHorizontalOffset ? rightOffsetPx : distR,
         clear: "both"
       };
     }
     return {
       display: "block",
       ...intrinsicBlockWidthStyle,
-      marginTop: distT + verticalOffset,
+      marginTop: topOffsetPx,
       marginBottom: distB,
-      marginLeft: distL + leftOffsetPx,
+      marginLeft: hasExplicitHorizontalOffset ? leftOffsetPx : distL + leftOffsetPx,
       marginRight: distR,
       clear: "both"
     };
@@ -7183,10 +7262,20 @@ function wrappedFloatingImageStyle(
     display: "block",
     ...intrinsicBlockWidthStyle,
     float: side,
-    marginTop: distT + verticalOffset,
+    marginTop: topOffsetPx,
     marginBottom: distB,
-    marginLeft: side === "left" ? distL + leftOffsetPx : distL,
-    marginRight: side === "right" ? distR + rightOffsetPx : distR
+    marginLeft:
+      side === "left"
+        ? hasExplicitHorizontalOffset
+          ? leftOffsetPx
+          : distL + leftOffsetPx
+        : distL,
+    marginRight:
+      side === "right"
+        ? hasExplicitHorizontalOffset
+          ? rightOffsetPx
+          : distR + rightOffsetPx
+        : distR
   };
 }
 
@@ -7371,6 +7460,68 @@ export function resolveAbsoluteFloatingImageDropPatch(
     verticalAlign: undefined,
     horizontalRelativeTo: "margin",
     verticalRelativeTo: "margin"
+  };
+}
+
+export function resolveWrappedFloatingImageDropPatch(
+  image: ImageRunNode,
+  hostWidth: number,
+  movedLeft: number,
+  movedTop: number,
+  options?: {
+    widthPx?: number;
+    heightPx?: number;
+  }
+): Partial<NonNullable<ImageRunNode["floating"]>> {
+  const baseFloating = image.floating ?? {};
+  const imageWidth = options?.widthPx ?? image.widthPx ?? MIN_PARAGRAPH_LINE_HEIGHT_PX;
+  const imageHeight = options?.heightPx ?? image.heightPx ?? imageWidth;
+  const wrapText = baseFloating.wrapText ?? "bothSides";
+  const wrapType = baseFloating.wrapType ?? "square";
+  const preserveAlignedHorizontalPlacement =
+    wrapType.trim().toLowerCase() === "topandbottom" &&
+    Boolean(baseFloating.horizontalAlign);
+  const side: "left" | "right" =
+    movedLeft + imageWidth / 2 <= hostWidth / 2 ? "left" : "right";
+  const previewGeometry = resolveDualWrappedFloatingImageGeometry(
+    {
+      ...image,
+      widthPx: imageWidth,
+      heightPx: imageHeight
+    },
+    hostWidth,
+    {
+      widthPx: imageWidth,
+      heightPx: imageHeight,
+      baseLeftPx: movedLeft,
+      baseTopPx: movedTop
+    }
+  );
+  const previewUsesSideFloat =
+    previewGeometry === undefined ||
+    previewGeometry.exclusion.left <= 0 ||
+    previewGeometry.exclusion.right >= hostWidth;
+  const explicitTopPx = Math.max(0, Math.round(movedTop - Math.round(baseFloating.distTPx ?? 0)));
+
+  return {
+    wrapType,
+    wrapText,
+    horizontalAlign: preserveAlignedHorizontalPlacement
+      ? baseFloating.horizontalAlign
+      : previewUsesSideFloat
+        ? side
+        : wrapText === "bothSides" || wrapText === "largest"
+          ? undefined
+          : side,
+    xPx: preserveAlignedHorizontalPlacement ? undefined : Math.round(movedLeft),
+    yPx: explicitTopPx,
+    distLPx: Math.max(4, Math.round(baseFloating.distLPx ?? 8)),
+    distRPx: Math.max(4, Math.round(baseFloating.distRPx ?? 8)),
+    distTPx: Math.max(0, Math.round(baseFloating.distTPx ?? 2)),
+    distBPx: Math.max(0, Math.round(baseFloating.distBPx ?? 4)),
+    horizontalRelativeTo: baseFloating.horizontalRelativeTo ?? "column",
+    verticalRelativeTo: baseFloating.verticalRelativeTo ?? "paragraph",
+    behindDocument: false
   };
 }
 
@@ -8167,13 +8318,30 @@ function runStyleToCss(
     Boolean
   );
   const textDecoration = textDecorationTokens.length > 0 ? textDecorationTokens.join(" ") : "none";
+  const borderType = style?.runBorder?.type?.trim().toLowerCase();
+  const borderStyle =
+    borderType === "single"
+      ? "solid"
+      : borderType === "nil" || borderType === "none"
+        ? undefined
+        : borderType;
+  const borderWidthPx =
+    Number.isFinite(style?.runBorder?.sizeEighthPt) && (style?.runBorder?.sizeEighthPt as number) > 0
+      ? Math.max(1, Number((((style?.runBorder?.sizeEighthPt as number) / 8) * (96 / 72)).toFixed(2)))
+      : borderStyle
+        ? 1
+        : undefined;
+  const borderPaddingPt =
+    Number.isFinite(style?.runBorder?.spacePt) && (style?.runBorder?.spacePt as number) >= 0
+      ? Math.max(0, Math.round(style?.runBorder?.spacePt as number))
+      : undefined;
 
   return {
     fontWeight: style?.bold ? 700 : undefined,
     fontStyle: style?.italic ? "italic" : undefined,
     textDecoration,
     color: themedRunColor(style?.color, documentTheme),
-    backgroundColor: resolveHighlightColor(style?.highlight),
+    backgroundColor: style?.backgroundColor ?? resolveHighlightColor(style?.highlight),
     fontSize: style?.fontSizePt
       ? `${Number(
           (style.fontSizePt * (hasScriptVerticalAlign ? SCRIPT_FONT_SCALE : 1)).toFixed(3)
@@ -8186,6 +8354,12 @@ function runStyleToCss(
       ? `${Number(((style?.characterSpacingTwips as number) / 20).toFixed(3))}pt`
       : undefined,
     verticalAlign,
+    display: borderStyle ? "inline-block" : undefined,
+    borderStyle,
+    borderWidth: borderWidthPx ? `${borderWidthPx}px` : undefined,
+    borderColor: borderStyle ? style?.runBorder?.color ?? "currentColor" : undefined,
+    padding: borderPaddingPt !== undefined ? `${borderPaddingPt}pt` : undefined,
+    boxDecorationBreak: borderStyle ? "clone" : undefined,
     whiteSpace: "pre-wrap"
   };
 }
@@ -17675,6 +17849,50 @@ export function useDocxEditor(options: UseDocxEditorOptions = {}): DocxEditorCon
     [applyModelChange]
   );
 
+  const setParagraphDropCapFontSizePt = React.useCallback(
+    (nodeIndex: number, fontSizePt: number): void => {
+      applyModelChange((current) => {
+        const next = cloneDocModel(current);
+        const paragraph = next.nodes[nodeIndex];
+        if (!paragraph || paragraph.type !== "paragraph") {
+          return current;
+        }
+
+        const dropCap = paragraphDropCap(paragraph);
+        if (!dropCap) {
+          return current;
+        }
+
+        paragraph.style = {
+          ...(paragraph.style ?? {}),
+          dropCap: {
+            ...dropCap
+          }
+        };
+
+        const nextFontSizePt = Math.max(1, fontSizePt);
+        let updated = false;
+        paragraph.children = paragraph.children.map((child) => {
+          if (updated || child.type !== "text") {
+            return child;
+          }
+          updated = true;
+          return {
+            ...child,
+            style: {
+              ...(child.style ?? {}),
+              fontSizePt: nextFontSizePt
+            }
+          };
+        });
+
+        paragraph.sourceXml = undefined;
+        return next;
+      }, "Resized drop cap");
+    },
+    [applyModelChange]
+  );
+
   const setParagraphDropCapText = React.useCallback(
     (nodeIndex: number, text: string): void => {
       applyModelChange((current) => {
@@ -18518,6 +18736,7 @@ export function useDocxEditor(options: UseDocxEditorOptions = {}): DocxEditorCon
     moveFloatingImage,
     moveSectionFloatingImage,
     moveParagraphDropCap,
+    setParagraphDropCapFontSizePt,
     setParagraphDropCapText,
     moveImage,
     setActiveTextRange,
@@ -19937,6 +20156,13 @@ export function DocxEditorViewer({
       }
     | undefined
   >();
+  const [dropCapResizePreview, setDropCapResizePreview] = React.useState<
+    | {
+        nodeIndex: number;
+        fontSizePx: number;
+      }
+    | undefined
+  >();
   const [tableColumnWidths, setTableColumnWidths] = React.useState<Record<number, number[]>>({});
   const [embeddedTableColumnWidths, setEmbeddedTableColumnWidths] = React.useState<
     Record<string, number[]>
@@ -19975,6 +20201,7 @@ export function DocxEditorViewer({
     setResizePreview(undefined);
     setFloatingMovePreview(undefined);
     setDropCapMovePreview(undefined);
+    setDropCapResizePreview(undefined);
     setActiveDropTarget(undefined);
     setIsDraggingImage(false);
     setActiveHeaderFooterEdit(undefined);
@@ -21636,6 +21863,19 @@ export function DocxEditorViewer({
   const clearTableCellSelection = React.useCallback((): void => {
     setTableCellSelectionRange((current) => (current ? undefined : current));
   }, []);
+  const clearObjectSelectionForParagraphEntry = React.useCallback(
+    (nodeIndex: number): void => {
+      clearTableCellSelection();
+      setSelectedImage(undefined);
+      setSelectedSectionImageKey(undefined);
+      setSelectedDropCapNodeIndex(undefined);
+
+      if (editor.selection.kind === "table-cell") {
+        editor.selectParagraph(nodeIndex);
+      }
+    },
+    [clearTableCellSelection, editor]
+  );
   const isPointWithinTableHandleHoverZone = React.useCallback(
     (tableIndex: number, x: number, y: number): boolean => {
       const tableElement = tableElementsRef.current.get(tableIndex);
@@ -26438,33 +26678,13 @@ export function DocxEditorViewer({
             Math.max(0, hostWidth - imageWidth)
           );
           const movedTop = Math.max(0, (baseGeometry?.imageTopPx ?? 0) + latestDeltaY);
-          const side: "left" | "right" =
-            movedLeft + imageWidth / 2 <= hostWidth / 2 ? "left" : "right";
-          const wrapText = baseFloating.wrapText ?? "bothSides";
-          const keepFreeHorizontalPlacement =
-            wrapText === "bothSides" || wrapText === "largest";
-          const preserveAlignedHorizontalPlacement =
-            (baseFloating.wrapType ?? "").trim().toLowerCase() === "topandbottom" &&
-            Boolean(baseFloating.horizontalAlign);
-
-          editor.moveFloatingImage(location, {
-            wrapType: baseFloating.wrapType ?? "square",
-            wrapText,
-            horizontalAlign: preserveAlignedHorizontalPlacement
-              ? baseFloating.horizontalAlign
-              : keepFreeHorizontalPlacement
-                ? undefined
-                : side,
-            xPx: preserveAlignedHorizontalPlacement ? undefined : Math.round(movedLeft),
-            yPx: Math.round(movedTop),
-            distLPx: Math.max(4, Math.round(baseFloating.distLPx ?? 8)),
-            distRPx: Math.max(4, Math.round(baseFloating.distRPx ?? 8)),
-            distTPx: Math.max(0, Math.round(baseFloating.distTPx ?? 2)),
-            distBPx: Math.max(0, Math.round(baseFloating.distBPx ?? 4)),
-            horizontalRelativeTo: baseFloating.horizontalRelativeTo ?? "column",
-            verticalRelativeTo: baseFloating.verticalRelativeTo ?? "paragraph",
-            behindDocument: false
-          });
+          editor.moveFloatingImage(
+            location,
+            resolveWrappedFloatingImageDropPatch(image, hostWidth, movedLeft, movedTop, {
+              widthPx: imageWidth,
+              heightPx: imageHeight
+            })
+          );
           return;
         }
 
@@ -26540,6 +26760,68 @@ export function DocxEditorViewer({
           xTwips: pixelsToTwips(Math.max(0, baseXPx + latestDeltaX)),
           yTwips: pixelsToTwips(Math.max(0, baseYPx + latestDeltaY))
         });
+      };
+
+      window.addEventListener("pointermove", onPointerMove);
+      window.addEventListener("pointerup", onPointerUp, { once: true });
+      window.addEventListener("pointercancel", onPointerUp, { once: true });
+    },
+    [editor, isReadOnly]
+  );
+
+  const beginDropCapResize = React.useCallback(
+    (
+      event: React.PointerEvent<HTMLElement>,
+      nodeIndex: number,
+      currentFontSizePx: number,
+      currentWidthPx: number,
+      currentHeightPx: number
+    ): void => {
+      if (isReadOnly || event.button !== 0) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      setSelectedImage(undefined);
+      setSelectedSectionImageKey(undefined);
+      setSelectedDropCapNodeIndex(nodeIndex);
+
+      const startX = event.clientX;
+      const startY = event.clientY;
+      const safeWidthPx = Math.max(1, currentWidthPx);
+      const safeHeightPx = Math.max(1, currentHeightPx);
+      const baseFontSizePx = Math.max(12, currentFontSizePx);
+      let latestFontSizePx = baseFontSizePx;
+
+      const onPointerMove = (pointerEvent: PointerEvent): void => {
+        const deltaX = pointerEvent.clientX - startX;
+        const deltaY = pointerEvent.clientY - startY;
+        const widthScale = (safeWidthPx + deltaX) / safeWidthPx;
+        const heightScale = (safeHeightPx + deltaY) / safeHeightPx;
+        const scale = Math.max(0.35, Math.max(widthScale, heightScale));
+        latestFontSizePx = clampNumber(
+          Math.round(baseFontSizePx * scale),
+          12,
+          320
+        );
+        setDropCapResizePreview({
+          nodeIndex,
+          fontSizePx: latestFontSizePx
+        });
+      };
+
+      const onPointerUp = (): void => {
+        window.removeEventListener("pointermove", onPointerMove);
+        window.removeEventListener("pointerup", onPointerUp);
+        window.removeEventListener("pointercancel", onPointerUp);
+        setDropCapResizePreview(undefined);
+
+        if (Math.abs(latestFontSizePx - baseFontSizePx) < 1) {
+          return;
+        }
+
+        editor.setParagraphDropCapFontSizePt(nodeIndex, (latestFontSizePx * 72) / 96);
       };
 
       window.addEventListener("pointermove", onPointerMove);
@@ -26668,33 +26950,13 @@ export function DocxEditorViewer({
           const movedTop = Math.round(
             Math.max(0, (baseGeometry?.imageTopPx ?? 0) + latestDeltaY)
           );
-          const side: "left" | "right" =
-            movedLeft + imageWidth / 2 <= hostWidth / 2 ? "left" : "right";
-          const wrapText = baseFloating.wrapText ?? "bothSides";
-          const keepFreeHorizontalPlacement =
-            wrapText === "bothSides" || wrapText === "largest";
-          const preserveAlignedHorizontalPlacement =
-            (baseFloating.wrapType ?? "").trim().toLowerCase() === "topandbottom" &&
-            Boolean(baseFloating.horizontalAlign);
-
-          editor.moveSectionFloatingImage(location, {
-            wrapType: baseFloating.wrapType ?? "square",
-            wrapText,
-            horizontalAlign: preserveAlignedHorizontalPlacement
-              ? baseFloating.horizontalAlign
-              : keepFreeHorizontalPlacement
-                ? undefined
-                : side,
-            xPx: preserveAlignedHorizontalPlacement ? undefined : movedLeft,
-            yPx: movedTop,
-            distLPx: Math.max(4, Math.round(baseFloating.distLPx ?? 8)),
-            distRPx: Math.max(4, Math.round(baseFloating.distRPx ?? 8)),
-            distTPx: Math.max(0, Math.round(baseFloating.distTPx ?? 2)),
-            distBPx: Math.max(0, Math.round(baseFloating.distBPx ?? 4)),
-            horizontalRelativeTo: baseFloating.horizontalRelativeTo ?? "column",
-            verticalRelativeTo: baseFloating.verticalRelativeTo ?? "paragraph",
-            behindDocument: false
-          });
+          editor.moveSectionFloatingImage(
+            location,
+            resolveWrappedFloatingImageDropPatch(image, hostWidth, movedLeft, movedTop, {
+              widthPx: imageWidth,
+              heightPx: imageHeight
+            })
+          );
           return;
         }
 
@@ -27398,6 +27660,68 @@ export function DocxEditorViewer({
           });
         }
       });
+      const previewParagraph =
+        movePreviewByImageIndex.size > 0
+          ? {
+              ...paragraph,
+              children: paragraph.children.map((child, childIndex) => {
+                if (child.type !== "image") {
+                  return child;
+                }
+
+                const movePreview = movePreviewByImageIndex.get(childIndex);
+                if (!movePreview || !shouldRenderWrappedFloatingImage(child)) {
+                  return child;
+                }
+
+                const widthPx =
+                  resizedWidthPxByImageIndex.get(childIndex) ?? child.widthPx ?? MIN_PARAGRAPH_LINE_HEIGHT_PX;
+                const heightPx =
+                  resizedHeightPxByImageIndex.get(childIndex) ?? child.heightPx ?? widthPx;
+                const baseGeometry = resolveDualWrappedFloatingImageGeometry(
+                  child,
+                  paragraphRenderTextWidthPx,
+                  {
+                    widthPx,
+                    heightPx,
+                    ...(Number.isFinite(movePreview.baseLeftPx)
+                      ? { baseLeftPx: Math.round(movePreview.baseLeftPx as number) }
+                      : undefined),
+                    ...(Number.isFinite(movePreview.baseTopPx)
+                      ? { baseTopPx: Math.round(movePreview.baseTopPx as number) }
+                      : undefined)
+                  }
+                );
+                const movedLeft = clampNumber(
+                  Math.round((baseGeometry?.imageLeftPx ?? 0) + movePreview.deltaX),
+                  0,
+                  Math.max(0, paragraphRenderTextWidthPx - widthPx)
+                );
+                const movedTop = Math.max(
+                  0,
+                  Math.round((baseGeometry?.imageTopPx ?? 0) + movePreview.deltaY)
+                );
+                const patch = resolveWrappedFloatingImageDropPatch(
+                  child,
+                  paragraphRenderTextWidthPx,
+                  movedLeft,
+                  movedTop,
+                  {
+                    widthPx,
+                    heightPx
+                  }
+                );
+
+                return {
+                  ...child,
+                  floating: {
+                    ...(child.floating ?? {}),
+                    ...patch
+                  }
+                };
+              })
+            }
+          : paragraph;
       const anchoredTabLayout = paragraphAnchoredTabLayout(paragraph);
       const useSpecialTabLayout =
         paragraphUsesTabLeaders(paragraph) ||
@@ -27425,13 +27749,12 @@ export function DocxEditorViewer({
 
       const manualDualWrappedLayout = !numberingLabel
         ? resolveParagraphDualWrappedTextLayout(
-            paragraph,
+            previewParagraph,
             paragraphRenderTextWidthPx,
-            estimateParagraphLineHeightPx(paragraph),
+            estimateParagraphLineHeightPx(previewParagraph),
             {
               widthPxByImageIndex: resizedWidthPxByImageIndex,
-              heightPxByImageIndex: resizedHeightPxByImageIndex,
-              movePreviewByImageIndex
+              heightPxByImageIndex: resizedHeightPxByImageIndex
             }
           )
         : undefined;
@@ -27527,7 +27850,7 @@ export function DocxEditorViewer({
         const renderManualImage = (
           geometry: DualWrappedFloatingImageGeometry
         ): React.ReactNode => {
-          const manualImage = paragraph.children[geometry.imageIndex];
+          const manualImage = previewParagraph.children[geometry.imageIndex];
           if (manualImage?.type !== "image") {
             return null;
           }
@@ -27924,7 +28247,7 @@ export function DocxEditorViewer({
               line.fragments.map((fragment) => renderManualFragment(fragment, lineIndex))
             )}
             {manualDualWrappedLayout.geometries.map((geometry) => renderManualImage(geometry))}
-            {paragraph.children.map((child, childIndex) =>
+            {previewParagraph.children.map((child, childIndex) =>
               child.type === "image" &&
               !manualGeometryImageIndexes.has(childIndex) &&
               shouldRenderAbsoluteFloatingImage(child)
@@ -27982,7 +28305,7 @@ export function DocxEditorViewer({
       nodes.push(renderImageDropZone({ ...location, childIndex: 0 }, `${keyPrefix}-drop-0`));
       let hasDualWrapSpacer = false;
 
-      paragraph.children.forEach((child, childIndex) => {
+      previewParagraph.children.forEach((child, childIndex) => {
         const runKey = `${keyPrefix}-run-${childIndex}`;
 
         if (child.type === "image") {
@@ -29289,10 +29612,10 @@ export function DocxEditorViewer({
             if (hasPartialLineRange) {
               activateEditableParagraphSegment(nodeIndex, paragraphLineRange);
             }
-            clearTableCellSelection();
+            clearObjectSelectionForParagraphEntry(nodeIndex);
           }}
           onClick={(event) => {
-            clearTableCellSelection();
+            clearObjectSelectionForParagraphEntry(nodeIndex);
             if (!editable) {
               if (!isReadOnly && hasPartialLineRange && !hasImage && !isManualPageBreakParagraph) {
                 activateEditableParagraphSegment(nodeIndex, paragraphLineRange, {
@@ -31614,6 +31937,7 @@ export function DocxEditorViewer({
             !nextSegmentHasPartialLines
           ) {
             const preview = dropCapMovePreview?.nodeIndex === nodeIndex ? dropCapMovePreview : undefined;
+            const resizePreview = dropCapResizePreview?.nodeIndex === nodeIndex ? dropCapResizePreview : undefined;
             const dropCapText = paragraphText(node).replace(/\s+/g, " ").trim();
             const dropCapStyle = firstRunStyle(node);
             const nextParagraphWidthPx = paragraphAvailableTextWidthPx(
@@ -31638,16 +31962,22 @@ export function DocxEditorViewer({
                     )
                   : estimateParagraphLineHeightPx(
                       nextNode,
-                      nextNodeIndex !== undefined
+                    nextNodeIndex !== undefined
                         ? docGridLinePitchPxByNodeIndex.get(nextNodeIndex)
                         : undefined
                     );
             const lineCount = Math.max(2, Math.round(dropCap.lines ?? 3));
-            const dropCapHeightPx = Math.max(18, Math.round(lineHeightPx * lineCount));
-            const baseFontSizePx = runFontSizePx(dropCapStyle);
-            const dropCapFontSizePx = Math.max(
-              dropCapHeightPx * 0.92,
-              baseFontSizePx * Math.max(2, lineCount * 1.35)
+            const dropCapFontSizePx = resolveDropCapFontSizePx(
+              dropCapStyle,
+              lineHeightPx,
+              lineCount,
+              resizePreview?.fontSizePx
+            );
+            const dropCapHeightPx = resolveDropCapVisualHeightPx(
+              dropCapStyle,
+              lineHeightPx,
+              lineCount,
+              dropCapFontSizePx
             );
             const dropCapTextStyle: TextRunNode["style"] = {
               ...(dropCapStyle ?? {}),
@@ -31673,6 +32003,47 @@ export function DocxEditorViewer({
             );
             const isSelectedDropCap = selectedDropCapNodeIndex === nodeIndex;
 
+            const dropCapParagraphActiveForEditing =
+              (editor.selection.kind === "paragraph" && editor.selection.nodeIndex === nextNodeIndex) ||
+              (editor.activeTextRange?.start.location.kind === "paragraph" &&
+                editor.activeTextRange.start.location.nodeIndex === nextNodeIndex) ||
+              (editor.activeTextRange?.end.location.kind === "paragraph" &&
+                editor.activeTextRange.end.location.nodeIndex === nextNodeIndex);
+            const dropCapWrapSource = buildParagraphPretextLayoutSource(nextNode);
+            const dropCapWrapExclusion = floatRight
+              ? {
+                  left: Math.max(0, movedLeftPx - horizontalGapPx),
+                  right: Math.min(nextParagraphWidthPx, movedLeftPx + dropCapWidthPx),
+                  top: movedTopPx,
+                  bottom:
+                    movedTopPx +
+                    dropCapHeightPx +
+                    Math.max(0, twipsToPixels(dropCap.verticalSpaceTwips) ?? 0)
+                }
+              : {
+                  left: Math.max(0, movedLeftPx),
+                  right: Math.min(nextParagraphWidthPx, movedLeftPx + dropCapWidthPx + horizontalGapPx),
+                  top: movedTopPx,
+                  bottom:
+                    movedTopPx +
+                    dropCapHeightPx +
+                    Math.max(0, twipsToPixels(dropCap.verticalSpaceTwips) ?? 0)
+                };
+            const dropCapManualWrapLayout =
+              !dropCapParagraphActiveForEditing && dropCapWrapSource
+                ? resolveParagraphPretextExclusionLayout(
+                    nextNode,
+                    dropCapWrapSource,
+                    nextParagraphWidthPx,
+                    lineHeightPx,
+                    [dropCapWrapExclusion]
+                  )
+                : undefined;
+            const dropCapBlockHeightPx = Math.max(
+              dropCapManualWrapLayout?.height ?? 0,
+              dropCapWrapExclusion.bottom
+            );
+
             rendered.push(
               <div
                 key={`dropcap-${nodeIndex}-${nextNodeIndex}`}
@@ -31681,7 +32052,7 @@ export function DocxEditorViewer({
                   position: "relative"
                 }}
               >
-                {dropCapText.length > 0 ? (
+                {!dropCapManualWrapLayout && dropCapText.length > 0 ? (
                   <span
                     data-docx-drop-cap="true"
                     data-docx-drop-cap-node-index={nodeIndex}
@@ -31769,26 +32140,336 @@ export function DocxEditorViewer({
                     {!isReadOnly ? (
                       <span
                         contentEditable={false}
-                        title="Drag drop cap"
+                        data-docx-table-move-handle="true"
+                        title="Move drop cap"
                         style={{
                           position: "absolute",
-                          top: -6,
-                          right: -6,
-                          width: 12,
-                          height: 12,
-                          borderRadius: 3,
-                          border: "1px solid #d4d4d8",
-                          backgroundColor: "#ffffff",
-                          boxShadow: "0 1px 2px rgba(0, 0, 0, 0.14)",
+                          top: -TABLE_MOVE_HANDLE_HIT_SIZE - 4,
+                          left: -TABLE_MOVE_HANDLE_HIT_SIZE - 4,
+                          width: TABLE_MOVE_HANDLE_HIT_SIZE,
+                          height: TABLE_MOVE_HANDLE_HIT_SIZE,
+                          display: "grid",
+                          placeItems: "center",
                           cursor: "move",
-                          zIndex: 4
+                          zIndex: 7,
+                          touchAction: "none",
+                          userSelect: "none"
                         }}
                         onPointerDown={(event) => beginDropCapMove(event, nodeIndex, dropCap)}
-                      />
+                      >
+                        <span
+                          style={{
+                            ...TABLE_MOVE_HANDLE_STYLE
+                          }}
+                        >
+                          <svg
+                            width="11"
+                            height="11"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            aria-hidden="true"
+                          >
+                            <path d="M12 2v20" />
+                            <path d="m7 7 5-5 5 5" />
+                            <path d="m7 17 5 5 5-5" />
+                            <path d="M2 12h20" />
+                            <path d="m7 7-5 5 5 5" />
+                            <path d="m17 7 5 5-5 5" />
+                          </svg>
+                        </span>
+                      </span>
+                    ) : null}
+                    {!isReadOnly ? (
+                      <span
+                        contentEditable={false}
+                        title="Resize drop cap"
+                        style={{
+                          position: "absolute",
+                          right: -TABLE_HANDLE_SAFEZONE_RIGHT_PX,
+                          bottom: -TABLE_HANDLE_SAFEZONE_BOTTOM_PX,
+                          width: TABLE_RESIZE_HANDLE_HIT_SIZE + TABLE_HANDLE_SAFEZONE_RIGHT_PX,
+                          height: TABLE_RESIZE_HANDLE_HIT_SIZE + TABLE_HANDLE_SAFEZONE_BOTTOM_PX,
+                          display: "grid",
+                          placeItems: "end",
+                          zIndex: 7,
+                          cursor: "nwse-resize",
+                          touchAction: "none",
+                          userSelect: "none"
+                        }}
+                        onPointerDown={(event) =>
+                          beginDropCapResize(
+                            event,
+                            nodeIndex,
+                            dropCapFontSizePx,
+                            dropCapWidthPx,
+                            dropCapHeightPx
+                          )
+                        }
+                      >
+                        <span
+                          style={{
+                            ...TABLE_RESIZE_HANDLE_STYLE,
+                            pointerEvents: "auto"
+                          }}
+                        />
+                      </span>
                     ) : null}
                   </span>
                 ) : null}
-                {renderDocumentNode(
+                {dropCapManualWrapLayout && dropCapWrapSource ? (
+                  <span
+                    contentEditable={false}
+                    style={{
+                      display: "block",
+                      position: "relative",
+                      minHeight: dropCapBlockHeightPx
+                    }}
+                  >
+                    {dropCapText.length > 0 ? (
+                      <span
+                        data-docx-drop-cap="true"
+                        data-docx-drop-cap-node-index={nodeIndex}
+                        contentEditable={false}
+                        style={{
+                          position: "absolute",
+                          left: movedLeftPx,
+                          top: movedTopPx,
+                          zIndex: 3,
+                          width: dropCapWidthPx,
+                          minHeight: dropCapHeightPx,
+                          display: "inline-flex",
+                          alignItems: "stretch",
+                          touchAction: "none",
+                          userSelect: "none"
+                        }}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          if (isReadOnly) {
+                            return;
+                          }
+                          clearTableCellSelection();
+                          setSelectedImage(undefined);
+                          setSelectedSectionImageKey(undefined);
+                          setSelectedDropCapNodeIndex(nodeIndex);
+                        }}
+                      >
+                        <input
+                          type="text"
+                          value={dropCapText}
+                          readOnly={isReadOnly}
+                          spellCheck={false}
+                          aria-label="Drop cap text"
+                          onChange={(event) => {
+                            if (isReadOnly) {
+                              return;
+                            }
+                            editor.setParagraphDropCapText(nodeIndex, event.currentTarget.value);
+                          }}
+                          onPointerDown={(event) => {
+                            event.stopPropagation();
+                            if (!isReadOnly) {
+                              setSelectedDropCapNodeIndex(nodeIndex);
+                            }
+                          }}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                          }}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter") {
+                              event.preventDefault();
+                            }
+                          }}
+                          style={{
+                            ...runStyleToCss(dropCapTextStyle, editor.documentTheme),
+                            width: "100%",
+                            minHeight: dropCapHeightPx,
+                            border: isSelectedDropCap ? "1px solid rgba(37, 99, 235, 0.8)" : "1px solid transparent",
+                            borderRadius: 4,
+                            backgroundColor: "transparent",
+                            outline: "none",
+                            padding: 0,
+                            margin: 0,
+                            lineHeight: 1,
+                            whiteSpace: "pre",
+                            overflow: "visible",
+                            boxSizing: "border-box",
+                            boxShadow: isSelectedDropCap
+                              ? "0 0 0 2px rgba(191, 219, 254, 0.65)"
+                              : undefined,
+                            color: themedRunColor(dropCapTextStyle.color, editor.documentTheme) ?? undefined,
+                            fontFamily: cssFontFamily(dropCapTextStyle.fontFamily) ?? undefined
+                          }}
+                        />
+                        {!isReadOnly ? (
+                          <span
+                            contentEditable={false}
+                            data-docx-table-move-handle="true"
+                            title="Move drop cap"
+                            style={{
+                              position: "absolute",
+                              top: -TABLE_MOVE_HANDLE_HIT_SIZE - 4,
+                              left: -TABLE_MOVE_HANDLE_HIT_SIZE - 4,
+                              width: TABLE_MOVE_HANDLE_HIT_SIZE,
+                              height: TABLE_MOVE_HANDLE_HIT_SIZE,
+                              display: "grid",
+                              placeItems: "center",
+                              cursor: "move",
+                              zIndex: 7,
+                              touchAction: "none",
+                              userSelect: "none"
+                            }}
+                            onPointerDown={(event) => beginDropCapMove(event, nodeIndex, dropCap)}
+                          >
+                            <span
+                              style={{
+                                ...TABLE_MOVE_HANDLE_STYLE
+                              }}
+                            >
+                              <svg
+                                width="11"
+                                height="11"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="2"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                aria-hidden="true"
+                              >
+                                <path d="M12 2v20" />
+                                <path d="m7 7 5-5 5 5" />
+                                <path d="m7 17 5 5-5 5" />
+                                <path d="M2 12h20" />
+                                <path d="m7 7-5 5 5 5" />
+                                <path d="m17 7 5 5-5 5" />
+                              </svg>
+                            </span>
+                          </span>
+                        ) : null}
+                        {!isReadOnly ? (
+                          <span
+                            contentEditable={false}
+                            title="Resize drop cap"
+                            style={{
+                              position: "absolute",
+                              right: -TABLE_HANDLE_SAFEZONE_RIGHT_PX,
+                              bottom: -TABLE_HANDLE_SAFEZONE_BOTTOM_PX,
+                              width: TABLE_RESIZE_HANDLE_HIT_SIZE + TABLE_HANDLE_SAFEZONE_RIGHT_PX,
+                              height: TABLE_RESIZE_HANDLE_HIT_SIZE + TABLE_HANDLE_SAFEZONE_BOTTOM_PX,
+                              display: "grid",
+                              placeItems: "end",
+                              zIndex: 7,
+                              cursor: "nwse-resize",
+                              touchAction: "none",
+                              userSelect: "none"
+                            }}
+                            onPointerDown={(event) =>
+                              beginDropCapResize(
+                                event,
+                                nodeIndex,
+                                dropCapFontSizePx,
+                                dropCapWidthPx,
+                                dropCapHeightPx
+                              )
+                            }
+                          >
+                            <span
+                              style={{
+                                ...TABLE_RESIZE_HANDLE_STYLE,
+                                pointerEvents: "auto"
+                              }}
+                            />
+                          </span>
+                        ) : null}
+                      </span>
+                    ) : null}
+                    {dropCapManualWrapLayout.lines.map((line, lineIndex) =>
+                      line.fragments.map((fragment) => {
+                        const pieces = dropCapWrapSource.runs
+                          .map((run) => {
+                            const overlapStart = Math.max(fragment.startOffset, run.startOffset);
+                            const overlapEnd = Math.min(fragment.endOffset, run.endOffset);
+                            if (overlapStart >= overlapEnd) {
+                              return undefined;
+                            }
+
+                            const slice = run.text.slice(
+                              overlapStart - run.startOffset,
+                              overlapEnd - run.startOffset
+                            );
+                            if (!slice) {
+                              return undefined;
+                            }
+
+                            const textStyle = run.link
+                              ? {
+                                  ...linkStyleToCss(run.style, editor.documentTheme),
+                                  whiteSpace: "pre"
+                                }
+                              : {
+                                  ...runStyleToCss(run.style, editor.documentTheme),
+                                  whiteSpace: "pre"
+                                };
+
+                            return run.link ? (
+                              <a
+                                key={`dropcap-wrap-${nodeIndex}-${lineIndex}-${run.key}-${overlapStart}`}
+                                href={run.link}
+                                target={run.link.startsWith("#") ? undefined : "_blank"}
+                                rel={run.link.startsWith("#") ? undefined : "noreferrer noopener"}
+                                onMouseDown={(event) => {
+                                  if (!run.link?.startsWith("#")) {
+                                    return;
+                                  }
+                                  event.preventDefault();
+                                  event.stopPropagation();
+                                }}
+                                onClick={(event) => {
+                                  if (!run.link?.startsWith("#")) {
+                                    return;
+                                  }
+                                  event.preventDefault();
+                                  event.stopPropagation();
+                                  scrollToBookmark(run.link.slice(1));
+                                }}
+                                style={textStyle}
+                              >
+                                {slice}
+                              </a>
+                            ) : (
+                              <span
+                                key={`dropcap-wrap-${nodeIndex}-${lineIndex}-${run.key}-${overlapStart}`}
+                                style={textStyle}
+                              >
+                                {slice}
+                              </span>
+                            );
+                          })
+                          .filter(Boolean);
+
+                        return (
+                          <span
+                            key={`dropcap-wrap-fragment-${nodeIndex}-${lineIndex}-${fragment.startOffset}-${fragment.endOffset}`}
+                            style={{
+                              position: "absolute",
+                              left: fragment.x,
+                              top: line.y,
+                              display: "inline-block",
+                              whiteSpace: "pre",
+                              lineHeight: `${lineHeightPx}px`
+                            }}
+                          >
+                            {pieces}
+                          </span>
+                        );
+                      })
+                    )}
+                  </span>
+                ) : renderDocumentNode(
                   nextNode,
                   nextNodeIndex,
                   nextSegment?.tableRowRange,
@@ -31818,10 +32499,12 @@ export function DocxEditorViewer({
     },
     [
       beginDropCapMove,
-      clearTableCellSelection,
+      beginDropCapResize,
+      clearObjectSelectionForParagraphEntry,
       docGridLinePitchPxByNodeIndex,
       documentContentWidthPx,
       dropCapMovePreview,
+      dropCapResizePreview,
       editor,
       isReadOnly,
       renderDocumentNode,

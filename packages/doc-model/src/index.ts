@@ -3,6 +3,15 @@ import type { OoxmlPackage } from "@react-docx/ooxml-core";
 export type ParagraphAlignment = "left" | "center" | "right" | "justify";
 export type HeadingLevel = 1 | 2 | 3 | 4 | 5 | 6;
 
+export interface TextRunBorderStyle {
+  type: string;
+  color?: string;
+  sizeEighthPt?: number;
+  spacePt?: number;
+  frame?: boolean;
+  shadow?: boolean;
+}
+
 export interface TextStyle {
   bold?: boolean;
   italic?: boolean;
@@ -10,10 +19,12 @@ export interface TextStyle {
   strike?: boolean;
   color?: string;
   highlight?: string;
+  backgroundColor?: string;
   fontSizePt?: number;
   fontFamily?: string;
   characterSpacingTwips?: number;
   verticalAlign?: "superscript" | "subscript";
+  runBorder?: TextRunBorderStyle;
 }
 
 export interface TextRunNode {
@@ -1445,6 +1456,36 @@ function parseParagraphBorderStyle(tagXml: string | undefined): ParagraphBorderS
   };
 }
 
+function parseTextRunBorderStyle(tagXml: string | undefined): TextRunBorderStyle | undefined {
+  if (!tagXml) {
+    return undefined;
+  }
+
+  const type = getAttribute(tagXml, "w:val")?.trim().toLowerCase();
+  if (!type) {
+    return undefined;
+  }
+
+  const sizeEighthPt = parseIntegerAttribute(tagXml, "w:sz");
+  const spacePt = parseIntegerAttribute(tagXml, "w:space");
+  const rawColor = getAttribute(tagXml, "w:color");
+  const color =
+    rawColor?.trim().toLowerCase() === "auto"
+      ? undefined
+      : normalizeHexColor(rawColor);
+  const frame = parseOnOffValue(getAttribute(tagXml, "w:frame"));
+  const shadow = parseOnOffValue(getAttribute(tagXml, "w:shadow"));
+
+  return {
+    type,
+    ...(sizeEighthPt !== undefined && sizeEighthPt >= 0 ? { sizeEighthPt } : undefined),
+    ...(spacePt !== undefined && spacePt >= 0 ? { spacePt } : undefined),
+    ...(color ? { color } : undefined),
+    ...(frame !== undefined ? { frame } : undefined),
+    ...(shadow !== undefined ? { shadow } : undefined)
+  };
+}
+
 function parseParagraphBorderSetFromXml(xml: string): ParagraphBorderSet | undefined {
   if (!xml) {
     return undefined;
@@ -1873,6 +1914,9 @@ function mergeTextStyles(...styles: Array<TextStyle | undefined>): TextStyle | u
     if (style.highlight !== undefined) {
       merged.highlight = style.highlight;
     }
+    if (style.backgroundColor !== undefined) {
+      merged.backgroundColor = style.backgroundColor;
+    }
     if (style.fontSizePt !== undefined) {
       merged.fontSizePt = style.fontSizePt;
     }
@@ -1884,6 +1928,9 @@ function mergeTextStyles(...styles: Array<TextStyle | undefined>): TextStyle | u
     }
     if (style.verticalAlign !== undefined) {
       merged.verticalAlign = style.verticalAlign;
+    }
+    if (style.runBorder !== undefined) {
+      merged.runBorder = { ...style.runBorder };
     }
   }
 
@@ -2120,6 +2167,7 @@ function parseTextStyleFromXml(xml: string, themeFonts: ThemeFontMap = {}): Text
 
   const colorMatch = xml.match(/<w:color\b[^>]*w:val="([^"]+)"/i);
   const highlightMatch = xml.match(/<w:highlight\b[^>]*w:val="([^"]+)"/i);
+  const shadingTag = xml.match(/<w:shd\b[^>]*\/?>/i)?.[0];
   const characterSpacingMatch = xml.match(/<w:spacing\b[^>]*w:val="(-?\d+)"/i);
   const sizeMatch =
     xml.match(/<w:sz\b[^>]*w:val="(\d+)"/i) ??
@@ -2145,6 +2193,7 @@ function parseTextStyleFromXml(xml: string, themeFonts: ThemeFontMap = {}): Text
   const drawingFontMatch = xml.match(/<a:rPr\b[\s\S]*?<a:latin\b[^>]*typeface="([^"]+)"/i);
   const drawingDefaultFontMatch = xml.match(/<a:defRPr\b[\s\S]*?<a:latin\b[^>]*typeface="([^"]+)"/i);
   const drawingAnyLatinMatch = xml.match(/<a:latin\b[^>]*typeface="([^"]+)"/i);
+  const runBorderTag = xml.match(/<w:bdr\b[^>]*\/?>/i)?.[0];
   const decodedTextSamples = [...xml.matchAll(/<(?:w|a):t\b[^>]*>([\s\S]*?)<\/(?:w|a):t>/gi)]
     .map((match) => decodeXmlEntities(match[1] ?? ""))
     .join("");
@@ -2192,6 +2241,11 @@ function parseTextStyleFromXml(xml: string, themeFonts: ThemeFontMap = {}): Text
 
   if (highlightMatch?.[1]) {
     style.highlight = highlightMatch[1];
+  }
+
+  const shadingFill = normalizeHexColor(shadingTag ? getAttribute(shadingTag, "w:fill") : undefined);
+  if (shadingFill) {
+    style.backgroundColor = shadingFill;
   }
 
   if (characterSpacingMatch?.[1]) {
@@ -2244,6 +2298,11 @@ function parseTextStyleFromXml(xml: string, themeFonts: ThemeFontMap = {}): Text
   const verticalAlignValue = verticalAlignMatch?.[1]?.toLowerCase();
   if (verticalAlignValue === "superscript" || verticalAlignValue === "subscript") {
     style.verticalAlign = verticalAlignValue;
+  }
+
+  const runBorder = parseTextRunBorderStyle(runBorderTag);
+  if (runBorder) {
+    style.runBorder = runBorder;
   }
 
   return Object.keys(style).length > 0 ? style : undefined;

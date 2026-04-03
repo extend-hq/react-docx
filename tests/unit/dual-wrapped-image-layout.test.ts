@@ -52,6 +52,23 @@ beforeAll(() => {
 });
 
 describe("dual wrapped image layout", () => {
+  it("scales drop-cap visual height with resized font size", async () => {
+    const {
+      resolveDropCapFontSizePx,
+      resolveDropCapVisualHeightPx
+    } = await import("../../packages/react-viewer/src/editor");
+
+    const style = { fontSizePt: 58.5 };
+    const baselineFontSizePx = resolveDropCapFontSizePx(style, 20, 3);
+    const baselineHeightPx = resolveDropCapVisualHeightPx(style, 20, 3, baselineFontSizePx);
+    const grownHeightPx = resolveDropCapVisualHeightPx(style, 20, 3, baselineFontSizePx * 1.5);
+    const shrunkHeightPx = resolveDropCapVisualHeightPx(style, 20, 3, baselineFontSizePx * 0.7);
+
+    expect(baselineHeightPx).toBeGreaterThan(0);
+    expect(grownHeightPx).toBeGreaterThan(baselineHeightPx);
+    expect(shrunkHeightPx).toBeLessThan(baselineHeightPx);
+  });
+
   it("detects an interior both-sides wrapped image exclusion box", async () => {
     const { resolveDualWrappedFloatingImageGeometry } = await import(
       "../../packages/react-viewer/src/editor"
@@ -349,6 +366,71 @@ describe("dual wrapped image layout", () => {
     });
   });
 
+  it("stores dragged wrapped side-floats without switching them into interior wraps", async () => {
+    const { resolveWrappedFloatingImageDropPatch } = await import(
+      "../../packages/react-viewer/src/editor"
+    );
+
+    const patch = resolveWrappedFloatingImageDropPatch(
+      {
+        type: "image",
+        widthPx: 120,
+        heightPx: 96,
+        floating: {
+          xPx: -6,
+          yPx: 18,
+          distLPx: 12,
+          distRPx: 12,
+          distTPx: 4,
+          distBPx: 4,
+          wrapType: "square",
+          wrapText: "bothSides",
+          behindDocument: false
+        }
+      },
+      420,
+      30,
+      26,
+      {
+        widthPx: 120,
+        heightPx: 96
+      }
+    );
+
+    expect(patch.horizontalAlign).toBe("left");
+    expect(patch.xPx).toBe(30);
+    expect(patch.yPx).toBe(22);
+  });
+
+  it("keeps explicit horizontal offsets on aligned wrapped floats", async () => {
+    const { wrappedFloatingImageStyle } = await import(
+      "../../packages/react-viewer/src/editor"
+    );
+
+    const style = wrappedFloatingImageStyle(
+      {
+        type: "image" as const,
+        widthPx: 120,
+        heightPx: 96,
+        floating: {
+          xPx: 36,
+          yPx: 0,
+          horizontalAlign: "left",
+          distLPx: 12,
+          distRPx: 12,
+          distTPx: 0,
+          distBPx: 4,
+          wrapType: "square",
+          wrapText: "bothSides",
+          behindDocument: false
+        }
+      },
+      { containerWidthPx: 420 }
+    );
+
+    expect(style.marginLeft).toBe(36);
+  });
+
   it("preserves right alignment for single-slot wrapped lines", async () => {
     const { resolveParagraphDualWrappedTextLayout } = await import(
       "../../packages/react-viewer/src/editor"
@@ -391,5 +473,46 @@ describe("dual wrapped image layout", () => {
 
     const fragment = layout?.layout.lines[0]?.fragments[0];
     expect(fragment?.x ?? 0).toBeGreaterThan(200);
+  });
+
+  it("keeps whole words together when a later wrap slot can fit them", async () => {
+    const { resolveParagraphDualWrappedTextLayout } = await import(
+      "../../packages/react-viewer/src/editor"
+    );
+
+    const paragraph: ParagraphNode = {
+      type: "paragraph",
+      children: [
+        {
+          type: "image",
+          widthPx: 120,
+          heightPx: 110,
+          floating: {
+            xPx: 80,
+            yPx: 0,
+            distLPx: 8,
+            distRPx: 8,
+            distTPx: 0,
+            distBPx: 4,
+            wrapType: "square",
+            wrapText: "bothSides",
+            behindDocument: false
+          }
+        },
+        {
+          type: "text",
+          text:
+            "Documents may contain images. For example, there is an image of the web accessibility symbol."
+        }
+      ]
+    };
+
+    const layout = resolveParagraphDualWrappedTextLayout(paragraph, 400, 22);
+
+    expect(layout).toBeDefined();
+    const firstLine = layout?.layout.lines[0];
+    expect(firstLine?.fragments).toHaveLength(1);
+    expect(firstLine?.fragments[0]?.text.startsWith("Documents")).toBe(true);
+    expect(firstLine?.fragments[0]?.x ?? 0).toBeGreaterThanOrEqual(200);
   });
 });

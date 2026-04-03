@@ -103,6 +103,34 @@ const DROP_CAP_DOC_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?
   </w:body>
 </w:document>`;
 
+const RUN_BORDER_DOC_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p>
+      <w:r><w:t>Some text in a </w:t></w:r>
+      <w:r>
+        <w:rPr><w:bdr w:val="single" w:sz="4" w:space="0" w:color="auto"/></w:rPr>
+        <w:t>box</w:t>
+      </w:r>
+    </w:p>
+  </w:body>
+</w:document>`;
+
+const RUN_SHADING_DOC_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p>
+      <w:r>
+        <w:rPr>
+          <w:color w:val="FFFFFF"/>
+          <w:shd w:val="clear" w:color="auto" w:fill="000000"/>
+        </w:rPr>
+        <w:t>inverse video</w:t>
+      </w:r>
+    </w:p>
+  </w:body>
+</w:document>`;
+
 const FORM_CONTROLS_DOC_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml">
   <w:body>
@@ -2133,5 +2161,60 @@ describe("doc-model import", () => {
     }
 
     expect(run.style?.characterSpacingTwips).toBe(20);
+  });
+
+  it("imports run border styling", async () => {
+    const zip = createZip([
+      { name: "[Content_Types].xml", content: CONTENT_TYPES_XML },
+      { name: "_rels/.rels", content: ROOT_RELS_XML },
+      { name: "word/document.xml", content: RUN_BORDER_DOC_XML }
+    ]);
+
+    const pkg = await parseDocx(zip);
+    const model = buildDocModel(pkg);
+    const paragraph = model.nodes[0];
+    expect(paragraph?.type).toBe("paragraph");
+    if (paragraph?.type !== "paragraph") {
+      return;
+    }
+
+    const run = paragraph.children[1];
+    expect(run?.type).toBe("text");
+    if (run?.type !== "text") {
+      return;
+    }
+
+    expect(run.text).toBe("box");
+    expect(run.style?.runBorder).toEqual({
+      type: "single",
+      sizeEighthPt: 4,
+      spacePt: 0
+    });
+  });
+
+  it("imports run shading as background color", async () => {
+    const zip = createZip([
+      { name: "[Content_Types].xml", content: CONTENT_TYPES_XML },
+      { name: "_rels/.rels", content: ROOT_RELS_XML },
+      { name: "word/document.xml", content: RUN_SHADING_DOC_XML }
+    ]);
+
+    const pkg = await parseDocx(zip);
+    const model = buildDocModel(pkg);
+    const paragraph = model.nodes[0];
+    expect(paragraph?.type).toBe("paragraph");
+    if (paragraph?.type !== "paragraph") {
+      return;
+    }
+
+    const run = paragraph.children[0];
+    expect(run?.type).toBe("text");
+    if (run?.type !== "text") {
+      return;
+    }
+
+    expect(run.text).toBe("inverse video");
+    expect(run.style?.color?.toLowerCase()).toBe("#ffffff");
+    expect(run.style?.backgroundColor?.toLowerCase()).toBe("#000000");
   });
 });

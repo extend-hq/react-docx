@@ -14,6 +14,10 @@ const HEADER_XML =
   '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:p><w:r><w:t>Original Header</w:t></w:r></w:p></w:hdr>';
 const DOCUMENT_WITH_DROP_CAP_XML =
   '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:pPr><w:framePr w:dropCap="drop" w:lines="3" w:wrap="around" w:hAnchor="text" w:vAnchor="text" w:x="240" w:y="120" w:hSpace="80" w:vSpace="40"/></w:pPr><w:r><w:t>A</w:t></w:r></w:p><w:p><w:r><w:t>fter paragraph.</w:t></w:r></w:p></w:body></w:document>';
+const DOCUMENT_WITH_RUN_BORDER_XML =
+  '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:rPr><w:bdr w:val="single" w:sz="4" w:space="0" w:color="auto"/></w:rPr><w:t>box</w:t></w:r></w:p></w:body></w:document>';
+const DOCUMENT_WITH_RUN_SHADING_XML =
+  '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:rPr><w:color w:val="FFFFFF"/><w:shd w:val="clear" w:color="auto" w:fill="000000"/></w:rPr><w:t>inverse video</w:t></w:r></w:p></w:body></w:document>';
 
 describe("round-trip", () => {
   it("builds model, edits it, then serializes back to document.xml", async () => {
@@ -122,6 +126,73 @@ describe("round-trip", () => {
     expect(xml).toContain('w:hSpace="80"');
     expect(xml).toContain('w:vSpace="40"');
     expect(xml).toContain("AB");
+  });
+
+  it("serializes parsed run border styling", async () => {
+    const seed = createMinimalDocxPackage(DOCUMENT_WITH_RUN_BORDER_XML);
+    const pkg = await parseDocx(packageToArrayBuffer(seed));
+    const model = buildDocModel(pkg);
+    const paragraph = model.nodes[0];
+    expect(paragraph?.type).toBe("paragraph");
+    if (paragraph?.type !== "paragraph") {
+      return;
+    }
+
+    const run = paragraph.children[0];
+    expect(run?.type).toBe("text");
+    if (run?.type !== "text") {
+      return;
+    }
+
+    paragraph.children = [
+      {
+        type: "text",
+        text: "boxed",
+        style: run.style
+      }
+    ];
+    paragraph.sourceXml = undefined;
+
+    const serialized = serializeDocModel(model, pkg);
+    const xml = serialized.parts.get("word/document.xml")?.content ?? "";
+    expect(xml).toContain("<w:bdr");
+    expect(xml).toContain('w:val="single"');
+    expect(xml).toContain('w:sz="4"');
+    expect(xml).toContain('w:space="0"');
+    expect(xml).toContain('w:color="auto"');
+    expect(xml).toContain("boxed");
+  });
+
+  it("serializes parsed run shading styling", async () => {
+    const seed = createMinimalDocxPackage(DOCUMENT_WITH_RUN_SHADING_XML);
+    const pkg = await parseDocx(packageToArrayBuffer(seed));
+    const model = buildDocModel(pkg);
+    const paragraph = model.nodes[0];
+    expect(paragraph?.type).toBe("paragraph");
+    if (paragraph?.type !== "paragraph") {
+      return;
+    }
+
+    const run = paragraph.children[0];
+    expect(run?.type).toBe("text");
+    if (run?.type !== "text") {
+      return;
+    }
+
+    paragraph.children = [
+      {
+        type: "text",
+        text: "inverse video updated",
+        style: run.style
+      }
+    ];
+    paragraph.sourceXml = undefined;
+
+    const serialized = serializeDocModel(model, pkg);
+    const xml = serialized.parts.get("word/document.xml")?.content ?? "";
+    expect(xml).toContain('<w:color w:val="FFFFFF"/>');
+    expect(xml).toContain('<w:shd w:val="clear" w:color="auto" w:fill="000000"/>');
+    expect(xml).toContain("inverse video updated");
   });
 
   it("serializes hyperlink runs with hyperlink relationship entries", async () => {

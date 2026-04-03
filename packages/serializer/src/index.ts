@@ -298,6 +298,10 @@ function runPropertiesXml(style?: TextStyle): string {
     fragments.push(`<w:highlight w:val="${highlight}"/>`);
   }
 
+  if (style.backgroundColor) {
+    fragments.push(`<w:shd w:val="clear" w:color="auto" w:fill="${style.backgroundColor.replace("#", "").toUpperCase()}"/>`);
+  }
+
   if (style.fontSizePt) {
     fragments.push(`<w:sz w:val="${Math.round(style.fontSizePt * 2)}"/>`);
   }
@@ -309,6 +313,24 @@ function runPropertiesXml(style?: TextStyle): string {
 
   if (style.verticalAlign === "superscript" || style.verticalAlign === "subscript") {
     fragments.push(`<w:vertAlign w:val="${style.verticalAlign}"/>`);
+  }
+
+  if (style.runBorder?.type) {
+    const attrs = [`w:val="${escapeXml(style.runBorder.type.trim().toLowerCase())}"`];
+    if (Number.isFinite(style.runBorder.sizeEighthPt) && (style.runBorder.sizeEighthPt as number) >= 0) {
+      attrs.push(`w:sz="${Math.round(style.runBorder.sizeEighthPt as number)}"`);
+    }
+    if (Number.isFinite(style.runBorder.spacePt) && (style.runBorder.spacePt as number) >= 0) {
+      attrs.push(`w:space="${Math.round(style.runBorder.spacePt as number)}"`);
+    }
+    attrs.push(`w:color="${style.runBorder.color ? style.runBorder.color.replace("#", "").toUpperCase() : "auto"}"`);
+    if (style.runBorder.frame !== undefined) {
+      attrs.push(`w:frame="${style.runBorder.frame ? "1" : "0"}"`);
+    }
+    if (style.runBorder.shadow !== undefined) {
+      attrs.push(`w:shadow="${style.runBorder.shadow ? "1" : "0"}"`);
+    }
+    fragments.push(`<w:bdr ${attrs.join(" ")}/>`);
   }
 
   return fragments.length > 0 ? `<w:rPr>${fragments.join("")}</w:rPr>` : "";

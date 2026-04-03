@@ -2,6 +2,7 @@ import {
   layoutNextLine,
   prepareWithSegments,
   type LayoutCursor,
+  type LayoutLine,
   type PreparedTextWithSegments
 } from "@chenglou/pretext";
 
@@ -83,6 +84,49 @@ function cursorEndedAtHardBreak(
   }
 
   return prepared.kinds[cursor.segmentIndex - 1] === "hard-break";
+}
+
+function lineSplitsLeadingBreakableSegment(
+  prepared: PreparedTextWithSegments,
+  start: LayoutCursor,
+  line: LayoutLine
+): boolean {
+  if (start.graphemeIndex !== 0) {
+    return false;
+  }
+
+  const breakableWidths = prepared.breakableWidths[start.segmentIndex];
+  if (!breakableWidths || breakableWidths.length <= 1) {
+    return false;
+  }
+
+  return (
+    line.end.segmentIndex === start.segmentIndex &&
+    line.end.graphemeIndex > start.graphemeIndex &&
+    line.end.graphemeIndex < breakableWidths.length
+  );
+}
+
+function laterIntervalFitsLeadingSegmentWithoutSplit(
+  prepared: PreparedTextWithSegments,
+  start: LayoutCursor,
+  laterIntervals: Array<{
+    x: number;
+    width: number;
+  }>
+): boolean {
+  for (const interval of laterIntervals) {
+    const candidate = layoutNextLine(prepared, start, interval.width);
+    if (!candidate) {
+      continue;
+    }
+
+    if (!lineSplitsLeadingBreakableSegment(prepared, start, candidate)) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 function rowWidthsAtY(
@@ -193,13 +237,25 @@ export function layoutTextWithPretextAroundExclusions(
       continue;
     }
 
-    for (const interval of rowIntervals) {
+    for (let intervalIndex = 0; intervalIndex < rowIntervals.length; intervalIndex += 1) {
+      const interval = rowIntervals[intervalIndex]!;
       if (cursorIsDone(prepared, cursor) || cursorEndedAtHardBreak(prepared, cursor)) {
         break;
       }
 
       const line = layoutNextLine(prepared, cursor, interval.width);
       if (line) {
+        if (
+          lineSplitsLeadingBreakableSegment(prepared, cursor, line) &&
+          laterIntervalFitsLeadingSegmentWithoutSplit(
+            prepared,
+            cursor,
+            rowIntervals.slice(intervalIndex + 1)
+          )
+        ) {
+          continue;
+        }
+
         fragments.push({
           text: line.text,
           width: line.width,
