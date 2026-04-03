@@ -20133,6 +20133,7 @@ export function DocxEditorViewer({
   const [selectedImage, setSelectedImage] = React.useState<DocxImageLocation | undefined>();
   const [selectedSectionImageKey, setSelectedSectionImageKey] = React.useState<string | undefined>();
   const [selectedDropCapNodeIndex, setSelectedDropCapNodeIndex] = React.useState<number | undefined>();
+  const [hoveredDropCapNodeIndex, setHoveredDropCapNodeIndex] = React.useState<number | undefined>();
   const [resizePreview, setResizePreview] = React.useState<{
     imageKey: string;
     widthPx: number;
@@ -20198,6 +20199,7 @@ export function DocxEditorViewer({
     setSelectedImage(undefined);
     setSelectedSectionImageKey(undefined);
     setSelectedDropCapNodeIndex(undefined);
+    setHoveredDropCapNodeIndex(undefined);
     setResizePreview(undefined);
     setFloatingMovePreview(undefined);
     setDropCapMovePreview(undefined);
@@ -20437,6 +20439,7 @@ export function DocxEditorViewer({
     setSelectedImage(undefined);
     setSelectedSectionImageKey(undefined);
     setSelectedDropCapNodeIndex(undefined);
+    setHoveredDropCapNodeIndex(undefined);
     setResizePreview(undefined);
     setFloatingMovePreview(undefined);
     setDropCapMovePreview(undefined);
@@ -21863,19 +21866,6 @@ export function DocxEditorViewer({
   const clearTableCellSelection = React.useCallback((): void => {
     setTableCellSelectionRange((current) => (current ? undefined : current));
   }, []);
-  const clearObjectSelectionForParagraphEntry = React.useCallback(
-    (nodeIndex: number): void => {
-      clearTableCellSelection();
-      setSelectedImage(undefined);
-      setSelectedSectionImageKey(undefined);
-      setSelectedDropCapNodeIndex(undefined);
-
-      if (editor.selection.kind === "table-cell") {
-        editor.selectParagraph(nodeIndex);
-      }
-    },
-    [clearTableCellSelection, editor]
-  );
   const isPointWithinTableHandleHoverZone = React.useCallback(
     (tableIndex: number, x: number, y: number): boolean => {
       const tableElement = tableElementsRef.current.get(tableIndex);
@@ -23309,6 +23299,53 @@ export function DocxEditorViewer({
       setActiveRangeFromSelection();
     });
   }, [setActiveRangeFromSelection]);
+
+  const clearObjectSelectionForParagraphEntry = React.useCallback(
+    (nodeIndex: number): void => {
+      clearTableCellSelection();
+      setSelectedImage(undefined);
+      setSelectedSectionImageKey(undefined);
+      setSelectedDropCapNodeIndex(undefined);
+      setHoveredDropCapNodeIndex(undefined);
+
+      if (editor.selection.kind === "table-cell") {
+        editor.selectParagraph(nodeIndex);
+      }
+    },
+    [clearTableCellSelection, editor]
+  );
+
+  const focusDropCapWrappedParagraph = React.useCallback(
+    (
+      nodeIndex: number,
+      point?: {
+        x: number;
+        y: number;
+      }
+    ): void => {
+      clearObjectSelectionForParagraphEntry(nodeIndex);
+      editor.selectParagraph(nodeIndex);
+      scheduleDomWrite(() => {
+        const element = paragraphElementsRef.current.get(nodeIndex);
+        if (!element || !element.isConnected) {
+          return;
+        }
+
+        if (point) {
+          placeCaretInsideElement(element, point);
+        } else {
+          placeCaretInsideElement(element);
+        }
+        flushActiveRangeFromSelection();
+      });
+    },
+    [
+      clearObjectSelectionForParagraphEntry,
+      editor,
+      flushActiveRangeFromSelection,
+      placeCaretInsideElement
+    ]
+  );
 
   const scheduleDeferredCollapsedSelectionSync = React.useCallback((): void => {
     if (deferredCollapsedSelectionSyncTimeoutRef.current !== null) {
@@ -24973,6 +25010,7 @@ export function DocxEditorViewer({
     }
 
     setSelectedDropCapNodeIndex(undefined);
+    setHoveredDropCapNodeIndex(undefined);
     setDropCapMovePreview(undefined);
   }, [selectedImage, selectedSectionImageKey]);
 
@@ -24984,6 +25022,7 @@ export function DocxEditorViewer({
     const paragraph = editor.model.nodes[selectedDropCapNodeIndex];
     if (!paragraph || paragraph.type !== "paragraph" || !paragraphDropCap(paragraph)) {
       setSelectedDropCapNodeIndex(undefined);
+      setHoveredDropCapNodeIndex(undefined);
       setDropCapMovePreview(undefined);
     }
   }, [editor.model, selectedDropCapNodeIndex]);
@@ -32002,13 +32041,30 @@ export function DocxEditorViewer({
               nextParagraphWidthPx - dropCapWidthPx - movedLeftPx
             );
             const isSelectedDropCap = selectedDropCapNodeIndex === nodeIndex;
+            const isHoveredDropCap = hoveredDropCapNodeIndex === nodeIndex;
+            const showDropCapHandles =
+              !isReadOnly &&
+              (isSelectedDropCap ||
+                isHoveredDropCap ||
+                dropCapMovePreview?.nodeIndex === nodeIndex ||
+                dropCapResizePreview?.nodeIndex === nodeIndex);
 
-            const dropCapParagraphActiveForEditing =
-              (editor.selection.kind === "paragraph" && editor.selection.nodeIndex === nextNodeIndex) ||
+            const nextParagraphElement = paragraphElementsRef.current.get(nextNodeIndex);
+            const dropCapParagraphContainsFocus =
+              typeof document !== "undefined" &&
+              nextParagraphElement instanceof HTMLElement &&
+              document.activeElement instanceof Node &&
+              nextParagraphElement.contains(document.activeElement);
+            const dropCapParagraphHasActiveRange =
               (editor.activeTextRange?.start.location.kind === "paragraph" &&
                 editor.activeTextRange.start.location.nodeIndex === nextNodeIndex) ||
               (editor.activeTextRange?.end.location.kind === "paragraph" &&
                 editor.activeTextRange.end.location.nodeIndex === nextNodeIndex);
+            const dropCapParagraphActiveForEditing =
+              dropCapParagraphContainsFocus ||
+              dropCapParagraphHasActiveRange ||
+              paragraphDraftsRef.current.has(nextNodeIndex) ||
+              activeEditableParagraphSegment?.nodeIndex === nextNodeIndex;
             const dropCapWrapSource = buildParagraphPretextLayoutSource(nextNode);
             const dropCapWrapExclusion = floatRight
               ? {
@@ -32089,6 +32145,16 @@ export function DocxEditorViewer({
                       setSelectedSectionImageKey(undefined);
                       setSelectedDropCapNodeIndex(nodeIndex);
                     }}
+                    onPointerEnter={() => {
+                      if (!isReadOnly) {
+                        setHoveredDropCapNodeIndex(nodeIndex);
+                      }
+                    }}
+                    onPointerLeave={() => {
+                      setHoveredDropCapNodeIndex((current) =>
+                        current === nodeIndex ? undefined : current
+                      );
+                    }}
                   >
                     <input
                       type="text"
@@ -32137,7 +32203,7 @@ export function DocxEditorViewer({
                         fontFamily: cssFontFamily(dropCapTextStyle.fontFamily) ?? undefined
                       }}
                     />
-                    {!isReadOnly ? (
+                    {showDropCapHandles ? (
                       <span
                         contentEditable={false}
                         data-docx-table-move-handle="true"
@@ -32183,9 +32249,10 @@ export function DocxEditorViewer({
                         </span>
                       </span>
                     ) : null}
-                    {!isReadOnly ? (
+                    {showDropCapHandles ? (
                       <span
                         contentEditable={false}
+                        data-image-resize-handle="true"
                         title="Resize drop cap"
                         style={{
                           position: "absolute",
@@ -32228,6 +32295,36 @@ export function DocxEditorViewer({
                       position: "relative",
                       minHeight: dropCapBlockHeightPx
                     }}
+                    onPointerEnter={() => {
+                      if (!isReadOnly) {
+                        setHoveredDropCapNodeIndex(nodeIndex);
+                      }
+                    }}
+                    onPointerLeave={() => {
+                      setHoveredDropCapNodeIndex((current) =>
+                        current === nodeIndex ? undefined : current
+                      );
+                    }}
+                    onPointerDown={(event) => {
+                      if (isReadOnly) {
+                        return;
+                      }
+                      const target = event.target;
+                      if (
+                        target instanceof Element &&
+                        target.closest(
+                          "[data-docx-drop-cap='true'],[data-docx-table-move-handle='true'],[data-image-resize-handle='true']"
+                        )
+                      ) {
+                        return;
+                      }
+                      event.preventDefault();
+                      event.stopPropagation();
+                      focusDropCapWrappedParagraph(nextNodeIndex, {
+                        x: event.clientX,
+                        y: event.clientY
+                      });
+                    }}
                   >
                     {dropCapText.length > 0 ? (
                       <span
@@ -32255,6 +32352,16 @@ export function DocxEditorViewer({
                           setSelectedImage(undefined);
                           setSelectedSectionImageKey(undefined);
                           setSelectedDropCapNodeIndex(nodeIndex);
+                        }}
+                        onPointerEnter={() => {
+                          if (!isReadOnly) {
+                            setHoveredDropCapNodeIndex(nodeIndex);
+                          }
+                        }}
+                        onPointerLeave={() => {
+                          setHoveredDropCapNodeIndex((current) =>
+                            current === nodeIndex ? undefined : current
+                          );
                         }}
                       >
                         <input
@@ -32304,7 +32411,7 @@ export function DocxEditorViewer({
                             fontFamily: cssFontFamily(dropCapTextStyle.fontFamily) ?? undefined
                           }}
                         />
-                        {!isReadOnly ? (
+                        {showDropCapHandles ? (
                           <span
                             contentEditable={false}
                             data-docx-table-move-handle="true"
@@ -32350,9 +32457,10 @@ export function DocxEditorViewer({
                             </span>
                           </span>
                         ) : null}
-                        {!isReadOnly ? (
+                        {showDropCapHandles ? (
                           <span
                             contentEditable={false}
+                            data-image-resize-handle="true"
                             title="Resize drop cap"
                             style={{
                               position: "absolute",
@@ -32498,6 +32606,7 @@ export function DocxEditorViewer({
       return rendered;
     },
     [
+      activeEditableParagraphSegment,
       beginDropCapMove,
       beginDropCapResize,
       clearObjectSelectionForParagraphEntry,
@@ -32506,6 +32615,8 @@ export function DocxEditorViewer({
       dropCapMovePreview,
       dropCapResizePreview,
       editor,
+      focusDropCapWrappedParagraph,
+      hoveredDropCapNodeIndex,
       isReadOnly,
       renderDocumentNode,
       selectedDropCapNodeIndex
