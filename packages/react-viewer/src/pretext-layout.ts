@@ -7,8 +7,11 @@ import {
 } from "@chenglou/pretext";
 
 const PREPARED_TEXT_CACHE_MAX_ENTRIES = 512;
+const LAYOUT_CACHE_MAX_ENTRIES = 256;
 
 const preparedTextByKey = new Map<string, PreparedTextWithSegments>();
+const layoutByKey = new Map<string, PretextVariableWidthLayout>();
+const fragmentOffsetAdvancesByFragment = new WeakMap<PretextLineFragment, number[]>();
 
 export interface PretextExclusionRect {
   left: number;
@@ -112,6 +115,33 @@ function measureOffsetWidthPx(font: string, text: string, offset: number): numbe
   return measureTextWidthPx(font, text.slice(0, Math.max(0, Math.min(offset, text.length))));
 }
 
+function layoutCacheKey(
+  text: string,
+  font: string,
+  containerWidthPx: number,
+  lineHeightPx: number,
+  exclusions: PretextExclusionRect[]
+): string {
+  const exclusionsKey = exclusions
+    .map((exclusion) => `${exclusion.left},${exclusion.right},${exclusion.top},${exclusion.bottom}`)
+    .join(";");
+  return `${font}\u0000${containerWidthPx}\u0000${lineHeightPx}\u0000${exclusionsKey}\u0000${text}`;
+}
+
+function cachedFragmentOffsetAdvances(font: string, fragment: PretextLineFragment): number[] {
+  const cached = fragmentOffsetAdvancesByFragment.get(fragment);
+  if (cached) {
+    return cached;
+  }
+
+  const advances = new Array<number>(fragment.text.length + 1);
+  for (let localOffset = 0; localOffset <= fragment.text.length; localOffset += 1) {
+    advances[localOffset] = measureOffsetWidthPx(font, fragment.text, localOffset);
+  }
+  fragmentOffsetAdvancesByFragment.set(fragment, advances);
+  return advances;
+}
+
 function fragmentOffsetAtX(
   font: string,
   fragment: PretextLineFragment,
@@ -127,9 +157,9 @@ function fragmentOffsetAtX(
 
   let bestOffset = fragment.startOffset;
   let bestDistance = Number.POSITIVE_INFINITY;
-  const localText = fragment.text;
-  for (let localOffset = 0; localOffset <= localText.length; localOffset += 1) {
-    const advancePx = measureOffsetWidthPx(font, localText, localOffset);
+  const advances = cachedFragmentOffsetAdvances(font, fragment);
+  for (let localOffset = 0; localOffset < advances.length; localOffset += 1) {
+    const advancePx = advances[localOffset] ?? 0;
     const distance = Math.abs(xWithinFragment - advancePx);
     if (distance < bestDistance) {
       bestDistance = distance;
@@ -340,13 +370,25 @@ export function layoutTextWithPretextAroundExclusions(
 
   const safeContainerWidthPx = Math.max(1, Math.round(containerWidthPx));
   const safeLineHeightPx = Math.max(1, Math.round(lineHeightPx));
-  const lines: PretextLineLayout[] = [];
   const normalizedExclusions = (exclusions ?? []).map((exclusion) => ({
     left: Math.round(exclusion.left),
     right: Math.round(exclusion.right),
     top: Math.round(exclusion.top),
     bottom: Math.round(exclusion.bottom)
   }));
+  const cacheKey = layoutCacheKey(
+    text,
+    font,
+    safeContainerWidthPx,
+    safeLineHeightPx,
+    normalizedExclusions
+  );
+  const cachedLayout = layoutByKey.get(cacheKey);
+  if (cachedLayout) {
+    return cachedLayout;
+  }
+
+  const lines: PretextLineLayout[] = [];
 
   let cursor: LayoutCursor = { segmentIndex: 0, graphemeIndex: 0 };
   let consumedOffset = 0;
@@ -414,7 +456,7 @@ export function layoutTextWithPretextAroundExclusions(
     lines.length > 0
       ? (lines[lines.length - 1]?.y ?? 0) + safeLineHeightPx
       : 0;
-  return {
+  const nextLayout: PretextVariableWidthLayout = {
     lineCount,
     height: Math.max(
       contentBottomPx,
@@ -428,6 +470,15 @@ export function layoutTextWithPretextAroundExclusions(
     lineHeightPx: safeLineHeightPx,
     exclusions: normalizedExclusions
   };
+  layoutByKey.set(cacheKey, nextLayout);
+  while (layoutByKey.size > LAYOUT_CACHE_MAX_ENTRIES) {
+    const firstKey = layoutByKey.keys().next().value as string | undefined;
+    if (!firstKey) {
+      break;
+    }
+    layoutByKey.delete(firstKey);
+  }
+  return nextLayout;
 }
 
 export function resolveOffsetAtPoint(
@@ -494,7 +545,8 @@ export function resolveCaretRectAtOffset(
       }
 
       const localOffset = safeOffset - fragment.startOffset;
-      const left = fragment.x + measureOffsetWidthPx(font, fragment.text, localOffset);
+      const advances = cachedFragmentOffsetAdvances(font, fragment);
+      const left = fragment.x + (advances[localOffset] ?? 0);
       return {
         left,
         top: line.y,
@@ -541,9 +593,10 @@ export function resolveSelectionRects(
         return;
       }
 
-      const leadingWidthPx = measureOffsetWidthPx(font, fragment.text, overlapStart - fragment.startOffset);
+      const advances = cachedFragmentOffsetAdvances(font, fragment);
+      const leadingWidthPx = advances[overlapStart - fragment.startOffset] ?? 0;
       const selectedWidthPx =
-        measureOffsetWidthPx(font, fragment.text, overlapEnd - fragment.startOffset) - leadingWidthPx;
+        (advances[overlapEnd - fragment.startOffset] ?? 0) - leadingWidthPx;
       rects.push({
         left: fragment.x + leadingWidthPx,
         top: line.y,

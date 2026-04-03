@@ -20281,6 +20281,26 @@ export function DocxEditorViewer({
     !deferInitialPaginationPaint
   );
   React.useEffect(() => {
+    if (typeof document === "undefined") {
+      return;
+    }
+
+    const styleId = "docx-wrapped-caret-style";
+    let styleElement = document.getElementById(styleId) as HTMLStyleElement | null;
+    if (!styleElement) {
+      styleElement = document.createElement("style");
+      styleElement.id = styleId;
+      styleElement.textContent = `
+        @keyframes docxWrappedCaretBlink {
+          0%, 49% { opacity: 1; }
+          50%, 100% { opacity: 0; }
+        }
+      `;
+      document.head.appendChild(styleElement);
+    }
+  }, []);
+
+  React.useEffect(() => {
     // Import/new-document should start from a clean viewer layout state.
     // Stale per-page/per-table measurements from a previous document can
     // otherwise leak into pagination and footer placement.
@@ -23563,6 +23583,21 @@ export function DocxEditorViewer({
     ]
   );
 
+  const activateDropCapEditor = React.useCallback(
+    (nodeIndex: number): void => {
+      if (isReadOnly) {
+        return;
+      }
+
+      clearTableCellSelection();
+      setSelectedImage(undefined);
+      setSelectedSectionImageKey(undefined);
+      setActiveWrappedParagraphSession(undefined);
+      setSelectedDropCapNodeIndex(nodeIndex);
+    },
+    [clearTableCellSelection, isReadOnly]
+  );
+
   const scheduleDeferredCollapsedSelectionSync = React.useCallback((): void => {
     if (deferredCollapsedSelectionSyncTimeoutRef.current !== null) {
       window.clearTimeout(deferredCollapsedSelectionSyncTimeoutRef.current);
@@ -25276,6 +25311,27 @@ export function DocxEditorViewer({
 
     focusWrappedParagraphTextarea();
   }, [activeWrappedParagraphSession, focusWrappedParagraphTextarea]);
+
+  React.useEffect(() => {
+    const textarea = wrappedParagraphTextareaRef.current;
+    const session = activeWrappedParagraphSession;
+    if (!textarea || !session) {
+      return;
+    }
+
+    const safeStart = Math.max(0, Math.min(session.selectionStart, textarea.value.length));
+    const safeEnd = Math.max(safeStart, Math.min(session.selectionEnd, textarea.value.length));
+    try {
+      if (
+        textarea.selectionStart !== safeStart ||
+        textarea.selectionEnd !== safeEnd
+      ) {
+        textarea.setSelectionRange(safeStart, safeEnd);
+      }
+    } catch {
+      // Ignore selection sync failures; the wrapped session remains authoritative.
+    }
+  }, [activeWrappedParagraphSession]);
 
   const focusParagraphAtOffset = React.useCallback(
     (paragraphIndex: number, offset: number): void => {
@@ -27839,11 +27895,19 @@ export function DocxEditorViewer({
       selectionStart !== undefined && selectionEnd !== undefined
         ? resolveSelectionRects(layout, selectionStart, selectionEnd)
         : [];
+    const inputAnchorRect = activeSession
+      ? resolveCaretRectAtOffset(layout, activeSession.selectionEnd) ??
+        resolveCaretRectAtOffset(layout, activeSession.selectionStart)
+      : activeRange && compareTextRangeBoundaries(activeRange.start, activeRange.end) === 0
+        ? resolveCaretRectAtOffset(layout, activeRange.end.offset)
+        : undefined;
     const caretRect =
       activeSession && activeSession.selectionStart === activeSession.selectionEnd
-        ? resolveCaretRectAtOffset(layout, activeSession.selectionEnd)
-        : activeRange && compareTextRangeBoundaries(activeRange.start, activeRange.end) === 0
-          ? resolveCaretRectAtOffset(layout, activeRange.end.offset)
+        ? inputAnchorRect
+        : !activeSession &&
+            activeRange &&
+            compareTextRangeBoundaries(activeRange.start, activeRange.end) === 0
+          ? inputAnchorRect
           : undefined;
 
     const renderFragment = (fragment: PretextLineFragment, lineIndex: number): React.ReactNode => {
@@ -27971,7 +28035,9 @@ export function DocxEditorViewer({
         style={{
           display: "block",
           position: "relative",
-          minHeight: blockHeightPx ?? layout.height
+          minHeight: blockHeightPx ?? layout.height,
+          userSelect: "none",
+          WebkitUserSelect: "none"
         }}
         onPointerDown={(event) => {
           const target = event.target;
@@ -28061,11 +28127,12 @@ export function DocxEditorViewer({
               height: caretRect.height,
               backgroundColor: "#2563eb",
               pointerEvents: "none",
-              zIndex: 4
+              zIndex: 4,
+              animation: "docxWrappedCaretBlink 1s steps(1, end) infinite"
             }}
           />
         ) : null}
-        {activeSession && caretRect ? (
+        {activeSession && inputAnchorRect ? (
           <textarea
             ref={(element) => {
               if (activeSession.locationKey === locationKey) {
@@ -28157,13 +28224,18 @@ export function DocxEditorViewer({
                   nextParagraph ? paragraphBaseFontSizePx(nextParagraph) : 16
                 );
               const currentLayout =
-                layoutTextWithPretextAroundExclusions(
-                  currentText,
-                  font,
-                  layout.containerWidthPx ?? 1,
-                  layout.lineHeightPx ?? lineHeightPx,
-                  layout.exclusions
-                ) ?? layout;
+                layout.text === currentText &&
+                layout.font === font &&
+                layout.containerWidthPx !== undefined &&
+                layout.lineHeightPx !== undefined
+                  ? layout
+                  : layoutTextWithPretextAroundExclusions(
+                      currentText,
+                      font,
+                      layout.containerWidthPx ?? 1,
+                      layout.lineHeightPx ?? lineHeightPx,
+                      layout.exclusions
+                    ) ?? layout;
               const currentCaretRect = resolveCaretRectAtOffset(currentLayout, selectionEnd);
               const isPlainEnterKey =
                 event.key === "Enter" && !event.metaKey && !event.ctrlKey && !event.altKey;
@@ -28305,11 +28377,11 @@ export function DocxEditorViewer({
             }}
             style={{
               position: "absolute",
-              left: caretRect.left,
-              top: caretRect.top,
+              left: inputAnchorRect.left,
+              top: inputAnchorRect.top,
               width: 1,
               minWidth: 1,
-              height: Math.max(lineHeightPx, caretRect.height),
+              height: Math.max(lineHeightPx, inputAnchorRect.height),
               opacity: 0,
               color: "transparent",
               caretColor: "transparent",
@@ -32914,13 +32986,7 @@ export function DocxEditorViewer({
                     }}
                     onClick={(event) => {
                       event.stopPropagation();
-                      if (isReadOnly) {
-                        return;
-                      }
-                      clearTableCellSelection();
-                      setSelectedImage(undefined);
-                      setSelectedSectionImageKey(undefined);
-                      setSelectedDropCapNodeIndex(nodeIndex);
+                      activateDropCapEditor(nodeIndex);
                     }}
                     onPointerEnter={() => {
                       if (!isReadOnly) {
@@ -32947,12 +33013,13 @@ export function DocxEditorViewer({
                       }}
                       onPointerDown={(event) => {
                         event.stopPropagation();
-                        if (!isReadOnly) {
-                          setSelectedDropCapNodeIndex(nodeIndex);
-                        }
+                        activateDropCapEditor(nodeIndex);
                       }}
                       onClick={(event) => {
                         event.stopPropagation();
+                      }}
+                      onFocus={() => {
+                        activateDropCapEditor(nodeIndex);
                       }}
                       onKeyDown={(event) => {
                         if (event.key === "Enter") {
@@ -33108,13 +33175,7 @@ export function DocxEditorViewer({
                           }}
                           onClick={(event) => {
                             event.stopPropagation();
-                            if (isReadOnly) {
-                              return;
-                            }
-                            clearTableCellSelection();
-                            setSelectedImage(undefined);
-                            setSelectedSectionImageKey(undefined);
-                            setSelectedDropCapNodeIndex(nodeIndex);
+                            activateDropCapEditor(nodeIndex);
                           }}
                           onPointerEnter={() => {
                             if (!isReadOnly) {
@@ -33140,12 +33201,13 @@ export function DocxEditorViewer({
                             }}
                             onPointerDown={(event) => {
                               event.stopPropagation();
-                              if (!isReadOnly) {
-                                setSelectedDropCapNodeIndex(nodeIndex);
-                              }
+                              activateDropCapEditor(nodeIndex);
                             }}
                             onClick={(event) => {
                               event.stopPropagation();
+                            }}
+                            onFocus={() => {
+                              activateDropCapEditor(nodeIndex);
                             }}
                             onKeyDown={(event) => {
                               if (event.key === "Enter") {
