@@ -613,6 +613,8 @@ const MIME_BY_EXTENSION: Record<string, string> = {
   jpeg: "image/jpeg",
   gif: "image/gif",
   bmp: "image/bmp",
+  wmf: "image/wmf",
+  emf: "image/emf",
   webp: "image/webp",
   svg: "image/svg+xml"
 };
@@ -1100,6 +1102,50 @@ function flowChartDelayPathData(widthPx: number, heightPx: number): string {
   return `M0 0 H${arcX} A${radius} ${radius} 0 0 1 ${arcX} ${safeHeight} H0 Z`;
 }
 
+function renderGroupedPictureSvgElement(
+  pictureXml: string,
+  childOffsetX: number,
+  childOffsetY: number,
+  scaleX: number,
+  scaleY: number,
+  context: ParseContext
+): string | undefined {
+  const picturePropertiesXml = extractBalancedTagBlocks(pictureXml, "pic:spPr")[0] ?? "";
+  const transformXml = extractBalancedTagBlocks(picturePropertiesXml, "a:xfrm")[0] ?? "";
+  const offTag = transformXml.match(/<a:off\b[^>]*\/>/i)?.[0] ?? "";
+  const extTag = transformXml.match(/<a:ext\b[^>]*\/>/i)?.[0] ?? "";
+  const offXPx = (parseIntegerAttribute(offTag, "x") ?? 0) - childOffsetX;
+  const offYPx = (parseIntegerAttribute(offTag, "y") ?? 0) - childOffsetY;
+  const extXPx = parseIntegerAttribute(extTag, "cx") ?? 0;
+  const extYPx = parseIntegerAttribute(extTag, "cy") ?? 0;
+  const x = Math.round(offXPx * scaleX);
+  const y = Math.round(offYPx * scaleY);
+  const widthPx = Math.max(1, Math.round(extXPx * scaleX));
+  const heightPx = Math.max(1, Math.round(extYPx * scaleY));
+  const relationshipId =
+    pictureXml.match(/<a:blip\b[^>]*r:embed="([^"]+)"/i)?.[1] ??
+    pictureXml.match(/<a:blip\b[^>]*r:link="([^"]+)"/i)?.[1];
+  if (!relationshipId) {
+    return undefined;
+  }
+
+  const partName = context.relationships.get(relationshipId);
+  if (!partName) {
+    context.warnings.push(`Missing relationship target for ${relationshipId}`);
+    return undefined;
+  }
+
+  const binary = context.binaryAssets.get(partName);
+  if (!binary) {
+    context.warnings.push(`Missing image asset ${partName}`);
+    return undefined;
+  }
+
+  const mimeType = contentTypeForPart(partName, context.contentTypes) ?? "application/octet-stream";
+  const src = `data:${mimeType};base64,${bytesToBase64(binary)}`;
+  return `<image href="${src}" x="${x}" y="${y}" width="${widthPx}" height="${heightPx}" preserveAspectRatio="none"/>`;
+}
+
 function renderStandaloneWordShapeSvg(
   runXml: string,
   widthPx: number | undefined,
@@ -1119,7 +1165,19 @@ function renderStandaloneWordShapeSvg(
     const safeHeight = clamp(Math.round(heightPx ?? 120), 8, 2400);
     const scaleX = safeWidth / childExtentX;
     const scaleY = safeHeight / childExtentY;
-    const elements = extractBalancedTagBlocks(groupXml, "wps:wsp")
+    const pictureElements = extractBalancedTagBlocks(groupXml, "pic:pic")
+      .map((pictureXml) =>
+        renderGroupedPictureSvgElement(
+          pictureXml,
+          childOffsetX,
+          childOffsetY,
+          scaleX,
+          scaleY,
+          context
+        )
+      )
+      .filter((element): element is string => Boolean(element));
+    const shapeElements = extractBalancedTagBlocks(groupXml, "wps:wsp")
       .map((shapeXml, shapeIndex) => {
         const shapePropertiesXml = extractBalancedTagBlocks(shapeXml, "wps:spPr")[0] ?? "";
         const transformXml = extractBalancedTagBlocks(shapePropertiesXml, "a:xfrm")[0];
@@ -1140,6 +1198,15 @@ function renderStandaloneWordShapeSvg(
           `group-fill-${shapeIndex}`
         );
         const stroke = drawingShapeStrokeMarkup(shapePropertiesXml, context.styleSheet.themeColors);
+        const textBoxParagraphs = parseTextBoxParagraphs(shapeXml, context);
+        const textBoxSvg =
+          textBoxParagraphs.length > 0 ? renderTextBoxSvg(textBoxParagraphs, shapeWidth, shapeHeight) : undefined;
+        const positionedTextBoxSvg = textBoxSvg
+          ? textBoxSvg.replace(
+              /^<svg\b/i,
+              `<svg x="${x}" y="${y}"`
+            )
+          : "";
 
         if (preset === "line") {
           return `<line x1="${x}" y1="${y}" x2="${x + shapeWidth}" y2="${y + shapeHeight}" ${stroke} fill="none"/>`;
@@ -1148,20 +1215,21 @@ function renderStandaloneWordShapeSvg(
         const pathXml = extractBalancedTagBlocks(shapePropertiesXml, "a:path")[0];
         const pathData = pathXml ? drawingShapePathData(pathXml, shapeWidth, shapeHeight) : undefined;
         if (pathData) {
-          return `${fill.defs.join("")}<path d="${pathData}" transform="translate(${x} ${y})" ${fill.fillAttribute} ${stroke}/>`;
+          return `${fill.defs.join("")}<path d="${pathData}" transform="translate(${x} ${y})" ${fill.fillAttribute} ${stroke}/>${positionedTextBoxSvg}`;
         }
 
         if (preset === "flowChartDelay") {
           return `${fill.defs.join("")}<path d="${flowChartDelayPathData(
             shapeWidth,
             shapeHeight
-          )}" transform="translate(${x} ${y})" ${fill.fillAttribute} ${stroke}/>`;
+          )}" transform="translate(${x} ${y})" ${fill.fillAttribute} ${stroke}/>${positionedTextBoxSvg}`;
         }
 
-        return `${fill.defs.join("")}<rect x="${x}" y="${y}" width="${shapeWidth}" height="${shapeHeight}" ${fill.fillAttribute} ${stroke}/>`;
+        return `${fill.defs.join("")}<rect x="${x}" y="${y}" width="${shapeWidth}" height="${shapeHeight}" ${fill.fillAttribute} ${stroke}/>${positionedTextBoxSvg}`;
       })
       .filter((element): element is string => Boolean(element));
 
+    const elements = [...pictureElements, ...shapeElements];
     if (elements.length > 0) {
       return `<svg xmlns="http://www.w3.org/2000/svg" width="${safeWidth}" height="${safeHeight}" viewBox="0 0 ${safeWidth} ${safeHeight}">${elements.join(
         ""
@@ -2934,6 +3002,130 @@ function bytesToBase64(bytes: Uint8Array): string {
   throw new Error("No base64 encoder available in this environment");
 }
 
+function isNodeRuntime(): boolean {
+  return Boolean(
+    typeof process !== "undefined" &&
+      process?.versions &&
+      typeof process.versions.node === "string"
+  );
+}
+
+function resolveNodeBuiltin<T = unknown>(moduleName: string): T | undefined {
+  if (!isNodeRuntime()) {
+    return undefined;
+  }
+
+  const processWithBuiltins = process as typeof process & {
+    getBuiltinModule?: (name: string) => unknown;
+  };
+  if (typeof processWithBuiltins.getBuiltinModule === "function") {
+    return processWithBuiltins.getBuiltinModule(moduleName) as T | undefined;
+  }
+
+  try {
+    const maybeRequire = Function(
+      "return typeof require !== 'undefined' ? require : undefined;"
+    )() as ((name: string) => T) | undefined;
+    return maybeRequire ? maybeRequire(moduleName) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function isWindowsMetafileContentType(contentType: string | undefined, partName?: string): boolean {
+  const normalizedContentType = contentType?.trim().toLowerCase();
+  if (
+    normalizedContentType === "image/wmf" ||
+    normalizedContentType === "image/x-wmf" ||
+    normalizedContentType === "application/x-wmf" ||
+    normalizedContentType === "image/emf" ||
+    normalizedContentType === "image/x-emf" ||
+    normalizedContentType === "application/x-emf"
+  ) {
+    return true;
+  }
+
+  const extension = partName ? extensionFromPartName(partName) : undefined;
+  return extension === "wmf" || extension === "emf";
+}
+
+function rasterizeWindowsMetafileToPngDataUri(
+  bytes: Uint8Array,
+  partName?: string
+): string | undefined {
+  if (!isNodeRuntime()) {
+    return undefined;
+  }
+
+  const fs = resolveNodeBuiltin<{
+    mkdtempSync(prefix: string): string;
+    writeFileSync(path: string, data: Uint8Array): void;
+    existsSync(path: string): boolean;
+    readFileSync(path: string): Uint8Array;
+    rmSync(path: string, options?: { recursive?: boolean; force?: boolean }): void;
+  }>("node:fs");
+  const os = resolveNodeBuiltin<{ tmpdir(): string }>("node:os");
+  const path = resolveNodeBuiltin<{
+    join(...parts: string[]): string;
+    basename(path: string, suffix?: string): string;
+    extname(path: string): string;
+  }>("node:path");
+  const childProcess = resolveNodeBuiltin<{
+    execFileSync(
+      file: string,
+      args: string[],
+      options?: {
+        stdio?: "ignore";
+      }
+    ): void;
+  }>("node:child_process");
+
+  if (!fs || !os || !path || !childProcess) {
+    return undefined;
+  }
+
+  const sourceExtension = extensionFromPartName(partName ?? "") ?? "wmf";
+  const baseName = "metafile-image";
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "react-docx-metafile-"));
+  const sourcePath = path.join(tempDir, `${baseName}.${sourceExtension}`);
+  const outputPath = path.join(tempDir, `${baseName}.png`);
+  const sofficeCandidates = [
+    process.env.SOFFICE_PATH,
+    "soffice",
+    "/opt/homebrew/bin/soffice",
+    "/Applications/LibreOffice.app/Contents/MacOS/soffice"
+  ].filter((candidate): candidate is string => Boolean(candidate));
+
+  try {
+    fs.writeFileSync(sourcePath, bytes);
+
+    for (const sofficePath of sofficeCandidates) {
+      try {
+        childProcess.execFileSync(
+          sofficePath,
+          ["--headless", "--convert-to", "png", "--outdir", tempDir, sourcePath],
+          { stdio: "ignore" }
+        );
+      } catch {
+        continue;
+      }
+
+      if (fs.existsSync(outputPath)) {
+        const pngBytes = fs.readFileSync(outputPath);
+        return `data:image/png;base64,${bytesToBase64(new Uint8Array(pngBytes))}`;
+      }
+    }
+
+    return undefined;
+  } finally {
+    try {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    } catch {
+      // Best-effort temp cleanup only.
+    }
+  }
+}
+
 function parseRunStyle(
   runXml: string,
   context: ParseContext,
@@ -3873,6 +4065,26 @@ function parseRunImage(runXml: string, context: ParseContext): ImageRunNode | un
     partName?.includes("/charts/") ||
     contentType === "application/vnd.openxmlformats-officedocument.drawingml.chart+xml";
 
+  const standaloneShapeSvg = renderStandaloneWordShapeSvg(activeRunXml, widthPx, heightPx, context);
+  const containsGroupedOrStandaloneShape = /<wpg:wgp\b|<wps:wsp\b/i.test(activeRunXml);
+  const containsTextBoxContent = /<w:txbxContent\b/i.test(activeRunXml);
+  if (standaloneShapeSvg && (containsGroupedOrStandaloneShape || !relationshipId)) {
+    return {
+      type: "image",
+      src: svgDataUri(standaloneShapeSvg),
+      alt: alt ?? (containsTextBoxContent ? "Text box" : "Shape"),
+      widthPx,
+      heightPx,
+      contentType: "image/svg+xml",
+      sourceXml: activeRunXml,
+      crop,
+      cssFilter,
+      cssOpacity,
+      floating,
+      syntheticTextBox: containsTextBoxContent || undefined
+    };
+  }
+
   if (likelyChartPart) {
     const chartXml = partName ? context.parts.get(partName)?.content : undefined;
     if (!chartXml && partName) {
@@ -3898,23 +4110,6 @@ function parseRunImage(runXml: string, context: ParseContext): ImageRunNode | un
   }
 
   if (!relationshipId) {
-    const standaloneShapeSvg = renderStandaloneWordShapeSvg(activeRunXml, widthPx, heightPx, context);
-    if (standaloneShapeSvg) {
-      return {
-        type: "image",
-        src: svgDataUri(standaloneShapeSvg),
-        alt: alt ?? "Shape",
-        widthPx,
-        heightPx,
-        contentType: "image/svg+xml",
-        sourceXml: activeRunXml,
-        crop,
-        cssFilter,
-        cssOpacity,
-        floating
-      };
-    }
-
     const textBoxParagraphs = parseTextBoxParagraphs(activeRunXml, context);
     if (textBoxParagraphs.length === 0) {
       return undefined;
@@ -3938,9 +4133,20 @@ function parseRunImage(runXml: string, context: ParseContext): ImageRunNode | un
   }
 
   let src: string | undefined;
+  let resolvedContentType = contentType;
   if (binary) {
-    const mimeType = contentType ?? "application/octet-stream";
-    src = `data:${mimeType};base64,${bytesToBase64(binary)}`;
+    const mimeType = contentTypeForPart(partName ?? "", context.contentTypes) ?? contentType ?? "application/octet-stream";
+    if (isWindowsMetafileContentType(mimeType, partName)) {
+      src = rasterizeWindowsMetafileToPngDataUri(binary, partName);
+      if (src) {
+        resolvedContentType = "image/png";
+      }
+    }
+
+    if (!src) {
+      src = `data:${mimeType};base64,${bytesToBase64(binary)}`;
+      resolvedContentType = mimeType;
+    }
   }
 
   return {
@@ -3950,7 +4156,7 @@ function parseRunImage(runXml: string, context: ParseContext): ImageRunNode | un
     widthPx,
     heightPx,
     partName,
-    contentType,
+    contentType: resolvedContentType,
     data: binary ? new Uint8Array(binary) : undefined,
     sourceXml: activeRunXml,
     crop,

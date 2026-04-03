@@ -182,6 +182,59 @@ describe("footer right-tab layout", () => {
     expect(html).toContain("a paper record that shows the total votes");
   });
 
+  it("does not apply anchored tab layouts to list rows that also define left tab stops", () => {
+    const model = cloneDocModel(defaultStarterModel);
+    model.nodes = [
+      {
+        type: "paragraph",
+        style: {
+          tabStops: [
+            {
+              alignment: "right",
+              leader: "none",
+              positionTwips: 1531
+            },
+            {
+              alignment: "left",
+              leader: "none",
+              positionTwips: 2160
+            },
+            {
+              alignment: "left",
+              leader: "none",
+              positionTwips: 2880
+            },
+            {
+              alignment: "left",
+              leader: "none",
+              positionTwips: 3600
+            },
+            {
+              alignment: "center",
+              leader: "none",
+              positionTwips: 4513
+            }
+          ]
+        },
+        children: [
+          {
+            type: "text",
+            text:
+              "\t(b)\ta reference to any other kind of instrument or writing is a reference to that other instrument or writing as in force, or existing, from time to time."
+          }
+        ]
+      }
+    ];
+
+    const html = renderToStaticMarkup(React.createElement(FooterViewer, { model }));
+
+    expect(html).not.toContain('data-docx-tab-layout="center-right"');
+    expect(html).not.toContain('data-docx-tab-layout="center"');
+    expect(html).not.toContain('data-docx-tab-layout="right"');
+    expect(html).toContain("a reference to any other kind of instrument or writing");
+    expect(html).toContain("from time to time.");
+  });
+
   it("keeps leading-tab footer page text horizontal in anchored center-right layouts", () => {
     const model = cloneDocModel(defaultStarterModel);
     model.nodes = [

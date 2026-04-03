@@ -282,7 +282,7 @@ describe("dual wrapped image layout", () => {
     expect(layout?.geometries[0]?.imageIndex).toBe(0);
   });
 
-  it("includes a dragged inline image as a preview exclusion", async () => {
+  it("does not promote a dragged inline image into a dual-wrap preview exclusion", async () => {
     const { resolveParagraphDualWrappedTextLayout } = await import(
       "../../packages/react-viewer/src/editor"
     );
@@ -318,10 +318,7 @@ describe("dual wrapped image layout", () => {
       heightPxByImageIndex: new Map([[1, 14]])
     });
 
-    expect(layout).toBeDefined();
-    expect(layout?.geometries).toHaveLength(1);
-    expect(layout?.geometries[0]?.imageLeftPx).toBe(152);
-    expect(layout?.geometries[0]?.imageTopPx).toBe(18);
+    expect(layout).toBeUndefined();
   });
 
   it("uses explicit drag bases for wrapped floating image previews", async () => {

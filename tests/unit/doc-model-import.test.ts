@@ -392,6 +392,64 @@ const DRAWING_TEXTBOX_ALTERNATE_DOC_XML = `<?xml version="1.0" encoding="UTF-8" 
   </w:body>
 </w:document>`;
 
+const GROUPED_PICTURE_TEXTBOX_DOC_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture" xmlns:wpg="http://schemas.microsoft.com/office/word/2010/wordprocessingGroup" xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">
+  <w:body>
+    <w:p>
+      <w:r>
+        <w:drawing>
+          <wp:anchor behindDoc="0">
+            <wp:extent cx="4936605" cy="845819"/>
+            <wp:docPr id="5" name="Group 5"/>
+            <a:graphic>
+              <a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingGroup">
+                <wpg:wgp>
+                  <wpg:grpSpPr>
+                    <a:xfrm>
+                      <a:off x="0" y="0"/>
+                      <a:ext cx="4936605" cy="845819"/>
+                      <a:chOff x="0" y="0"/>
+                      <a:chExt cx="4933026" cy="850291"/>
+                    </a:xfrm>
+                  </wpg:grpSpPr>
+                  <pic:pic>
+                    <pic:blipFill>
+                      <a:blip r:embed="rId5"/>
+                    </pic:blipFill>
+                    <pic:spPr>
+                      <a:xfrm>
+                        <a:off x="0" y="0"/>
+                        <a:ext cx="1371600" cy="731520"/>
+                      </a:xfrm>
+                    </pic:spPr>
+                  </pic:pic>
+                  <wps:wsp>
+                    <wps:spPr>
+                      <a:xfrm>
+                        <a:off x="1421485" y="0"/>
+                        <a:ext cx="3511541" cy="850291"/>
+                      </a:xfrm>
+                      <a:prstGeom prst="rect"><a:avLst/></a:prstGeom>
+                      <a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill>
+                    </wps:spPr>
+                    <wps:txbx>
+                      <w:txbxContent>
+                        <w:p><w:r><w:t>Commonwealth of Massachusetts</w:t></w:r></w:p>
+                        <w:p><w:r><w:t>Office of Medicaid</w:t></w:r></w:p>
+                      </w:txbxContent>
+                    </wps:txbx>
+                  </wps:wsp>
+                </wpg:wgp>
+              </a:graphicData>
+            </a:graphic>
+          </wp:anchor>
+        </w:drawing>
+      </w:r>
+      <w:r><w:t>After group</w:t></w:r>
+    </w:p>
+  </w:body>
+</w:document>`;
+
 const TEXTBOX_COLOR_ONLY_UNDERLINE_DOC_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">
   <w:body>
@@ -1541,6 +1599,41 @@ describe("doc-model import", () => {
         (child) => child.type === "text" && child.text.includes("Overlay Title")
       );
       expect(overlayTextInFlow).toBeUndefined();
+    }
+  });
+
+  it("imports grouped picture and textbox drawings as one synthetic SVG without leaking textbox text into flow", async () => {
+    const zip = createZip([
+      { name: "[Content_Types].xml", content: CONTENT_TYPES_XML },
+      { name: "_rels/.rels", content: ROOT_RELS_XML },
+      { name: "word/document.xml", content: GROUPED_PICTURE_TEXTBOX_DOC_XML },
+      { name: "word/_rels/document.xml.rels", content: DOCUMENT_RELS_XML },
+      { name: "word/media/image1.png", content: ONE_BY_ONE_PNG }
+    ]);
+
+    const pkg = await parseDocx(zip);
+    const model = buildDocModel(pkg);
+
+    const firstParagraph = model.nodes[0];
+    expect(firstParagraph?.type).toBe("paragraph");
+    if (firstParagraph?.type === "paragraph") {
+      const imageRuns = firstParagraph.children.filter((child) => child.type === "image");
+      expect(imageRuns).toHaveLength(1);
+
+      const groupedImage = imageRuns[0];
+      expect(groupedImage?.type).toBe("image");
+      if (groupedImage?.type === "image") {
+        expect(groupedImage.src?.startsWith("data:image/svg+xml")).toBe(true);
+        expect(groupedImage.contentType).toBe("image/svg+xml");
+        expect(groupedImage.syntheticTextBox).toBe(true);
+      }
+
+      const inFlowText = firstParagraph.children
+        .filter((child): child is Extract<(typeof firstParagraph.children)[number], { type: "text" }> => child.type === "text")
+        .map((child) => child.text)
+        .join("");
+      expect(inFlowText).toBe("After group");
+      expect(inFlowText.includes("Commonwealth of Massachusetts")).toBe(false);
     }
   });
 
