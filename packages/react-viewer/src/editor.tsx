@@ -7515,6 +7515,10 @@ function shouldRenderWrappedFloatingImage(image: ImageRunNode): boolean {
   );
 }
 
+function isFixedPositionWrappedFloatingImage(image: ImageRunNode): boolean {
+  return shouldRenderWrappedFloatingImage(image) && !floatingImageMovesWithText(image.floating);
+}
+
 function shouldRenderTopAnchoredMarginFloatAsAbsolute(image: ImageRunNode): boolean {
   const floating = image.floating;
   if (!floating) {
@@ -7950,7 +7954,9 @@ export function resolveWrappedFloatingImageDropPatch(
   const imageHeight = options?.heightPx ?? image.heightPx ?? imageWidth;
   const wrapText = baseFloating.wrapText ?? "bothSides";
   const wrapType = baseFloating.wrapType ?? "square";
+  const convertFixedPositionToMoveWithText = !floatingImageMovesWithText(baseFloating);
   const preserveAlignedHorizontalPlacement =
+    !convertFixedPositionToMoveWithText &&
     wrapType.trim().toLowerCase() === "topandbottom" &&
     Boolean(baseFloating.horizontalAlign);
   const side: "left" | "right" =
@@ -7997,8 +8003,12 @@ export function resolveWrappedFloatingImageDropPatch(
     distRPx: Math.max(4, Math.round(baseFloating.distRPx ?? 8)),
     distTPx: Math.max(0, Math.round(baseFloating.distTPx ?? 2)),
     distBPx: Math.max(0, Math.round(baseFloating.distBPx ?? 4)),
-    horizontalRelativeTo: baseFloating.horizontalRelativeTo ?? "column",
-    verticalRelativeTo: baseFloating.verticalRelativeTo ?? "paragraph",
+    horizontalRelativeTo: convertFixedPositionToMoveWithText
+      ? "column"
+      : baseFloating.horizontalRelativeTo ?? "column",
+    verticalRelativeTo: convertFixedPositionToMoveWithText
+      ? "paragraph"
+      : baseFloating.verticalRelativeTo ?? "paragraph",
     behindDocument: false
   };
 }
@@ -29133,6 +29143,7 @@ export function DocxEditorViewer({
     baseTextStyle?: TextRunNode["style"];
     blockHeightPx?: number;
     obstacleNodes?: React.ReactNode;
+    pageAbsoluteObstacleNodes?: React.ReactNode;
   }): React.ReactNode => {
     const {
       location,
@@ -29142,7 +29153,8 @@ export function DocxEditorViewer({
       lineHeightPx,
       baseTextStyle,
       blockHeightPx,
-      obstacleNodes
+      obstacleNodes,
+      pageAbsoluteObstacleNodes
     } = params;
     const locationKey = paragraphLocationKey(location);
     const activeSession =
@@ -29375,7 +29387,7 @@ export function DocxEditorViewer({
         }}
         style={{
           display: "block",
-          position: "relative",
+          position: pageAbsoluteObstacleNodes ? "static" : "relative",
           minHeight: blockHeightPx ?? layout.height,
           userSelect: "none",
           WebkitUserSelect: "none"
@@ -29482,44 +29494,52 @@ export function DocxEditorViewer({
           focusWrappedParagraphTextarea();
         }}
       >
-        {obstacleNodes}
-        {selectionRects.map((rect, index) => (
-          <span
-            key={`${keyPrefix}-sel-${index}`}
-            contentEditable={false}
-            style={{
-              position: "absolute",
-              left: rect.left,
-              top: rect.top,
-              width: rect.width,
-              height: rect.height,
-              backgroundColor: "rgba(59, 130, 246, 0.25)",
-              pointerEvents: "none",
-              zIndex: 2
-            }}
-          />
-        ))}
-        {layout.lines.map((line, lineIndex) =>
-          line.fragments.map((fragment) => renderFragment(fragment, lineIndex))
-        )}
-        {activeSession && caretRect ? (
-          <span
-            contentEditable={false}
-            style={{
-              position: "absolute",
-              left: caretRect.left,
-              top: caretRect.top,
-              width: Math.max(1, caretRect.width),
-              height: caretRect.height,
-              backgroundColor: "#2563eb",
-              pointerEvents: "none",
-              zIndex: 4,
-              animation: "docxWrappedCaretBlink 1s steps(1, end) infinite"
-            }}
-          />
-        ) : null}
-        {activeSession && inputAnchorRect ? (
-          <textarea
+        {pageAbsoluteObstacleNodes}
+        <span
+          style={{
+            display: "block",
+            position: "relative",
+            minHeight: blockHeightPx ?? layout.height
+          }}
+        >
+          {obstacleNodes}
+          {selectionRects.map((rect, index) => (
+            <span
+              key={`${keyPrefix}-sel-${index}`}
+              contentEditable={false}
+              style={{
+                position: "absolute",
+                left: rect.left,
+                top: rect.top,
+                width: rect.width,
+                height: rect.height,
+                backgroundColor: "rgba(59, 130, 246, 0.25)",
+                pointerEvents: "none",
+                zIndex: 2
+              }}
+            />
+          ))}
+          {layout.lines.map((line, lineIndex) =>
+            line.fragments.map((fragment) => renderFragment(fragment, lineIndex))
+          )}
+          {activeSession && caretRect ? (
+            <span
+              contentEditable={false}
+              style={{
+                position: "absolute",
+                left: caretRect.left,
+                top: caretRect.top,
+                width: Math.max(1, caretRect.width),
+                height: caretRect.height,
+                backgroundColor: "#2563eb",
+                pointerEvents: "none",
+                zIndex: 4,
+                animation: "docxWrappedCaretBlink 1s steps(1, end) infinite"
+              }}
+            />
+          ) : null}
+          {activeSession && inputAnchorRect ? (
+            <textarea
             ref={(element) => {
               if (activeSession.locationKey === locationKey) {
                 wrappedParagraphTextareaRef.current = element;
@@ -29798,7 +29818,8 @@ export function DocxEditorViewer({
               zIndex: 5
             }}
           />
-        ) : null}
+          ) : null}
+        </span>
       </span>
     );
   };
@@ -30026,7 +30047,10 @@ export function DocxEditorViewer({
         anchoredTabLayout === "center-right" ||
         anchoredTabLayout === "center" ||
         anchoredTabLayout === "right";
-      if (trackedChangesEnabled || useSpecialTabLayout) {
+      const hasFixedPositionWrappedImage = paragraph.children.some(
+        (child) => child.type === "image" && isFixedPositionWrappedFloatingImage(child)
+      );
+      if ((trackedChangesEnabled || useSpecialTabLayout) && !hasFixedPositionWrappedImage) {
         return renderParagraphRuns(
           paragraph,
           keyPrefix,
@@ -30599,7 +30623,20 @@ export function DocxEditorViewer({
               {previewParagraph.children.map((child, childIndex) =>
                 child.type === "image" &&
                 !manualGeometryImageIndexes.has(childIndex) &&
-                shouldRenderAbsoluteFloatingImage(child)
+                shouldRenderAbsoluteFloatingImage(child) &&
+                !isPageOrMarginAnchoredAbsoluteFloatingImage(child)
+                  ? renderManualAbsoluteImage(child, childIndex)
+                  : null
+              )}
+            </>
+          ),
+          pageAbsoluteObstacleNodes: (
+            <>
+              {previewParagraph.children.map((child, childIndex) =>
+                child.type === "image" &&
+                !manualGeometryImageIndexes.has(childIndex) &&
+                shouldRenderAbsoluteFloatingImage(child) &&
+                isPageOrMarginAnchoredAbsoluteFloatingImage(child)
                   ? renderManualAbsoluteImage(child, childIndex)
                   : null
               )}

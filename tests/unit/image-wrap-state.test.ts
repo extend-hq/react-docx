@@ -87,6 +87,48 @@ describe("image wrap state", () => {
     });
   });
 
+  it("converts fixed-position wrapped images to move-with-text on drag drop", async () => {
+    const { resolveWrappedFloatingImageDropPatch } = await import(
+      "../../packages/react-viewer/src/editor"
+    );
+
+    expect(
+      resolveWrappedFloatingImageDropPatch(
+        {
+          type: "image",
+          widthPx: 80,
+          heightPx: 60,
+          floating: {
+            wrapType: "square",
+            wrapText: "bothSides",
+            horizontalRelativeTo: "margin",
+            verticalRelativeTo: "margin",
+            xPx: 140,
+            yPx: 90,
+            distLPx: 8,
+            distRPx: 8,
+            distTPx: 0,
+            distBPx: 0,
+            behindDocument: false
+          }
+        },
+        420,
+        120,
+        44,
+        {
+          widthPx: 80,
+          heightPx: 60
+        }
+      )
+    ).toMatchObject({
+      xPx: 120,
+      yPx: 44,
+      horizontalRelativeTo: "column",
+      verticalRelativeTo: "paragraph",
+      behindDocument: false
+    });
+  });
+
   it("renders behind-text absolute images below the text layer", async () => {
     const { absoluteFloatingImageStyle } = await import(
       "../../packages/react-viewer/src/editor"
