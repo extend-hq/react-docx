@@ -1,6 +1,29 @@
 import { describe, expect, it } from "vitest";
 
 describe("image wrap state", () => {
+  it("keeps checkbox widget width stable across checked states", async () => {
+    const { resolveCheckboxFieldWidthPx } = await import(
+      "../../packages/react-viewer/src/editor"
+    );
+
+    const uncheckedWidth = resolveCheckboxFieldWidthPx({
+      type: "form-field",
+      fieldType: "checkbox",
+      checked: false,
+      checkedSymbol: "☒",
+      uncheckedSymbol: "☐"
+    });
+    const checkedWidth = resolveCheckboxFieldWidthPx({
+      type: "form-field",
+      fieldType: "checkbox",
+      checked: true,
+      checkedSymbol: "☒",
+      uncheckedSymbol: "☐"
+    });
+
+    expect(checkedWidth).toBe(uncheckedWidth);
+  });
+
   it("treats missing floating metadata as inline with text", async () => {
     const { resolveDocxImageWrapState } = await import(
       "../../packages/react-viewer/src/editor"

@@ -4566,7 +4566,7 @@ function resolveTabSpacerWidthPx(
 
 function estimateInteractiveFieldWidthPx(field: FormFieldRunNode): number {
   if (field.fieldType === "checkbox") {
-    return Math.max(14, estimateTextAdvanceWidthPx(formFieldDisplayValue(field), field.style));
+    return resolveCheckboxFieldWidthPx(field);
   }
 
   if (field.fieldType === "date") {
@@ -4586,6 +4586,25 @@ function estimateInteractiveFieldWidthPx(field: FormFieldRunNode): number {
   const defaultText = field.widget?.text?.defaultText?.trim();
   const textValue = field.value?.trim() || defaultText || field.title?.trim() || "Click here.";
   return Math.max(42, Math.min(280, estimateTextAdvanceWidthPx(textValue, field.style) + 12));
+}
+
+export function resolveCheckboxFieldWidthPx(field: FormFieldRunNode): number {
+  const exactWidgetWidthPx =
+    field.widget?.checkbox?.sizeMode === "exact" &&
+    Number.isFinite(field.widget.checkbox.sizePt)
+      ? Math.max(14, Math.round((((field.widget.checkbox.sizePt as number) * 96) / 72) + 4))
+      : undefined;
+  if (Number.isFinite(exactWidgetWidthPx)) {
+    return exactWidgetWidthPx as number;
+  }
+
+  const checkedSymbol = field.checkedSymbol ?? "☒";
+  const uncheckedSymbol = field.uncheckedSymbol ?? "☐";
+  return Math.max(
+    14,
+    estimateTextAdvanceWidthPx(checkedSymbol, field.style),
+    estimateTextAdvanceWidthPx(uncheckedSymbol, field.style)
+  );
 }
 
 function paragraphIsEffectivelyEmpty(paragraph: ParagraphNode): boolean {
@@ -31174,6 +31193,7 @@ export function DocxEditorViewer({
             const checkboxSymbol = child.checked ?? child.widget?.checkbox?.defaultChecked
               ? child.checkedSymbol ?? "☒"
               : child.uncheckedSymbol ?? "☐";
+            const checkboxWidthPx = resolveCheckboxFieldWidthPx(child);
             nodes.push(
               <span
                 key={runKey}
@@ -31226,7 +31246,10 @@ export function DocxEditorViewer({
                   onFormFieldDoubleClick?.(formFieldLocation);
                 }}
                 style={{
-                  display: "inline",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  width: `${checkboxWidthPx}px`,
                   marginInline: 0,
                   lineHeight: "inherit",
                   fontFamily: cssFontFamily(child.style?.fontFamily) ?? "inherit",
