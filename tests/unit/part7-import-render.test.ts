@@ -27,34 +27,33 @@ function ImportedViewer({
 }
 
 describe("part-7 import render", () => {
-  it("imports and renders both floating arrow images", async () => {
+  it("imports the mixed wrapped-arrow and inline-dot paragraph structure", async () => {
     const zip = readFileSync(PART7_DOCX_PATH);
     const pkg = await parseDocx(zip);
     const model = buildDocModel(pkg);
 
     expect(model.nodes[1]?.type).toBe("paragraph");
-    expect(model.nodes[3]?.type).toBe("paragraph");
-    if (model.nodes[1]?.type !== "paragraph" || model.nodes[3]?.type !== "paragraph") {
+    if (model.nodes[1]?.type !== "paragraph") {
       return;
     }
 
-    const leftArrow = model.nodes[1].children[3];
-    const rightArrow = model.nodes[3].children[1];
+    const leftArrow = model.nodes[1].children[0];
+    const inlineDot = model.nodes[1].children[2];
     expect(leftArrow?.type).toBe("image");
-    expect(rightArrow?.type).toBe("image");
-    if (leftArrow?.type !== "image" || rightArrow?.type !== "image") {
+    expect(inlineDot?.type).toBe("image");
+    if (leftArrow?.type !== "image" || inlineDot?.type !== "image") {
       return;
     }
 
     expect(leftArrow.alt).toBe("back.png");
-    expect(rightArrow.alt).toBe("forward.png");
+    expect(inlineDot.alt).toBe("dot_green.png");
     expect(leftArrow.src).toContain("data:image/png;base64,");
-    expect(rightArrow.src).toContain("data:image/png;base64,");
+    expect(inlineDot.src).toContain("data:image/png;base64,");
 
     const html = renderToStaticMarkup(React.createElement(ImportedViewer, { model }));
-    expect(html).toContain('data-docx-image-location="p:1:3"');
-    expect(html).toContain('data-docx-image-location="p:3:1"');
+    expect(html).toContain('data-docx-image-location="p:1:0"');
+    expect(html).toContain('data-docx-image-location="p:1:2"');
     expect(html).toContain("back.png");
-    expect(html).toContain("forward.png");
+    expect(html).toContain("dot_green.png");
   });
 });

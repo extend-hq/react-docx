@@ -105,6 +105,40 @@ describe("dual wrapped image layout", () => {
     });
   });
 
+  it("converts margin-relative vertical offsets into paragraph-local exclusion tops", async () => {
+    const { resolveDualWrappedFloatingImageGeometry } = await import(
+      "../../packages/react-viewer/src/editor"
+    );
+
+    const geometry = resolveDualWrappedFloatingImageGeometry(
+      {
+        type: "image",
+        widthPx: 102,
+        heightPx: 102,
+        floating: {
+          xPx: 102,
+          yPx: 84,
+          horizontalRelativeTo: "margin",
+          verticalRelativeTo: "margin",
+          distLPx: 12,
+          distRPx: 12,
+          distTPx: 0,
+          distBPx: 0,
+          wrapType: "square",
+          wrapText: "bothSides",
+          behindDocument: false
+        }
+      },
+      420,
+      {
+        paragraphTopPx: 40
+      }
+    );
+
+    expect(geometry?.imageTopPx).toBe(44);
+    expect(geometry?.exclusion.top).toBe(44);
+  });
+
   it("keeps narrow near-edge both-sides wraps on the side-float path", async () => {
     const { resolveDualWrappedFloatingImageGeometry } = await import(
       "../../packages/react-viewer/src/editor"
@@ -131,6 +165,41 @@ describe("dual wrapped image layout", () => {
     );
 
     expect(geometry).toBeUndefined();
+  });
+
+  it("maps explicit left insets into occupied side-float width", async () => {
+    const { wrappedFloatingImageStyle } = await import(
+      "../../packages/react-viewer/src/editor"
+    );
+
+    const style = wrappedFloatingImageStyle(
+      {
+        type: "image",
+        widthPx: 102,
+        heightPx: 102,
+        floating: {
+          xPx: 102,
+          yPx: 84,
+          horizontalRelativeTo: "margin",
+          verticalRelativeTo: "margin",
+          distLPx: 12,
+          distRPx: 12,
+          distTPx: 0,
+          distBPx: 0,
+          wrapType: "square",
+          wrapText: "bothSides",
+          behindDocument: false
+        }
+      },
+      {
+        containerWidthPx: 400
+      }
+    );
+
+    expect(style.float).toBe("left");
+    expect(style.marginLeft).toBe(0);
+    expect(style.paddingLeft).toBe(102);
+    expect(style.boxSizing).toBe("content-box");
   });
 
   it("lays out text into left and right fragments beside an interior wrapped image", async () => {
@@ -178,6 +247,109 @@ describe("dual wrapped image layout", () => {
       ...(layout?.geometries.map((geometry) => geometry.exclusion.bottom) ?? [0])
     );
     expect(layout?.layout.height).toBeGreaterThanOrEqual(maxExclusionBottom);
+  });
+
+  it("keeps mixed inline-image paragraphs on the pretext wrapped layout path", async () => {
+    const { resolveParagraphDualWrappedTextLayout } = await import(
+      "../../packages/react-viewer/src/editor"
+    );
+
+    const paragraph: ParagraphNode = {
+      type: "paragraph",
+      children: [
+        {
+          type: "image",
+          widthPx: 102,
+          heightPx: 102,
+          alt: "back.png",
+          floating: {
+            xPx: 102,
+            yPx: 84,
+            horizontalRelativeTo: "margin",
+            verticalRelativeTo: "margin",
+            distLPx: 12,
+            distRPx: 12,
+            distTPx: 0,
+            distBPx: 0,
+            wrapType: "square",
+            wrapText: "bothSides",
+            behindDocument: false
+          }
+        },
+        {
+          type: "text",
+          text: "Images can be part of the normal text flow, like this image of a green dot "
+        },
+        {
+          type: "image",
+          widthPx: 14,
+          heightPx: 14,
+          alt: "dot_green.png"
+        },
+        {
+          type: "text",
+          text:
+            ". Inline images do not cause breaks in the text and are usually small in size."
+        }
+      ]
+    };
+
+    const layout = resolveParagraphDualWrappedTextLayout(paragraph, 620, 22);
+
+    expect(layout).toBeDefined();
+    expect(layout?.geometries).toHaveLength(1);
+    expect(
+      layout?.source.runs.some(
+        (run) => run.kind === "image" && run.image?.alt === "dot_green.png"
+      )
+    ).toBe(true);
+    expect(layout?.layout.lineCount).toBeGreaterThan(1);
+    expect(layout?.layout.height).toBeGreaterThan(
+      layout?.geometries[0]?.imageTopPx ?? 0
+    );
+  });
+
+  it("does not let a later-anchored wrapped image start above its anchor line", async () => {
+    const { resolveParagraphDualWrappedTextLayout } = await import(
+      "../../packages/react-viewer/src/editor"
+    );
+
+    const paragraph: ParagraphNode = {
+      type: "paragraph",
+      children: [
+        {
+          type: "text",
+          text:
+            "Generally, it is not possible to translate the exact positioning of images from a Word document to an ebook. That is because in Word, image positioning is specified in absolute units from the page boundaries. "
+        },
+        {
+          type: "image",
+          widthPx: 102,
+          heightPx: 102,
+          alt: "forward.png",
+          floating: {
+            xPx: 138,
+            yPx: 32,
+            horizontalRelativeTo: "margin",
+            verticalRelativeTo: "margin",
+            distLPx: 12,
+            distRPx: 12,
+            distTPx: 0,
+            distBPx: 0,
+            wrapType: "square",
+            wrapText: "bothSides",
+            behindDocument: false
+          }
+        }
+      ]
+    };
+
+    const layout = resolveParagraphDualWrappedTextLayout(paragraph, 420, 22, {
+      paragraphTopPx: 0
+    });
+
+    expect(layout).toBeDefined();
+    expect(layout?.geometries[0]?.imageTopPx).toBeGreaterThan(32);
   });
 
   it("treats top-and-bottom centered images as full-width excluded rows", async () => {
