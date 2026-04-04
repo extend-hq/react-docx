@@ -38,7 +38,10 @@ import {
   collectTableExplicitPageBreakInfo,
   collectTopLevelExplicitPageBreakStartNodeIndexes
 } from "./pagination-breaks";
-import { reconcilePagesToTargetCountByScalingHeight } from "./page-count-reconciliation";
+import {
+  reconcilePagesToTargetCountByScalingHeight,
+  shouldAllowStoredPageCountReduction
+} from "./page-count-reconciliation";
 import {
   DEFAULT_DOCUMENT_LAYOUT,
   DEFAULT_DOC_PAGE_HEIGHT,
@@ -169,10 +172,12 @@ const DEFAULT_PARAGRAPH_LINE_MULTIPLE = 1;
 // Browser line box metrics run taller at single-spacing but converge by ~1.08.
 const WORD_SINGLE_LINE_AUTO_SCALE = 0.88;
 const WORD_SINGLE_LINE_AUTO_SCALE_SANS = 0.9;
+const WORD_SINGLE_LINE_AUTO_SCALE_SERIF = 1.12;
 const WORD_AUTO_LINE_SCALE_BLEND_END_MULTIPLE = 1.08;
 const MIN_AUTO_LINE_MULTIPLE = 0.1;
 const MIN_PARAGRAPH_LINE_HEIGHT_PX = 14;
 const FLOATING_HEADER_FOOTER_CLEARANCE_BUFFER_PX = 18;
+const MEASURED_PAGE_HEADER_CLEARANCE_BUFFER_PX = 8;
 const MEASURED_PAGE_FOOTER_CLEARANCE_BUFFER_PX = 24;
 const UNOVERLAPPED_FOOTER_MIN_CLEARANCE_PX = 16;
 const FLOATING_FOOTER_BASELINE_CLEARANCE_RESERVE_PX = 16;
@@ -203,8 +208,9 @@ const TEXT_MEASURE_CACHE_MAX_ENTRIES = 12000;
 const DEFAULT_TAB_STOP_PX = 48;
 const TAB_LEADER_ZONE_GAP_PX = 20;
 const EMPTY_PARAGRAPH_EXTRA_HEIGHT_PX = 0;
-const PARAGRAPH_SEGMENT_TOP_BLEED_PX = 10;
-const PARAGRAPH_SEGMENT_DESCENDER_BLEED_PX = 3;
+const PARAGRAPH_SEGMENT_TOP_BLEED_PX = 22;
+const PARAGRAPH_SEGMENT_DESCENDER_BLEED_PX = 6;
+const PARAGRAPH_SEGMENT_VISUAL_SAFETY_PX = 24;
 const INITIAL_PAGINATION_PREMEASURE_PAGE_LIMIT = 8;
 const TOP_AND_BOTTOM_VERTICAL_DRAG_SNAP_PX = 10;
 const HEADER_FOOTER_INACTIVE_OPACITY = 0.5;
@@ -1900,19 +1906,27 @@ export function resolveMeasuredPageContentHeightPx(params: {
     Number.isFinite(bodyTopPx) &&
     correctedAllowedBodyBottomPx > (bodyTopPx as number)
   ) {
+    const measuredHeaderClearanceBufferPx =
+      headerHeightPx > 0 ? MEASURED_PAGE_HEADER_CLEARANCE_BUFFER_PX : 0;
     const correctedHeightPx = Math.max(
       120,
       Math.round(correctedAllowedBodyBottomPx - (bodyTopPx as number))
     );
     return Number.isFinite(iterativeMeasuredHeightPx)
-      ? Math.min(correctedHeightPx, iterativeMeasuredHeightPx as number)
-      : correctedHeightPx;
+      ? Math.min(
+          Math.max(120, correctedHeightPx - measuredHeaderClearanceBufferPx),
+          Math.max(120, (iterativeMeasuredHeightPx as number) - measuredHeaderClearanceBufferPx)
+        )
+      : Math.max(120, correctedHeightPx - measuredHeaderClearanceBufferPx);
   }
 
+  const measuredHeaderClearanceBufferPx =
+    headerHeightPx > 0 ? MEASURED_PAGE_HEADER_CLEARANCE_BUFFER_PX : 0;
   const correctedFallbackHeightPx = Math.max(
     120,
     fallbackHeightPx -
       headerHeightPx -
+      measuredHeaderClearanceBufferPx -
       footerOverlapPx -
       renderedBodyOverrunPx -
       measuredFooterClearanceBufferPx
@@ -3630,6 +3644,7 @@ interface WrappedParagraphEditingSession {
   text: string;
   selectionStart: number;
   selectionEnd: number;
+  anchorOffset: number;
   isComposing: boolean;
   preferredCaretX?: number;
 }
@@ -5017,6 +5032,17 @@ function singleLineAutoScaleForFontFamily(fontFamily?: string): number {
   const normalized = normalizeFontFamilyToken(fontFamily) ?? fontFamily?.toLowerCase();
   if (!normalized) {
     return WORD_SINGLE_LINE_AUTO_SCALE;
+  }
+
+  if (
+    normalized === "times new roman" ||
+    normalized === "cambria" ||
+    normalized === "garamond" ||
+    normalized === "georgia" ||
+    normalized === "book antiqua" ||
+    normalized === "palatino linotype"
+  ) {
+    return WORD_SINGLE_LINE_AUTO_SCALE_SERIF;
   }
 
   if (
@@ -6915,12 +6941,12 @@ export function buildDocumentPageNodeSegments(
           const mustKeepBottomSpacing = linesRemaining <= minLinesPerSegment;
           const bottomSpacingPx = mustKeepBottomSpacing ? afterSpacingPx : 0;
           const remainingHeightPx = Math.max(0, currentPageContentHeightPx - pageConsumedHeightPx);
+          const visualSafetyPx = Math.max(0, PARAGRAPH_SEGMENT_VISUAL_SAFETY_PX);
+          const remainingHeightWithVisualSafetyPx = Math.max(0, remainingHeightPx - visualSafetyPx);
           const allRemainingHeightPx =
             topSpacingPx + linesRemaining * paragraphLineHeightPx + bottomSpacingPx;
 
-          if (
-            allRemainingHeightPx <= remainingHeightPx + PAGE_OVERFLOW_TOLERANCE_PX
-          ) {
+          if (allRemainingHeightPx <= remainingHeightWithVisualSafetyPx) {
             currentPageSegments.push({
               nodeIndex,
               paragraphLineRange: {
@@ -6937,10 +6963,11 @@ export function buildDocumentPageNodeSegments(
           }
 
           const maxLinesThisPage = Math.max(0, linesRemaining - minLinesPerSegment);
-          const availableForLinesPx = Math.max(0, remainingHeightPx - topSpacingPx);
-          let linesThatFit = Math.floor(
-            (availableForLinesPx + PAGE_OVERFLOW_TOLERANCE_PX) / paragraphLineHeightPx
+          const availableForLinesPx = Math.max(
+            0,
+            remainingHeightWithVisualSafetyPx - topSpacingPx
           );
+          let linesThatFit = Math.floor(availableForLinesPx / paragraphLineHeightPx);
           linesThatFit = Math.min(linesThatFit, maxLinesThisPage);
 
           if (linesThatFit < minLinesPerSegment) {
@@ -10645,8 +10672,8 @@ function renderParagraphRuns(
           ? absoluteFloatingImageStyle(child, {
               pageOriginLeft: floatingPageOriginPx?.left,
               pageOriginTop: floatingPageOriginPx?.top,
-              columnOriginLeft: floatingPageOriginPx?.columnLeft ?? floatingPageOriginPx?.left,
-              columnOriginTop: floatingPageOriginPx?.columnTop ?? floatingPageOriginPx?.top,
+              columnOriginLeft: floatingPageOriginPx?.columnLeft,
+              columnOriginTop: floatingPageOriginPx?.columnTop,
               deltaX: (movePreview?.deltaX ?? 0) + horizontalAnchorCorrectionPx,
               deltaY: movePreview?.deltaY ?? 0
             })
@@ -14722,6 +14749,37 @@ function sameTextRange(a?: DocxTextRange, b?: DocxTextRange): boolean {
   );
 }
 
+export function shouldReissueDomSelectionRestore(options: {
+  modelChanged: boolean;
+  selectionChanged: boolean;
+  rangeChanged: boolean;
+  activeTextRange?: DocxTextRange;
+  suppressNext: boolean;
+  selectionSessionKind: DocxSelectionSessionKind;
+}): boolean {
+  if (options.suppressNext) {
+    return false;
+  }
+
+  if (
+    options.selectionSessionKind === "pointer" ||
+    options.selectionSessionKind === "keyboard" ||
+    options.selectionSessionKind === "composition"
+  ) {
+    return false;
+  }
+
+  if (!options.activeTextRange) {
+    return false;
+  }
+
+  if (options.selectionChanged || options.rangeChanged) {
+    return false;
+  }
+
+  return options.modelChanged;
+}
+
 function shouldSyncActiveRangeOnKeyUp(event: React.KeyboardEvent<HTMLElement>): boolean {
   const nativeKeyboardEvent = event.nativeEvent as KeyboardEvent | undefined;
   if (nativeKeyboardEvent?.isComposing) {
@@ -15481,6 +15539,7 @@ export function useDocxEditor(options: UseDocxEditorOptions = {}): DocxEditorCon
   const activeTextRangeRef = React.useRef<DocxTextRange | undefined>(activeTextRange);
   const pendingRunStyleRef = React.useRef<TextRunNode["style"] | undefined>(pendingRunStyle);
   const suppressNextDomSelectionRestoreRef = React.useRef(false);
+  const domSelectionRestoreModelRef = React.useRef(model);
   const selectionSessionRef = React.useRef<DocxSelectionSessionKind>("idle");
   const selectionSessionTimeoutRef = React.useRef<number | null>(null);
   const lastInViewerActiveTextRangeRef = React.useRef<DocxTextRange | undefined>(undefined);
@@ -15585,6 +15644,9 @@ export function useDocxEditor(options: UseDocxEditorOptions = {}): DocxEditorCon
       selection,
       activeTextRange
     );
+    const modelChangedSinceLastSelectionRestoreCheck =
+      domSelectionRestoreModelRef.current !== model;
+    domSelectionRestoreModelRef.current = model;
     const nextSelection = normalizedCursorState.selection;
     const nextRange = normalizedCursorState.activeTextRange;
     const selectionChanged = !sameEditorSelection(selection, nextSelection);
@@ -15597,9 +15659,14 @@ export function useDocxEditor(options: UseDocxEditorOptions = {}): DocxEditorCon
       }
 
       if (
-        selectionSessionRef.current === "pointer" ||
-        selectionSessionRef.current === "keyboard" ||
-        selectionSessionRef.current === "composition"
+        !shouldReissueDomSelectionRestore({
+          modelChanged: modelChangedSinceLastSelectionRestoreCheck,
+          selectionChanged,
+          rangeChanged,
+          activeTextRange,
+          suppressNext: false,
+          selectionSessionKind: selectionSessionRef.current
+        })
       ) {
         return;
       }
@@ -15607,10 +15674,6 @@ export function useDocxEditor(options: UseDocxEditorOptions = {}): DocxEditorCon
       // Model updates can tear down native DOM ranges even when the logical
       // editor range is unchanged (for example, formatting an expanded
       // selection). Re-issue a restore request so the visual selection remains.
-      if (!activeTextRange) {
-        return;
-      }
-
       const nextNonce = historyRestoreNonceRef.current + 1;
       historyRestoreNonceRef.current = nextNonce;
       setHistoryRestoreRequest({
@@ -20730,6 +20793,7 @@ export function DocxEditorViewer({
         startX: number;
         startY: number;
         hasMoved: boolean;
+        explicitSelectionActive: boolean;
       }
     | undefined
   >(undefined);
@@ -21252,6 +21316,9 @@ export function DocxEditorViewer({
       );
     const storedDocumentPageCount = editor.model.metadata.documentPageCount;
     const hardBreakCount = collectDocxHardPageBreakStartNodeIndexes(editor.model).size;
+    const hasLastRenderedPageBreakHints = editor.model.nodes.some(
+      (node) => node.type === "paragraph" && paragraphHasLastRenderedPageBreak(node)
+    );
     const minimumPageCount = Math.max(1, hardBreakCount + 1);
     const targetPageCount = Number.isFinite(storedDocumentPageCount) && (storedDocumentPageCount as number) > 0
       ? Math.max(minimumPageCount, Math.round(storedDocumentPageCount as number))
@@ -21326,6 +21393,11 @@ export function DocxEditorViewer({
       !editor.canUndo &&
       !editor.canRedo &&
       !hasPageAnchoredFloatingFooterContent &&
+      shouldAllowStoredPageCountReduction({
+        estimatedPageCount: estimatedPages.length,
+        targetPageCount: resolvedTargetPageCount,
+        hasLastRenderedPageBreakHints
+      }) &&
       (
         !measuredPageHeightOverridesReduceContent ||
         allowMeasuredReductionOverPaginationReconciliation
@@ -23347,6 +23419,16 @@ export function DocxEditorViewer({
   const resolveParagraphHostElement = React.useCallback(
     (location: DocxTextRangeLocation): HTMLElement | undefined => {
       if (location.kind === "paragraph") {
+        const wrappedSurface = wrappedParagraphSurfaceRegistryRef.current.get(
+          paragraphLocationKey({
+            kind: "paragraph",
+            nodeIndex: location.nodeIndex
+          })
+        );
+        if (wrappedSurface?.element.isConnected) {
+          return wrappedSurface.element;
+        }
+
         const trackedElement = paragraphElementsRef.current.get(location.nodeIndex);
         if (trackedElement?.isConnected) {
           return trackedElement;
@@ -23700,7 +23782,9 @@ export function DocxEditorViewer({
     clearTableCellSelection();
 
     const paragraphHosts = Array.from(
-      rootElement.querySelectorAll<HTMLElement>("[data-docx-paragraph-host='true']")
+      rootElement.querySelectorAll<HTMLElement>(
+        "[data-docx-paragraph-host='true'],[data-docx-wrapped-paragraph-root='true'][data-docx-wrapped-paragraph-location-key]"
+      )
     );
     if (paragraphHosts.length === 0) {
       return;
@@ -23736,7 +23820,39 @@ export function DocxEditorViewer({
         container instanceof Element ? container : container.parentElement;
       const paragraphElement = referenceElement?.closest<HTMLElement>("[data-docx-paragraph-kind]");
       if (!paragraphElement) {
-        return undefined;
+        const wrappedRoot = referenceElement?.closest<HTMLElement>(
+          "[data-docx-wrapped-paragraph-root='true'][data-docx-wrapped-paragraph-location-key]"
+        );
+        if (!wrappedRoot) {
+          return undefined;
+        }
+
+        const locationKey = wrappedRoot.getAttribute("data-docx-wrapped-paragraph-location-key");
+        if (!locationKey) {
+          return undefined;
+        }
+
+        const wrappedSurface = wrappedParagraphSurfaceRegistryRef.current.get(locationKey);
+        if (!wrappedSurface || !wrappedSurface.element.contains(container)) {
+          return undefined;
+        }
+
+        try {
+          const boundaryRange = document.createRange();
+          boundaryRange.setStart(wrappedSurface.element, 0);
+          const normalizedOffset = Math.max(
+            0,
+            Number.isFinite(offset) ? Math.round(offset) : 0
+          );
+          boundaryRange.setEnd(container, normalizedOffset);
+          const boundaryTextLength = textLengthFromRange(boundaryRange);
+          return {
+            location: cloneTextRangeLocation(wrappedSurface.location),
+            offset: clampNumber(Math.round(boundaryTextLength), 0, wrappedSurface.textLength)
+          };
+        } catch {
+          return undefined;
+        }
       }
 
       const location = parseParagraphLocationFromElement(paragraphElement);
@@ -23879,7 +23995,17 @@ export function DocxEditorViewer({
           return undefined;
         }
 
-        const location = parseParagraphLocationFromElement(paragraphElement);
+        const location =
+          parseParagraphLocationFromElement(paragraphElement) ??
+          (() => {
+            const wrappedLocationKey = paragraphElement.getAttribute(
+              "data-docx-wrapped-paragraph-location-key"
+            );
+            const wrappedSurface = wrappedLocationKey
+              ? wrappedParagraphSurfaceRegistryRef.current.get(wrappedLocationKey)
+              : undefined;
+            return wrappedSurface?.location;
+          })();
         if (!location) {
           return undefined;
         }
@@ -23973,7 +24099,9 @@ export function DocxEditorViewer({
         return undefined;
       }
       const paragraphHosts = Array.from(
-        rootElement.querySelectorAll<HTMLElement>("[data-docx-paragraph-host='true']")
+        rootElement.querySelectorAll<HTMLElement>(
+          "[data-docx-paragraph-host='true'],[data-docx-wrapped-paragraph-root='true'][data-docx-wrapped-paragraph-location-key]"
+        )
       );
       if (paragraphHosts.length === 0) {
         return undefined;
@@ -24072,6 +24200,19 @@ export function DocxEditorViewer({
     });
   }, [setActiveRangeFromSelection]);
 
+  const selectionIsExpandedWithinElement = React.useCallback((element: HTMLElement): boolean => {
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
+      return false;
+    }
+
+    const selectedRange = selection.getRangeAt(0);
+    return (
+      element.contains(selectedRange.startContainer) &&
+      element.contains(selectedRange.endContainer)
+    );
+  }, []);
+
   const ensureCaretPlacementInsideElement = React.useCallback(
     (
       element: HTMLElement,
@@ -24157,6 +24298,12 @@ export function DocxEditorViewer({
         const selection = window.getSelection();
         const selectedRange =
           selection && selection.rangeCount > 0 ? selection.getRangeAt(0) : undefined;
+        const expandedSelection = Boolean(selection && !selection.isCollapsed && selectedRange);
+        if (expandedSelection) {
+          syncSelection();
+          editor.clearSelectionSession("pointer");
+          return;
+        }
         const rangeInsideElement = Boolean(
           selectedRange &&
             element.contains(selectedRange.startContainer) &&
@@ -24234,6 +24381,7 @@ export function DocxEditorViewer({
         preferredCaretX?: number;
         textOverride?: string;
         isComposing?: boolean;
+        anchorOffset?: number;
       }
     ): void => {
       const paragraph = getParagraphAtLocation(editor.model, location).paragraph;
@@ -24244,6 +24392,13 @@ export function DocxEditorViewer({
       const clampedEnd = Math.max(0, Math.min(Math.round(endOffset), textLength));
       const safeStart = Math.min(clampedStart, clampedEnd);
       const safeEnd = Math.max(clampedStart, clampedEnd);
+      const safeAnchor = Math.max(
+        0,
+        Math.min(
+          Math.round(options?.anchorOffset ?? startOffset),
+          textLength
+        )
+      );
       const locationKey = paragraphLocationKey(location);
       const sessionText = options?.textOverride ?? (paragraph ? paragraphText(paragraph) : "");
       wrappedParagraphPendingSelectionRef.current = {
@@ -24258,6 +24413,7 @@ export function DocxEditorViewer({
         text: sessionText,
         selectionStart: safeStart,
         selectionEnd: safeEnd,
+        anchorOffset: safeAnchor,
         isComposing: options?.isComposing ?? current?.isComposing ?? false,
         preferredCaretX:
           options?.preferredCaretX ??
@@ -24620,13 +24776,19 @@ export function DocxEditorViewer({
   ]);
 
   const beginCrossNodeSelectionDrag = React.useCallback(
-    (startBoundary: DocxTextRangeBoundary, pointerId: number, startX: number, startY: number): void => {
+    (
+      startBoundary: DocxTextRangeBoundary,
+      pointerId: number,
+      startX: number,
+      startY: number
+    ): void => {
       tableSelectionDragRef.current = {
         pointerId,
         startBoundary,
         startX,
         startY,
-        hasMoved: false
+        hasMoved: false,
+        explicitSelectionActive: false
       };
 
       const onPointerMove = (pointerMoveEvent: PointerEvent): void => {
@@ -24640,9 +24802,6 @@ export function DocxEditorViewer({
         if (deltaX + deltaY >= 3) {
           dragState.hasMoved = true;
         }
-        if (dragState.hasMoved) {
-          pointerMoveEvent.preventDefault();
-        }
 
         const fallbackBias: "start" | "end" =
           pointerMoveEvent.clientY < dragState.startY ||
@@ -24650,6 +24809,31 @@ export function DocxEditorViewer({
             pointerMoveEvent.clientX < dragState.startX)
             ? "start"
             : "end";
+
+        if (!dragState.explicitSelectionActive) {
+          if (!dragState.hasMoved) {
+            return;
+          }
+
+          const endBoundary = resolveBoundaryFromPoint(
+            {
+              x: pointerMoveEvent.clientX,
+              y: pointerMoveEvent.clientY
+            },
+            fallbackBias
+          );
+          if (!endBoundary) {
+            return;
+          }
+
+          if (sameParagraphLocation(dragState.startBoundary.location, endBoundary.location)) {
+            return;
+          }
+
+          dragState.explicitSelectionActive = true;
+        }
+
+        pointerMoveEvent.preventDefault();
         const endBoundary = resolveBoundaryFromPoint(
           {
             x: pointerMoveEvent.clientX,
@@ -24670,7 +24854,7 @@ export function DocxEditorViewer({
           return;
         }
 
-        if (dragState.hasMoved) {
+        if (dragState.explicitSelectionActive && dragState.hasMoved) {
           const fallbackBias: "start" | "end" =
             pointerUpEvent.clientY < dragState.startY ||
             (pointerUpEvent.clientY === dragState.startY &&
@@ -28891,7 +29075,7 @@ export function DocxEditorViewer({
         event.clientX - rect.left,
         event.clientY - rect.top
       );
-      const anchorOffset = event.shiftKey && activeSession ? activeSession.selectionStart : offset;
+      const anchorOffset = event.shiftKey && activeSession != null ? activeSession.anchorOffset : offset;
       const anchorBoundary: DocxTextRangeBoundary = {
         location: cloneTextRangeLocation(location),
         offset: anchorOffset
@@ -28909,7 +29093,8 @@ export function DocxEditorViewer({
       event.currentTarget.setPointerCapture(event.pointerId);
       syncWrappedParagraphRange(location, anchorOffset, offset, {
         textOverride: textValue,
-        textLength: textValue.length
+        textLength: textValue.length,
+        anchorOffset
       });
       focusWrappedParagraphTextarea();
     };
@@ -28984,7 +29169,8 @@ export function DocxEditorViewer({
             const textValue = activeSession?.text ?? source.text;
             syncWrappedParagraphRange(location, dragState.anchorOffset, endBoundary.offset, {
               textOverride: textValue,
-              textLength: textValue.length
+              textLength: textValue.length,
+              anchorOffset: dragState.anchorOffset
             });
             return;
           }
@@ -29020,6 +29206,19 @@ export function DocxEditorViewer({
           );
           const wordRange = expandOffsetToWord(textValue, offset);
           syncWrappedParagraphRange(location, wordRange.start, wordRange.end, {
+            textOverride: textValue,
+            textLength: textValue.length
+          });
+          focusWrappedParagraphTextarea();
+        }}
+        onClick={(event) => {
+          if (isReadOnly || event.detail < 3) {
+            return;
+          }
+          event.preventDefault();
+          event.stopPropagation();
+          const textValue = activeSession?.text ?? source.text;
+          syncWrappedParagraphRange(location, 0, textValue.length, {
             textOverride: textValue,
             textLength: textValue.length
           });
@@ -29212,7 +29411,9 @@ export function DocxEditorViewer({
                   event.key === "Home"
                     ? currentLine?.fragments[0]?.startOffset ?? 0
                     : currentLine?.fragments[currentLine.fragments.length - 1]?.endOffset ?? currentText.length;
-                const anchorOffset = event.shiftKey ? selectionStart : targetOffset;
+                const anchorOffset = event.shiftKey
+                  ? (activeSession?.anchorOffset ?? selectionStart)
+                  : targetOffset;
                 updateSelection(anchorOffset, targetOffset);
                 return;
               }
@@ -29221,14 +29422,22 @@ export function DocxEditorViewer({
                 (event.key === "ArrowUp" || event.key === "ArrowDown") &&
                 !event.metaKey &&
                 !event.ctrlKey &&
-                !event.altKey &&
-                isCollapsedSelection
+                !event.altKey
               ) {
                 event.preventDefault();
+                // For expanded selections collapse to the appropriate end first (Word behavior):
+                // ArrowUp → collapse to min (top) end; ArrowDown → collapse to max (bottom) end
+                const sourceOffset = isCollapsedSelection
+                  ? selectionEnd
+                  : (event.key === "ArrowUp" ? selectionStart : selectionEnd);
+                const sourceCaretRect = isCollapsedSelection
+                  ? currentCaretRect
+                  : resolveCaretRectAtOffset(currentLayout, sourceOffset);
                 const preferredCaretX =
-                  activeSession?.preferredCaretX ?? currentCaretRect?.left ?? 0;
+                  (isCollapsedSelection ? activeSession?.preferredCaretX : undefined) ??
+                  sourceCaretRect?.left ?? 0;
                 const probeY =
-                  (currentCaretRect?.top ?? 0) +
+                  (sourceCaretRect?.top ?? 0) +
                   (event.key === "ArrowUp"
                     ? -(currentLayout.lineHeightPx ?? lineHeightPx)
                     : currentLayout.lineHeightPx ?? lineHeightPx) +
@@ -29894,8 +30103,6 @@ export function DocxEditorViewer({
           const floatingStyle = absoluteFloatingImageStyle(manualImage, {
             pageOriginLeft: interactiveBodyFloatingPageOriginPx?.left ?? 0,
             pageOriginTop: interactiveBodyFloatingPageOriginPx?.top ?? 0,
-            columnOriginLeft: interactiveBodyFloatingPageOriginPx?.left ?? 0,
-            columnOriginTop: interactiveBodyFloatingPageOriginPx?.top ?? 0,
             deltaX: movePreview?.deltaX ?? 0,
             deltaY: movePreview?.deltaY ?? 0
           });
@@ -30181,8 +30388,6 @@ export function DocxEditorViewer({
               ? absoluteFloatingImageStyle(child, {
                   pageOriginLeft: interactiveBodyFloatingPageOriginPx?.left ?? 0,
                   pageOriginTop: interactiveBodyFloatingPageOriginPx?.top ?? 0,
-                  columnOriginLeft: interactiveBodyFloatingPageOriginPx?.left ?? 0,
-                  columnOriginTop: interactiveBodyFloatingPageOriginPx?.top ?? 0,
                   deltaX: movePreview?.deltaX ?? 0,
                   deltaY: movePreview?.deltaY ?? 0
                 })
@@ -31528,6 +31733,12 @@ export function DocxEditorViewer({
           suppressContentEditableWarning
           onMouseUp={(event) => {
             if (!editable) {
+              return;
+            }
+
+            if (selectionIsExpandedWithinElement(event.currentTarget)) {
+              flushActiveRangeFromSelection();
+              cancelPendingPointerSelectionReconcile();
               return;
             }
 
@@ -33009,7 +33220,7 @@ export function DocxEditorViewer({
                                   event.stopPropagation();
                                   tableCellDraftsRef.current.delete(cellDraftKey);
                                 }}
-                                onMouseUp={(event) => {
+          onMouseUp={(event) => {
                                   const cellElement = event.currentTarget;
                                   const paragraphSelector =
                                     `[data-docx-paragraph-kind='table-cell']` +
@@ -33034,6 +33245,19 @@ export function DocxEditorViewer({
                                           return candidateDistance < closestDistance ? candidate : closest;
                                         }, paragraphElements[0])
                                       : undefined;
+                                  if (
+                                    fallbackParagraph &&
+                                    selectionIsExpandedWithinElement(fallbackParagraph)
+                                  ) {
+                                    updateActiveTextRangeFromTableCell(
+                                      cellElement,
+                                      nodeIndex,
+                                      rowIndex,
+                                      cellIndex
+                                    );
+                                    cancelPendingPointerSelectionReconcile();
+                                    return;
+                                  }
                                   if (fallbackParagraph) {
                                     schedulePointerSelectionReconcile(fallbackParagraph, {
                                       x: event.clientX,
@@ -34784,8 +35008,8 @@ export function DocxEditorViewer({
                     {
                       left: pageLayout.marginsPx.left,
                       top: pageLayout.marginsPx.top,
-                      columnLeft: pageLayout.marginsPx.left,
-                      columnTop: pageLayout.marginsPx.top,
+                      columnLeft: 0,
+                      columnTop: 0,
                       pageWidth: pageLayout.pageWidthPx
                     },
                     {
@@ -35109,8 +35333,8 @@ export function DocxEditorViewer({
 	                    {
 	                      left: footerNeedsPageWideLayout ? 0 : pageLayout.marginsPx.left,
 	                      top: pageLayout.marginsPx.top,
-                        columnLeft: pageLayout.marginsPx.left,
-                        columnTop: pageLayout.marginsPx.top,
+                        columnLeft: footerNeedsPageWideLayout ? pageLayout.marginsPx.left : 0,
+                        columnTop: 0,
 	                      pageWidth: pageLayout.pageWidthPx
 	                    },
                     {

@@ -249,7 +249,7 @@ describe("footer pagination reserve", () => {
         bodyRenderedBottomPx: 960,
         footerTopPx: 960,
       })
-    ).toBe(816);
+    ).toBe(808);
   });
 
   it("shrinks the measured body budget further when rendered body content already overruns the footer", () => {
@@ -268,7 +268,7 @@ describe("footer pagination reserve", () => {
         bodyRenderedBottomPx: 970,
         footerTopPx: 960,
       })
-    ).toBe(806);
+    ).toBe(798);
   });
 
   it("continues shrinking a measured page budget when the same page still overruns the footer", () => {
@@ -288,7 +288,7 @@ describe("footer pagination reserve", () => {
         bodyRenderedBottomPx: 970,
         footerTopPx: 960,
       })
-    ).toBe(788);
+    ).toBe(780);
   });
 
   it("does not shrink image-only body pages based on a sparse measured body bottom", () => {

@@ -66,6 +66,57 @@ function tableCellDirectParagraphs(nodeContent: TableCellContentNode[]): Paragra
   return nodeContent.filter((entry): entry is ParagraphNode => entry.type === "paragraph");
 }
 
+function tableRowHasSubstantiveContentOutsideBreakOnlyParagraphs(row: TableNode["rows"][number]): boolean {
+  return row.cells.some((cell) =>
+    tableCellDirectParagraphs(cell.nodes).some((paragraph) => {
+      if (paragraphIsOnlyExplicitPageBreak(paragraph)) {
+        return false;
+      }
+
+      return (
+        paragraphHasVisibleText(paragraph) ||
+        paragraphHasImage(paragraph) ||
+        paragraphHasFormField(paragraph) ||
+        paragraphHasExplicitPageBreak(paragraph)
+      );
+    })
+  );
+}
+
+function tableRowSubstantiveCellIndexes(row: TableNode["rows"][number]): number[] {
+  const indexes: number[] = [];
+  row.cells.forEach((cell, cellIndex) => {
+    const substantive = tableCellDirectParagraphs(cell.nodes).some((paragraph) => {
+      if (paragraphIsOnlyExplicitPageBreak(paragraph)) {
+        return false;
+      }
+
+      return (
+        paragraphHasVisibleText(paragraph) ||
+        paragraphHasImage(paragraph) ||
+        paragraphHasFormField(paragraph) ||
+        paragraphHasExplicitPageBreak(paragraph)
+      );
+    });
+    if (substantive) {
+      indexes.push(cellIndex);
+    }
+  });
+  return indexes;
+}
+
+function tableRowUsesTrailingSignatureCellBreakPattern(
+  table: TableNode,
+  row: TableNode["rows"][number]
+): boolean {
+  if (table.rows.length !== 1 || row.cells.length < 4) {
+    return false;
+  }
+
+  const substantiveIndexes = tableRowSubstantiveCellIndexes(row);
+  return substantiveIndexes.length === 1 && substantiveIndexes[0] >= row.cells.length - 1;
+}
+
 export function collectTableExplicitPageBreakInfo(table: TableNode): TableExplicitPageBreakInfo {
   const sourceXml = table.sourceXml ?? "";
   if (sourceXml) {
@@ -87,7 +138,17 @@ export function collectTableExplicitPageBreakInfo(table: TableNode): TableExplic
           return;
         }
 
-        const breakTarget = paragraphIsOnlyExplicitPageBreak(paragraph) ? rowIndex : rowIndex + 1;
+        if (
+          paragraphIsOnlyExplicitPageBreak(paragraph) &&
+          rowIndex === 0 &&
+          tableRowHasSubstantiveContentOutsideBreakOnlyParagraphs(row) &&
+          !tableRowUsesTrailingSignatureCellBreakPattern(table, row)
+        ) {
+          return;
+        }
+
+        const breakTarget =
+          paragraphIsOnlyExplicitPageBreak(paragraph) ? rowIndex : rowIndex + 1;
         if (rowBreakTarget === undefined || breakTarget < rowBreakTarget) {
           rowBreakTarget = breakTarget;
         }

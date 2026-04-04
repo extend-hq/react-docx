@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { reconcilePagesToTargetCountByScalingHeight } from "../../packages/react-viewer/src/page-count-reconciliation";
+import {
+  reconcilePagesToTargetCountByScalingHeight,
+  shouldAllowStoredPageCountReduction
+} from "../../packages/react-viewer/src/page-count-reconciliation";
 
 describe("page-count-reconciliation", () => {
   it("adds pages by reducing effective page height when Word stored more pages", () => {
@@ -66,5 +69,25 @@ describe("page-count-reconciliation", () => {
     });
 
     expect(reconciled).toEqual([["page-1"], ["page-2"]]);
+  });
+
+  it("does not reduce to a stale stored page count when last-rendered break hints are present", () => {
+    expect(
+      shouldAllowStoredPageCountReduction({
+        estimatedPageCount: 4,
+        targetPageCount: 3,
+        hasLastRenderedPageBreakHints: true
+      })
+    ).toBe(false);
+  });
+
+  it("still allows reduction when no last-rendered break hints are present", () => {
+    expect(
+      shouldAllowStoredPageCountReduction({
+        estimatedPageCount: 4,
+        targetPageCount: 3,
+        hasLastRenderedPageBreakHints: false
+      })
+    ).toBe(true);
   });
 });

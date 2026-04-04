@@ -12,6 +12,20 @@ export interface PageCountReconciliationOptions<TPage> {
   scales?: number[];
 }
 
+export function shouldAllowStoredPageCountReduction(options: {
+  estimatedPageCount: number;
+  targetPageCount: number;
+  hasLastRenderedPageBreakHints?: boolean;
+}): boolean {
+  const estimatedPageCount = Math.max(1, Math.round(options.estimatedPageCount));
+  const targetPageCount = Math.max(1, Math.round(options.targetPageCount));
+  if (targetPageCount >= estimatedPageCount) {
+    return true;
+  }
+
+  return options.hasLastRenderedPageBreakHints !== true;
+}
+
 function isBetterCandidate<TPage>(
   candidate: PageCountCandidate<TPage>,
   incumbent: PageCountCandidate<TPage>,

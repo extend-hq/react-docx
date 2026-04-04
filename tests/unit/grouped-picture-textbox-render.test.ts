@@ -113,6 +113,78 @@ const GROUPED_PICTURE_TEXTBOX_DOC_XML = `<?xml version="1.0" encoding="UTF-8" st
   </w:body>
 </w:document>`;
 
+const GROUPED_VECTOR_SHAPE_DOC_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document
+  xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+  xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+  xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+  xmlns:wpg="http://schemas.microsoft.com/office/word/2010/wordprocessingGroup"
+  xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"
+  mc:Ignorable="wp14"
+>
+  <w:body>
+    <w:p>
+      <w:r>
+        <w:drawing>
+          <wp:anchor behindDoc="0" layoutInCell="1" allowOverlap="1" simplePos="0">
+            <wp:simplePos x="0" y="0"/>
+            <wp:positionH relativeFrom="page"><wp:posOffset>7188741</wp:posOffset></wp:positionH>
+            <wp:positionV relativeFrom="page"><wp:posOffset>2040</wp:posOffset></wp:positionV>
+            <wp:extent cx="44544" cy="2016004"/>
+            <wp:wrapTopAndBottom/>
+            <wp:docPr id="1305526484" name="Group 386"/>
+            <a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+              <a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingGroup">
+                <wpg:wgp>
+                  <wpg:cNvGrpSpPr/>
+                  <wpg:grpSpPr>
+                    <a:xfrm>
+                      <a:off x="0" y="0"/>
+                      <a:ext cx="44544" cy="2016004"/>
+                      <a:chOff x="0" y="0"/>
+                      <a:chExt cx="44544" cy="2016004"/>
+                    </a:xfrm>
+                  </wpg:grpSpPr>
+                  <wps:wsp>
+                    <wps:cNvPr id="2097971878" name="Shape 58"/>
+                    <wps:cNvSpPr/>
+                    <wps:spPr>
+                      <a:xfrm><a:off x="0" y="0"/><a:ext cx="44539" cy="1697658"/></a:xfrm>
+                      <a:custGeom>
+                        <a:avLst/><a:gdLst/><a:ahLst/><a:cxnLst/><a:rect l="0" t="0" r="0" b="0"/>
+                        <a:pathLst>
+                          <a:path w="44539" h="1697658">
+                            <a:moveTo><a:pt x="0" y="0"/></a:moveTo>
+                            <a:lnTo><a:pt x="44539" y="0"/></a:lnTo>
+                            <a:lnTo><a:pt x="44539" y="1675395"/></a:lnTo>
+                            <a:cubicBezTo><a:pt x="44539" y="1687688"/><a:pt x="34570" y="1697658"/><a:pt x="22276" y="1697658"/></a:cubicBezTo>
+                            <a:cubicBezTo><a:pt x="9970" y="1697658"/><a:pt x="0" y="1687688"/><a:pt x="0" y="1675395"/></a:cubicBezTo>
+                            <a:lnTo><a:pt x="0" y="0"/></a:lnTo>
+                            <a:close/>
+                          </a:path>
+                        </a:pathLst>
+                      </a:custGeom>
+                      <a:ln w="0" cap="flat"><a:miter lim="127000"/></a:ln>
+                    </wps:spPr>
+                    <wps:style>
+                      <a:lnRef idx="0"><a:srgbClr val="000000"><a:alpha val="0"/></a:srgbClr></a:lnRef>
+                      <a:fillRef idx="1"><a:srgbClr val="76A88B"/></a:fillRef>
+                      <a:effectRef idx="0"><a:scrgbClr r="0" g="0" b="0"/></a:effectRef>
+                      <a:fontRef idx="none"/>
+                    </wps:style>
+                    <wps:bodyPr/>
+                  </wps:wsp>
+                </wpg:wgp>
+              </a:graphicData>
+            </a:graphic>
+          </wp:anchor>
+        </w:drawing>
+      </w:r>
+    </w:p>
+    <w:sectPr/>
+  </w:body>
+</w:document>`;
+
 const ONE_BY_ONE_JPEG_BASE64 =
   "/9j/4AAQSkZJRgABAQAAAQABAAD/2wCEAAkGBxAQEBAQEBAVEBUVFRUVFRUVFRUVFRUVFRUWFhUVFRUYHSggGBolHRUVITEhJSkrLi4uFx8zODMsNygtLisBCgoKDg0OGxAQGy0fHR0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLf/AABEIAAEAAQMBIgACEQEDEQH/xAAXAAADAQAAAAAAAAAAAAAAAAAAAQMC/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAwDAQACEAMQAAAB6A//xAAXEAADAQAAAAAAAAAAAAAAAAAAAREC/9oACAEBAAEFAiUf/8QAFBEBAAAAAAAAAAAAAAAAAAAAEP/aAAgBAwEBPwEf/8QAFBEBAAAAAAAAAAAAAAAAAAAAEP/aAAgBAgEBPwEf/8QAFxABAQEBAAAAAAAAAAAAAAAAAQARIf/aAAgBAQAGPwJrP//EABcQAQEBAQAAAAAAAAAAAAAAAAERACH/2gAIAQEAAT8hR5iP/9oADAMBAAIAAwAAABBf/8QAFBEBAAAAAAAAAAAAAAAAAAAAEP/aAAgBAwEBPxAf/8QAFBEBAAAAAAAAAAAAAAAAAAAAEP/aAAgBAgEBPxAf/8QAFxABAAMAAAAAAAAAAAAAAAAAAREhQf/aAAgBAQABPxBBbQ7/2Q==";
 
@@ -148,5 +220,21 @@ describe("grouped picture textbox render", () => {
     expect(html).toContain("Commonwealth%20of%20Massachusetts");
     expect(html).toContain("clear:both");
     expect(html).toContain("After group");
+  });
+
+  it("keeps grouped vector shape fill colors when they come from wps:style fillRef", async () => {
+    const zip = createZip([
+      { name: "[Content_Types].xml", content: CONTENT_TYPES_XML },
+      { name: "_rels/.rels", content: ROOT_RELS_XML },
+      { name: "word/document.xml", content: GROUPED_VECTOR_SHAPE_DOC_XML }
+    ]);
+
+    const pkg = await parseDocx(zip);
+    const model = buildDocModel(pkg);
+    const html = renderToStaticMarkup(React.createElement(ImportedViewer, { model }));
+
+    expect(html).toContain("data:image/svg+xml;charset=utf-8,");
+    expect(html).toContain("76A88B");
+    expect(html).not.toContain("Missing image");
   });
 });

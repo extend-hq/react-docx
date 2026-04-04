@@ -782,6 +782,62 @@ const DOC_WITH_STYLE_REFERENCES_XML = `<?xml version="1.0" encoding="UTF-8" stan
   </w:body>
 </w:document>`;
 
+const DOC_WITH_EAST_ASIA_THEME_STYLE_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p>
+      <w:pPr>
+        <w:pStyle w:val="Heading1"/>
+      </w:pPr>
+      <w:r>
+        <w:t>Latin heading should keep the Normal font</w:t>
+      </w:r>
+    </w:p>
+  </w:body>
+</w:document>`;
+
+const STYLES_WITH_EAST_ASIA_THEME_HEADING_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:docDefaults>
+    <w:rPrDefault>
+      <w:rPr>
+        <w:rFonts w:asciiTheme="minorHAnsi" w:hAnsiTheme="minorHAnsi"/>
+      </w:rPr>
+    </w:rPrDefault>
+  </w:docDefaults>
+  <w:style w:type="paragraph" w:default="1" w:styleId="Normal">
+    <w:name w:val="Normal"/>
+    <w:rPr>
+      <w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman" w:eastAsia="Times New Roman" w:cs="Times New Roman"/>
+    </w:rPr>
+  </w:style>
+  <w:style w:type="paragraph" w:styleId="Heading1">
+    <w:name w:val="heading 1"/>
+    <w:basedOn w:val="Normal"/>
+    <w:rPr>
+      <w:rFonts w:eastAsiaTheme="majorEastAsia"/>
+    </w:rPr>
+  </w:style>
+</w:styles>`;
+
+const THEME_WITH_CAMBRIA_MAJOR_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" name="Office Theme">
+  <a:themeElements>
+    <a:fontScheme name="Office">
+      <a:majorFont>
+        <a:latin typeface="Cambria"/>
+        <a:ea typeface=""/>
+        <a:cs typeface=""/>
+      </a:majorFont>
+      <a:minorFont>
+        <a:latin typeface="Calibri"/>
+        <a:ea typeface=""/>
+        <a:cs typeface=""/>
+      </a:minorFont>
+    </a:fontScheme>
+  </a:themeElements>
+</a:theme>`;
+
 const PAGINATION_STYLES_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
   <w:style w:type="paragraph" w:default="1" w:styleId="Normal">
@@ -1823,6 +1879,34 @@ describe("doc-model import", () => {
         expect(eastAsiaOnlyRun.style?.fontFamily).toBe("Georgia");
       }
     }
+  });
+
+  it("keeps inherited latin paragraph fonts when a style only defines eastAsiaTheme", async () => {
+    const zip = createZip([
+      { name: "[Content_Types].xml", content: CONTENT_TYPES_WITH_STYLES_XML },
+      { name: "_rels/.rels", content: ROOT_RELS_XML },
+      { name: "word/document.xml", content: DOC_WITH_EAST_ASIA_THEME_STYLE_XML },
+      { name: "word/styles.xml", content: STYLES_WITH_EAST_ASIA_THEME_HEADING_XML },
+      { name: "word/theme/theme1.xml", content: THEME_WITH_CAMBRIA_MAJOR_XML }
+    ]);
+
+    const pkg = await parseDocx(zip);
+    const model = buildDocModel(pkg);
+
+    const paragraph = model.nodes[0];
+    expect(paragraph?.type).toBe("paragraph");
+    if (paragraph?.type !== "paragraph") {
+      return;
+    }
+
+    const run = paragraph.children[0];
+    expect(run?.type).toBe("text");
+    if (run?.type !== "text") {
+      return;
+    }
+
+    expect(paragraph.style?.styleId).toBe("Heading1");
+    expect(run.style?.fontFamily).toBe("Times New Roman");
   });
 
   it("imports paragraph pagination properties from style inheritance and direct paragraph properties", async () => {

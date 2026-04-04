@@ -693,7 +693,7 @@ export function buildDocumentPageNodeSegments(
           const allRemainingHeightPx =
             topSpacingPx + linesRemaining * paragraphLineHeightPx + bottomSpacingPx;
 
-          if (allRemainingHeightPx <= remainingHeightPx + pageOverflowTolerancePx) {
+          if (allRemainingHeightPx <= remainingHeightPx) {
             currentPageSegments.push({
               nodeIndex,
               paragraphLineRange: {
@@ -711,9 +711,7 @@ export function buildDocumentPageNodeSegments(
 
           const maxLinesThisPage = Math.max(0, linesRemaining - minLinesPerSegment);
           const availableForLinesPx = Math.max(0, remainingHeightPx - topSpacingPx);
-          let linesThatFit = Math.floor(
-            (availableForLinesPx + pageOverflowTolerancePx) / paragraphLineHeightPx
-          );
+          let linesThatFit = Math.floor(availableForLinesPx / paragraphLineHeightPx);
           linesThatFit = Math.min(linesThatFit, maxLinesThisPage);
 
           if (linesThatFit < minLinesPerSegment) {

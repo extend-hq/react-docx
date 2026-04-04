@@ -1041,6 +1041,19 @@ function drawingShapeFillMarkup(
     };
   }
 
+  const styleFillRefXml = extractBalancedTagBlocks(shapePropertiesXml, "a:fillRef")[0];
+  if (styleFillRefXml) {
+    const resolved = resolveDrawingColorFromXml(styleFillRefXml, themeColors);
+    if (resolved) {
+      return {
+        fillAttribute: `fill="${resolved.color}"${
+          resolved.opacity !== undefined ? ` fill-opacity="${resolved.opacity}"` : ""
+        }`,
+        defs: []
+      };
+    }
+  }
+
   return {
     fillAttribute: 'fill="none"',
     defs: []
@@ -1056,12 +1069,19 @@ function drawingShapeStrokeMarkup(shapePropertiesXml: string, themeColors: Theme
     return 'stroke="none"';
   }
 
-  const resolved = resolveDrawingColorFromXml(lineXml, themeColors);
-  const widthPx = emuToPixels(parseIntegerAttribute(lineXml.match(/<a:ln\b[^>]*>/i)?.[0] ?? "", "w")) ?? 1;
+  const lineWidthEmu = parseIntegerAttribute(lineXml.match(/<a:ln\b[^>]*>/i)?.[0] ?? "", "w");
+  if (Number.isFinite(lineWidthEmu) && (lineWidthEmu as number) <= 0) {
+    return 'stroke="none"';
+  }
+
+  const resolved =
+    resolveDrawingColorFromXml(lineXml, themeColors) ??
+    resolveDrawingColorFromXml(extractBalancedTagBlocks(shapePropertiesXml, "a:lnRef")[0], themeColors);
+  const widthPx = emuToPixels(lineWidthEmu);
 
   return `stroke="${resolved?.color ?? "#000000"}"${
     resolved?.opacity !== undefined ? ` stroke-opacity="${resolved.opacity}"` : ""
-  } stroke-width="${Math.max(1, widthPx)}"`;
+  } stroke-width="${Math.max(1, widthPx ?? 1)}"`;
 }
 
 function drawingShapePathData(pathXml: string, widthPx: number, heightPx: number): string | undefined {
@@ -1194,11 +1214,14 @@ function renderStandaloneWordShapeSvg(
         const y = Math.round(offYPx * scaleY);
         const preset = getAttribute(shapePropertiesXml.match(/<a:prstGeom\b[^>]*>/i)?.[0] ?? "", "prst")?.trim();
         const fill = drawingShapeFillMarkup(
-          shapePropertiesXml,
+          `${shapePropertiesXml}${extractBalancedTagBlocks(shapeXml, "wps:style")[0] ?? ""}`,
           context.styleSheet.themeColors,
           `group-fill-${shapeIndex}`
         );
-        const stroke = drawingShapeStrokeMarkup(shapePropertiesXml, context.styleSheet.themeColors);
+        const stroke = drawingShapeStrokeMarkup(
+          `${shapePropertiesXml}${extractBalancedTagBlocks(shapeXml, "wps:style")[0] ?? ""}`,
+          context.styleSheet.themeColors
+        );
         const textBoxParagraphs = parseTextBoxParagraphs(shapeXml, context);
         const textBoxSvg =
           textBoxParagraphs.length > 0 ? renderTextBoxSvg(textBoxParagraphs, shapeWidth, shapeHeight) : undefined;
@@ -1254,8 +1277,15 @@ function renderStandaloneWordShapeSvg(
   const rotationDegrees = Number.isFinite(rotationRaw) ? rotationRaw / 60000 : undefined;
   const rotationLayout = svgRotationLayout(rotationDegrees, safeWidth, safeHeight);
   const preset = getAttribute(shapePropertiesXml.match(/<a:prstGeom\b[^>]*>/i)?.[0] ?? "", "prst")?.trim();
-  const fill = drawingShapeFillMarkup(shapePropertiesXml, context.styleSheet.themeColors, "shape-fill");
-  const stroke = drawingShapeStrokeMarkup(shapePropertiesXml, context.styleSheet.themeColors);
+  const fill = drawingShapeFillMarkup(
+    `${shapePropertiesXml}${extractBalancedTagBlocks(shapeXml, "wps:style")[0] ?? ""}`,
+    context.styleSheet.themeColors,
+    "shape-fill"
+  );
+  const stroke = drawingShapeStrokeMarkup(
+    `${shapePropertiesXml}${extractBalancedTagBlocks(shapeXml, "wps:style")[0] ?? ""}`,
+    context.styleSheet.themeColors
+  );
   const pathXml = extractBalancedTagBlocks(shapePropertiesXml, "a:path")[0];
   const pathData = pathXml ? drawingShapePathData(pathXml, safeWidth, safeHeight) : undefined;
   let body = "";
@@ -2267,6 +2297,7 @@ function parseTextStyleFromXml(xml: string, themeFonts: ThemeFontMap = {}): Text
     .map((match) => decodeXmlEntities(match[1] ?? ""))
     .join("");
   const containsEastAsiaGlyphs = /[\u2e80-\u9fff\u3040-\u30ff\uac00-\ud7af]/i.test(decodedTextSamples);
+  const containsComplexScriptGlyphs = /[\u0590-\u08ff\ufb1d-\ufefc]/i.test(decodedTextSamples);
 
   const style: TextStyle = {};
   if (bold !== undefined) {
@@ -2329,16 +2360,17 @@ function parseTextStyleFromXml(xml: string, themeFonts: ThemeFontMap = {}): Text
 
   const runFontFamily = asciiFont ?? hAnsiFont;
   const runThemeFontToken = asciiThemeFont ?? hAnsiThemeFont;
-  const eastAsiaOrComplexFont =
-    eastAsiaFont ?? complexScriptFont;
-  const eastAsiaOrComplexThemeToken =
-    eastAsiaThemeFont ?? complexScriptThemeFont;
+  const eastAsiaFallbackFont = containsEastAsiaGlyphs ? eastAsiaFont : undefined;
+  const eastAsiaFallbackThemeToken = containsEastAsiaGlyphs ? eastAsiaThemeFont : undefined;
+  const complexScriptFallbackFont = containsComplexScriptGlyphs ? complexScriptFont : undefined;
+  const complexScriptFallbackThemeToken = containsComplexScriptGlyphs
+    ? complexScriptThemeFont
+    : undefined;
   const symbolFallbackFont =
-    eastAsiaOrComplexFont &&
-    /(symbol|emoji|dingbats?|wingdings|webdings)/i.test(eastAsiaOrComplexFont)
-      ? eastAsiaOrComplexFont
+    (eastAsiaFont ?? complexScriptFont) &&
+    /(symbol|emoji|dingbats?|wingdings|webdings)/i.test(eastAsiaFont ?? complexScriptFont ?? "")
+      ? eastAsiaFont ?? complexScriptFont
       : undefined;
-  const complexFallbackFont = containsEastAsiaGlyphs ? eastAsiaOrComplexFont : undefined;
 
   if (runFontFamily) {
     style.fontFamily = runFontFamily;
@@ -2347,10 +2379,17 @@ function parseTextStyleFromXml(xml: string, themeFonts: ThemeFontMap = {}): Text
     if (themeFontFamily) {
       style.fontFamily = themeFontFamily;
     }
-  } else if (complexFallbackFont) {
-    style.fontFamily = complexFallbackFont;
-  } else if (eastAsiaOrComplexThemeToken) {
-    const themeFontFamily = resolveThemeFont(eastAsiaOrComplexThemeToken, themeFonts);
+  } else if (eastAsiaFallbackFont) {
+    style.fontFamily = eastAsiaFallbackFont;
+  } else if (eastAsiaFallbackThemeToken) {
+    const themeFontFamily = resolveThemeFont(eastAsiaFallbackThemeToken, themeFonts);
+    if (themeFontFamily) {
+      style.fontFamily = themeFontFamily;
+    }
+  } else if (complexScriptFallbackFont) {
+    style.fontFamily = complexScriptFallbackFont;
+  } else if (complexScriptFallbackThemeToken) {
+    const themeFontFamily = resolveThemeFont(complexScriptFallbackThemeToken, themeFonts);
     if (themeFontFamily) {
       style.fontFamily = themeFontFamily;
     }
@@ -3112,6 +3151,7 @@ function rasterizeWindowsMetafileToPngDataUri(
       }
 
       if (fs.existsSync(outputPath)) {
+        trimRasterizedMetafilePng(outputPath, childProcess);
         const pngBytes = fs.readFileSync(outputPath);
         return `data:image/png;base64,${bytesToBase64(new Uint8Array(pngBytes))}`;
       }
@@ -3123,6 +3163,99 @@ function rasterizeWindowsMetafileToPngDataUri(
       fs.rmSync(tempDir, { recursive: true, force: true });
     } catch {
       // Best-effort temp cleanup only.
+    }
+  }
+}
+
+function trimRasterizedMetafilePng(
+  pngPath: string,
+  childProcess: {
+    execFileSync(
+      file: string,
+      args: string[],
+      options?: {
+        stdio?: "ignore";
+      }
+    ): void;
+  }
+): void {
+  const pythonCandidates = [process.env.PYTHON, "python3", "python"].filter(
+    (candidate): candidate is string => Boolean(candidate)
+  );
+  const trimScript = `
+from PIL import Image
+import sys
+
+path = sys.argv[1]
+try:
+    image = Image.open(path).convert("RGBA")
+except Exception:
+    raise SystemExit(0)
+
+width, height = image.size
+if width <= 0 or height <= 0:
+    raise SystemExit(0)
+
+pixels = image.load()
+left = width
+top = height
+right = -1
+bottom = -1
+
+for y in range(height):
+    for x in range(width):
+        r, g, b, a = pixels[x, y]
+        if a <= 8:
+            continue
+        if r >= 248 and g >= 248 and b >= 248:
+            continue
+        if x < left:
+            left = x
+        if y < top:
+            top = y
+        if x > right:
+            right = x
+        if y > bottom:
+            bottom = y
+
+if right < left or bottom < top:
+    raise SystemExit(0)
+
+trimmed_width = right - left + 1
+trimmed_height = bottom - top + 1
+if trimmed_width >= width * 0.96 and trimmed_height >= height * 0.96:
+    raise SystemExit(0)
+
+occupancy_x = trimmed_width / width if width else 1
+occupancy_y = trimmed_height / height if height else 1
+
+if occupancy_x < 0.75 or occupancy_y < 0.75:
+    target_occupancy = 0.82
+    padded_width = min(width, max(trimmed_width, round(trimmed_width / target_occupancy)))
+    padded_height = min(height, max(trimmed_height, round(trimmed_height / target_occupancy)))
+    pad_x = max(4, round((padded_width - trimmed_width) / 2))
+    pad_y = max(4, round((padded_height - trimmed_height) / 2))
+else:
+    pad_x = max(4, round(trimmed_width * 0.03))
+    pad_y = max(4, round(trimmed_height * 0.03))
+
+crop_left = max(0, left - pad_x)
+crop_top = max(0, top - pad_y)
+crop_right = min(width, right + pad_x + 1)
+crop_bottom = min(height, bottom + pad_y + 1)
+
+cropped = image.crop((crop_left, crop_top, crop_right, crop_bottom))
+cropped.save(path, format="PNG")
+`;
+
+  for (const pythonPath of pythonCandidates) {
+    try {
+      childProcess.execFileSync(pythonPath, ["-c", trimScript, pngPath], {
+        stdio: "ignore"
+      });
+      return;
+    } catch {
+      continue;
     }
   }
 }

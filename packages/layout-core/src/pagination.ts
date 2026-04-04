@@ -140,6 +140,59 @@ function tableCellDirectParagraphs(nodeContent: TableCellContentNode[]): Paragra
   return nodeContent.filter((entry): entry is ParagraphNode => entry.type === "paragraph");
 }
 
+function tableRowHasSubstantiveContentOutsideBreakOnlyParagraphs(
+  row: TableNode["rows"][number]
+): boolean {
+  return row.cells.some((cell) =>
+    tableCellDirectParagraphs(cell.nodes).some((paragraph) => {
+      if (paragraphIsOnlyExplicitPageBreak(paragraph)) {
+        return false;
+      }
+
+      return (
+        paragraphHasVisibleText(paragraph) ||
+        paragraphHasImage(paragraph) ||
+        paragraphHasFormField(paragraph) ||
+        paragraphHasExplicitPageBreak(paragraph)
+      );
+    })
+  );
+}
+
+function tableRowSubstantiveCellIndexes(row: TableNode["rows"][number]): number[] {
+  const indexes: number[] = [];
+  row.cells.forEach((cell, cellIndex) => {
+    const substantive = tableCellDirectParagraphs(cell.nodes).some((paragraph) => {
+      if (paragraphIsOnlyExplicitPageBreak(paragraph)) {
+        return false;
+      }
+
+      return (
+        paragraphHasVisibleText(paragraph) ||
+        paragraphHasImage(paragraph) ||
+        paragraphHasFormField(paragraph) ||
+        paragraphHasExplicitPageBreak(paragraph)
+      );
+    });
+    if (substantive) {
+      indexes.push(cellIndex);
+    }
+  });
+  return indexes;
+}
+
+function tableRowUsesTrailingSignatureCellBreakPattern(
+  table: TableNode,
+  row: TableNode["rows"][number]
+): boolean {
+  if (table.rows.length !== 1 || row.cells.length < 4) {
+    return false;
+  }
+
+  const substantiveIndexes = tableRowSubstantiveCellIndexes(row);
+  return substantiveIndexes.length === 1 && substantiveIndexes[0] >= row.cells.length - 1;
+}
+
 export function sectionBreakPropertiesStartNewPage(sectionPropertiesXml: string): boolean {
   const sectionType =
     sectionPropertiesXml.match(SECTION_TYPE_XML_PATTERN)?.[1]?.trim().toLowerCase() ?? "nextpage";
@@ -476,6 +529,15 @@ export function collectTableExplicitPageBreakInfo(table: TableNode): TableExplic
     row.cells.forEach((cell) => {
       tableCellDirectParagraphs(cell.nodes).forEach((paragraph) => {
         if (!paragraphHasExplicitPageBreak(paragraph)) {
+          return;
+        }
+
+        if (
+          paragraphIsOnlyExplicitPageBreak(paragraph) &&
+          rowIndex === 0 &&
+          tableRowHasSubstantiveContentOutsideBreakOnlyParagraphs(row) &&
+          !tableRowUsesTrailingSignatureCellBreakPattern(table, row)
+        ) {
           return;
         }
 

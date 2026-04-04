@@ -119,4 +119,76 @@ describe("pagination-breaks", () => {
     });
     expect([...collectTopLevelExplicitPageBreakStartNodeIndexes(model.nodes)]).toEqual([1]);
   });
+
+  it("ignores a first-row break-only cell when the same row already has real content", async () => {
+    const model = await buildModelFromDocumentXml(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:r><w:t>Intro</w:t></w:r></w:p>
+    <w:tbl>
+      <w:tr>
+        <w:tc>
+          <w:p><w:r><w:br w:type="page"/></w:r></w:p>
+          <w:p/>
+        </w:tc>
+        <w:tc>
+          <w:p><w:r><w:t>Visible row content</w:t></w:r></w:p>
+        </w:tc>
+      </w:tr>
+    </w:tbl>
+    <w:p><w:r><w:t>After table</w:t></w:r></w:p>
+  </w:body>
+</w:document>`);
+
+    const table = model.nodes[1];
+    expect(table?.type).toBe("table");
+    if (!table || table.type !== "table") {
+      return;
+    }
+
+    expect(collectTableExplicitPageBreakInfo(table)).toEqual({
+      startRowIndexes: [],
+      breakAfterTable: false
+    });
+    expect([...collectTopLevelExplicitPageBreakStartNodeIndexes(model.nodes)]).toEqual([]);
+  });
+
+  it("treats a single-row signature-style table break-only cell as a break before the table", async () => {
+    const model = await buildModelFromDocumentXml(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:r><w:t>Intro</w:t></w:r></w:p>
+    <w:tbl>
+      <w:tr>
+        <w:tc>
+          <w:p><w:r><w:br w:type="page"/></w:r></w:p>
+          <w:p/>
+        </w:tc>
+        <w:tc>
+          <w:p/>
+        </w:tc>
+        <w:tc>
+          <w:p/>
+        </w:tc>
+        <w:tc>
+          <w:p><w:r><w:t>Very truly yours,</w:t></w:r></w:p>
+        </w:tc>
+      </w:tr>
+    </w:tbl>
+    <w:p><w:r><w:t>After table</w:t></w:r></w:p>
+  </w:body>
+</w:document>`);
+
+    const table = model.nodes[1];
+    expect(table?.type).toBe("table");
+    if (!table || table.type !== "table") {
+      return;
+    }
+
+    expect(collectTableExplicitPageBreakInfo(table)).toEqual({
+      startRowIndexes: [0],
+      breakAfterTable: false
+    });
+    expect([...collectTopLevelExplicitPageBreakStartNodeIndexes(model.nodes)]).toEqual([1]);
+  });
 });
