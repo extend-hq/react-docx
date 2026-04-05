@@ -1551,6 +1551,14 @@ function resolveHeaderFooterAbsoluteFloatingTopPx(
   return undefined;
 }
 
+function shouldReserveHeaderFooterFloatingImageSpace(image: ImageRunNode): boolean {
+  return (
+    shouldRenderAbsoluteFloatingImage(image) &&
+    Boolean(image.floating) &&
+    image.floating?.behindDocument !== true
+  );
+}
+
 function resolveFooterParagraphFloatingBoundaryTopPx(
   paragraph: ParagraphNode,
   layout: Pick<DocumentLayoutMetrics, "marginsPx">
@@ -1562,7 +1570,11 @@ function resolveFooterParagraphFloatingBoundaryTopPx(
   let boundaryTopPx: number | undefined;
 
   paragraph.children.forEach((child) => {
-    if (child.type !== "image" || !child.floating) {
+    if (
+      child.type !== "image" ||
+      !child.floating ||
+      !shouldReserveHeaderFooterFloatingImageSpace(child)
+    ) {
       return;
     }
 
@@ -1632,7 +1644,11 @@ function estimateHeaderFooterParagraphFloatingReservePx(
   }
 
   return paragraph.children.reduce((largest, child) => {
-    if (child.type !== "image" || !shouldRenderAbsoluteFloatingImage(child) || !child.floating) {
+    if (
+      child.type !== "image" ||
+      !child.floating ||
+      !shouldReserveHeaderFooterFloatingImageSpace(child)
+    ) {
       return largest;
     }
 
@@ -3406,6 +3422,20 @@ function paragraphIsAbsoluteFloatingImageAnchorOnly(paragraph: ParagraphNode): b
   return hasAbsoluteFloatingImage;
 }
 
+function paragraphIsBehindTextAbsoluteFloatingImageAnchorOnly(
+  paragraph: ParagraphNode
+): boolean {
+  if (!paragraphIsAbsoluteFloatingImageAnchorOnly(paragraph)) {
+    return false;
+  }
+
+  return paragraph.children.every(
+    (child) =>
+      child.type === "text" ||
+      (child.type === "image" && child.floating?.behindDocument === true)
+  );
+}
+
 function paragraphNeedsPageWidthAnchorHost(
   paragraph: ParagraphNode
 ): boolean {
@@ -3599,6 +3629,111 @@ function paragraphHasVisibleText(paragraph: ParagraphNode): boolean {
       (child.type === "text" && child.text.trim().length > 0) ||
       (child.type === "form-field" && formFieldDisplayValue(child).trim().length > 0)
   );
+}
+
+function paragraphHasOnlyWhitespaceText(paragraph: ParagraphNode): boolean {
+  if (paragraphHasImage(paragraph) || paragraphHasFormField(paragraph)) {
+    return false;
+  }
+
+  return paragraph.children.every((child) => {
+    if (child.type !== "text") {
+      return false;
+    }
+
+    return child.text.replace(/[\s\u00a0]+/g, "").length === 0;
+  });
+}
+
+function likelyFullPageCoverImageRelativeToContentBox(
+  image: ImageRunNode,
+  pageContentWidthPx: number,
+  pageContentHeightPx: number
+): boolean {
+  if (!shouldRenderAbsoluteFloatingImage(image) || !image.floating) {
+    return false;
+  }
+
+  const floating = image.floating;
+  if (floating.behindDocument !== true || (floating.wrapType ?? "none") !== "none") {
+    return false;
+  }
+
+  const widthPx = Math.max(0, Math.round(image.widthPx ?? 0));
+  const heightPx = Math.max(0, Math.round(image.heightPx ?? 0));
+  const safeContentWidthPx = Math.max(1, Math.round(pageContentWidthPx));
+  const safeContentHeightPx = Math.max(1, Math.round(pageContentHeightPx));
+  const widthLooksCoverSized = widthPx >= safeContentWidthPx * 0.8;
+  const heightLooksCoverSized = heightPx >= safeContentHeightPx * 0.7;
+  const verticalRelativeTo = floating.verticalRelativeTo?.trim().toLowerCase();
+
+  return (
+    widthLooksCoverSized &&
+    heightLooksCoverSized &&
+    (verticalRelativeTo === undefined ||
+      verticalRelativeTo === "" ||
+      verticalRelativeTo === "paragraph" ||
+      verticalRelativeTo === "line")
+  );
+}
+
+function paragraphIsLikelyFullPageCoverArtAnchor(
+  paragraph: ParagraphNode,
+  pageContentWidthPx: number,
+  pageContentHeightPx: number
+): boolean {
+  return (
+    paragraphIsAbsoluteFloatingImageAnchorOnly(paragraph) &&
+    paragraph.children.some(
+      (child) =>
+        child.type === "image" &&
+        likelyFullPageCoverImageRelativeToContentBox(
+          child,
+          pageContentWidthPx,
+          pageContentHeightPx
+        )
+    )
+  );
+}
+
+function paragraphActsAsLeadingCoverLayoutSpacer(
+  model: DocModel,
+  nodeIndex: number,
+  paragraph: ParagraphNode,
+  pageContentWidthPx: number,
+  pageContentHeightPx: number
+): boolean {
+  if (nodeIndex <= 0 || !paragraphHasOnlyWhitespaceText(paragraph) || paragraphHasExplicitPageBreak(paragraph)) {
+    return false;
+  }
+
+  if (paragraph.style?.numbering) {
+    return false;
+  }
+
+  let sawLikelyCoverArtAnchor = false;
+  for (let probeIndex = 0; probeIndex < nodeIndex; probeIndex += 1) {
+    const probeNode = model.nodes[probeIndex];
+    if (!probeNode || probeNode.type !== "paragraph") {
+      continue;
+    }
+
+    if (paragraphHasVisibleText(probeNode)) {
+      return false;
+    }
+
+    if (
+      paragraphIsLikelyFullPageCoverArtAnchor(
+        probeNode,
+        pageContentWidthPx,
+        pageContentHeightPx
+      )
+    ) {
+      sawLikelyCoverArtAnchor = true;
+    }
+  }
+
+  return sawLikelyCoverArtAnchor;
 }
 
 function paragraphLooksLikeCheckboxChoiceRow(paragraph: ParagraphNode): boolean {
@@ -4265,15 +4400,41 @@ export function resolveParagraphDualWrappedTextLayout(
   const anchorAdjustedGeometries = geometries.map((geometry) => {
     const wrapType = geometry.image.floating?.wrapType?.trim().toLowerCase();
     const verticalRelativeTo = geometry.image.floating?.verticalRelativeTo?.trim().toLowerCase();
+    const anchorOffset = paragraphChildAnchorOffset(paragraph, geometry.imageIndex);
+    if (
+      wrapType === "topandbottom" &&
+      anchorOffset <= 0 &&
+      syntheticTextBoxActsAsTopAndBottomMasthead(geometry.image) &&
+      (verticalRelativeTo === undefined ||
+        verticalRelativeTo === "" ||
+        verticalRelativeTo === "paragraph" ||
+        verticalRelativeTo === "line")
+    ) {
+      const clampedTopPx = 0;
+      if (geometry.imageTopPx <= clampedTopPx) {
+        return geometry;
+      }
+
+      const deltaTopPx = clampedTopPx - geometry.imageTopPx;
+      return {
+        ...geometry,
+        imageTopPx: geometry.imageTopPx + deltaTopPx,
+        exclusion: {
+          ...geometry.exclusion,
+          top: geometry.exclusion.top + deltaTopPx,
+          bottom: geometry.exclusion.bottom + deltaTopPx
+        }
+      };
+    }
+
     if (
       !unexcludedLayout ||
-      wrapType === "topAndBottom" ||
+      wrapType === "topandbottom" ||
       (verticalRelativeTo !== "margin" && verticalRelativeTo !== "page")
     ) {
       return geometry;
     }
 
-    const anchorOffset = paragraphChildAnchorOffset(paragraph, geometry.imageIndex);
     if (anchorOffset <= 0) {
       return geometry;
     }
@@ -6009,7 +6170,7 @@ function resolveParagraphDocGridLinePitchPx(
   return Math.max(1, Math.round(docGridLinePitchPx as number));
 }
 
-function estimateParagraphLineHeightPx(
+export function estimateParagraphLineHeightPx(
   paragraph: ParagraphNode,
   docGridLinePitchPx?: number,
   disableDocGridSnap = false
@@ -6053,7 +6214,15 @@ function estimateParagraphLineHeightPx(
     baseFontFamily
   );
   const autoLineHeightPx = Math.max(1, Math.round(baseFontPx * multiple));
-  return Math.max(autoLineHeightPx, docGridMinimumLineHeightPx ?? 0);
+  const minimumReadableAutoLineHeightPx =
+    paragraph.style?.numbering
+      ? Math.ceil(baseFontPx)
+      : 0;
+  return Math.max(
+    autoLineHeightPx,
+    minimumReadableAutoLineHeightPx,
+    docGridMinimumLineHeightPx ?? 0
+  );
 }
 
 function estimateParagraphHeightPx(
@@ -6581,6 +6750,19 @@ function collectDocxEstimatedOverflowBreakStartNodeIndexes(
     }
     if (
       node.type === "paragraph" &&
+      paragraphActsAsLeadingCoverLayoutSpacer(
+        model,
+        nodeIndex,
+        node,
+        nodeMetrics.pageContentWidthPx,
+        nodeMetrics.pageContentHeightPx
+      )
+    ) {
+      previousParagraphAfterPx = 0;
+      continue;
+    }
+    if (
+      node.type === "paragraph" &&
       paragraphCollapsesIntoPreviousParagraph(node, model.nodes[nodeIndex - 1])
     ) {
       continue;
@@ -7066,6 +7248,19 @@ export function buildDocumentPageNodeSegments(
     if (
       node.type === "paragraph" &&
       paragraphIsStructuralSectionBreakSpacer(node)
+    ) {
+      previousParagraphAfterPx = 0;
+      continue;
+    }
+    if (
+      node.type === "paragraph" &&
+      paragraphActsAsLeadingCoverLayoutSpacer(
+        model,
+        nodeIndex,
+        node,
+        nodeMetrics.pageContentWidthPx,
+        nodeMetrics.pageContentHeightPx
+      )
     ) {
       previousParagraphAfterPx = 0;
       continue;
@@ -8174,9 +8369,29 @@ function paragraphNeedsPageAnchoredAbsolutePositioningContext(paragraph: Paragra
   );
 }
 
+function paragraphNeedsLocalAbsolutePositioningContext(paragraph: ParagraphNode): boolean {
+  return paragraph.children.some(
+    (child) =>
+      child.type === "image" &&
+      shouldRenderAbsoluteFloatingImage(child) &&
+      !isPageOrMarginAnchoredAbsoluteFloatingImage(child)
+  );
+}
+
 function paragraphHasPageAnchoredAbsoluteFloatingImage(paragraph: ParagraphNode): boolean {
   return paragraph.children.some(
     (child) => child.type === "image" && isPageOrMarginAnchoredAbsoluteFloatingImage(child)
+  );
+}
+
+function paragraphHasPageAnchoredForegroundAbsoluteFloatingImage(
+  paragraph: ParagraphNode
+): boolean {
+  return paragraph.children.some(
+    (child) =>
+      child.type === "image" &&
+      isPageOrMarginAnchoredAbsoluteFloatingImage(child) &&
+      child.floating?.behindDocument !== true
   );
 }
 
@@ -8649,6 +8864,8 @@ function paragraphBlockStyle(
   const suppressTocNumberingTextIndent =
     isTableOfContentsParagraph(paragraph) && paragraphHasNumbering(paragraph);
   const suppressIndentForFloatingAnchorOnlyParagraph = paragraphIsFloatingImageAnchorOnly(paragraph);
+  const suppressStackingContextForBehindTextAnchorOnlyParagraph =
+    paragraphIsBehindTextAbsoluteFloatingImageAnchorOnly(paragraph);
   const headingLevel = paragraph.style?.headingLevel;
   const applyWordLikeHeadingFallback = !paragraph.sourceXml;
   const hasSoftLineBreak = paragraphText(paragraph).includes("\n");
@@ -8660,7 +8877,7 @@ function paragraphBlockStyle(
 
   return {
     position: "relative",
-    zIndex: 1,
+    zIndex: suppressStackingContextForBehindTextAnchorOnlyParagraph ? undefined : 1,
     textAlign: paragraph.style?.align ?? "left",
     ...(paragraph.style?.align === "justify" && hasSoftLineBreak
       ? ({ textAlignLast: "justify" } as React.CSSProperties)
@@ -9835,6 +10052,14 @@ function syntheticTextBoxContainsPictureLayer(image: ImageRunNode): boolean {
   return /<pic:pic\b|<a:blip\b/i.test(image.sourceXml);
 }
 
+function syntheticTextBoxActsAsTopAndBottomMasthead(image: ImageRunNode): boolean {
+  if (!image.syntheticTextBox || !image.sourceXml) {
+    return false;
+  }
+
+  return /<wpg:wgp\b/i.test(image.sourceXml) && /<wps:wsp\b/i.test(image.sourceXml);
+}
+
 function summarizeChangeFeatures(prefix: string, features: string[], fallback: string): string {
   if (features.length === 0) {
     return fallback;
@@ -10537,6 +10762,7 @@ interface ParagraphRunRenderOptions {
   tocLinkColorByLevel?: Partial<Record<number, string | undefined>>;
   trackedMarkupMode?: "inline" | "gutter";
   withinHeaderFooter?: boolean;
+  headerFooterRegion?: "header" | "footer";
   pageNumberFormat?: string;
   resolveStyleRefFieldValue?: (target: string) => string | undefined;
   floatingAnchorOriginCorrectionXPx?: number;
@@ -10917,14 +11143,21 @@ function renderParagraphRuns(
         sectionImageInteraction?.floatingMovePreview?.imageKey === sectionImageKey
           ? sectionImageInteraction.floatingMovePreview
           : undefined;
+      const forceAbsoluteFixedPositionSectionFloat =
+        options?.withinHeaderFooter === true &&
+        isPageOrMarginAnchoredWrappedFloatingImage(child);
       const forceWrappedTopAnchoredSectionFloat =
         options?.withinHeaderFooter === true &&
         Boolean(child.floating?.wrapType && child.floating.wrapType !== "none") &&
         shouldRenderTopAnchoredMarginFloatAsAbsolute(child);
-      const isWrappedFloatingImage = forceWrappedTopAnchoredSectionFloat
+      const isWrappedFloatingImage =
+        !forceAbsoluteFixedPositionSectionFloat &&
+        (forceWrappedTopAnchoredSectionFloat
         ? true
-        : shouldRenderWrappedFloatingImage(child);
-      const isAbsoluteFloatingImage = forceWrappedTopAnchoredSectionFloat
+        : shouldRenderWrappedFloatingImage(child));
+      const isAbsoluteFloatingImage = forceAbsoluteFixedPositionSectionFloat
+        ? true
+        : forceWrappedTopAnchoredSectionFloat
         ? false
         : shouldRenderAbsoluteFloatingImage(child);
       const horizontalRelativeTo = child.floating?.horizontalRelativeTo?.toLowerCase();
@@ -10940,6 +11173,13 @@ function renderParagraphRuns(
       const horizontalAnchorCorrectionPx = usesExternalHorizontalAnchorOrigin(child)
         ? floatingAnchorOriginCorrectionXPx
         : 0;
+      const absoluteColumnOriginLeftPx =
+        options?.withinHeaderFooter === true &&
+        options?.headerFooterRegion === "header" &&
+        child.floating?.behindDocument === true &&
+        horizontalRelativeTo === "column"
+          ? floatingPageOriginPx?.left
+          : floatingPageOriginPx?.columnLeft;
       const floatingStyle: React.CSSProperties = isWrappedFloatingImage
         ? wrappedFloatingImageStyle(child, {
             containerWidthPx: floatingPageOriginPx?.pageWidth,
@@ -10951,7 +11191,7 @@ function renderParagraphRuns(
           ? absoluteFloatingImageStyle(child, {
               pageOriginLeft: floatingPageOriginPx?.left,
               pageOriginTop: floatingPageOriginPx?.top,
-              columnOriginLeft: floatingPageOriginPx?.columnLeft,
+              columnOriginLeft: absoluteColumnOriginLeftPx,
               columnOriginTop: floatingPageOriginPx?.columnTop,
               deltaX: (movePreview?.deltaX ?? 0) + horizontalAnchorCorrectionPx,
               deltaY: movePreview?.deltaY ?? 0
@@ -19956,6 +20196,10 @@ function renderHeaderNode(
       ...(runRenderOptions ?? {}),
       ...(paragraphRunOptionOverrides ?? {}),
       withinHeaderFooter: true,
+      headerFooterRegion:
+        paragraphRunOptionOverrides?.headerFooterRegion ??
+        editScope?.region ??
+        runRenderOptions?.headerFooterRegion,
       sectionImageInteraction:
         location && imageInteraction
           ? {
@@ -20183,12 +20427,17 @@ function renderHeaderNode(
 
   if (node.type === "paragraph") {
     const requiresPageAbsoluteContext = paragraphNeedsPageAnchoredAbsolutePositioningContext(node);
+    const requiresLocalAbsoluteContext = paragraphNeedsLocalAbsolutePositioningContext(node);
     return renderHeaderParagraph(
       node,
       keyPrefix,
       {
         ...paragraphBlockStyle(node, numberingDefinitions, headingStyles),
-        ...(requiresPageAbsoluteContext ? { position: "static" } : undefined)
+        ...(requiresPageAbsoluteContext
+          ? { position: "static" }
+          : requiresLocalAbsoluteContext
+            ? { position: "relative" }
+            : undefined)
       },
       editScope && Number.isFinite(sectionNodeIndex)
         ? {
@@ -21627,6 +21876,15 @@ export function DocxEditorViewer({
     const hasLastRenderedPageBreakHints = editor.model.nodes.some(
       (node) => node.type === "paragraph" && paragraphHasLastRenderedPageBreak(node)
     );
+    const renderedBreakHintPageCount = hasLastRenderedPageBreakHints
+      ? 1 +
+        editor.model.nodes.reduce(
+          (count, node) =>
+            count +
+            (node.type === "paragraph" && paragraphHasLastRenderedPageBreak(node) ? 1 : 0),
+          0
+        )
+      : undefined;
     const minimumPageCount = Math.max(1, hardBreakCount + 1);
     const targetPageCount = Number.isFinite(storedDocumentPageCount) && (storedDocumentPageCount as number) > 0
       ? Math.max(minimumPageCount, Math.round(storedDocumentPageCount as number))
@@ -21681,7 +21939,8 @@ export function DocxEditorViewer({
       (section.footerSections ?? []).some((footerSection) =>
         (footerSection.nodes ?? []).some(
           (node) =>
-            node.type === "paragraph" && paragraphHasPageAnchoredAbsoluteFloatingImage(node)
+            node.type === "paragraph" &&
+            paragraphHasPageAnchoredForegroundAbsoluteFloatingImage(node)
         )
       )
     );
@@ -21704,7 +21963,8 @@ export function DocxEditorViewer({
       shouldAllowStoredPageCountReduction({
         estimatedPageCount: estimatedPages.length,
         targetPageCount: resolvedTargetPageCount,
-        hasLastRenderedPageBreakHints
+        hasLastRenderedPageBreakHints,
+        renderedBreakHintPageCount
       }) &&
       (
         !measuredPageHeightOverridesReduceContent ||
@@ -29467,10 +29727,11 @@ export function DocxEditorViewer({
         onPointerDown={(event) => {
           const target = event.target;
           if (
-            target instanceof Element &&
-            target.closest(
-              "[data-docx-image-location],[data-docx-drop-cap='true'],[data-docx-table-move-handle='true'],[data-image-resize-handle='true']"
-            )
+            eventTargetIsInteractiveControl(target) ||
+            (target instanceof Element &&
+              target.closest(
+                "[data-docx-image-location],[data-docx-drop-cap='true'],[data-docx-table-move-handle='true'],[data-image-resize-handle='true'],[data-docx-form-field='true']"
+              ))
           ) {
             return;
           }
@@ -32067,6 +32328,7 @@ export function DocxEditorViewer({
         (!hasPartialLineRange || paragraphSegmentIsActiveEditable) &&
         !isManualPageBreakParagraph;
       const requiresPageAbsoluteContext = paragraphNeedsPageAnchoredAbsolutePositioningContext(node);
+      const requiresLocalAbsoluteContext = paragraphNeedsLocalAbsolutePositioningContext(node);
       const resolvedPageLayout = options?.pageLayout ?? documentLayout;
       const paragraphPageFlowTopPx = Math.max(0, Math.round(options?.pageFlowTopPx ?? 0));
       const hasDualWrappedFloatingImage = Boolean(
@@ -32139,6 +32401,8 @@ export function DocxEditorViewer({
             }
           : requiresPageAbsoluteContext
           ? { position: "static" }
+          : requiresLocalAbsoluteContext
+            ? { position: "relative" }
           : hasDualWrappedFloatingImage
             ? { position: "relative" }
             : undefined),
@@ -35699,7 +35963,10 @@ export function DocxEditorViewer({
                     },
                     pageNumber,
                     totalPagesForFieldResolution,
-                    pageHeaderFooterRunRenderOptions,
+                    {
+                      ...pageHeaderFooterRunRenderOptions,
+                      headerFooterRegion: "header"
+                    },
                     headerEditScope,
                     headerImageInteraction,
                     undefined,
@@ -36024,7 +36291,10 @@ export function DocxEditorViewer({
                     },
                     pageNumber,
                     totalPagesForFieldResolution,
-                    pageHeaderFooterRunRenderOptions,
+                    {
+                      ...pageHeaderFooterRunRenderOptions,
+                      headerFooterRegion: "footer"
+                    },
                     footerEditScope,
                     footerImageInteraction,
                     undefined,

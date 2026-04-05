@@ -681,6 +681,54 @@ describe("dual wrapped image layout", () => {
     expect(wrappedPretextParagraphBlockHeightPx(layout.layout)).toBe(22);
   });
 
+  it("keeps grouped top-and-bottom mastheads from letting body text rise above them", async () => {
+    const { resolveParagraphDualWrappedTextLayout } = await import(
+      "../../packages/react-viewer/src/editor"
+    );
+
+    const paragraph: ParagraphNode = {
+      type: "paragraph",
+      children: [
+        {
+          type: "image",
+          widthPx: 518,
+          heightPx: 89,
+          floating: {
+            xPx: 6,
+            yPx: 30,
+            horizontalRelativeTo: "column",
+            verticalRelativeTo: "paragraph",
+            distLPx: 12,
+            distRPx: 12,
+            distTPx: 0,
+            distBPx: 0,
+            wrapType: "topAndBottom",
+            behindDocument: false
+          },
+          syntheticTextBox: true,
+          sourceXml:
+            "<w:drawing><wp:anchor><wp:wrapTopAndBottom/><a:graphic><a:graphicData><wpg:wgp><pic:pic/><wps:wsp/></wpg:wgp></a:graphicData></a:graphic></wp:anchor></w:drawing>"
+        },
+        {
+          type: "text",
+          text: "Nursing Facility Bulletin 191"
+        }
+      ]
+    };
+
+    const layout = resolveParagraphDualWrappedTextLayout(paragraph, 640, 22);
+
+    expect(layout).toBeDefined();
+    if (!layout) {
+      return;
+    }
+
+    expect(layout.geometries[0]?.imageTopPx).toBe(0);
+    expect(layout.layout.lines[0]?.y ?? 0).toBeGreaterThanOrEqual(
+      layout.geometries[0]?.exclusion.bottom ?? 0
+    );
+  });
+
   it("preserves right alignment for single-slot wrapped lines", async () => {
     const { resolveParagraphDualWrappedTextLayout } = await import(
       "../../packages/react-viewer/src/editor"

@@ -36,7 +36,11 @@ function borderedFooterParagraph(text: string) {
   };
 }
 
-function floatingFooterImageParagraph(yPx: number, heightPx = 24) {
+function floatingFooterImageParagraph(
+  yPx: number,
+  heightPx = 24,
+  behindDocument = true
+) {
   return {
     type: "paragraph" as const,
     style: undefined,
@@ -52,7 +56,7 @@ function floatingFooterImageParagraph(yPx: number, heightPx = 24) {
           horizontalRelativeTo: "page" as const,
           verticalRelativeTo: "page" as const,
           wrapType: "none" as const,
-          behindDocument: true,
+          behindDocument,
         },
       },
     ],
@@ -215,7 +219,7 @@ describe("footer pagination reserve", () => {
       {
         type: "default",
         partName: "footer1.xml",
-        nodes: [floatingFooterImageParagraph(900)],
+        nodes: [floatingFooterImageParagraph(900, 24, false)],
       },
     ];
 
@@ -231,6 +235,29 @@ describe("footer pagination reserve", () => {
         footerDistancePx: 48,
       })
     ).toBe(120);
+  });
+
+  it("does not reserve body height for behind-text decorative footer overlays", () => {
+    const footerSections: FooterSection[] = [
+      {
+        type: "default",
+        partName: "footer1.xml",
+        nodes: [floatingFooterImageParagraph(900, 24, true)],
+      },
+    ];
+
+    expect(
+      resolveFooterPaginationReservePx(footerSections, {
+        pageWidthPx: 794,
+        pageHeightPx: 1100,
+        marginsPx: {
+          left: 45,
+          right: 45,
+          bottom: 96,
+        },
+        footerDistancePx: 48,
+      })
+    ).toBe(0);
   });
 
   it("caps the measured page content budget at the visible footer boundary", () => {

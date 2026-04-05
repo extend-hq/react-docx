@@ -232,9 +232,18 @@ describe("grouped picture textbox render", () => {
     const pkg = await parseDocx(zip);
     const model = buildDocModel(pkg);
     const html = renderToStaticMarkup(React.createElement(ImportedViewer, { model }));
+    const imageNode = (model.nodes[0] as any)?.children?.[0];
+    const svgDataUri = imageNode?.src as string | undefined;
+    const svgMarkup =
+      typeof svgDataUri === "string" && svgDataUri.startsWith("data:image/svg+xml")
+        ? decodeURIComponent(svgDataUri.slice(svgDataUri.indexOf(",") + 1))
+        : "";
 
     expect(html).toContain("data:image/svg+xml;charset=utf-8,");
     expect(html).toContain("76A88B");
     expect(html).not.toContain("Missing image");
+    expect(svgMarkup).toContain("fill=\"#76A88B\"");
+    expect(svgMarkup).toContain("C");
+    expect(svgMarkup).not.toContain("M4 0 Z");
   });
 });

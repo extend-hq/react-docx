@@ -76,9 +76,21 @@ describe("page-count-reconciliation", () => {
       shouldAllowStoredPageCountReduction({
         estimatedPageCount: 4,
         targetPageCount: 3,
-        hasLastRenderedPageBreakHints: true
+        hasLastRenderedPageBreakHints: true,
+        renderedBreakHintPageCount: 4
       })
     ).toBe(false);
+  });
+
+  it("still allows reduction when the stored page count matches the rendered break hints", () => {
+    expect(
+      shouldAllowStoredPageCountReduction({
+        estimatedPageCount: 3,
+        targetPageCount: 2,
+        hasLastRenderedPageBreakHints: true,
+        renderedBreakHintPageCount: 2
+      })
+    ).toBe(true);
   });
 
   it("still allows reduction when no last-rendered break hints are present", () => {

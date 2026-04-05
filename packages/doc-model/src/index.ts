@@ -1089,30 +1089,66 @@ function drawingShapePathData(pathXml: string, widthPx: number, heightPx: number
   const baseWidth = Math.max(1, parseIntegerAttribute(pathTag, "w") ?? 21600);
   const baseHeight = Math.max(1, parseIntegerAttribute(pathTag, "h") ?? 21600);
   const commandMatches = [
-    ...pathXml.matchAll(/<(a:moveTo|a:lnTo)\b[\s\S]*?<a:pt\b[^>]*x="([^"]+)"[^>]*y="([^"]+)"[^>]*\/>[\s\S]*?<\/\1>/gi)
+    ...pathXml.matchAll(/<(a:moveTo|a:lnTo|a:cubicBezTo|a:close)\b[\s\S]*?(?:<\/\1>|\/>)/gi)
   ];
   if (commandMatches.length === 0) {
     return undefined;
   }
 
+  const scalePoint = (xRaw: string, yRaw: string): string | undefined => {
+    const x = Number(xRaw);
+    const y = Number(yRaw);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+      return undefined;
+    }
+
+    const scaledX = Number(((x / baseWidth) * widthPx).toFixed(2));
+    const scaledY = Number(((y / baseHeight) * heightPx).toFixed(2));
+    return `${scaledX} ${scaledY}`;
+  };
+
   const commands = commandMatches
     .map((match) => {
-      const x = Number(match[2]);
-      const y = Number(match[3]);
-      if (!Number.isFinite(x) || !Number.isFinite(y)) {
-        return undefined;
+      const commandType = match[1].toLowerCase();
+      const commandXml = match[0];
+      if (commandType.includes("close")) {
+        return "Z";
       }
 
-      const scaledX = Number(((x / baseWidth) * widthPx).toFixed(2));
-      const scaledY = Number(((y / baseHeight) * heightPx).toFixed(2));
-      return `${match[1].toLowerCase().includes("moveto") ? "M" : "L"}${scaledX} ${scaledY}`;
+      const pointMatches = [...commandXml.matchAll(/<a:pt\b[^>]*x="([^"]+)"[^>]*y="([^"]+)"[^>]*\/>/gi)];
+      if (commandType.includes("moveto") || commandType.includes("lnto")) {
+        const point = pointMatches[0];
+        if (!point) {
+          return undefined;
+        }
+        const scaledPoint = scalePoint(point[1], point[2]);
+        if (!scaledPoint) {
+          return undefined;
+        }
+        return `${commandType.includes("moveto") ? "M" : "L"}${scaledPoint}`;
+      }
+
+      if (commandType.includes("cubicbezto")) {
+        if (pointMatches.length < 3) {
+          return undefined;
+        }
+        const scaledPoints = pointMatches
+          .slice(0, 3)
+          .map((point) => scalePoint(point[1], point[2]));
+        if (scaledPoints.some((point) => !point)) {
+          return undefined;
+        }
+        return `C${scaledPoints.join(" ")}`;
+      }
+
+      return undefined;
     })
     .filter((command): command is string => Boolean(command));
   if (commands.length === 0) {
     return undefined;
   }
 
-  return pathXml.includes("<a:close") ? `${commands.join(" ")} Z` : commands.join(" ");
+  return commands.join(" ");
 }
 
 function flowChartDelayPathData(widthPx: number, heightPx: number): string {
@@ -4268,12 +4304,16 @@ function parseRunImage(runXml: string, context: ParseContext): ImageRunNode | un
 
   let src: string | undefined;
   let resolvedContentType = contentType;
+  let resolvedCssOpacity = cssOpacity;
   if (binary) {
     const mimeType = contentTypeForPart(partName ?? "", context.contentTypes) ?? contentType ?? "application/octet-stream";
     if (isWindowsMetafileContentType(mimeType, partName)) {
       src = rasterizeWindowsMetafileToPngDataUri(binary, partName);
       if (src) {
         resolvedContentType = "image/png";
+        // OOXML alpha modifiers on legacy metafiles do not map cleanly after rasterization.
+        // Keeping the CSS opacity as well makes these imports appear doubly faded.
+        resolvedCssOpacity = undefined;
       }
     }
 
@@ -4295,7 +4335,7 @@ function parseRunImage(runXml: string, context: ParseContext): ImageRunNode | un
     sourceXml: activeRunXml,
     crop,
     cssFilter,
-    cssOpacity,
+    cssOpacity: resolvedCssOpacity,
     floating
   };
 }
