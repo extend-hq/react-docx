@@ -519,6 +519,237 @@ function distributeTextAcrossParagraphChildren(
   ];
 }
 
+export function splitParagraphChildrenAtTextOffsets(
+  paragraph: ParagraphNode,
+  text: string,
+  startOffset: number,
+  endOffset: number,
+  options?: {
+    beforeInsertedStyle?: TextStyle;
+    afterInsertedStyle?: TextStyle;
+  }
+): {
+  beforeChildren: ParagraphNode["children"];
+  afterChildren: ParagraphNode["children"];
+} {
+  const normalizedText = text ?? "";
+  const safeStart = Math.max(0, Math.min(Math.round(startOffset), normalizedText.length));
+  const safeEnd = Math.max(safeStart, Math.min(Math.round(endOffset), normalizedText.length));
+  const hasNonTextRuns = paragraph.children.some((child) => child.type !== "text");
+
+  if (!hasNonTextRuns) {
+    return {
+      beforeChildren: distributeTextAcrossRuns(
+        normalizedText.slice(0, safeStart),
+        textRuns(paragraph),
+        { insertedStyle: options?.beforeInsertedStyle }
+      ),
+      afterChildren: distributeTextAcrossRuns(
+        normalizedText.slice(safeEnd),
+        textRuns(paragraph),
+        { insertedStyle: options?.afterInsertedStyle }
+      )
+    };
+  }
+
+  const textGroups: TextRunNode[][] = [];
+  const anchors: Array<Exclude<ParagraphNode["children"][number], TextRunNode>> = [];
+  let currentGroup: TextRunNode[] = [];
+
+  for (const child of paragraph.children) {
+    if (child.type === "text") {
+      currentGroup.push(cloneTextRun(child));
+      continue;
+    }
+
+    textGroups.push(currentGroup);
+    currentGroup = [];
+    anchors.push(
+      child.type === "form-field"
+        ? cloneFormFieldRun(child)
+        : cloneImageRun(child)
+    );
+  }
+  textGroups.push(currentGroup);
+
+  let segments: string[] | undefined;
+  let anchorOffsets: number[] | undefined;
+
+  const allAnchorsAreImages = anchors.length > 0 && anchors.every((anchor) => anchor.type === "image");
+  if (allAnchorsAreImages) {
+    const originalSegmentTexts = textGroups.map((group) => group.map((run) => run.text).join(""));
+    const originalText = originalSegmentTexts.join("");
+    const originalAnchorOffsets: number[] = [];
+    let originalOffsetCursor = 0;
+    for (let index = 0; index < anchors.length; index += 1) {
+      originalOffsetCursor += originalSegmentTexts[index]?.length ?? 0;
+      originalAnchorOffsets.push(originalOffsetCursor);
+    }
+
+    const prefixLength = commonPrefixLength(originalText, normalizedText);
+    const suffixLength = commonSuffixLength(originalText, normalizedText, prefixLength);
+    const replacedOriginalStart = prefixLength;
+    const replacedOriginalEnd = Math.max(replacedOriginalStart, originalText.length - suffixLength);
+    const replacedNextEnd = Math.max(replacedOriginalStart, normalizedText.length - suffixLength);
+    const delta = replacedNextEnd - replacedOriginalEnd;
+    const remappedAnchorOffsets = originalAnchorOffsets.map((anchorOffset) => {
+      if (anchorOffset < replacedOriginalStart) {
+        return anchorOffset;
+      }
+      if (anchorOffset >= replacedOriginalEnd) {
+        return anchorOffset + delta;
+      }
+      return replacedOriginalStart;
+    });
+
+    const nextSegments: string[] = [];
+    let cursor = 0;
+    remappedAnchorOffsets.forEach((anchorOffset) => {
+      const safeAnchorOffset = Math.max(cursor, Math.min(anchorOffset, normalizedText.length));
+      nextSegments.push(normalizedText.slice(cursor, safeAnchorOffset));
+      cursor = safeAnchorOffset;
+    });
+    nextSegments.push(normalizedText.slice(cursor));
+    segments = nextSegments;
+    anchorOffsets = remappedAnchorOffsets;
+  } else {
+    const nextSegments: string[] = [];
+    const nextAnchorOffsets: number[] = [];
+    let cursor = 0;
+
+    for (let index = 0; index < anchors.length; index += 1) {
+      const anchor = anchors[index];
+      const anchorText = anchor.type === "form-field" ? formFieldDisplayValue(anchor) : "";
+      if (!anchorText) {
+        segments = undefined;
+        anchorOffsets = undefined;
+        break;
+      }
+
+      const anchorIndex = normalizedText.indexOf(anchorText, cursor);
+      if (anchorIndex < 0) {
+        nextSegments.push(normalizedText.slice(cursor));
+        cursor = normalizedText.length;
+        break;
+      }
+
+      nextSegments.push(normalizedText.slice(cursor, anchorIndex));
+      cursor = anchorIndex + anchorText.length;
+      nextAnchorOffsets.push(anchorIndex);
+    }
+
+    if (nextSegments.length > 0 || anchors.length === 0) {
+      nextSegments.push(normalizedText.slice(cursor));
+      while (nextSegments.length < textGroups.length) {
+        nextSegments.push("");
+      }
+      segments = nextSegments;
+      anchorOffsets = nextAnchorOffsets;
+    }
+  }
+
+  if (!segments || !anchorOffsets) {
+    return {
+      beforeChildren: distributeTextAcrossRuns(
+        normalizedText.slice(0, safeStart),
+        textRuns(paragraph),
+        { insertedStyle: options?.beforeInsertedStyle }
+      ),
+      afterChildren: distributeTextAcrossRuns(
+        normalizedText.slice(safeEnd),
+        textRuns(paragraph),
+        { insertedStyle: options?.afterInsertedStyle }
+      )
+    };
+  }
+
+  const beforeChildren: ParagraphNode["children"] = [];
+  const afterChildren: ParagraphNode["children"] = [];
+  let cursor = 0;
+
+  for (let index = 0; index < textGroups.length; index += 1) {
+    const templateRuns = textGroups[index];
+    const segmentText = segments[index] ?? "";
+    const segmentStart = cursor;
+    const segmentEnd = segmentStart + segmentText.length;
+    cursor = segmentEnd;
+
+    const beforePart =
+      safeStart <= segmentStart
+        ? ""
+        : segmentText.slice(0, Math.max(0, Math.min(segmentText.length, safeStart - segmentStart)));
+    const afterPart =
+      safeEnd >= segmentEnd
+        ? ""
+        : segmentText.slice(Math.max(0, Math.min(segmentText.length, safeEnd - segmentStart)));
+
+    if (templateRuns.length > 0) {
+      if (beforePart.length > 0) {
+        beforeChildren.push(
+          ...distributeTextAcrossRuns(beforePart, templateRuns, {
+            insertedStyle: options?.beforeInsertedStyle
+          })
+        );
+      }
+      if (afterPart.length > 0) {
+        afterChildren.push(
+          ...distributeTextAcrossRuns(afterPart, templateRuns, {
+            insertedStyle: options?.afterInsertedStyle
+          })
+        );
+      }
+    } else {
+      if (beforePart.length > 0) {
+        beforeChildren.push({
+          type: "text",
+          text: beforePart,
+          style: cloneTextStyle(options?.beforeInsertedStyle)
+        });
+      }
+      if (afterPart.length > 0) {
+        afterChildren.push({
+          type: "text",
+          text: afterPart,
+          style: cloneTextStyle(options?.afterInsertedStyle)
+        });
+      }
+    }
+
+    if (index < anchors.length) {
+      const anchor = cloneParagraphChildRun(anchors[index]);
+      const anchorOffset = anchorOffsets[index] ?? segmentEnd;
+      if (anchorOffset <= safeStart) {
+        beforeChildren.push(anchor);
+      } else if (anchorOffset >= safeEnd) {
+        afterChildren.push(anchor);
+      } else {
+        beforeChildren.push(anchor);
+      }
+    }
+  }
+
+  if (beforeChildren.length === 0) {
+    beforeChildren.push({
+      type: "text",
+      text: "",
+      style: cloneTextStyle(options?.beforeInsertedStyle)
+    });
+  }
+
+  if (afterChildren.length === 0) {
+    afterChildren.push({
+      type: "text",
+      text: "",
+      style: cloneTextStyle(options?.afterInsertedStyle)
+    });
+  }
+
+  return {
+    beforeChildren,
+    afterChildren
+  };
+}
+
 function cloneParagraph(paragraph: ParagraphNode): ParagraphNode {
   return {
     type: "paragraph",

@@ -174,4 +174,32 @@ describe("image wrap state", () => {
 
     expect(style.zIndex).toBeLessThan(0);
   });
+
+  it("can resolve page coordinates for fixed-position wrapped images", async () => {
+    const { absoluteFloatingImageStyle } = await import(
+      "../../packages/react-viewer/src/editor"
+    );
+
+    const style = absoluteFloatingImageStyle({
+      type: "image",
+      widthPx: 102,
+      heightPx: 102,
+      floating: {
+        wrapType: "square",
+        wrapText: "bothSides",
+        behindDocument: false,
+        horizontalRelativeTo: "margin",
+        verticalRelativeTo: "margin",
+        xPx: 139,
+        yPx: 381
+      }
+    }, {
+      pageOriginLeft: 72,
+      pageOriginTop: 72
+    });
+
+    expect(style.position).toBe("absolute");
+    expect(style.left).toBe(211);
+    expect(style.top).toBe(453);
+  });
 });

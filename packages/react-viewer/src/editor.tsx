@@ -27,6 +27,7 @@ import {
   type TextRunNode
 } from "@react-docx/doc-model";
 import {
+  splitParagraphChildrenAtTextOffsets,
   updateParagraphText,
   updateTableCellParagraphTextRecursive,
   updateTableCellParagraphText,
@@ -8144,9 +8145,32 @@ function isPageOrMarginAnchoredAbsoluteFloatingImage(image: ImageRunNode): boole
   return horizontalPageAnchored && verticalPageAnchored;
 }
 
+function isPageOrMarginAnchoredWrappedFloatingImage(image: ImageRunNode): boolean {
+  if (!shouldRenderWrappedFloatingImage(image)) {
+    return false;
+  }
+
+  const floating = image.floating;
+  if (!floating) {
+    return false;
+  }
+
+  const horizontalRelativeTo = floating.horizontalRelativeTo?.toLowerCase();
+  const verticalRelativeTo = floating.verticalRelativeTo?.toLowerCase();
+  const horizontalPageAnchored =
+    horizontalRelativeTo === "page" || horizontalRelativeTo === "margin";
+  const verticalPageAnchored =
+    verticalRelativeTo === "page" || verticalRelativeTo === "margin";
+
+  return horizontalPageAnchored && verticalPageAnchored;
+}
+
 function paragraphNeedsPageAnchoredAbsolutePositioningContext(paragraph: ParagraphNode): boolean {
   return paragraph.children.some(
-    (child) => child.type === "image" && isPageOrMarginAnchoredAbsoluteFloatingImage(child)
+    (child) =>
+      child.type === "image" &&
+      (isPageOrMarginAnchoredAbsoluteFloatingImage(child) ||
+        isPageOrMarginAnchoredWrappedFloatingImage(child))
   );
 }
 
@@ -17363,16 +17387,16 @@ export function useDocxEditor(options: UseDocxEditorOptions = {}): DocxEditorCon
       updater: (field: FormFieldRunNode) => FormFieldRunNode,
       successStatus?: string
     ): void => {
-      applyModelChange((current) => {
-        const next = cloneDocModel(current);
+      dispatchEditorTransaction((current) => {
+        const next = cloneDocModel(current.model);
         const { paragraph, tableNode } = getParagraphAtLocation(next, location);
         if (!paragraph) {
-          return current;
+          return undefined;
         }
 
         const child = paragraph.children[location.childIndex];
         if (!child || child.type !== "form-field") {
-          return current;
+          return undefined;
         }
 
         const updated = updater(cloneFormFieldRun(child));
@@ -17386,10 +17410,13 @@ export function useDocxEditor(options: UseDocxEditorOptions = {}): DocxEditorCon
           tableNode.sourceXml = undefined;
         }
 
-        return next;
-      }, successStatus);
+        return {
+          model: next,
+          status: successStatus
+        };
+      });
     },
-    [applyModelChange]
+    [dispatchEditorTransaction]
   );
 
   const selectFormField = React.useCallback((location?: DocxFormFieldLocation): void => {
@@ -18149,11 +18176,14 @@ export function useDocxEditor(options: UseDocxEditorOptions = {}): DocxEditorCon
 
         const safeStart = Math.max(0, Math.min(normalizedStartOffset, normalizedDraftText.length));
         const safeEnd = Math.max(safeStart, Math.min(normalizedEndOffset, normalizedDraftText.length));
-        const beforeText = normalizedDraftText.slice(0, safeStart);
-        const afterText = normalizedDraftText.slice(safeEnd);
         const splitParagraphStyle = splitParagraphStyleWithDefaultSpacing(
           paragraphNode.style,
           paragraphNode.sourceXml
+        );
+        const beforeInsertedStyle = cloneTextStyle(
+          pendingRunStyle ??
+            firstTextStyleAtOffset(paragraphNode, safeStart, true) ??
+            firstRunStyle(paragraphNode)
         );
         const inheritedRunStyle =
           cloneTextStyle(
@@ -18161,31 +18191,25 @@ export function useDocxEditor(options: UseDocxEditorOptions = {}): DocxEditorCon
               firstTextStyleAtOffset(paragraphNode, safeEnd, false) ??
               firstRunStyle(paragraphNode)
           ) ?? {};
+        const splitChildren = splitParagraphChildrenAtTextOffsets(
+          paragraphNode,
+          normalizedDraftText,
+          safeStart,
+          safeEnd,
+          {
+            beforeInsertedStyle,
+            afterInsertedStyle: inheritedRunStyle
+          }
+        );
 
         paragraphNode.style = cloneParagraphStyle(splitParagraphStyle);
-        paragraphNode.children = [
-          {
-            type: "text",
-            text: beforeText,
-            style: cloneTextStyle(
-              pendingRunStyle ??
-                firstTextStyleAtOffset(paragraphNode, safeStart, true) ??
-                firstRunStyle(paragraphNode)
-            )
-          }
-        ];
+        paragraphNode.children = splitChildren.beforeChildren;
         paragraphNode.sourceXml = undefined;
 
         next.nodes.splice(insertionIndex, 0, {
           type: "paragraph",
           style: cloneParagraphStyle(splitParagraphStyle),
-          children: [
-            {
-              type: "text",
-              text: afterText,
-              style: inheritedRunStyle
-            }
-          ]
+          children: splitChildren.afterChildren
         });
 
         splitResult = {
@@ -20793,6 +20817,11 @@ export function DocxEditorViewer({
   const showTrackedChangeGutter = trackedChangesEnabled;
   const isReadOnly = mode === "read-only" || trackedChangesEnabled;
   const canReplaceDocumentByDrop = mode !== "read-only";
+  const formFieldLocationKey = React.useCallback((location: DocxFormFieldLocation): string => {
+    return location.kind === "paragraph"
+      ? `p:${location.nodeIndex}:${location.childIndex}`
+      : `t:${location.tableIndex}:${location.rowIndex}:${location.cellIndex}:${location.paragraphIndex}:${location.childIndex}`;
+  }, []);
   const tocLinkColorByLevel = React.useMemo(
     () => collectHeadingTextColorByLevel(editor.model),
     [editor.model]
@@ -20867,6 +20896,13 @@ export function DocxEditorViewer({
   const deferredCollapsedSelectionSyncTimeoutRef = React.useRef<number | null>(null);
   const pendingSelectionIntentFrameRef = React.useRef<number | null>(null);
   const selectionIntentNonceRef = React.useRef(0);
+  const lastFormFieldClickRef = React.useRef<
+    | {
+        key: string;
+        time: number;
+      }
+    | undefined
+  >(undefined);
 
   const [isDragOverCanvas, setIsDragOverCanvas] = React.useState(false);
   const [isDraggingImage, setIsDraggingImage] = React.useState(false);
@@ -20914,6 +20950,23 @@ export function DocxEditorViewer({
   const [embeddedTableColumnWidths, setEmbeddedTableColumnWidths] = React.useState<
     Record<string, number[]>
   >({});
+  const handleRepeatedFormFieldClick = React.useCallback(
+    (location: DocxFormFieldLocation): boolean => {
+      const now = typeof performance !== "undefined" ? performance.now() : Date.now();
+      const key = formFieldLocationKey(location);
+      const previousClick = lastFormFieldClickRef.current;
+      if (previousClick && previousClick.key === key && now - previousClick.time <= 350) {
+        lastFormFieldClickRef.current = undefined;
+        editor.selectFormField(location);
+        onFormFieldDoubleClick?.(location);
+        return true;
+      }
+
+      lastFormFieldClickRef.current = { key, time: now };
+      return false;
+    },
+    [editor.selectFormField, formFieldLocationKey, onFormFieldDoubleClick]
+  );
   const [activeColumnResize, setActiveColumnResize] = React.useState<
     { tableIndex: number; boundaryColumnIndex: number } | undefined
   >();
@@ -30434,6 +30487,181 @@ export function DocxEditorViewer({
           );
         };
 
+        const renderManualPageFixedWrappedImage = (
+          geometry: DualWrappedFloatingImageGeometry
+        ): React.ReactNode => {
+          const manualImage = previewParagraph.children[geometry.imageIndex];
+          if (manualImage?.type !== "image") {
+            return null;
+          }
+
+          const manualImageLocation: DocxImageLocation = { ...location, childIndex: geometry.imageIndex };
+          const manualImageKey = imageLocationKey(manualImageLocation);
+          const isSelectedImage = selectedImage ? imageLocationKey(selectedImage) === manualImageKey : false;
+          const movePreview = movePreviewByImageIndex.get(geometry.imageIndex);
+          const widthPx = geometry.imageWidthPx;
+          const heightPx = geometry.imageHeightPx;
+          const floatingStyle = absoluteFloatingImageStyle(manualImage, {
+            pageOriginLeft: interactiveBodyFloatingPageOriginPx?.left ?? 0,
+            pageOriginTop: interactiveBodyFloatingPageOriginPx?.top ?? 0,
+            deltaX: movePreview?.deltaX ?? 0,
+            deltaY: movePreview?.deltaY ?? 0
+          });
+          const renderableImageSrc =
+            syntheticTextBoxSvg(
+              manualImage,
+              undefined,
+              undefined,
+              undefined,
+              undefined
+            ) ??
+            resolveRenderableImageSource(manualImage);
+          const showsUnsupportedFallback =
+            imageUsesPlaceholderFallback(manualImage) || (manualImage.src && !renderableImageSrc);
+
+          return (
+            <span
+              key={`${keyPrefix}-manual-fixed-wrap-image-${geometry.imageIndex}`}
+              contentEditable={false}
+              data-docx-image-location={manualImageKey}
+              style={{
+                display: "inline-block",
+                position: "absolute",
+                width: widthPx ? `${widthPx}px` : undefined,
+                height: heightPx ? `${heightPx}px` : undefined,
+                ...floatingStyle
+              }}
+              onPointerDown={(event) =>
+                isReadOnly
+                  ? undefined
+                  : beginFloatingImageMove(
+                      event,
+                      manualImageLocation,
+                      manualImage,
+                      true,
+                      false
+                    )
+              }
+              onClick={(event) => {
+                event.stopPropagation();
+                if (!isReadOnly) {
+                  setSelectedImage(manualImageLocation);
+                }
+              }}
+              onContextMenu={(event) => {
+                if (isReadOnly) {
+                  return;
+                }
+
+                event.preventDefault();
+                event.stopPropagation();
+                clearTableCellSelection();
+                setSelectedSectionImageKey(undefined);
+                setSelectedImage(manualImageLocation);
+                openContextMenu(
+                  {
+                    kind: "image",
+                    activeTextRange: resolveActiveRangeFromDomSelection(),
+                    location: cloneTextRangeLocation(imageLocationToParagraphLocation(manualImageLocation)),
+                    image: {
+                      location: manualImageLocation,
+                      floating: manualImage.floating ? { ...manualImage.floating } : undefined
+                    }
+                  },
+                  {
+                    x: event.clientX,
+                    y: event.clientY
+                  }
+                );
+              }}
+            >
+              {renderableImageSrc && !showsUnsupportedFallback ? (
+                <img
+                  src={renderableImageSrc}
+                  alt={manualImage.alt ?? "DOCX image"}
+                  draggable={false}
+                  style={{
+                    width: widthPx ? `${widthPx}px` : undefined,
+                    height: heightPx ? `${heightPx}px` : undefined,
+                    maxWidth: "none",
+                    verticalAlign: "middle",
+                    display: "block",
+                    cursor: isReadOnly ? "default" : "move",
+                    filter: manualImage.cssFilter,
+                    opacity: manualImage.cssOpacity
+                  }}
+                />
+              ) : showsUnsupportedFallback ? (
+                <span
+                  role="img"
+                  aria-label={manualImage.alt ?? "DOCX image"}
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    width: widthPx ? `${widthPx}px` : "1.8em",
+                    height: heightPx ? `${heightPx}px` : "1.8em",
+                    minWidth: 16,
+                    minHeight: 16,
+                    border: "1px solid #d1d5db",
+                    borderRadius: 3,
+                    backgroundColor: "#ffffff",
+                    color: "#0f172a",
+                    fontSize: (widthPx ?? 0) <= 56 && (heightPx ?? 0) <= 56 ? 12 : 10,
+                    fontWeight: 700,
+                    textTransform: "lowercase",
+                    fontFamily: "Arial, sans-serif",
+                    lineHeight: 1
+                  }}
+                >
+                  {unsupportedImageFallbackLabel(manualImage, widthPx, heightPx)}
+                </span>
+              ) : null}
+
+              {!isReadOnly && isSelectedImage ? (
+                <>
+                  {[
+                    { key: "top-left", left: -5, top: -5, cursor: "nwse-resize", xDirection: -1, yDirection: -1 },
+                    { key: "top-right", right: -5, top: -5, cursor: "nesw-resize", xDirection: 1, yDirection: -1 },
+                    { key: "bottom-left", left: -5, bottom: -5, cursor: "nesw-resize", xDirection: -1, yDirection: 1 },
+                    { key: "bottom-right", right: -5, bottom: -5, cursor: "nwse-resize", xDirection: 1, yDirection: 1 }
+                  ].map((handle) => (
+                    <span
+                      key={`${keyPrefix}-manual-fixed-wrap-${geometry.imageIndex}-${handle.key}`}
+                      contentEditable={false}
+                      data-image-resize-handle="true"
+                      style={{
+                        position: "absolute",
+                        width: 10,
+                        height: 10,
+                        borderRadius: 3,
+                        border: "1px solid #d4d4d8",
+                        backgroundColor: "#ffffff",
+                        boxShadow: "0 1px 2px rgba(0, 0, 0, 0.14)",
+                        cursor: handle.cursor,
+                        ...(handle.left !== undefined ? { left: handle.left } : undefined),
+                        ...(handle.right !== undefined ? { right: handle.right } : undefined),
+                        ...(handle.top !== undefined ? { top: handle.top } : undefined),
+                        ...(handle.bottom !== undefined ? { bottom: handle.bottom } : undefined)
+                      }}
+                      onPointerDown={(event) => {
+                        beginImageResize(
+                          event,
+                          manualImageLocation,
+                          widthPx,
+                          heightPx,
+                          handle.xDirection as -1 | 1,
+                          handle.yDirection as -1 | 1
+                        );
+                      }}
+                    />
+                  ))}
+                </>
+              ) : null}
+            </span>
+          );
+        };
+
         const renderManualAbsoluteImage = (
           manualImage: ImageRunNode,
           childIndex: number
@@ -30616,6 +30844,14 @@ export function DocxEditorViewer({
           activeWrappedParagraphSession?.locationKey === paragraphLocationKey(location)
             ? activeWrappedParagraphSession
             : undefined;
+        const manualPageFixedWrappedImageIndexes = new Set(
+          manualDualWrappedLayout.geometries
+            .filter((geometry) => {
+              const child = previewParagraph.children[geometry.imageIndex];
+              return child?.type === "image" && isPageOrMarginAnchoredWrappedFloatingImage(child);
+            })
+            .map((geometry) => geometry.imageIndex)
+        );
         const activeWrappedSource = activeSession
           ? buildSyntheticPretextLayoutSource(activeSession.text, firstRunStyle(previewParagraph))
           : manualDualWrappedLayout.source;
@@ -30638,7 +30874,11 @@ export function DocxEditorViewer({
           blockHeightPx: wrappedPretextParagraphBlockHeightPx(activeWrappedLayout),
           obstacleNodes: (
             <>
-              {manualDualWrappedLayout.geometries.map((geometry) => renderManualImage(geometry))}
+              {manualDualWrappedLayout.geometries.map((geometry) =>
+                manualPageFixedWrappedImageIndexes.has(geometry.imageIndex)
+                  ? null
+                  : renderManualImage(geometry)
+              )}
               {previewParagraph.children.map((child, childIndex) =>
                 child.type === "image" &&
                 !manualGeometryImageIndexes.has(childIndex) &&
@@ -30651,6 +30891,11 @@ export function DocxEditorViewer({
           ),
           pageAbsoluteObstacleNodes: (
             <>
+              {manualDualWrappedLayout.geometries.map((geometry) =>
+                manualPageFixedWrappedImageIndexes.has(geometry.imageIndex)
+                  ? renderManualPageFixedWrappedImage(geometry)
+                  : null
+              )}
               {previewParagraph.children.map((child, childIndex) =>
                 child.type === "image" &&
                 !manualGeometryImageIndexes.has(childIndex) &&
@@ -31214,6 +31459,9 @@ export function DocxEditorViewer({
 
                   event.preventDefault();
                   event.stopPropagation();
+                  if (handleRepeatedFormFieldClick(formFieldLocation)) {
+                    return;
+                  }
                   editor.selectFormField(formFieldLocation);
                   editor.toggleFormCheckbox(formFieldLocation);
                 }}
@@ -31241,6 +31489,7 @@ export function DocxEditorViewer({
                     return;
                   }
 
+                  event.preventDefault();
                   event.stopPropagation();
                   editor.selectFormField(formFieldLocation);
                   onFormFieldDoubleClick?.(formFieldLocation);
@@ -31274,6 +31523,9 @@ export function DocxEditorViewer({
                 data-docx-form-field="true"
                 data-docx-form-field-type="dropdown"
                 value={selectedValue}
+                onClick={(event) => {
+                  event.stopPropagation();
+                }}
                 onChange={(event) => {
                   if (isReadOnly) {
                     return;
@@ -31291,6 +31543,7 @@ export function DocxEditorViewer({
                     return;
                   }
 
+                  event.preventDefault();
                   event.stopPropagation();
                   editor.selectFormField(formFieldLocation);
                   onFormFieldDoubleClick?.(formFieldLocation);
@@ -31324,6 +31577,9 @@ export function DocxEditorViewer({
                   data-docx-form-field-type="date"
                   type={compactFieldLayout ? "text" : "date"}
                   value={normalizedDate}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                  }}
                   onChange={(event) => {
                     if (isReadOnly) {
                       return;
@@ -31341,6 +31597,7 @@ export function DocxEditorViewer({
                       return;
                     }
 
+                    event.preventDefault();
                     event.stopPropagation();
                     editor.selectFormField(formFieldLocation);
                     onFormFieldDoubleClick?.(formFieldLocation);
@@ -31360,6 +31617,9 @@ export function DocxEditorViewer({
                   type="text"
                   value={child.value ?? ""}
                   placeholder={child.placeholder ?? child.title ?? "Enter date"}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                  }}
                   onChange={(event) => {
                     if (isReadOnly) {
                       return;
@@ -31377,6 +31637,7 @@ export function DocxEditorViewer({
                       return;
                     }
 
+                    event.preventDefault();
                     event.stopPropagation();
                     editor.selectFormField(formFieldLocation);
                     onFormFieldDoubleClick?.(formFieldLocation);
@@ -31397,6 +31658,9 @@ export function DocxEditorViewer({
                 type="text"
                 value={child.value ?? ""}
                 placeholder={child.placeholder ?? child.title ?? ""}
+                onClick={(event) => {
+                  event.stopPropagation();
+                }}
                 onChange={(event) => {
                   if (isReadOnly) {
                     return;
@@ -31414,6 +31678,7 @@ export function DocxEditorViewer({
                     return;
                   }
 
+                  event.preventDefault();
                   event.stopPropagation();
                   editor.selectFormField(formFieldLocation);
                   onFormFieldDoubleClick?.(formFieldLocation);
@@ -31571,6 +31836,7 @@ export function DocxEditorViewer({
       editor.selectFormField,
       editor.setFormFieldValue,
       editor.toggleFormCheckbox,
+      handleRepeatedFormFieldClick,
       onFormFieldDoubleClick,
       isReadOnly,
       paragraphNumberingLabels,

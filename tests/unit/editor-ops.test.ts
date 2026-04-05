@@ -7,6 +7,7 @@ import {
   serializeParagraphsForClipboard,
   setParagraphHeading,
   setRunHighlight,
+  splitParagraphChildrenAtTextOffsets,
   toggleRunStyleFlag,
   updateParagraphText,
   updateTableCellParagraphTextRecursive,
@@ -539,5 +540,46 @@ describe("editor-ops", () => {
       text: " Yes (selected)",
       style: { italic: true }
     });
+  });
+
+  it("preserves floating image anchors when splitting paragraph children", () => {
+    const paragraph: DocModel["nodes"][number] = {
+      type: "paragraph",
+      children: [
+        {
+          type: "image",
+          alt: "forward.png",
+          widthPx: 102,
+          heightPx: 102,
+          floating: {
+            wrapType: "square",
+            horizontalRelativeTo: "margin",
+            verticalRelativeTo: "margin",
+            xPx: 139,
+            yPx: 381
+          }
+        },
+        { type: "text", text: "Generally, it is not possible ", style: { italic: true } },
+        { type: "text", text: "to edit around this arrow.", style: { bold: true } }
+      ]
+    };
+
+    if (paragraph.type !== "paragraph") {
+      return;
+    }
+
+    const split = splitParagraphChildrenAtTextOffsets(
+      paragraph,
+      "Generally, it is not possible to edit around this arrow.",
+      29,
+      29
+    );
+
+    expect(split.beforeChildren[0]).toMatchObject({
+      type: "image",
+      alt: "forward.png"
+    });
+    expect(split.beforeChildren.some((child) => child.type === "text" && child.text.includes("Generally"))).toBe(true);
+    expect(split.afterChildren.some((child) => child.type === "text" && child.text.includes("to edit around this arrow."))).toBe(true);
   });
 });
