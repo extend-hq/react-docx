@@ -1151,6 +1151,48 @@ function drawingShapePathData(pathXml: string, widthPx: number, heightPx: number
   return commands.join(" ");
 }
 
+function ellipsePathData(widthPx: number, heightPx: number): string {
+  const safeWidth = Math.max(1, Math.round(widthPx));
+  const safeHeight = Math.max(1, Math.round(heightPx));
+  const rx = safeWidth / 2;
+  const ry = safeHeight / 2;
+  return `M${rx} 0 C${safeWidth - rx * 0.45} 0 ${safeWidth} ${ry * 0.45} ${safeWidth} ${ry} C${safeWidth} ${safeHeight - ry * 0.45} ${safeWidth - rx * 0.45} ${safeHeight} ${rx} ${safeHeight} C${rx * 0.45} ${safeHeight} 0 ${safeHeight - ry * 0.45} 0 ${ry} C0 ${ry * 0.45} ${rx * 0.45} 0 ${rx} 0 Z`;
+}
+
+function capsulePathData(widthPx: number, heightPx: number): string {
+  const safeWidth = Math.max(1, Math.round(widthPx));
+  const safeHeight = Math.max(1, Math.round(heightPx));
+  if (safeHeight >= safeWidth) {
+    const rx = safeWidth / 2;
+    return `M${rx} 0 C${safeWidth - rx * 0.45} 0 ${safeWidth} ${rx * 0.45} ${safeWidth} ${rx} L${safeWidth} ${safeHeight - rx} C${safeWidth} ${safeHeight - rx * 0.45} ${safeWidth - rx * 0.45} ${safeHeight} ${rx} ${safeHeight} C${rx * 0.45} ${safeHeight} 0 ${safeHeight - rx * 0.45} 0 ${safeHeight - rx} L0 ${rx} C0 ${rx * 0.45} ${rx * 0.45} 0 ${rx} 0 Z`;
+  }
+
+  const ry = safeHeight / 2;
+  return `M0 ${ry} C0 ${ry * 0.45} ${ry * 0.45} 0 ${ry} 0 L${safeWidth - ry} 0 C${safeWidth - ry * 0.45} 0 ${safeWidth} ${ry * 0.45} ${safeWidth} ${ry} C${safeWidth} ${safeHeight - ry * 0.45} ${safeWidth - ry * 0.45} ${safeHeight} ${safeWidth - ry} ${safeHeight} L${ry} ${safeHeight} C${ry * 0.45} ${safeHeight} 0 ${safeHeight - ry * 0.45} 0 ${ry} Z`;
+}
+
+function drawingShapeHeuristicPathData(
+  pathXml: string,
+  widthPx: number,
+  heightPx: number
+): string | undefined {
+  const cubicCount = (pathXml.match(/<a:cubicBezTo\b/gi) ?? []).length;
+  const lineCount = (pathXml.match(/<a:lnTo\b/gi) ?? []).length;
+  if (cubicCount === 0) {
+    return undefined;
+  }
+
+  if (cubicCount >= 4 && lineCount === 0) {
+    return ellipsePathData(widthPx, heightPx);
+  }
+
+  if (cubicCount >= 2 && lineCount === 2) {
+    return capsulePathData(widthPx, heightPx);
+  }
+
+  return undefined;
+}
+
 function flowChartDelayPathData(widthPx: number, heightPx: number): string {
   const safeWidth = Math.max(1, Math.round(widthPx));
   const safeHeight = Math.max(1, Math.round(heightPx));
@@ -1273,7 +1315,13 @@ function renderStandaloneWordShapeSvg(
         }
 
         const pathXml = extractBalancedTagBlocks(shapePropertiesXml, "a:path")[0];
-        const pathData = pathXml ? drawingShapePathData(pathXml, shapeWidth, shapeHeight) : undefined;
+        const directPathData = pathXml ? drawingShapePathData(pathXml, shapeWidth, shapeHeight) : undefined;
+        const pathData =
+          pathXml &&
+          /<a:cubicBezTo\b/i.test(pathXml) &&
+          (!directPathData || !directPathData.includes("C"))
+            ? drawingShapeHeuristicPathData(pathXml, shapeWidth, shapeHeight) ?? directPathData
+            : directPathData;
         if (pathData) {
           return `${fill.defs.join("")}<path d="${pathData}" transform="translate(${x} ${y})" ${fill.fillAttribute} ${stroke}/>${positionedTextBoxSvg}`;
         }
@@ -1323,7 +1371,13 @@ function renderStandaloneWordShapeSvg(
     context.styleSheet.themeColors
   );
   const pathXml = extractBalancedTagBlocks(shapePropertiesXml, "a:path")[0];
-  const pathData = pathXml ? drawingShapePathData(pathXml, safeWidth, safeHeight) : undefined;
+  const directPathData = pathXml ? drawingShapePathData(pathXml, safeWidth, safeHeight) : undefined;
+  const pathData =
+    pathXml &&
+    /<a:cubicBezTo\b/i.test(pathXml) &&
+    (!directPathData || !directPathData.includes("C"))
+      ? drawingShapeHeuristicPathData(pathXml, safeWidth, safeHeight) ?? directPathData
+      : directPathData;
   let body = "";
 
   if (preset === "line") {

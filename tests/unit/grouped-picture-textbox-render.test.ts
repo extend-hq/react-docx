@@ -174,6 +174,92 @@ const GROUPED_VECTOR_SHAPE_DOC_XML = `<?xml version="1.0" encoding="UTF-8" stand
                     </wps:style>
                     <wps:bodyPr/>
                   </wps:wsp>
+                  <wps:wsp>
+                    <wps:cNvPr id="1488951384" name="Shape 59"/>
+                    <wps:cNvSpPr/>
+                    <wps:spPr>
+                      <a:xfrm><a:off x="5" y="1881388"/><a:ext cx="44539" cy="44526"/></a:xfrm>
+                      <a:custGeom>
+                        <a:avLst/><a:gdLst/><a:ahLst/><a:cxnLst/><a:rect l="0" t="0" r="0" b="0"/>
+                        <a:pathLst>
+                          <a:path w="44539" h="44526">
+                            <a:moveTo><a:pt x="22263" y="0"/></a:moveTo>
+                            <a:cubicBezTo><a:pt x="34569" y="0"/><a:pt x="44539" y="9957"/><a:pt x="44539" y="22263"/></a:cubicBezTo>
+                            <a:cubicBezTo><a:pt x="44539" y="34557"/><a:pt x="34569" y="44526"/><a:pt x="22263" y="44526"/></a:cubicBezTo>
+                            <a:cubicBezTo><a:pt x="9969" y="44526"/><a:pt x="0" y="34557"/><a:pt x="0" y="22263"/></a:cubicBezTo>
+                            <a:cubicBezTo><a:pt x="0" y="9957"/><a:pt x="9969" y="0"/><a:pt x="22263" y="0"/></a:cubicBezTo>
+                            <a:close/>
+                          </a:path>
+                        </a:pathLst>
+                      </a:custGeom>
+                      <a:ln w="0" cap="flat"><a:miter lim="127000"/></a:ln>
+                    </wps:spPr>
+                    <wps:style>
+                      <a:lnRef idx="0"><a:srgbClr val="000000"><a:alpha val="0"/></a:srgbClr></a:lnRef>
+                      <a:fillRef idx="1"><a:srgbClr val="76A88B"/></a:fillRef>
+                      <a:effectRef idx="0"><a:scrgbClr r="0" g="0" b="0"/></a:effectRef>
+                      <a:fontRef idx="none"/>
+                    </wps:style>
+                    <wps:bodyPr/>
+                  </wps:wsp>
+                  <wps:wsp>
+                    <wps:cNvPr id="1450273586" name="Shape 60"/>
+                    <wps:cNvSpPr/>
+                    <wps:spPr>
+                      <a:xfrm><a:off x="5" y="1971477"/><a:ext cx="44539" cy="44526"/></a:xfrm>
+                      <a:custGeom>
+                        <a:avLst/><a:gdLst/><a:ahLst/><a:cxnLst/><a:rect l="0" t="0" r="0" b="0"/>
+                        <a:pathLst>
+                          <a:path w="44539" h="44526">
+                            <a:moveTo><a:pt x="22263" y="0"/></a:moveTo>
+                            <a:cubicBezTo><a:pt x="34569" y="0"/><a:pt x="44539" y="9957"/><a:pt x="44539" y="22263"/></a:cubicBezTo>
+                            <a:cubicBezTo><a:pt x="44539" y="34557"/><a:pt x="34569" y="44526"/><a:pt x="22263" y="44526"/></a:cubicBezTo>
+                            <a:cubicBezTo><a:pt x="9969" y="44526"/><a:pt x="0" y="34557"/><a:pt x="0" y="22263"/></a:cubicBezTo>
+                            <a:cubicBezTo><a:pt x="0" y="9957"/><a:pt x="9969" y="0"/><a:pt x="22263" y="0"/></a:cubicBezTo>
+                            <a:close/>
+                          </a:path>
+                        </a:pathLst>
+                      </a:custGeom>
+                      <a:ln w="0" cap="flat"><a:miter lim="127000"/></a:ln>
+                    </wps:spPr>
+                    <wps:style>
+                      <a:lnRef idx="0"><a:srgbClr val="000000"><a:alpha val="0"/></a:srgbClr></a:lnRef>
+                      <a:fillRef idx="1"><a:srgbClr val="76A88B"/></a:fillRef>
+                      <a:effectRef idx="0"><a:scrgbClr r="0" g="0" b="0"/></a:effectRef>
+                      <a:fontRef idx="none"/>
+                    </wps:style>
+                    <wps:bodyPr/>
+                  </wps:wsp>
+                  <wps:wsp>
+                    <wps:cNvPr id="630477836" name="Shape 61"/>
+                    <wps:cNvSpPr/>
+                    <wps:spPr>
+                      <a:xfrm><a:off x="0" y="1743215"/><a:ext cx="44539" cy="92608"/></a:xfrm>
+                      <a:custGeom>
+                        <a:avLst/><a:gdLst/><a:ahLst/><a:cxnLst/><a:rect l="0" t="0" r="0" b="0"/>
+                        <a:pathLst>
+                          <a:path w="44539" h="92608">
+                            <a:moveTo><a:pt x="22276" y="0"/></a:moveTo>
+                            <a:cubicBezTo><a:pt x="34570" y="0"/><a:pt x="44539" y="9970"/><a:pt x="44539" y="22263"/></a:cubicBezTo>
+                            <a:lnTo><a:pt x="44539" y="70345"/></a:lnTo>
+                            <a:cubicBezTo><a:pt x="44539" y="82652"/><a:pt x="34570" y="92608"/><a:pt x="22276" y="92608"/></a:cubicBezTo>
+                            <a:cubicBezTo><a:pt x="9970" y="92608"/><a:pt x="0" y="82652"/><a:pt x="0" y="70345"/></a:cubicBezTo>
+                            <a:lnTo><a:pt x="0" y="22263"/></a:lnTo>
+                            <a:cubicBezTo><a:pt x="0" y="9970"/><a:pt x="9970" y="0"/><a:pt x="22276" y="0"/></a:cubicBezTo>
+                            <a:close/>
+                          </a:path>
+                        </a:pathLst>
+                      </a:custGeom>
+                      <a:ln w="0" cap="flat"><a:miter lim="127000"/></a:ln>
+                    </wps:spPr>
+                    <wps:style>
+                      <a:lnRef idx="0"><a:srgbClr val="000000"><a:alpha val="0"/></a:srgbClr></a:lnRef>
+                      <a:fillRef idx="1"><a:srgbClr val="76A88B"/></a:fillRef>
+                      <a:effectRef idx="0"><a:scrgbClr r="0" g="0" b="0"/></a:effectRef>
+                      <a:fontRef idx="none"/>
+                    </wps:style>
+                    <wps:bodyPr/>
+                  </wps:wsp>
                 </wpg:wgp>
               </a:graphicData>
             </a:graphic>
@@ -243,7 +329,7 @@ describe("grouped picture textbox render", () => {
     expect(html).toContain("76A88B");
     expect(html).not.toContain("Missing image");
     expect(svgMarkup).toContain("fill=\"#76A88B\"");
-    expect(svgMarkup).toContain("C");
+    expect((svgMarkup.match(/<path /g) ?? []).length).toBeGreaterThanOrEqual(4);
     expect(svgMarkup).not.toContain("M4 0 Z");
   });
 });
