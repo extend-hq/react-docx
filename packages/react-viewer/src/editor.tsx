@@ -56,6 +56,7 @@ import {
 import {
   imageUsesPlaceholderFallback,
   resolveRenderableImageSource,
+  subscribeRenderableImageSourceUpdates,
   unsupportedImageFallbackLabel
 } from "./image-render";
 import {
@@ -3433,6 +3434,17 @@ function paragraphIsBehindTextAbsoluteFloatingImageAnchorOnly(
     (child) =>
       child.type === "text" ||
       (child.type === "image" && child.floating?.behindDocument === true)
+  );
+}
+
+function imageBehavesAsDecorativeBehindTextBackground(
+  image: ImageRunNode,
+  paragraph: ParagraphNode
+): boolean {
+  return (
+    image.floating?.behindDocument === true &&
+    shouldRenderAbsoluteFloatingImage(image) &&
+    paragraphIsBehindTextAbsoluteFloatingImageAnchorOnly(paragraph)
   );
 }
 
@@ -11133,6 +11145,8 @@ function renderParagraphRuns(
     }
 
     if (child.type === "image") {
+      const behavesAsDecorativeBehindTextBackground =
+        imageBehavesAsDecorativeBehindTextBackground(child, paragraph);
       const sectionImageInteraction = options?.sectionImageInteraction;
       const sectionImageLocation = sectionImageInteraction?.imageLocationForChild?.(childIndex);
       const sectionImageKey = sectionImageLocation
@@ -11211,7 +11225,8 @@ function renderParagraphRuns(
       const onSectionImagePointerDown =
         sectionImageLocation &&
         sectionImageInteraction?.onImagePointerDown &&
-        !sectionImageInteraction.isReadOnly
+        !sectionImageInteraction.isReadOnly &&
+        !behavesAsDecorativeBehindTextBackground
           ? (event: React.PointerEvent<HTMLElement>) => {
               sectionImageInteraction.onImagePointerDown?.(
                 event,
@@ -11225,7 +11240,8 @@ function renderParagraphRuns(
       const onSectionImageClick =
         sectionImageLocation &&
         sectionImageInteraction?.onImageClick &&
-        !sectionImageInteraction.isReadOnly
+        !sectionImageInteraction.isReadOnly &&
+        !behavesAsDecorativeBehindTextBackground
           ? (event: React.MouseEvent<HTMLElement>) => {
               event.stopPropagation();
               sectionImageInteraction.onImageClick?.(sectionImageLocation);
@@ -11234,6 +11250,7 @@ function renderParagraphRuns(
       const sectionImageCursor =
         sectionImageLocation &&
         !sectionImageInteraction?.isReadOnly &&
+        !behavesAsDecorativeBehindTextBackground &&
         (isWrappedFloatingImage || isAbsoluteFloatingImage)
           ? "move"
           : undefined;
@@ -11279,7 +11296,8 @@ function renderParagraphRuns(
               paddingInline: 8,
               ...trackedImageStyle,
               ...floatingStyleWithMovePreview,
-              cursor: sectionImageCursor
+              cursor: sectionImageCursor,
+              ...(behavesAsDecorativeBehindTextBackground ? { pointerEvents: "none", userSelect: "none" } : undefined)
             }}
             onPointerDown={onSectionImagePointerDown}
             onClick={onSectionImageClick}
@@ -11319,7 +11337,8 @@ function renderParagraphRuns(
 	              marginInline: isWrappedFloatingImage || isAbsoluteFloatingImage ? undefined : 0,
                 ...trackedImageStyle,
 	              ...floatingStyleWithMovePreview,
-                cursor: sectionImageCursor
+                cursor: sectionImageCursor,
+                ...(behavesAsDecorativeBehindTextBackground ? { pointerEvents: "none", userSelect: "none" } : undefined)
 	            }}
               onPointerDown={onSectionImagePointerDown}
               onClick={onSectionImageClick}
@@ -11353,7 +11372,8 @@ function renderParagraphRuns(
                     marginInline: isWrappedFloatingImage || isAbsoluteFloatingImage ? undefined : 0,
                     ...trackedImageStyle,
                     ...floatingStyleWithMovePreview,
-                    cursor: sectionImageCursor
+                    cursor: sectionImageCursor,
+                    ...(behavesAsDecorativeBehindTextBackground ? { pointerEvents: "none", userSelect: "none" } : undefined)
                   }}
                   onPointerDown={onSectionImagePointerDown}
                   onClick={onSectionImageClick}
@@ -11395,7 +11415,8 @@ function renderParagraphRuns(
                   ...imageVisualStyle,
                   ...trackedImageStyle,
                   ...floatingStyleWithMovePreview,
-                  cursor: sectionImageCursor
+                  cursor: sectionImageCursor,
+                  ...(behavesAsDecorativeBehindTextBackground ? { pointerEvents: "none", userSelect: "none" } : undefined)
                 }}
               />
             );
@@ -21228,6 +21249,7 @@ export function DocxEditorViewer({
   const [measuredPageContentHeightByIndex, setMeasuredPageContentHeightByIndex] = React.useState<
     number[]
   >([]);
+  const [, setRenderableImageSourceRevision] = React.useState(0);
   const [activeEditableParagraphSegment, setActiveEditableParagraphSegment] = React.useState<
     ParagraphSegmentIdentity | undefined
   >(undefined);
@@ -21250,6 +21272,11 @@ export function DocxEditorViewer({
     !deferInitialPaginationPaint
   );
   const [postImportPaginationUnlocked, setPostImportPaginationUnlocked] = React.useState(false);
+  React.useEffect(() => {
+    return subscribeRenderableImageSourceUpdates(() => {
+      setRenderableImageSourceRevision((value) => value + 1);
+    });
+  }, []);
   React.useEffect(() => {
     if (typeof document === "undefined") {
       return;
@@ -31224,6 +31251,8 @@ export function DocxEditorViewer({
           const imageLocation: DocxImageLocation = { ...location, childIndex };
           const imageKey = imageLocationKey(imageLocation);
           const isSelectedImage = selectedImage ? imageLocationKey(selectedImage) === imageKey : false;
+          const behavesAsDecorativeBehindTextBackground =
+            imageBehavesAsDecorativeBehindTextBackground(child, previewParagraph);
           const preview = resizePreview?.imageKey === imageKey ? resizePreview : undefined;
           const movePreview = floatingMovePreview?.imageKey === imageKey ? floatingMovePreview : undefined;
           const isWrappedFloatingImage = shouldRenderWrappedFloatingImage(child);
@@ -31339,10 +31368,12 @@ export function DocxEditorViewer({
               style={{
                 ...imageFrameStyle,
                 ...floatingStyle,
-                ...(isBehindTextAbsoluteImage ? { pointerEvents: "none" } : undefined)
+                ...(isBehindTextAbsoluteImage || behavesAsDecorativeBehindTextBackground
+                  ? { pointerEvents: "none", userSelect: "none" }
+                  : undefined)
               }}
               onPointerDown={(event) =>
-                isReadOnly
+                isReadOnly || behavesAsDecorativeBehindTextBackground
                   ? undefined
                   : beginFloatingImageMove(
                       event,
@@ -31354,12 +31385,12 @@ export function DocxEditorViewer({
               }
               onClick={(event) => {
                 event.stopPropagation();
-                if (!isReadOnly) {
+                if (!isReadOnly && !behavesAsDecorativeBehindTextBackground) {
                   setSelectedImage(imageLocation);
                 }
               }}
               onContextMenu={(event) => {
-                if (isReadOnly) {
+                if (isReadOnly || behavesAsDecorativeBehindTextBackground) {
                   return;
                 }
 
@@ -31393,7 +31424,7 @@ export function DocxEditorViewer({
                     opacity: child.cssOpacity
                   };
                   const imageCursor =
-                    isReadOnly
+                    isReadOnly || behavesAsDecorativeBehindTextBackground
                       ? "default"
                       : isWrappedFloatingImage || isAbsoluteFloatingImage
                       ? "move"
@@ -31433,6 +31464,9 @@ export function DocxEditorViewer({
                             display: "block",
                             transform: `translate(${-cropLayout.offsetXPx}px, ${-cropLayout.offsetYPx}px)`,
                             cursor: imageCursor,
+                            ...(behavesAsDecorativeBehindTextBackground
+                              ? { pointerEvents: "none", userSelect: "none" }
+                              : undefined),
                             ...imageVisualStyle
                           }}
                         />
@@ -31462,6 +31496,9 @@ export function DocxEditorViewer({
                         verticalAlign: "middle",
                         display: "block",
                         cursor: imageCursor,
+                        ...(behavesAsDecorativeBehindTextBackground
+                          ? { pointerEvents: "none", userSelect: "none" }
+                          : undefined),
                         ...imageVisualStyle
                       }}
                     />
@@ -31512,7 +31549,10 @@ export function DocxEditorViewer({
                 </span>
               )}
 
-              {!isReadOnly && isSelectedImage && !isBehindTextAbsoluteImage ? (
+              {!isReadOnly &&
+              isSelectedImage &&
+              !isBehindTextAbsoluteImage &&
+              !behavesAsDecorativeBehindTextBackground ? (
                 <>
                   {resizeHandles.map((handle) => (
                     <span
@@ -31558,7 +31598,7 @@ export function DocxEditorViewer({
               ) : null}
             </span>
           );
-          if (isBehindTextAbsoluteImage && !isReadOnly) {
+          if (isBehindTextAbsoluteImage && !isReadOnly && !behavesAsDecorativeBehindTextBackground) {
             nodes.push(
               <span
                 key={`${runKey}-hit-target`}

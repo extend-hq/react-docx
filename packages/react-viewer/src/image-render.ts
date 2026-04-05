@@ -1,4 +1,5 @@
 import type { ImageRunNode } from "@react-docx/doc-model";
+import { convertEmfToDataUrl, convertWmfToDataUrl } from "emf-converter";
 import { encode as encodePng } from "fast-png";
 import UTIFModule from "utif";
 
@@ -26,8 +27,13 @@ const PLACEHOLDER_FALLBACK_CONTENT_TYPES = new Set([
   "image/wmf"
 ]);
 const TIFF_DATA_URI_PREFIXES = ["data:image/tiff", "data:image/tif"];
+const EMF_DATA_URI_PREFIXES = ["data:image/emf", "data:image/x-emf"];
+const WMF_DATA_URI_PREFIXES = ["data:image/wmf", "data:image/x-wmf"];
 const UTIF = UTIFModule as unknown as UtifModule;
 const convertedTiffSrcCache = new Map<string, string | undefined>();
+const convertedMetafileSrcCache = new Map<string, string | null>();
+const pendingMetafileConversions = new Map<string, Promise<string | undefined>>();
+const renderableImageSourceListeners = new Set<() => void>();
 
 function normalizeImageContentType(image: ImageRenderSource): string | undefined {
   return image.contentType?.trim().toLowerCase();
@@ -47,9 +53,78 @@ function imageHasTiffContent(image: ImageRenderSource): boolean {
   return Boolean(src && TIFF_DATA_URI_PREFIXES.some((prefix) => src.startsWith(prefix)));
 }
 
+function imageHasMetafileContent(image: ImageRenderSource): boolean {
+  const contentType = normalizeImageContentType(image);
+  if (contentType && PLACEHOLDER_FALLBACK_CONTENT_TYPES.has(contentType)) {
+    return true;
+  }
+
+  const src = normalizeImageSrc(image)?.toLowerCase();
+  return Boolean(
+    src &&
+      (EMF_DATA_URI_PREFIXES.some((prefix) => src.startsWith(prefix)) ||
+        WMF_DATA_URI_PREFIXES.some((prefix) => src.startsWith(prefix)))
+  );
+}
+
+function imageUsesEmfContent(image: ImageRenderSource): boolean {
+  const contentType = normalizeImageContentType(image);
+  if (contentType === "image/x-emf" || contentType === "image/emf") {
+    return true;
+  }
+
+  const src = normalizeImageSrc(image)?.toLowerCase();
+  return Boolean(src && EMF_DATA_URI_PREFIXES.some((prefix) => src.startsWith(prefix)));
+}
+
+function imageUsesWmfContent(image: ImageRenderSource): boolean {
+  const contentType = normalizeImageContentType(image);
+  if (contentType === "image/x-wmf" || contentType === "image/wmf") {
+    return true;
+  }
+
+  const src = normalizeImageSrc(image)?.toLowerCase();
+  return Boolean(src && WMF_DATA_URI_PREFIXES.some((prefix) => src.startsWith(prefix)));
+}
+
+function metafileCacheKey(image: ImageRenderSource): string | undefined {
+  const src = normalizeImageSrc(image);
+  if (src) {
+    return src;
+  }
+
+  const bytes = image.data;
+  if (!bytes?.byteLength) {
+    return undefined;
+  }
+
+  const base64 = bytesToBase64(bytes);
+  const contentType = normalizeImageContentType(image) ?? "application/octet-stream";
+  return base64 ? `data:${contentType};base64,${base64}` : undefined;
+}
+
+function notifyRenderableImageSourceListeners(): void {
+  renderableImageSourceListeners.forEach((listener) => {
+    try {
+      listener();
+    } catch {
+      // Ignore listener errors to avoid breaking image conversion updates.
+    }
+  });
+}
+
 export function imageUsesPlaceholderFallback(image: ImageRenderSource): boolean {
   const contentType = normalizeImageContentType(image);
-  return Boolean(contentType && PLACEHOLDER_FALLBACK_CONTENT_TYPES.has(contentType));
+  if (!contentType || !PLACEHOLDER_FALLBACK_CONTENT_TYPES.has(contentType)) {
+    return false;
+  }
+
+  const cacheKey = metafileCacheKey(image);
+  if (!cacheKey) {
+    return true;
+  }
+
+  return convertedMetafileSrcCache.get(cacheKey) == null;
 }
 
 export function unsupportedImageFallbackLabel(
@@ -117,6 +192,15 @@ function toArrayBuffer(bytes: Uint8Array): ArrayBufferLike {
   }
 
   return buffer.slice(byteOffset, byteOffset + byteLength);
+}
+
+function toStrictArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+  const arrayBuffer = toArrayBuffer(bytes);
+  if (arrayBuffer instanceof ArrayBuffer) {
+    return arrayBuffer;
+  }
+
+  return Uint8Array.from(bytes).buffer;
 }
 
 function resolveTiffBytes(image: ImageRenderSource): Uint8Array | undefined {
@@ -191,6 +275,49 @@ export function resolveRenderableImageSource(image: ImageRenderSource): string |
     return undefined;
   }
 
+  if (imageHasMetafileContent(image)) {
+    const cacheKey = metafileCacheKey(image);
+    if (!cacheKey) {
+      return undefined;
+    }
+
+    if (convertedMetafileSrcCache.has(cacheKey)) {
+      return convertedMetafileSrcCache.get(cacheKey) ?? undefined;
+    }
+
+    if (!pendingMetafileConversions.has(cacheKey)) {
+      const bytes = resolveTiffBytes(image);
+      if (bytes) {
+        const conversionPromise = (async (): Promise<string | undefined> => {
+          try {
+            const arrayBuffer = toStrictArrayBuffer(bytes);
+            const converted = imageUsesEmfContent(image)
+              ? await convertEmfToDataUrl(arrayBuffer, undefined, undefined, { dpiScale: 1 })
+              : imageUsesWmfContent(image)
+              ? await convertWmfToDataUrl(arrayBuffer, undefined, undefined, { dpiScale: 1 })
+              : null;
+            const normalized = converted ?? undefined;
+            convertedMetafileSrcCache.set(cacheKey, normalized ?? null);
+            notifyRenderableImageSourceListeners();
+            return normalized;
+          } catch {
+            convertedMetafileSrcCache.set(cacheKey, null);
+            notifyRenderableImageSourceListeners();
+            return undefined;
+          } finally {
+            pendingMetafileConversions.delete(cacheKey);
+          }
+        })();
+
+        pendingMetafileConversions.set(cacheKey, conversionPromise);
+      } else {
+        convertedMetafileSrcCache.set(cacheKey, null);
+      }
+    }
+
+    return undefined;
+  }
+
   if (!imageHasTiffContent(image)) {
     return src;
   }
@@ -212,4 +339,11 @@ export function resolveRenderableImageSource(image: ImageRenderSource): string |
 
   convertedTiffSrcCache.set(src, converted);
   return converted;
+}
+
+export function subscribeRenderableImageSourceUpdates(listener: () => void): () => void {
+  renderableImageSourceListeners.add(listener);
+  return () => {
+    renderableImageSourceListeners.delete(listener);
+  };
 }

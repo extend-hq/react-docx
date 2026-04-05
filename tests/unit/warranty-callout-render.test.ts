@@ -10,14 +10,16 @@ const DOCX_PATH =
   "/Users/andrewluo/Documents/DOCX testing/2026-04-03_14-45-42/fd29deb939afe8b33f66f2431738a90cac3b1c1de79d6aa0da4a227c40d7322b.docx";
 
 function ImportedViewer({
-  model
+  model,
+  mode = "read-only"
 }: {
   model: Awaited<ReturnType<typeof buildDocModel>>;
+  mode?: "edit" | "read-only";
 }): React.JSX.Element {
   const editor = useDocxEditor({ starterModel: model });
   return React.createElement(DocxEditorViewer, {
     editor,
-    mode: "read-only"
+    mode
   });
 }
 
@@ -37,5 +39,20 @@ describe("warranty callout render", () => {
     expect(html).toMatch(
       /data-docx-paragraph-node-index="13"[\s\S]*?Matters not covered by the warranty:/
     );
+  });
+
+  it("treats the behind-text callout panel as decorative background instead of an interactive image", async () => {
+    const zip = readFileSync(DOCX_PATH);
+    const pkg = await parseDocx(zip);
+    const model = buildDocModel(pkg);
+    const html = renderToStaticMarkup(React.createElement(ImportedViewer, { model, mode: "edit" }));
+
+    expect(html).toMatch(
+      /data-docx-paragraph-node-index="12"[\s\S]*?data-docx-image-location="p:12:0"[\s\S]*?pointer-events:none[\s\S]*?user-select:none/
+    );
+    expect(html).not.toMatch(
+      /data-docx-paragraph-node-index="12"[\s\S]*?data-docx-image-location="p:12:0"[\s\S]*?cursor:move/
+    );
+    expect(html).not.toContain('data-docx-image-location="p:12:0-hit-target"');
   });
 });
