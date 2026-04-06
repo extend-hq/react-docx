@@ -73,6 +73,7 @@ export interface ImageRunNode {
     zIndex?: number;
   };
   syntheticTextBox?: boolean;
+  textBoxText?: string;
 }
 
 export type FormFieldType = "checkbox" | "text" | "date" | "dropdown";
@@ -852,12 +853,17 @@ const DEFAULT_DRAWING_SCHEME_COLORS: ThemeColorMap = {
   followedhyperlink: "#954f72"
 };
 
-function emuToPixels(value: number | undefined): number | undefined {
-  if (!Number.isFinite(value)) {
+function emuToPixels(value: number | string | undefined): number | undefined {
+  if (value === undefined || value === null || value === "") {
     return undefined;
   }
 
-  return Math.round((value as number) / 9525);
+  const parsed = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(parsed)) {
+    return undefined;
+  }
+
+  return Number((parsed / 9525).toFixed(3));
 }
 
 function resolveDrawingColorFromXml(
@@ -2945,7 +2951,7 @@ function parseStyleSheet(pkg: OoxmlPackage): ParsedStyleSheet {
 
   const defaultParagraphStyleId =
     paragraphStyles.find((style) => style.isDefault)?.id ??
-    (paragraphStyleById.has("Normal") ? "Normal" : paragraphStyles[0]?.id);
+    (paragraphStyleById.has("Normal") ? "Normal" : undefined);
   const resolvedDefaultParagraphStyle = defaultParagraphStyleId
     ? paragraphStyleById.get(defaultParagraphStyleId)
     : undefined;
@@ -3496,19 +3502,11 @@ function parseFloatingAnchorFromRunXml(
   const distBRaw = getAttribute(anchorTag, "distB");
   const zIndexRaw = getAttribute(anchorTag, "relativeHeight");
 
-  const xPx = xOffsetRaw ? Math.round(Number(xOffsetRaw) / 9525) : undefined;
-  const yPx = yOffsetRaw ? Math.round(Number(yOffsetRaw) / 9525) : undefined;
+  const xPx = emuToPixels(xOffsetRaw);
+  const yPx = emuToPixels(yOffsetRaw);
   const toPxFromEmu = (value?: string): number | undefined => {
-    if (!value) {
-      return undefined;
-    }
-
-    const parsed = Number(value);
-    if (!Number.isFinite(parsed)) {
-      return undefined;
-    }
-
-    return Math.max(0, Math.round(parsed / 9525));
+    const resolved = emuToPixels(value);
+    return resolved === undefined ? undefined : Math.max(0, resolved);
   };
   const zIndex = zIndexRaw && Number.isFinite(Number(zIndexRaw)) ? Number(zIndexRaw) : undefined;
   const horizontalRelativeTo = positionHTag ? getAttribute(positionHTag, "relativeFrom") : undefined;
@@ -4236,13 +4234,13 @@ function chartXmlToSvgDataUri(
   return svgDataUri(svg);
 }
 
-function parseRunImage(runXml: string, context: ParseContext): ImageRunNode | undefined {
+function parseRunImageBlock(runXml: string, context: ParseContext): ImageRunNode | undefined {
   const normalizedRunXml = preferAlternateContentChoice(runXml);
   let activeRunXml = normalizedRunXml;
   let extentMatch = activeRunXml.match(/<wp:extent\b[^>]*cx="(\d+)"[^>]*cy="(\d+)"/i);
   let vmlSize = parseVmlSize(activeRunXml);
-  let widthPx = extentMatch?.[1] ? Math.round(Number(extentMatch[1]) / 9525) : vmlSize.widthPx;
-  let heightPx = extentMatch?.[2] ? Math.round(Number(extentMatch[2]) / 9525) : vmlSize.heightPx;
+  let widthPx = extentMatch?.[1] ? emuToPixels(extentMatch[1]) : vmlSize.widthPx;
+  let heightPx = extentMatch?.[2] ? emuToPixels(extentMatch[2]) : vmlSize.heightPx;
   const floating = parseFloatingAnchorFromRunXml(normalizedRunXml);
 
   const docPrMatch = activeRunXml.match(/<wp:docPr\b[^>]*>/i);
@@ -4270,8 +4268,8 @@ function parseRunImage(runXml: string, context: ParseContext): ImageRunNode | un
 
     extentMatch = activeRunXml.match(/<wp:extent\b[^>]*cx="(\d+)"[^>]*cy="(\d+)"/i);
     vmlSize = parseVmlSize(activeRunXml);
-    widthPx = extentMatch?.[1] ? Math.round(Number(extentMatch[1]) / 9525) : vmlSize.widthPx;
-    heightPx = extentMatch?.[2] ? Math.round(Number(extentMatch[2]) / 9525) : vmlSize.heightPx;
+    widthPx = extentMatch?.[1] ? emuToPixels(extentMatch[1]) : vmlSize.widthPx;
+    heightPx = extentMatch?.[2] ? emuToPixels(extentMatch[2]) : vmlSize.heightPx;
   }
 
   const partName = relationshipId ? context.relationships.get(relationshipId) : undefined;
@@ -4393,6 +4391,44 @@ function parseRunImage(runXml: string, context: ParseContext): ImageRunNode | un
     cssOpacity: resolvedCssOpacity,
     floating
   };
+}
+
+function parseRunImages(runXml: string, context: ParseContext): ImageRunNode[] {
+  const candidateRanges = extractBalancedTagBlocksInOrder(runXml, [
+    "mc:AlternateContent",
+    "w:drawing",
+    "w:pict",
+    "w:object"
+  ]);
+  const candidateXmlBlocks =
+    candidateRanges.length > 0
+      ? candidateRanges.map((range) => runXml.slice(range.start, range.end))
+      : [runXml];
+
+  const images: ImageRunNode[] = [];
+  const seenKeys = new Set<string>();
+  for (const candidateXml of candidateXmlBlocks) {
+    const image = parseRunImageBlock(candidateXml, context);
+    if (!image) {
+      continue;
+    }
+
+    const dedupeKey = JSON.stringify({
+      src: image.src,
+      contentType: image.contentType,
+      widthPx: image.widthPx,
+      heightPx: image.heightPx,
+      floating: image.floating,
+      syntheticTextBox: image.syntheticTextBox
+    });
+    if (seenKeys.has(dedupeKey)) {
+      continue;
+    }
+    seenKeys.add(dedupeKey);
+    images.push(image);
+  }
+
+  return images;
 }
 
 interface ParagraphRunToken {
@@ -5248,9 +5284,13 @@ function parseParagraph(paragraphXml: string, context: ParseContext): ParagraphN
     }
 
     const run = contentToken.token;
-    const image = parseRunImage(run.xml, context);
+    const images = parseRunImages(run.xml, context);
     const style = parseRunStyle(run.xml, context, paragraphStyle?.styleId);
-    const parsedTokens = parseRunTextTokens(image?.syntheticTextBox ? stripTextBoxContent(run.xml) : run.xml);
+    const parsedTokens = parseRunTextTokens(
+      images.some((image) => image.syntheticTextBox)
+        ? stripTextBoxContent(run.xml)
+        : run.xml
+    );
 
   for (const token of parsedTokens) {
       if (token.text.length === 0 && !token.noteReference) {
@@ -5266,7 +5306,7 @@ function parseParagraph(paragraphXml: string, context: ParseContext): ParagraphN
       });
     }
 
-    if (image) {
+    for (const image of images) {
       children.push(image);
     }
   }
@@ -6539,18 +6579,13 @@ type BodyTokenRange = {
 };
 
 function extractBodyTokenRanges(bodyXml: string): BodyTokenRange[] {
-  const tableRanges = extractBalancedTagRanges(bodyXml, "w:tbl");
-  const paragraphRanges = extractBalancedTagRanges(bodyXml, "w:p").filter((paragraphRange) => {
-    return !tableRanges.some(
-      (tableRange) =>
-        paragraphRange.start > tableRange.start && paragraphRange.end <= tableRange.end
-    );
-  });
-
-  return [
-    ...tableRanges.map((range) => ({ ...range, kind: "table" as const })),
-    ...paragraphRanges.map((range) => ({ ...range, kind: "paragraph" as const }))
-  ].sort((left, right) => left.start - right.start);
+  return extractBalancedTagBlocksInOrder(bodyXml, ["w:tbl", "w:p"]).map(
+    (range) => ({
+      start: range.start,
+      end: range.end,
+      kind: range.tagName === "w:tbl" ? ("table" as const) : ("paragraph" as const),
+    })
+  );
 }
 
 export function parseDocumentXml(documentXml: string, context?: ParseContext): DocNode[] {
@@ -6952,7 +6987,8 @@ function cloneParagraph(paragraph: ParagraphNode): ParagraphNode {
         cssFilter: child.cssFilter,
         cssOpacity: child.cssOpacity,
         floating: child.floating ? { ...child.floating } : undefined,
-        syntheticTextBox: child.syntheticTextBox
+        syntheticTextBox: child.syntheticTextBox,
+        textBoxText: child.textBoxText
       };
     })
   };

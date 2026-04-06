@@ -34,9 +34,12 @@ describe("endnotes import render", () => {
       "Fin."
     ]);
     expect((html.match(/data-docx-page-wrapper=\"true\"/g) ?? []).length).toBe(1);
+    expect(html).toContain('data-docx-endnotes-section="true"');
+    expect(html).not.toContain('data-docx-footnotes-section="true"');
     expect(html).toContain('id="docx-endnote-2"');
     expect(html).toContain('id="docx-endnote-3"');
     expect(html).toContain("A tachyon walks into a bar.");
     expect(html).toContain("Fin.");
+    expect(html).not.toContain('margin-top:auto');
   });
 });

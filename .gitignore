@@ -13,6 +13,12 @@ tmp/
 .tmp-*
 *.tmp
 scripts/compare-docx-to-libreoffice.mjs
+docx-vs-libreoffice/
+viewer-visual-fidelity-report.json
+viewer-visual-fidelity-report.md
+viewer-visual-fidelity-artifacts/
+comparison-pairs.json
+comparison-results.json
 tests/visual/
 tests/fixtures/docx-regression/
 tests/fixtures/docx-regression-local/

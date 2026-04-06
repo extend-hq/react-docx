@@ -69,6 +69,7 @@ import {
   resolveCaretRectAtOffset,
   resolveOffsetAtPoint,
   resolveSelectionRects,
+  sliceLayoutToLineRange,
 } from "./pretext-layout";
 
 const HIGHLIGHT_TO_CSS: Record<string, string> = {
@@ -198,6 +199,7 @@ const WORD_TABLE_CELL_FALLBACK_PADDING_PX = {
   bottom: 4,
   left: 4,
 } as const;
+const DEFAULT_UNSPECIFIED_DOCX_FONT_FAMILY = "Times New Roman";
 const SPLITTABLE_TABLE_ROW_ESTIMATE_EXTRA_LINE_COUNT = 2;
 const SPLITTABLE_TABLE_ROW_DEEP_CONTENT_NODE_THRESHOLD = 8;
 const PAGE_BREAK_XML_PATTERN = /<w:br\b[^>]*w:type="page"[^>]*\/?>/i;
@@ -216,6 +218,7 @@ const TEXT_MEASURE_CACHE_MAX_ENTRIES = 12000;
 const DEFAULT_TAB_STOP_PX = 48;
 const TAB_LEADER_ZONE_GAP_PX = 20;
 const EMPTY_PARAGRAPH_EXTRA_HEIGHT_PX = 0;
+const LEADING_COVER_SPACER_EXTRA_HEIGHT_PX = 2;
 const PARAGRAPH_SEGMENT_TOP_BLEED_PX = 22;
 const PARAGRAPH_SEGMENT_DESCENDER_BLEED_PX = 6;
 const PARAGRAPH_SEGMENT_VISUAL_SAFETY_PX = 24;
@@ -1238,6 +1241,7 @@ const WORD_IMAGE_Z_INDEX_DEFAULT = WORD_IMAGE_Z_INDEX_MAX;
 interface SectionColumnLayout {
   count: number;
   gapPx: number;
+  widthsPx?: number[];
 }
 
 const DEFAULT_PAGE_NUMBER_START = 1;
@@ -1459,10 +1463,20 @@ function parseSectionColumns(
   const columnGapTwipsRaw = columnsTag.match(/w:space="(\d+)"/i)?.[1];
   const columnGapTwips = columnGapTwipsRaw ? Number(columnGapTwipsRaw) : 720;
   const columnGapPx = twipsToPixels(columnGapTwips) ?? 24;
+  const columnWidthTags = [
+    ...sectionPropertiesXml.matchAll(/<w:col\b[^>]*w:w="(\d+)"[^>]*\/>/gi),
+  ];
+  const widthsPx = columnWidthTags
+    .map((match) => Number(match[1]))
+    .filter((value) => Number.isFinite(value) && value > 0)
+    .map((value) => Math.max(1, Math.round(twipsToPixels(value) ?? 0)));
 
   return {
     count: Math.max(2, Math.round(numberOfColumns)),
     gapPx: Math.max(0, columnGapPx),
+    ...(widthsPx.length === Math.max(2, Math.round(numberOfColumns))
+      ? { widthsPx }
+      : undefined),
   };
 }
 
@@ -2382,15 +2396,20 @@ function scaleMeasuredPageContentHeights(
   );
 }
 
-function resolvePageContentHeightPxForPageSegments(
+export function resolvePageContentHeightPxForPageSegments(
   pageSegments: DocumentPageNodeSegment[],
   pageIndex: number,
   defaultPageContentHeightPx: number,
   metricsBySection: PaginationSectionMetrics[],
   measuredPageContentHeightsPxByPageIndex?: number[]
 ): number {
+  const pageContainsOnlySplitParagraphSegments =
+    documentPageContainsOnlySplitParagraphSegments(pageSegments);
   const measuredHeightPx = measuredPageContentHeightsPxByPageIndex?.[pageIndex];
-  if (Number.isFinite(measuredHeightPx)) {
+  if (
+    Number.isFinite(measuredHeightPx) &&
+    !pageContainsOnlySplitParagraphSegments
+  ) {
     return Math.max(120, Math.round(measuredHeightPx as number));
   }
 
@@ -2406,6 +2425,19 @@ function resolvePageContentHeightPxForPageSegments(
     Math.round(
       metricsBySection[metricsIndex]?.pageContentHeightPx ??
         defaultPageContentHeightPx
+    )
+  );
+}
+
+export function documentPageContainsOnlySplitParagraphSegments(
+  pageSegments: DocumentPageNodeSegment[]
+): boolean {
+  return (
+    pageSegments.length > 0 &&
+    pageSegments.every(
+      (segment) =>
+        !segment.tableRowRange &&
+        paragraphSegmentHasPartialLineRange(segment.paragraphLineRange)
     )
   );
 }
@@ -3208,6 +3240,10 @@ export interface DocxEditorController {
     widthPx: number,
     heightPx: number
   ) => void;
+  setSyntheticTextBoxText: (
+    location: DocxImageLocation,
+    text: string
+  ) => void;
   setImageWrapMode: (
     location: DocxImageLocation,
     mode: DocxImageWrapMode,
@@ -3671,6 +3707,61 @@ function paragraphText(paragraph: ParagraphNode): string {
     .join("");
 }
 
+function nodeTreeContainsExplicitFontFamily(
+  nodes: DocModel["nodes"] | HeaderSection["nodes"] | FooterSection["nodes"]
+): boolean {
+  return nodes.some((node) => {
+    if (node.type === "paragraph") {
+      return node.children.some((child) => {
+        if (child.type === "text" || child.type === "form-field") {
+          return Boolean(child.style?.fontFamily?.trim());
+        }
+        return false;
+      });
+    }
+
+    if (node.type === "table") {
+      return node.rows.some((row) =>
+        row.cells.some((cell) => nodeTreeContainsExplicitFontFamily(cell.nodes))
+      );
+    }
+
+    return false;
+  });
+}
+
+function resolveDocumentInheritedFontFamily(model: DocModel): string | undefined {
+  const paragraphStyles = model.metadata.paragraphStyles ?? [];
+  const styleDefinesFontFamily = paragraphStyles.some((style) =>
+    Boolean(style.runStyle?.fontFamily?.trim())
+  );
+  if (styleDefinesFontFamily) {
+    return undefined;
+  }
+
+  if (nodeTreeContainsExplicitFontFamily(model.nodes)) {
+    return undefined;
+  }
+
+  if (
+    (model.metadata.headerSections ?? []).some((section) =>
+      nodeTreeContainsExplicitFontFamily(section.nodes)
+    )
+  ) {
+    return undefined;
+  }
+
+  if (
+    (model.metadata.footerSections ?? []).some((section) =>
+      nodeTreeContainsExplicitFontFamily(section.nodes)
+    )
+  ) {
+    return undefined;
+  }
+
+  return cssFontFamily(DEFAULT_UNSPECIFIED_DOCX_FONT_FAMILY);
+}
+
 function replaceTabLayoutMarkersWithTabText(root: HTMLElement): void {
   const centerLayouts = Array.from(
     root.querySelectorAll<HTMLElement>("[data-docx-tab-layout='center']")
@@ -3973,6 +4064,29 @@ function paragraphIsAbsoluteFloatingImageAnchorOnly(
   return hasAbsoluteFloatingImage;
 }
 
+function paragraphContainsOnlyAbsoluteFloatingContent(
+  paragraph: ParagraphNode
+): boolean {
+  if (paragraphHasFormField(paragraph)) {
+    return false;
+  }
+
+  let hasAbsoluteFloatingImage = false;
+  for (const child of paragraph.children) {
+    if (child.type === "text") {
+      continue;
+    }
+
+    if (child.type !== "image" || !shouldRenderAbsoluteFloatingImage(child)) {
+      return false;
+    }
+
+    hasAbsoluteFloatingImage = true;
+  }
+
+  return hasAbsoluteFloatingImage;
+}
+
 function paragraphIsBehindTextAbsoluteFloatingImageAnchorOnly(
   paragraph: ParagraphNode
 ): boolean {
@@ -3998,6 +4112,19 @@ function imageBehavesAsDecorativeBehindTextBackground(
   );
 }
 
+function paragraphActsAsDecorativeBehindTextBackgroundOverlay(
+  paragraph: ParagraphNode
+): boolean {
+  return (
+    paragraphIsBehindTextAbsoluteFloatingImageAnchorOnly(paragraph) &&
+    !paragraphHasVisibleText(paragraph) &&
+    !paragraphHasFormField(paragraph) &&
+    paragraph.children.every(
+      (child) => child.type !== "image" || child.syntheticTextBox !== true
+    )
+  );
+}
+
 function paragraphNeedsPageWidthAnchorHost(paragraph: ParagraphNode): boolean {
   if (!paragraphIsFloatingImageAnchorOnly(paragraph)) {
     return false;
@@ -4017,6 +4144,12 @@ function paragraphNeedsPageWidthAnchorHost(paragraph: ParagraphNode): boolean {
       .toLowerCase();
     return horizontalRelativeTo === "page" || horizontalRelativeTo === "margin";
   });
+}
+
+function paragraphHasAbsoluteFloatingImage(paragraph: ParagraphNode): boolean {
+  return paragraph.children.some(
+    (child) => child.type === "image" && shouldRenderAbsoluteFloatingImage(child)
+  );
 }
 
 function collectHeadingTextColorByLevel(
@@ -4276,7 +4409,7 @@ function paragraphIsLikelyFullPageCoverArtAnchor(
   pageContentHeightPx: number
 ): boolean {
   return (
-    paragraphIsAbsoluteFloatingImageAnchorOnly(paragraph) &&
+    paragraphContainsOnlyAbsoluteFloatingContent(paragraph) &&
     paragraph.children.some(
       (child) =>
         child.type === "image" &&
@@ -4287,6 +4420,135 @@ function paragraphIsLikelyFullPageCoverArtAnchor(
         )
     )
   );
+}
+
+function paragraphStartsNormalFlowContent(
+  paragraph: ParagraphNode
+): boolean {
+  if (!paragraphHasVisibleText(paragraph)) {
+    return false;
+  }
+
+  return !paragraph.children.some(
+    (child) => child.type === "image" && shouldRenderAbsoluteFloatingImage(child)
+  );
+}
+
+function paragraphParticipatesInLeadingCoverLayout(
+  model: DocModel,
+  nodeIndex: number,
+  pageContentWidthPx: number,
+  pageContentHeightPx: number
+): boolean {
+  let sawLikelyCoverArtAnchor = false;
+  for (let probeIndex = 0; probeIndex <= nodeIndex; probeIndex += 1) {
+    const probeNode = model.nodes[probeIndex];
+    if (!probeNode || probeNode.type !== "paragraph") {
+      return false;
+    }
+
+    if (paragraphStartsNormalFlowContent(probeNode)) {
+      return false;
+    }
+
+    if (
+      paragraphIsLikelyFullPageCoverArtAnchor(
+        probeNode,
+        pageContentWidthPx,
+        pageContentHeightPx
+      )
+    ) {
+      sawLikelyCoverArtAnchor = true;
+    }
+  }
+
+  return sawLikelyCoverArtAnchor;
+}
+
+function paragraphLikelyFullPageCoverFootprintPx(
+  model: DocModel,
+  nodeIndex: number,
+  paragraph: ParagraphNode,
+  pageContentWidthPx: number,
+  pageContentHeightPx: number
+): number {
+  if (
+    !paragraphParticipatesInLeadingCoverLayout(
+      model,
+      nodeIndex,
+      pageContentWidthPx,
+      pageContentHeightPx
+    ) ||
+    !paragraphIsLikelyFullPageCoverArtAnchor(
+      paragraph,
+      pageContentWidthPx,
+      pageContentHeightPx
+    )
+  ) {
+    return 0;
+  }
+
+  return Math.max(1, Math.round(pageContentHeightPx));
+}
+
+function paragraphActsAsLeadingCoverLayoutOverlay(
+  model: DocModel,
+  nodeIndex: number,
+  paragraph: ParagraphNode,
+  pageContentWidthPx: number,
+  pageContentHeightPx: number
+): boolean {
+  if (
+    !paragraphParticipatesInLeadingCoverLayout(
+      model,
+      nodeIndex,
+      pageContentWidthPx,
+      pageContentHeightPx
+    ) ||
+    paragraphIsLikelyFullPageCoverArtAnchor(
+      paragraph,
+      pageContentWidthPx,
+      pageContentHeightPx
+    ) ||
+    paragraphHasVisibleText(paragraph) ||
+    paragraphHasFormField(paragraph)
+  ) {
+    return false;
+  }
+
+  return paragraph.children.every(
+    (child) =>
+      child.type === "text" ||
+      (child.type === "image" && shouldRenderAbsoluteFloatingImage(child))
+  );
+}
+
+function fullPageCoverAbsoluteFloatingImageStyle(
+  image: ImageRunNode,
+  layout: DocumentLayoutMetrics,
+  options?: {
+    deltaX?: number;
+    deltaY?: number;
+  }
+): React.CSSProperties {
+  const floating = image.floating;
+  const normalizedZIndex = Number.isFinite(floating?.zIndex)
+    ? Math.max(
+        1,
+        Math.min(65535, Math.round((floating?.zIndex as number) / WORD_IMAGE_Z_INDEX_STEP))
+      )
+    : 1;
+  return {
+    position: "absolute",
+    left: -layout.marginsPx.left + Math.round(options?.deltaX ?? 0),
+    top: -layout.marginsPx.top + Math.round(options?.deltaY ?? 0),
+    width: layout.pageWidthPx,
+    height: layout.pageHeightPx,
+    zIndex:
+      floating?.behindDocument === true
+        ? -100000 + normalizedZIndex
+        : normalizedZIndex,
+  };
 }
 
 function paragraphActsAsLeadingCoverLayoutSpacer(
@@ -4308,29 +4570,12 @@ function paragraphActsAsLeadingCoverLayoutSpacer(
     return false;
   }
 
-  let sawLikelyCoverArtAnchor = false;
-  for (let probeIndex = 0; probeIndex < nodeIndex; probeIndex += 1) {
-    const probeNode = model.nodes[probeIndex];
-    if (!probeNode || probeNode.type !== "paragraph") {
-      continue;
-    }
-
-    if (paragraphHasVisibleText(probeNode)) {
-      return false;
-    }
-
-    if (
-      paragraphIsLikelyFullPageCoverArtAnchor(
-        probeNode,
-        pageContentWidthPx,
-        pageContentHeightPx
-      )
-    ) {
-      sawLikelyCoverArtAnchor = true;
-    }
-  }
-
-  return sawLikelyCoverArtAnchor;
+  return paragraphParticipatesInLeadingCoverLayout(
+    model,
+    nodeIndex,
+    pageContentWidthPx,
+    pageContentHeightPx
+  );
 }
 
 function paragraphLooksLikeCheckboxChoiceRow(
@@ -6132,6 +6377,7 @@ function singleLineAutoScaleForFontFamily(fontFamily?: string): number {
   }
 
   if (
+    normalized === "times roman" ||
     normalized === "times new roman" ||
     normalized === "cambria" ||
     normalized === "garamond" ||
@@ -6206,7 +6452,8 @@ function resolveMeasureFont(
   const fontSizePx = resolveMeasureFontSizePx(style, paragraphBaseFontPx);
   const fontFamily =
     cssFontFamily(style?.fontFamily) ??
-    '"Calibri", "Segoe UI", Arial, sans-serif';
+    cssFontFamily(DEFAULT_UNSPECIFIED_DOCX_FONT_FAMILY) ??
+    '"Times New Roman", serif';
   return `${fontStyle} normal ${fontWeight} ${fontSizePx}px ${fontFamily}`;
 }
 
@@ -6606,6 +6853,59 @@ function estimateWrappedLineCountForParagraph(
     !useTabLeaderLayout && anchoredTabLayout === "right";
   const useAnchoredTabLayout =
     useCenterRightTabLayout || useCenterTabLayout || useRightTabLayout;
+  const paragraphEligibleForPlainPretextLineCount =
+    !paragraph.style?.numbering &&
+    !paragraph.style?.indent &&
+    (!paragraph.style?.tabStops || paragraph.style.tabStops.length === 0);
+
+  if (
+    paragraphEligibleForPlainPretextLineCount &&
+    !useTabLeaderLayout &&
+    !useAnchoredTabLayout
+  ) {
+    const pretextPlainLineCount = (() => {
+      let paragraphText = "";
+      let paragraphFont: string | undefined;
+      for (const child of paragraph.children) {
+        if (child.type === "image") {
+          return undefined;
+        }
+        if (child.type !== "text") {
+          return undefined;
+        }
+        if (
+          Number.isFinite(child.style?.characterSpacingTwips) &&
+          (child.style?.characterSpacingTwips as number) !== 0
+        ) {
+          return undefined;
+        }
+        const childFont = resolveMeasureFont(child.style, paragraphBaseFontPx);
+        if (!paragraphFont) {
+          paragraphFont = childFont;
+        } else if (paragraphFont !== childFont) {
+          return undefined;
+        }
+        paragraphText += child.text;
+      }
+
+      if (!paragraphText || !paragraphFont) {
+        return undefined;
+      }
+
+      const lineHeightPx = estimateParagraphLineHeightPx(paragraph);
+      const layout = layoutTextWithPretextAroundExclusions(
+        paragraphText,
+        paragraphFont,
+        maxLineWidthPx,
+        lineHeightPx
+      );
+      return layout?.lineCount;
+    })();
+    if (pretextPlainLineCount) {
+      return Math.max(1, pretextPlainLineCount);
+    }
+  }
+
   if (useTabLeaderLayout) {
     const tabLeaderLineCount = estimateTabLeaderWrappedLineCountForParagraph(
       paragraph,
@@ -7190,6 +7490,8 @@ function estimateParagraphHeightPx(
   );
   const absoluteFloatingAnchorOnlyParagraph =
     paragraphIsAbsoluteFloatingImageAnchorOnly(paragraph);
+  const decorativeBehindTextAnchorOnlyParagraph =
+    paragraphActsAsDecorativeBehindTextBackgroundOverlay(paragraph);
   const inlineImageHeightPx = paragraph.children.reduce((largest, child) => {
     if (child.type !== "image") {
       return largest;
@@ -7229,7 +7531,9 @@ function estimateParagraphHeightPx(
     },
     0
   );
-  const emptyParagraphHeightPx = paragraphIsEffectivelyEmpty(paragraph)
+  const emptyParagraphHeightPx = decorativeBehindTextAnchorOnlyParagraph
+    ? 0
+    : paragraphIsEffectivelyEmpty(paragraph)
     ? lineHeightPx + EMPTY_PARAGRAPH_EXTRA_HEIGHT_PX
     : 0;
   const topBorderInsetPx = paragraphBorderInsetPx(
@@ -7245,7 +7549,10 @@ function estimateParagraphHeightPx(
     : lineHeightPx * lineCount;
 
   const contentHeightPx = Math.max(
-    absoluteFloatingAnchorOnlyParagraph ? 0 : lineHeightPx,
+    absoluteFloatingAnchorOnlyParagraph ||
+      decorativeBehindTextAnchorOnlyParagraph
+      ? 0
+      : lineHeightPx,
     textFlowHeightPx,
     inlineImageHeightPx,
     wrappedFloatingImageHeightPx,
@@ -7735,6 +8042,34 @@ function collectDocxEstimatedOverflowBreakStartNodeIndexes(
   let currentPageContentHeightPx =
     metricsBySection[0]?.pageContentHeightPx ??
     fallbackMetrics.pageContentHeightPx;
+  const projectConsumedHeightAcrossSectionMultipliers = (
+    consumedHeightPx: number,
+    fromMetrics: PaginationSectionMetrics | undefined,
+    toMetrics: PaginationSectionMetrics | undefined
+  ): number => {
+    const safeConsumedHeightPx = Math.max(0, Math.round(consumedHeightPx));
+    if (safeConsumedHeightPx <= 0) {
+      return 0;
+    }
+
+    const fromMultiplier = Math.max(
+      1,
+      Math.round(fromMetrics?.pageContentHeightMultiplier ?? 1)
+    );
+    const toMultiplier = Math.max(
+      1,
+      Math.round(toMetrics?.pageContentHeightMultiplier ?? 1)
+    );
+    if (fromMultiplier === toMultiplier) {
+      return safeConsumedHeightPx;
+    }
+
+    const approximateVisualDepthPx = safeConsumedHeightPx / fromMultiplier;
+    return Math.max(
+      0,
+      Math.round(approximateVisualDepthPx * toMultiplier)
+    );
+  };
   for (let nodeIndex = 0; nodeIndex < model.nodes.length; nodeIndex += 1) {
     const previousMetricsIndex = currentMetricsIndex;
     currentMetricsIndex = resolvePaginationSectionMetricsIndexForNodeIndex(
@@ -7745,6 +8080,11 @@ function collectDocxEstimatedOverflowBreakStartNodeIndexes(
     const nodeMetrics =
       metricsBySection[currentMetricsIndex] ?? fallbackMetrics;
     if (nodeIndex > 0 && currentMetricsIndex !== previousMetricsIndex) {
+      pageConsumedHeightPx = projectConsumedHeightAcrossSectionMultipliers(
+        pageConsumedHeightPx,
+        metricsBySection[previousMetricsIndex],
+        nodeMetrics
+      );
       currentPageContentHeightPx = nodeMetrics.pageContentHeightPx;
     }
 
@@ -7764,13 +8104,20 @@ function collectDocxEstimatedOverflowBreakStartNodeIndexes(
     }
     if (
       node.type === "paragraph" &&
-      paragraphActsAsLeadingCoverLayoutSpacer(
+      paragraphActsAsLeadingCoverLayoutOverlay(
         model,
         nodeIndex,
         node,
         nodeMetrics.pageContentWidthPx,
         nodeMetrics.pageContentHeightPx
       )
+    ) {
+      previousParagraphAfterPx = 0;
+      continue;
+    }
+    if (
+      node.type === "paragraph" &&
+      paragraphActsAsDecorativeBehindTextBackgroundOverlay(node)
     ) {
       previousParagraphAfterPx = 0;
       continue;
@@ -7812,13 +8159,23 @@ function collectDocxEstimatedOverflowBreakStartNodeIndexes(
         nodeBeforeSpacingPx +
         nodeAfterSpacingPx
     );
+    const coverFootprintPx =
+      node.type === "paragraph"
+        ? paragraphLikelyFullPageCoverFootprintPx(
+            model,
+            nodeIndex,
+            node,
+            nodeMetrics.pageContentWidthPx,
+            nodeMetrics.pageContentHeightPx
+          )
+        : 0;
     const collapsedMarginPx =
       node.type === "paragraph" && pageConsumedHeightPx > 0
         ? Math.min(previousParagraphAfterPx, nodeBeforeSpacingPx)
         : 0;
     const collapsedNodeHeightPx = Math.max(
       1,
-      rawNodeHeightPx - collapsedMarginPx
+      Math.max(rawNodeHeightPx, coverFootprintPx) - collapsedMarginPx
     );
 
     let requiredHeightPx = collapsedNodeHeightPx;
@@ -7918,8 +8275,10 @@ function collectDocxEstimatedOverflowBreakStartNodeIndexes(
       currentPageContentHeightPx = nodeMetrics.pageContentHeightPx;
     }
 
-    const effectiveNodeHeightPx =
-      pageConsumedHeightPx > 0 ? collapsedNodeHeightPx : rawNodeHeightPx;
+    const effectiveNodeHeightPx = Math.max(
+      pageConsumedHeightPx > 0 ? collapsedNodeHeightPx : rawNodeHeightPx,
+      coverFootprintPx
+    );
     pageConsumedHeightPx += effectiveNodeHeightPx;
     previousParagraphAfterPx =
       node.type === "paragraph" ? nodeAfterSpacingPx : 0;
@@ -8058,6 +8417,25 @@ export function resolveParagraphSegmentClipBleedPx(
         : 0,
     bottomPx: Math.max(0, PARAGRAPH_SEGMENT_DESCENDER_BLEED_PX),
   };
+}
+
+export function resolveParagraphSegmentNonFlowReservePx(
+  paragraphLineRange?: ParagraphLineRange
+): number {
+  const bleed = resolveParagraphSegmentClipBleedPx(paragraphLineRange);
+  if (bleed.topPx <= 0 && bleed.bottomPx <= 0) {
+    return 0;
+  }
+
+  const lineHeightSafetyPx = Math.max(
+    0,
+    Math.ceil((paragraphLineRange?.lineHeightPx ?? 0) * 0.9)
+  );
+  return (
+    Math.max(0, bleed.topPx) +
+    Math.max(0, bleed.bottomPx) +
+    Math.max(0, PARAGRAPH_SEGMENT_VISUAL_SAFETY_PX, lineHeightSafetyPx)
+  );
 }
 
 function paragraphSegmentIdentityMatches(
@@ -8304,6 +8682,34 @@ export function buildDocumentPageNodeSegments(
     0,
     metricsBySection[0]
   );
+  const projectConsumedHeightAcrossSectionMultipliers = (
+    consumedHeightPx: number,
+    fromMetrics: PaginationSectionMetrics | undefined,
+    toMetrics: PaginationSectionMetrics | undefined
+  ): number => {
+    const safeConsumedHeightPx = Math.max(0, Math.round(consumedHeightPx));
+    if (safeConsumedHeightPx <= 0) {
+      return 0;
+    }
+
+    const fromMultiplier = Math.max(
+      1,
+      Math.round(fromMetrics?.pageContentHeightMultiplier ?? 1)
+    );
+    const toMultiplier = Math.max(
+      1,
+      Math.round(toMetrics?.pageContentHeightMultiplier ?? 1)
+    );
+    if (fromMultiplier === toMultiplier) {
+      return safeConsumedHeightPx;
+    }
+
+    const approximateVisualDepthPx = safeConsumedHeightPx / fromMultiplier;
+    return Math.max(
+      0,
+      Math.round(approximateVisualDepthPx * toMultiplier)
+    );
+  };
 
   for (let nodeIndex = 0; nodeIndex < model.nodes.length; nodeIndex += 1) {
     const previousMetricsIndex = currentMetricsIndex;
@@ -8315,6 +8721,11 @@ export function buildDocumentPageNodeSegments(
     const nodeMetrics =
       metricsBySection[currentMetricsIndex] ?? fallbackMetrics;
     if (nodeIndex > 0 && currentMetricsIndex !== previousMetricsIndex) {
+      pageConsumedHeightPx = projectConsumedHeightAcrossSectionMultipliers(
+        pageConsumedHeightPx,
+        metricsBySection[previousMetricsIndex],
+        nodeMetrics
+      );
       currentPageContentHeightPx = resolveMetricsPageContentHeightPx(
         currentPageIndex,
         nodeMetrics
@@ -8344,7 +8755,7 @@ export function buildDocumentPageNodeSegments(
     }
     if (
       node.type === "paragraph" &&
-      paragraphActsAsLeadingCoverLayoutSpacer(
+      paragraphActsAsLeadingCoverLayoutOverlay(
         model,
         nodeIndex,
         node,
@@ -8352,6 +8763,15 @@ export function buildDocumentPageNodeSegments(
         nodeMetrics.pageContentHeightPx
       )
     ) {
+      currentPageSegments.push({ nodeIndex });
+      previousParagraphAfterPx = 0;
+      continue;
+    }
+    if (
+      node.type === "paragraph" &&
+      paragraphActsAsDecorativeBehindTextBackgroundOverlay(node)
+    ) {
+      currentPageSegments.push({ nodeIndex });
       previousParagraphAfterPx = 0;
       continue;
     }
@@ -8414,8 +8834,15 @@ export function buildDocumentPageNodeSegments(
           beforeSpacingPx +
           afterSpacingPx
       );
+      const coverFootprintPx = paragraphLikelyFullPageCoverFootprintPx(
+        model,
+        nodeIndex,
+        node,
+        nodeMetrics.pageContentWidthPx,
+        nodeMetrics.pageContentHeightPx
+      );
       const paragraphTooTallForSinglePage =
-        rawNodeHeightPx >
+        Math.max(rawNodeHeightPx, coverFootprintPx) >
         nodeMetrics.pageContentHeightPx + PAGE_OVERFLOW_TOLERANCE_PX;
       const keepLinesOverflowSplit =
         node.style?.keepLines === true && paragraphTooTallForSinglePage;
@@ -8445,7 +8872,7 @@ export function buildDocumentPageNodeSegments(
           : 0;
       const collapsedNodeHeightPx = Math.max(
         1,
-        rawNodeHeightPx - collapsedMarginPx
+        Math.max(rawNodeHeightPx, coverFootprintPx) - collapsedMarginPx
       );
       const paragraphLineHeightPx = estimateParagraphLineHeightPx(
         node,
@@ -8481,20 +8908,22 @@ export function buildDocumentPageNodeSegments(
             0,
             currentPageContentHeightPx - pageConsumedHeightPx
           );
-          const visualSafetyPx = Math.max(
-            0,
-            PARAGRAPH_SEGMENT_VISUAL_SAFETY_PX
-          );
-          const remainingHeightWithVisualSafetyPx = Math.max(
-            0,
-            remainingHeightPx - visualSafetyPx
-          );
+          const allRemainingSegmentReservePx =
+            resolveParagraphSegmentNonFlowReservePx({
+              startLineIndex: lineCursor,
+              endLineIndex: paragraphLineCount,
+              totalLineCount: paragraphLineCount,
+              lineHeightPx: paragraphLineHeightPx,
+            });
           const allRemainingHeightPx =
             topSpacingPx +
             linesRemaining * paragraphLineHeightPx +
             bottomSpacingPx;
 
-          if (allRemainingHeightPx <= remainingHeightWithVisualSafetyPx) {
+          if (
+            allRemainingHeightPx + allRemainingSegmentReservePx <=
+            remainingHeightPx
+          ) {
             currentPageSegments.push({
               nodeIndex,
               paragraphLineRange: {
@@ -8514,9 +8943,19 @@ export function buildDocumentPageNodeSegments(
             0,
             linesRemaining - minLinesPerSegment
           );
+          const continuingSegmentReservePx =
+            resolveParagraphSegmentNonFlowReservePx({
+              startLineIndex: lineCursor,
+              endLineIndex: Math.min(
+                paragraphLineCount,
+                lineCursor + maxLinesThisPage
+              ),
+              totalLineCount: paragraphLineCount,
+              lineHeightPx: paragraphLineHeightPx,
+            });
           const availableForLinesPx = Math.max(
             0,
-            remainingHeightWithVisualSafetyPx - topSpacingPx
+            remainingHeightPx - topSpacingPx - continuingSegmentReservePx
           );
           let linesThatFit = Math.floor(
             availableForLinesPx / paragraphLineHeightPx
@@ -8550,7 +8989,32 @@ export function buildDocumentPageNodeSegments(
             );
           }
 
-          const segmentEndLineIndex = Math.min(
+          let segmentEndLineIndex = Math.min(
+            paragraphLineCount,
+            lineCursor + linesThatFit
+          );
+          while (linesThatFit > minLinesPerSegment) {
+            const segmentReservePx = resolveParagraphSegmentNonFlowReservePx({
+              startLineIndex: lineCursor,
+              endLineIndex: segmentEndLineIndex,
+              totalLineCount: paragraphLineCount,
+              lineHeightPx: paragraphLineHeightPx,
+            });
+            if (
+              topSpacingPx +
+                (segmentEndLineIndex - lineCursor) * paragraphLineHeightPx +
+                segmentReservePx <=
+              remainingHeightPx
+            ) {
+              break;
+            }
+            linesThatFit -= 1;
+            segmentEndLineIndex = Math.min(
+              paragraphLineCount,
+              lineCursor + linesThatFit
+            );
+          }
+          const safeSegmentEndLineIndex = Math.min(
             paragraphLineCount,
             lineCursor + linesThatFit
           );
@@ -8558,7 +9022,7 @@ export function buildDocumentPageNodeSegments(
             nodeIndex,
             paragraphLineRange: {
               startLineIndex: lineCursor,
-              endLineIndex: segmentEndLineIndex,
+              endLineIndex: safeSegmentEndLineIndex,
               totalLineCount: paragraphLineCount,
               lineHeightPx: paragraphLineHeightPx,
             },
@@ -8566,9 +9030,9 @@ export function buildDocumentPageNodeSegments(
 
           pageConsumedHeightPx +=
             topSpacingPx +
-            (segmentEndLineIndex - lineCursor) * paragraphLineHeightPx;
+            (safeSegmentEndLineIndex - lineCursor) * paragraphLineHeightPx;
           previousParagraphAfterPx = 0;
-          lineCursor = segmentEndLineIndex;
+          lineCursor = safeSegmentEndLineIndex;
           isFirstSegment = false;
 
           if (lineCursor < paragraphLineCount) {
@@ -8671,8 +9135,10 @@ export function buildDocumentPageNodeSegments(
       }
 
       currentPageSegments.push({ nodeIndex });
-      const effectiveNodeHeightPx =
-        pageConsumedHeightPx > 0 ? collapsedNodeHeightPx : rawNodeHeightPx;
+      const effectiveNodeHeightPx = Math.max(
+        pageConsumedHeightPx > 0 ? collapsedNodeHeightPx : rawNodeHeightPx,
+        coverFootprintPx
+      );
       pageConsumedHeightPx += effectiveNodeHeightPx;
       previousParagraphAfterPx = afterSpacingPx;
       continue;
@@ -9201,6 +9667,8 @@ export function absoluteFloatingImageStyle(
     pageOriginTop?: number;
     columnOriginLeft?: number;
     columnOriginTop?: number;
+    paragraphOriginLeft?: number;
+    paragraphOriginTop?: number;
     deltaX?: number;
     deltaY?: number;
   }
@@ -9234,16 +9702,7 @@ export function absoluteFloatingImageStyle(
       )
     : undefined;
   const resolvedZIndex = floating.behindDocument
-    ? Number.isFinite(floating.zIndex)
-      ? -Math.max(
-          1,
-          Math.min(
-            65535,
-            Math.round((floating.zIndex as number) / WORD_IMAGE_Z_INDEX_STEP) +
-              1
-          )
-        )
-      : -1
+    ? -100000 + (normalizedZIndex ?? 1)
     : normalizedZIndex ?? 4;
 
   const resolvedLeft =
@@ -9252,6 +9711,8 @@ export function absoluteFloatingImageStyle(
         ? floating.xPx + (options?.pageOriginLeft ?? 0)
         : horizontalRelativeTo === "column"
         ? floating.xPx + (options?.columnOriginLeft ?? 0)
+        : horizontalRelativeTo === "paragraph" || horizontalRelativeTo === "line"
+        ? floating.xPx + (options?.paragraphOriginLeft ?? 0)
         : floating.xPx
       : undefined;
   const resolvedTop =
@@ -9260,6 +9721,8 @@ export function absoluteFloatingImageStyle(
         ? floating.yPx + (options?.pageOriginTop ?? 0)
         : verticalRelativeTo === "column"
         ? floating.yPx + (options?.columnOriginTop ?? 0)
+        : verticalRelativeTo === "paragraph" || verticalRelativeTo === "line"
+        ? floating.yPx + (options?.paragraphOriginTop ?? 0)
         : floating.yPx
       : undefined;
 
@@ -9941,6 +10404,14 @@ function resolveListParagraphIndent(
   );
   const levelIndent = level?.indent;
   const styleIndent = paragraph.style?.indent;
+  const numberingHasVisibleMarker = Boolean(
+    (level?.text && level.text.trim().length > 0) || level?.pictureBullet?.src
+  );
+  const numberingProvidesUsableIndent = Boolean(
+    Number.isFinite(levelIndent?.leftTwips) ||
+      Number.isFinite(levelIndent?.firstLineTwips) ||
+      Number.isFinite(levelIndent?.hangingTwips)
+  );
   const styleLeftTwips = styleIndent?.leftTwips;
   const explicitParagraphIndent = paragraphExplicitIndentTwips(paragraph);
   const explicitParagraphLeftTwips = explicitParagraphIndent?.leftTwips;
@@ -9953,6 +10424,9 @@ function resolveListParagraphIndent(
   const hasExplicitParagraphHangingTwips = Number.isFinite(
     explicitParagraphHangingTwips
   );
+  if (!numberingHasVisibleMarker && !numberingProvidesUsableIndent) {
+    return styleIndent;
+  }
   const baseLevelLeftTwips = Number.isFinite(baseLevel?.indent?.leftTwips)
     ? baseLevel?.indent?.leftTwips ?? 0
     : Number.isFinite(styleLeftTwips)
@@ -10235,6 +10709,7 @@ function paragraphBlockStyle(
     zIndex: suppressStackingContextForBehindTextAnchorOnlyParagraph
       ? undefined
       : 1,
+    overflow: "visible",
     textAlign: paragraph.style?.align ?? "left",
     ...(paragraph.style?.align === "justify" && hasSoftLineBreak
       ? ({ textAlignLast: "justify" } as React.CSSProperties)
@@ -11179,6 +11654,24 @@ interface SyntheticTextBoxParagraph {
   segments: SyntheticTextBoxSegment[];
 }
 
+interface SyntheticTextBoxFrameStyle {
+  backgroundColor?: string;
+  borderColor?: string;
+  borderWidthPx: number;
+  paddingLeftPx: number;
+  paddingTopPx: number;
+  paddingRightPx: number;
+  paddingBottomPx: number;
+}
+
+function emuToPixels(value: number | undefined): number | undefined {
+  if (!Number.isFinite(value)) {
+    return undefined;
+  }
+
+  return Math.max(0, Math.round((value as number) / 9525));
+}
+
 function resolveSyntheticTextBoxFieldText(
   rawText: string,
   fieldKind: PageFieldKind | undefined,
@@ -11428,6 +11921,125 @@ function syntheticTextBoxParagraphsFromRunXml(
   return resolved;
 }
 
+function syntheticTextBoxFrameStyleFromRunXml(
+  runXml: string
+): SyntheticTextBoxFrameStyle {
+  const bodyPrTag =
+    balancedTagXmlBlocks(runXml, "wps:bodyPr")[0] ??
+    runXml.match(/<wps:bodyPr\b[^>]*\/?>/i)?.[0] ??
+    "";
+  const lineTag =
+    balancedTagXmlBlocks(runXml, "a:ln")[0] ??
+    runXml.match(/<a:ln\b[\s\S]*?<\/a:ln>/i)?.[0] ??
+    runXml.match(/<a:ln\b[^>]*\/?>/i)?.[0] ??
+    "";
+  const shapePropsXml =
+    balancedTagXmlBlocks(runXml, "wps:spPr")[0] ??
+    runXml.match(/<wps:spPr\b[\s\S]*?<\/wps:spPr>/i)?.[0] ??
+    "";
+
+  const hasNoFill =
+    /<a:noFill\b/i.test(shapePropsXml) || /<wps:noFill\b/i.test(shapePropsXml);
+  const lineHasNoFill = /<a:noFill\b/i.test(lineTag);
+  const fillColor =
+    shapePropsXml.match(/<a:solidFill>\s*<a:srgbClr\b[^>]*val="([^"]+)"/i)?.[1] ??
+    shapePropsXml.match(/<a:solidFill>\s*<a:schemeClr\b[^>]*val="([^"]+)"/i)?.[1];
+  const lineColor =
+    lineTag.match(/<a:solidFill>\s*<a:srgbClr\b[^>]*val="([^"]+)"/i)?.[1] ??
+    lineTag.match(/<a:solidFill>\s*<a:schemeClr\b[^>]*val="([^"]+)"/i)?.[1];
+  const lineWidthEmu = Number(xmlAttribute(lineTag, "w"));
+  const resolvedBorderWidthPx =
+    !lineTag || lineHasNoFill
+      ? 0
+      : Number.isFinite(lineWidthEmu) && (lineWidthEmu as number) > 0
+      ? Math.max(1, Math.round((lineWidthEmu as number) / 9525))
+      : 0;
+
+  return {
+    backgroundColor:
+      !hasNoFill && fillColor ? `#${fillColor}` : undefined,
+    borderColor:
+      resolvedBorderWidthPx > 0 && lineColor ? `#${lineColor}` : undefined,
+    borderWidthPx: resolvedBorderWidthPx,
+    paddingLeftPx: emuToPixels(Number(xmlAttribute(bodyPrTag, "lIns"))) ?? 6,
+    paddingTopPx: emuToPixels(Number(xmlAttribute(bodyPrTag, "tIns"))) ?? 3,
+    paddingRightPx:
+      emuToPixels(Number(xmlAttribute(bodyPrTag, "rIns"))) ?? 6,
+    paddingBottomPx:
+      emuToPixels(Number(xmlAttribute(bodyPrTag, "bIns"))) ?? 3,
+  };
+}
+
+function syntheticTextBoxTextValue(image: ImageRunNode): string | undefined {
+  const explicit = image.textBoxText;
+  if (typeof explicit === "string") {
+    return explicit;
+  }
+
+  const paragraphs = image.sourceXml
+    ? syntheticTextBoxParagraphsFromRunXml(image.sourceXml)
+    : [];
+  if (paragraphs.length === 0) {
+    return undefined;
+  }
+
+  return paragraphs
+    .map((paragraph) => paragraph.segments.map((segment) => segment.text).join(""))
+    .join("\n");
+}
+
+function resolveSyntheticTextBoxParagraphs(
+  image: ImageRunNode,
+  pageNumber?: number,
+  totalPages?: number,
+  pageNumberFormat?: string,
+  resolveStyleRefFieldValue?: (target: string) => string | undefined
+): SyntheticTextBoxParagraph[] {
+  const baseParagraphs =
+    image.sourceXml
+      ? syntheticTextBoxParagraphsFromRunXml(
+          image.sourceXml,
+          pageNumber,
+          totalPages,
+          pageNumberFormat,
+          resolveStyleRefFieldValue
+        )
+      : [];
+  const explicitText = image.textBoxText;
+  if (typeof explicitText !== "string") {
+    return baseParagraphs;
+  }
+
+  const lines = explicitText.split(/\r?\n/);
+  if (lines.length === 0) {
+    return baseParagraphs;
+  }
+
+  return lines.map((line, index) => {
+    const baseParagraph = baseParagraphs[index] ?? baseParagraphs[0];
+    const baseStyle = baseParagraph?.segments[0]?.style;
+    return {
+      align: baseParagraph?.align,
+      lineHeightPx: baseParagraph?.lineHeightPx ?? 18,
+      segments: [{ text: line, style: baseStyle }],
+    };
+  });
+}
+
+function syntheticTextBoxForegroundZIndex(image: ImageRunNode): number {
+  const normalizedZIndex = Number.isFinite(image.floating?.zIndex)
+    ? Math.max(
+        1,
+        Math.min(
+          65535,
+          Math.round((image.floating?.zIndex as number) / WORD_IMAGE_Z_INDEX_STEP)
+        )
+      )
+    : 4;
+
+  return Math.max(4, normalizedZIndex);
+}
+
 function syntheticTextBoxSvg(
   image: ImageRunNode,
   pageNumber?: number,
@@ -11446,8 +12058,8 @@ function syntheticTextBoxSvg(
     return undefined;
   }
 
-  const paragraphs = syntheticTextBoxParagraphsFromRunXml(
-    image.sourceXml,
+  const paragraphs = resolveSyntheticTextBoxParagraphs(
+    image,
     pageNumber,
     totalPages,
     pageNumberFormat,
@@ -13953,7 +14565,7 @@ function normalizeLegacyBulletGlyphs(
     .join("");
 }
 
-function buildParagraphNumberingLabels(
+export function buildParagraphNumberingLabels(
   model: DocModel
 ): Map<string, ParagraphNumberingLabel> {
   const labels = new Map<string, ParagraphNumberingLabel>();
@@ -14732,39 +15344,73 @@ function columnWidthsFromTableDefinition(
   columnCount: number
 ): number[] | undefined {
   const gridWidths = table.style?.columnWidthsTwips;
+  const rowDerivedWidths = deriveColumnWidthsFromTableRows(table, columnCount);
+
+  if (gridWidths && gridWidths.length === columnCount) {
+    return normalizeColumnWidthsTwips(gridWidths, columnCount);
+  }
+
+  if (rowDerivedWidths && rowDerivedWidths.length > 0) {
+    return rowDerivedWidths;
+  }
+
   if (gridWidths && gridWidths.length > 0) {
     return normalizeColumnWidthsTwips(gridWidths, columnCount);
   }
 
-  const firstRow = table.rows[0];
-  if (!firstRow) {
-    return undefined;
-  }
+  return undefined;
+}
 
-  const derived: number[] = [];
-  for (const cell of firstRow.cells) {
-    const span =
-      cell.style?.gridSpan && cell.style.gridSpan > 1 ? cell.style.gridSpan : 1;
-    const cellWidth = cell.style?.widthTwips;
+function deriveColumnWidthsFromTableRows(
+  table: TableNode,
+  columnCount: number
+): number[] | undefined {
+  let bestCandidate: number[] | undefined;
+  let bestPositiveCount = -1;
 
-    if (cellWidth && cellWidth > 0) {
-      const perColumn = cellWidth / span;
-      for (let index = 0; index < span; index += 1) {
-        derived.push(perColumn);
+  for (const row of table.rows) {
+    const candidate: number[] = [];
+    for (const cell of row.cells) {
+      const span =
+        cell.style?.gridSpan && cell.style.gridSpan > 1
+          ? cell.style.gridSpan
+          : 1;
+      const cellWidth = cell.style?.widthTwips;
+
+      if (cellWidth && cellWidth > 0) {
+        const perColumn = cellWidth / span;
+        for (let index = 0; index < span; index += 1) {
+          candidate.push(perColumn);
+        }
+        continue;
       }
+
+      for (let index = 0; index < span; index += 1) {
+        candidate.push(0);
+      }
+    }
+
+    if (candidate.length !== columnCount || candidate.length === 0) {
       continue;
     }
 
-    for (let index = 0; index < span; index += 1) {
-      derived.push(0);
+    const positiveCount = candidate.filter((value) => value > 0).length;
+    if (positiveCount <= 0 || positiveCount < bestPositiveCount) {
+      continue;
+    }
+
+    bestCandidate = candidate;
+    bestPositiveCount = positiveCount;
+    if (positiveCount === columnCount) {
+      break;
     }
   }
 
-  if (derived.length === 0 || derived.every((value) => value <= 0)) {
+  if (!bestCandidate) {
     return undefined;
   }
 
-  return normalizeColumnWidthsTwips(derived, columnCount);
+  return normalizeColumnWidthsTwips(bestCandidate, columnCount);
 }
 
 function normalizeColumnWidthsTwips(
@@ -15140,6 +15786,44 @@ function paragraphBorderVisible(
 
 function tableBorderVisible(border: TableBorderStyle | undefined): boolean {
   return borderTypeVisible(border?.type);
+}
+
+function tableBorderSetHasVisibleEdges(
+  borders: TableBorderSet | undefined
+): boolean {
+  return Boolean(
+    tableBorderVisible(borders?.top) ||
+      tableBorderVisible(borders?.right) ||
+      tableBorderVisible(borders?.bottom) ||
+      tableBorderVisible(borders?.left)
+  );
+}
+
+function tableUsesSeparateBorderModel(table: TableNode): boolean {
+  const tableBorders = table.style?.borders;
+  if (
+    tableBorderVisible(tableBorders?.insideH) ||
+    tableBorderVisible(tableBorders?.insideV)
+  ) {
+    return false;
+  }
+
+  return table.rows.some((row) =>
+    row.cells.some((cell) => tableBorderSetHasVisibleEdges(cell.style?.borders))
+  );
+}
+
+function tableElementBorderStyle(table: TableNode): React.CSSProperties {
+  if (!tableUsesSeparateBorderModel(table)) {
+    return {
+      borderCollapse: "collapse",
+    };
+  }
+
+  return {
+    borderCollapse: "separate",
+    borderSpacing: 0,
+  };
 }
 
 function resolvePreferredParagraphBorder(
@@ -15861,6 +16545,7 @@ function mergeAdjacentTextRuns(
             data: child.data ? new Uint8Array(child.data) : undefined,
             floating: child.floating ? { ...child.floating } : undefined,
             syntheticTextBox: child.syntheticTextBox,
+            textBoxText: child.textBoxText,
           }
     );
   }
@@ -16163,6 +16848,7 @@ function mutateParagraphTextStyleInRange(
           data: child.data ? new Uint8Array(child.data) : undefined,
           floating: child.floating ? { ...child.floating } : undefined,
           syntheticTextBox: child.syntheticTextBox,
+          textBoxText: child.textBoxText,
         });
       }
       continue;
@@ -16256,6 +16942,7 @@ function mutateParagraphLinkInRange(
           data: child.data ? new Uint8Array(child.data) : undefined,
           floating: child.floating ? { ...child.floating } : undefined,
           syntheticTextBox: child.syntheticTextBox,
+          textBoxText: child.textBoxText,
         });
       }
       continue;
@@ -21469,6 +22156,51 @@ export function useDocxEditor(
     [applyModelChange]
   );
 
+  const setSyntheticTextBoxText = React.useCallback(
+    (location: DocxImageLocation, text: string): void => {
+      applyModelChange((current) => {
+        const next = cloneDocModel(current);
+        const { paragraph, tableNode } = getParagraphAtLocation(
+          next,
+          imageLocationToParagraphLocation(location)
+        );
+        if (!paragraph) {
+          return current;
+        }
+
+        const child = paragraph.children[location.childIndex];
+        if (!child || child.type !== "image" || !child.syntheticTextBox) {
+          return current;
+        }
+
+        const normalizedText = text.replace(/\r\n?/g, "\n");
+        if (child.textBoxText === normalizedText) {
+          return current;
+        }
+
+        child.textBoxText = normalizedText;
+        child.src =
+          syntheticTextBoxSvg(
+            {
+              ...child,
+              textBoxText: normalizedText,
+            },
+            undefined,
+            undefined,
+            undefined,
+            undefined
+          ) ?? child.src;
+        paragraph.sourceXml = undefined;
+        if (tableNode) {
+          tableNode.sourceXml = undefined;
+        }
+
+        return next;
+      }, "Edited text box");
+    },
+    [applyModelChange]
+  );
+
   const setImageWrapMode = React.useCallback(
     (
       location: DocxImageLocation,
@@ -22741,6 +23473,7 @@ export function useDocxEditor(
     insertImageFile,
     appendParagraph,
     resizeImage,
+    setSyntheticTextBoxText,
     setImageWrapMode,
     moveFloatingImage,
     moveSectionFloatingImage,
@@ -23791,7 +24524,7 @@ function renderHeaderNode(
         style={{
           width:
             resolvedTableWidthPx > 0 ? `${resolvedTableWidthPx}px` : "100%",
-          borderCollapse: "collapse",
+          ...tableElementBorderStyle(node),
           tableLayout: node.style?.layout === "autofit" ? "auto" : "fixed",
         }}
       >
@@ -24985,9 +25718,6 @@ export function DocxEditorViewer({
   const primarySectionPropertiesXml =
     documentSections[0]?.sectionPropertiesXml ??
     editor.model.metadata.sectionPropertiesXml;
-  const finalSectionPropertiesXml =
-    documentSections[documentSections.length - 1]?.sectionPropertiesXml ??
-    editor.model.metadata.sectionPropertiesXml;
   const documentLayout = React.useMemo(
     () => parseSectionLayout(primarySectionPropertiesXml),
     [primarySectionPropertiesXml]
@@ -25066,28 +25796,13 @@ export function DocxEditorViewer({
 
     return widthByNodeIndex;
   }, [editor.model.nodes, paginationSectionMetrics]);
-  const finalSectionColumns = React.useMemo(
-    () => parseSectionColumns(finalSectionPropertiesXml),
-    [finalSectionPropertiesXml]
+  const sectionColumnsBySectionIndex = React.useMemo(
+    () =>
+      documentSections.map((section) =>
+        parseSectionColumns(section.sectionPropertiesXml)
+      ),
+    [documentSections]
   );
-  const finalSectionStartNodeIndex = React.useMemo(() => {
-    let lastSectionBreakParagraphIndex = -1;
-    editor.model.nodes.forEach((node, nodeIndex) => {
-      if (node.type !== "paragraph") {
-        return;
-      }
-
-      if (SECTION_PROPERTIES_XML_PATTERN.test(node.sourceXml ?? "")) {
-        lastSectionBreakParagraphIndex = nodeIndex;
-      }
-    });
-
-    if (!finalSectionColumns) {
-      return undefined;
-    }
-
-    return Math.max(0, lastSectionBreakParagraphIndex + 1);
-  }, [editor.model.nodes, finalSectionColumns]);
   const paragraphNumberingLabels = React.useMemo(
     () => buildParagraphNumberingLabels(editor.model),
     [editor.model]
@@ -25233,6 +25948,32 @@ export function DocxEditorViewer({
     let estimatedPages = buildEstimatedPages(
       tableMeasuredRowHeightsForPagination
     );
+    if (
+      measuredPageContentHeightByIndex &&
+      measuredPageContentHeightByIndex.length > 0
+    ) {
+      const pureEstimatedPages = buildEstimatedPages(
+        tableMeasuredRowHeightsForPagination,
+        null
+      );
+      const measuredPagesAreOnlySplitParagraphs =
+        estimatedPages.length > 0 &&
+        estimatedPages.every((pageSegments) =>
+          documentPageContainsOnlySplitParagraphSegments(pageSegments)
+        );
+      const purePagesAreOnlySplitParagraphs =
+        pureEstimatedPages.length > 0 &&
+        pureEstimatedPages.every((pageSegments) =>
+          documentPageContainsOnlySplitParagraphSegments(pageSegments)
+        );
+      if (
+        measuredPagesAreOnlySplitParagraphs &&
+        purePagesAreOnlySplitParagraphs &&
+        pureEstimatedPages.length < estimatedPages.length
+      ) {
+        estimatedPages = pureEstimatedPages;
+      }
+    }
     if (
       !editor.canUndo &&
       !editor.canRedo &&
@@ -34746,9 +35487,14 @@ export function DocxEditorViewer({
               pageWidth: documentLayout.pageWidthPx,
             }
           : undefined;
+      const paragraphContentWidthPx =
+        location.kind === "paragraph"
+          ? (pageContentWidthPxByNodeIndex.get(location.nodeIndex) ??
+            documentContentWidthPx)
+          : documentContentWidthPx;
       const paragraphRenderTextWidthPx = paragraphAvailableTextWidthPx(
         paragraph,
-        documentContentWidthPx,
+        paragraphContentWidthPx,
         editor.model.metadata.numberingDefinitions
       );
       const paragraphPageFlowTopPx = Math.max(
@@ -35353,12 +36099,23 @@ export function DocxEditorViewer({
           const movePreview = movePreviewByImageIndex.get(geometry.imageIndex);
           const widthPx = geometry.imageWidthPx;
           const heightPx = geometry.imageHeightPx;
-          const floatingStyle = absoluteFloatingImageStyle(manualImage, {
-            pageOriginLeft: interactiveBodyFloatingPageOriginPx?.left ?? 0,
-            pageOriginTop: interactiveBodyFloatingPageOriginPx?.top ?? 0,
-            deltaX: movePreview?.deltaX ?? 0,
-            deltaY: movePreview?.deltaY ?? 0,
-          });
+          const floatingStyle = likelyFullPageCoverImageRelativeToContentBox(
+            manualImage,
+            documentContentWidthPx,
+            documentLayout.pageHeightPx -
+              documentLayout.marginsPx.top -
+              documentLayout.marginsPx.bottom
+          )
+            ? fullPageCoverAbsoluteFloatingImageStyle(manualImage, documentLayout, {
+                deltaX: movePreview?.deltaX ?? 0,
+                deltaY: movePreview?.deltaY ?? 0,
+              })
+            : absoluteFloatingImageStyle(manualImage, {
+                pageOriginLeft: interactiveBodyFloatingPageOriginPx?.left ?? 0,
+                pageOriginTop: interactiveBodyFloatingPageOriginPx?.top ?? 0,
+                deltaX: movePreview?.deltaX ?? 0,
+                deltaY: movePreview?.deltaY ?? 0,
+              });
           const renderableImageSrc =
             syntheticTextBoxSvg(
               manualImage,
@@ -35576,12 +36333,23 @@ export function DocxEditorViewer({
             resizedWidthPxByImageIndex.get(childIndex) ?? manualImage.widthPx;
           const heightPx =
             resizedHeightPxByImageIndex.get(childIndex) ?? manualImage.heightPx;
-          const floatingStyle = absoluteFloatingImageStyle(manualImage, {
-            pageOriginLeft: interactiveBodyFloatingPageOriginPx?.left ?? 0,
-            pageOriginTop: interactiveBodyFloatingPageOriginPx?.top ?? 0,
-            deltaX: movePreview?.deltaX ?? 0,
-            deltaY: movePreview?.deltaY ?? 0,
-          });
+          const floatingStyle = likelyFullPageCoverImageRelativeToContentBox(
+            manualImage,
+            documentContentWidthPx,
+            documentLayout.pageHeightPx -
+              documentLayout.marginsPx.top -
+              documentLayout.marginsPx.bottom
+          )
+            ? fullPageCoverAbsoluteFloatingImageStyle(manualImage, documentLayout, {
+                deltaX: movePreview?.deltaX ?? 0,
+                deltaY: movePreview?.deltaY ?? 0,
+              })
+            : absoluteFloatingImageStyle(manualImage, {
+                pageOriginLeft: interactiveBodyFloatingPageOriginPx?.left ?? 0,
+                pageOriginTop: interactiveBodyFloatingPageOriginPx?.top ?? 0,
+                deltaX: movePreview?.deltaX ?? 0,
+                deltaY: movePreview?.deltaY ?? 0,
+              });
           const renderableImageSrc =
             syntheticTextBoxSvg(
               manualImage,
@@ -35951,6 +36719,15 @@ export function DocxEditorViewer({
             shouldRenderWrappedFloatingImage(child);
           const isAbsoluteFloatingImage =
             shouldRenderAbsoluteFloatingImage(child);
+          const isLikelyFullPageCoverImage =
+            isAbsoluteFloatingImage &&
+            likelyFullPageCoverImageRelativeToContentBox(
+              child,
+              documentContentWidthPx,
+              documentLayout.pageHeightPx -
+                documentLayout.marginsPx.top -
+                documentLayout.marginsPx.bottom
+            );
           const dualWrapExclusionLayout = isWrappedFloatingImage
             ? wrappedFloatingImageDualExclusionLayout(child, {
                 containerWidthPx: paragraphRenderTextWidthPx,
@@ -35975,12 +36752,17 @@ export function DocxEditorViewer({
                 deltaY: movePreview?.deltaY ?? 0,
               })
             : isAbsoluteFloatingImage
-            ? absoluteFloatingImageStyle(child, {
-                pageOriginLeft: interactiveBodyFloatingPageOriginPx?.left ?? 0,
-                pageOriginTop: interactiveBodyFloatingPageOriginPx?.top ?? 0,
-                deltaX: movePreview?.deltaX ?? 0,
-                deltaY: movePreview?.deltaY ?? 0,
-              })
+            ? isLikelyFullPageCoverImage
+              ? fullPageCoverAbsoluteFloatingImageStyle(child, documentLayout, {
+                  deltaX: movePreview?.deltaX ?? 0,
+                  deltaY: movePreview?.deltaY ?? 0,
+                })
+              : absoluteFloatingImageStyle(child, {
+                  pageOriginLeft: interactiveBodyFloatingPageOriginPx?.left ?? 0,
+                  pageOriginTop: interactiveBodyFloatingPageOriginPx?.top ?? 0,
+                  deltaX: movePreview?.deltaX ?? 0,
+                  deltaY: movePreview?.deltaY ?? 0,
+                })
             : movePreview
             ? {
                 transform: `translate(${movePreview.deltaX}px, ${movePreview.deltaY}px)`,
@@ -35997,11 +36779,27 @@ export function DocxEditorViewer({
               undefined,
               undefined
             ) ?? resolveRenderableImageSource(child);
+          const isLiveSyntheticTextBox =
+            child.syntheticTextBox && !syntheticTextBoxContainsPictureLayer(child);
+          const syntheticTextBoxParagraphs = isLiveSyntheticTextBox
+            ? resolveSyntheticTextBoxParagraphs(child)
+            : undefined;
+          const syntheticTextBoxText = isLiveSyntheticTextBox
+            ? syntheticTextBoxTextValue(child) ?? ""
+            : "";
+          const syntheticTextBoxFrame = isLiveSyntheticTextBox
+            ? syntheticTextBoxFrameStyleFromRunXml(child.sourceXml ?? "")
+            : undefined;
           const showsUnsupportedFallback =
             imageUsesPlaceholderFallback(child) ||
             (child.src && !renderableImageSrc);
+          const liftLiveSyntheticTextBoxAboveArtwork =
+            isLiveSyntheticTextBox && child.floating?.behindDocument === true;
           const isBehindTextAbsoluteImage =
-            isAbsoluteFloatingImage && child.floating?.behindDocument === true;
+            isAbsoluteFloatingImage &&
+            child.floating?.behindDocument === true &&
+            !liftLiveSyntheticTextBoxAboveArtwork;
+          const imageShouldFillFrame = isLikelyFullPageCoverImage;
           const imageFrameStyle: React.CSSProperties = {
             display: "inline-block",
             position:
@@ -36096,13 +36894,19 @@ export function DocxEditorViewer({
               style={{
                 ...imageFrameStyle,
                 ...floatingStyle,
+                ...(liftLiveSyntheticTextBoxAboveArtwork
+                  ? { zIndex: syntheticTextBoxForegroundZIndex(child) }
+                  : undefined),
                 ...(isBehindTextAbsoluteImage ||
                 behavesAsDecorativeBehindTextBackground
                   ? { pointerEvents: "none", userSelect: "none" }
                   : undefined),
               }}
               onPointerDown={(event) =>
-                isReadOnly || behavesAsDecorativeBehindTextBackground
+                isReadOnly ||
+                behavesAsDecorativeBehindTextBackground ||
+                (event.target instanceof Element &&
+                  event.target.closest("[data-docx-textbox-editor='true']"))
                   ? undefined
                   : beginFloatingImageMove(
                       event,
@@ -36149,7 +36953,94 @@ export function DocxEditorViewer({
                 );
               }}
             >
-              {renderableImageSrc && !showsUnsupportedFallback ? (
+              {isLiveSyntheticTextBox ? (
+                <div
+                  data-docx-textbox-editor="true"
+                  contentEditable={!isReadOnly}
+                  suppressContentEditableWarning
+                  spellCheck={false}
+                  onFocus={(event) => {
+                    event.stopPropagation();
+                    if (!isReadOnly) {
+                      setSelectedImage(imageLocation);
+                    }
+                  }}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    if (!isReadOnly) {
+                      setSelectedImage(imageLocation);
+                    }
+                  }}
+                  onPointerDown={(event) => {
+                    event.stopPropagation();
+                    if (!isReadOnly) {
+                      setSelectedImage(imageLocation);
+                    }
+                  }}
+                  onBlur={(event) => {
+                    if (isReadOnly) {
+                      return;
+                    }
+                    editor.setSyntheticTextBoxText(
+                      imageLocation,
+                      event.currentTarget.innerText
+                    );
+                  }}
+                  style={{
+                    width: widthPx ? `${widthPx}px` : undefined,
+                    height: heightPx ? `${heightPx}px` : undefined,
+                    boxSizing: "border-box",
+                    overflowX: "hidden",
+                    overflowY: "visible",
+                    backgroundColor: syntheticTextBoxFrame?.backgroundColor,
+                    ...(syntheticTextBoxFrame &&
+                    syntheticTextBoxFrame.borderWidthPx > 0 &&
+                    syntheticTextBoxFrame.borderColor
+                      ? {
+                          border: `${syntheticTextBoxFrame.borderWidthPx}px solid ${syntheticTextBoxFrame.borderColor}`,
+                        }
+                      : { border: "none" }),
+                    paddingTop: syntheticTextBoxFrame?.paddingTopPx ?? 3,
+                    paddingRight: syntheticTextBoxFrame?.paddingRightPx ?? 6,
+                    paddingBottom: syntheticTextBoxFrame?.paddingBottomPx ?? 3,
+                    paddingLeft: syntheticTextBoxFrame?.paddingLeftPx ?? 6,
+                    whiteSpace: "pre-wrap",
+                    cursor: isReadOnly ? "default" : "text",
+                    outline: "none",
+                    display: "block",
+                  }}
+                >
+                  {syntheticTextBoxParagraphs && syntheticTextBoxParagraphs.length > 0
+                    ? syntheticTextBoxParagraphs.map((paragraph, paragraphIndex) => (
+                        <div
+                          key={`${runKey}-textbox-paragraph-${paragraphIndex}`}
+                          style={{
+                            minHeight: `${Math.max(1, paragraph.lineHeightPx)}px`,
+                            lineHeight: `${Math.max(1, paragraph.lineHeightPx)}px`,
+                            textAlign: paragraph.align ?? "left",
+                            whiteSpace: "pre-wrap",
+                          }}
+                        >
+                          {paragraph.segments.map((segment, segmentIndex) => (
+                            <span
+                              key={`${runKey}-textbox-paragraph-${paragraphIndex}-segment-${segmentIndex}`}
+                              style={
+                                segment.style
+                                  ? runStyleToCss(
+                                      segment.style,
+                                      editor.documentTheme
+                                    )
+                                  : undefined
+                              }
+                            >
+                              {segment.text}
+                            </span>
+                          ))}
+                        </div>
+                      ))
+                    : syntheticTextBoxText}
+                </div>
+              ) : renderableImageSrc && !showsUnsupportedFallback ? (
                 (() => {
                   const cropLayout = imageCropLayout(child, widthPx, heightPx);
                   const imageVisualStyle: React.CSSProperties = {
@@ -36169,8 +37060,12 @@ export function DocxEditorViewer({
                     return (
                       <span
                         style={{
-                          width: `${cropLayout.frameWidthPx}px`,
-                          height: `${cropLayout.frameHeightPx}px`,
+                          width: imageShouldFillFrame
+                            ? "100%"
+                            : `${cropLayout.frameWidthPx}px`,
+                          height: imageShouldFillFrame
+                            ? "100%"
+                            : `${cropLayout.frameHeightPx}px`,
                           overflow: "hidden",
                           display: "block",
                         }}
@@ -36199,12 +37094,19 @@ export function DocxEditorViewer({
                               : undefined
                           }
                           style={{
-                            width: `${cropLayout.imageWidthPx}px`,
-                            height: `${cropLayout.imageHeightPx}px`,
+                            width: imageShouldFillFrame
+                              ? "100%"
+                              : `${cropLayout.imageWidthPx}px`,
+                            height: imageShouldFillFrame
+                              ? "100%"
+                              : `${cropLayout.imageHeightPx}px`,
                             maxWidth: "none",
                             verticalAlign: "middle",
                             display: "block",
-                            transform: `translate(${-cropLayout.offsetXPx}px, ${-cropLayout.offsetYPx}px)`,
+                            transform: imageShouldFillFrame
+                              ? undefined
+                              : `translate(${-cropLayout.offsetXPx}px, ${-cropLayout.offsetYPx}px)`,
+                            objectFit: imageShouldFillFrame ? "cover" : undefined,
                             cursor: imageCursor,
                             ...(behavesAsDecorativeBehindTextBackground
                               ? { pointerEvents: "none", userSelect: "none" }
@@ -36240,14 +37142,25 @@ export function DocxEditorViewer({
                           : undefined
                       }
                       style={{
-                        width: widthPx ? `${widthPx}px` : undefined,
-                        height: heightPx ? `${heightPx}px` : undefined,
+                        width: imageShouldFillFrame
+                          ? "100%"
+                          : widthPx
+                          ? `${widthPx}px`
+                          : undefined,
+                        height: imageShouldFillFrame
+                          ? "100%"
+                          : heightPx
+                          ? `${heightPx}px`
+                          : undefined,
                         maxWidth:
-                          isWrappedFloatingImage || isAbsoluteFloatingImage
+                          imageShouldFillFrame
+                            ? "none"
+                            : isWrappedFloatingImage || isAbsoluteFloatingImage
                             ? undefined
                             : "100%",
                         verticalAlign: "middle",
                         display: "block",
+                        objectFit: imageShouldFillFrame ? "cover" : undefined,
                         cursor: imageCursor,
                         ...(behavesAsDecorativeBehindTextBackground
                           ? { pointerEvents: "none", userSelect: "none" }
@@ -37142,9 +38055,16 @@ export function DocxEditorViewer({
       documentLayout.marginsPx.left -
       documentLayout.marginsPx.right
   );
+  const documentInheritedFontFamily = React.useMemo(
+    () => resolveDocumentInheritedFontFamily(editor.model),
+    [editor.model]
+  );
   const pageSurfaceBaseStyle: React.CSSProperties = {
     ...BASE_DOC_STYLE,
     ...DOC_SURFACE_STYLE_BY_THEME[editor.documentTheme],
+    ...(documentInheritedFontFamily
+      ? { fontFamily: documentInheritedFontFamily }
+      : undefined),
     ...(isDragOverCanvas
       ? { boxShadow: "0 0 0 2px rgba(59,130,246,0.4)" }
       : undefined),
@@ -37219,11 +38139,40 @@ export function DocxEditorViewer({
         paragraphSegmentIsActiveEditable ||
         (!paragraphHasActiveEditableSegment && paragraphSegmentStartLine === 0);
       const isManualPageBreakParagraph = paragraphIsOnlyExplicitPageBreak(node);
+      const paragraphContentWidthPx =
+        pageContentWidthPxByNodeIndex.get(nodeIndex) ?? documentContentWidthPx;
       const paragraphRenderTextWidthPx = paragraphAvailableTextWidthPx(
         node,
-        documentContentWidthPx,
+        paragraphContentWidthPx,
         editor.model.metadata.numberingDefinitions
       );
+      const pretextParagraphSource = hasPartialLineRange
+        ? buildParagraphPretextLayoutSource(node)
+        : undefined;
+      const pretextParagraphLayout =
+        hasPartialLineRange && pretextParagraphSource
+          ? layoutTextWithPretextAroundExclusions(
+              pretextParagraphSource.text,
+              resolveMeasureFont(
+                firstRunStyle(node),
+                paragraphBaseFontSizePx(node)
+              ),
+              paragraphRenderTextWidthPx,
+              paragraphSegmentLineHeightPx,
+              []
+            )
+          : undefined;
+      const pretextParagraphSliceLayout =
+        hasPartialLineRange &&
+        pretextParagraphLayout &&
+        paragraphLineRange &&
+        pretextParagraphLayout.lineCount > 0
+          ? sliceLayoutToLineRange(
+              pretextParagraphLayout,
+              paragraphLineRange.startLineIndex,
+              paragraphLineRange.endLineIndex
+            )
+          : undefined;
       const editable =
         !hasImage &&
         !isReadOnly &&
@@ -37248,6 +38197,15 @@ export function DocxEditorViewer({
             pageMarginTopPx: resolvedPageLayout.marginsPx.top,
           }
         )
+      );
+      const leadingCoverLayoutSpacer = paragraphActsAsLeadingCoverLayoutSpacer(
+        editor.model,
+        nodeIndex,
+        node,
+        paragraphContentWidthPx,
+        resolvedPageLayout.pageHeightPx -
+          resolvedPageLayout.marginsPx.top -
+          resolvedPageLayout.marginsPx.bottom
       );
       const beforeSpacingPx = effectiveParagraphBeforeSpacingPx(
         editor.model,
@@ -37322,9 +38280,49 @@ export function DocxEditorViewer({
           : hasDualWrappedFloatingImage
           ? { position: "relative" }
           : undefined),
+        ...(leadingCoverLayoutSpacer
+          ? {
+              minHeight: `${
+                estimateParagraphLineHeightPx(node, nodeDocGridLinePitchPx) +
+                EMPTY_PARAGRAPH_EXTRA_HEIGHT_PX +
+                LEADING_COVER_SPACER_EXTRA_HEIGHT_PX
+              }px`,
+            }
+          : undefined),
         outline: "none",
       };
-      const renderedInteractiveParagraphContent = hasPartialLineRange ? (
+      const renderedInteractiveParagraphContent =
+        hasPartialLineRange &&
+        pretextParagraphSource &&
+        pretextParagraphSliceLayout &&
+        pretextParagraphSliceLayout.lineCount > 0 ? (
+        <div
+          style={{
+            minHeight:
+              paragraphSegmentVisibleHeightPx +
+              paragraphSegmentClipBleedTopPx +
+              paragraphSegmentClipBleedBottomPx,
+            marginBottom: -(
+              paragraphSegmentClipBleedTopPx + paragraphSegmentClipBleedBottomPx
+            ),
+            paddingTop: paragraphSegmentClipBleedTopPx,
+            paddingBottom: paragraphSegmentClipBleedBottomPx,
+          }}
+        >
+          {renderWrappedPretextParagraph({
+            location: {
+              kind: "paragraph",
+              nodeIndex,
+            },
+            keyPrefix: `node-${nodeIndex}-lines-${paragraphSegmentStartLine}-${paragraphSegmentEndLine}`,
+            source: pretextParagraphSource,
+            layout: pretextParagraphSliceLayout,
+            lineHeightPx: paragraphSegmentLineHeightPx,
+            baseTextStyle: firstRunStyle(node),
+            blockHeightPx: pretextParagraphSliceLayout.height,
+          })}
+        </div>
+      ) : hasPartialLineRange ? (
         <div
           style={{
             height:
@@ -37338,7 +38336,8 @@ export function DocxEditorViewer({
             marginBottom: -(
               paragraphSegmentClipBleedTopPx + paragraphSegmentClipBleedBottomPx
             ),
-            overflow: "hidden",
+            overflowX: "hidden",
+            overflowY: "visible",
           }}
         >
           <div
@@ -38403,7 +39402,7 @@ export function DocxEditorViewer({
                     resolvedTableWidthPx > 0
                       ? `${resolvedTableWidthPx}px`
                       : "100%",
-                  borderCollapse: "collapse",
+                  ...tableElementBorderStyle(node),
                   tableLayout:
                     node.style?.layout === "autofit" ? "auto" : "fixed",
                 }}
@@ -41527,7 +42526,12 @@ export function DocxEditorViewer({
             resolveStyleRefFieldValueForPage(pageIndex, target),
           ...(pageNumberFormat ? { pageNumberFormat } : undefined),
         };
+        const isLastPage = pageIndex === pageCount - 1;
         const pageFootnotes = pageFootnotesByIndex[pageIndex] ?? [];
+        const pageBottomFootnotes =
+          isLastPage && remainingFootnotes.length > 0
+            ? [...pageFootnotes, ...remainingFootnotes]
+            : pageFootnotes;
         const pageBodyAvailableHeightPx = resolvePageContentHeightPxForPageSegments(
           pageNodeSegments,
           pageIndex,
@@ -41540,7 +42544,6 @@ export function DocxEditorViewer({
           paginationSectionMetrics,
           measuredPageContentHeightByIndex
         );
-        const isLastPage = pageIndex === pageCount - 1;
         const headerFooterBodyDimmed = pageHeaderFooterEditActive;
         const pageSurfaceStyle: React.CSSProperties = {
           ...pageSurfaceBaseStyle,
@@ -41736,82 +42739,652 @@ export function DocxEditorViewer({
               >
                 <div style={{ minHeight: 0 }}>
                   {(() => {
-                    if (
-                      !finalSectionColumns ||
-                      finalSectionStartNodeIndex === undefined
-                    ) {
-                      return renderNodeSegments(pageNodeSegments, { pageLayout });
+                    if (pageNodeSegments.length === 0) {
+                      return null;
                     }
 
-                    const multiColumnStartOffset = pageNodeSegments.findIndex(
-                      (segment) => segment.nodeIndex >= finalSectionStartNodeIndex
-                    );
-                    if (multiColumnStartOffset < 0) {
-                      return renderNodeSegments(pageNodeSegments, { pageLayout });
-                    }
+                    const sectionGroups: Array<{
+                      sectionIndex: number;
+                      segments: DocumentPageNodeSegment[];
+                    }> = [];
+                    let currentSectionIndex = 0;
 
-                    const regularNodeSegments = pageNodeSegments.slice(
-                      0,
-                      multiColumnStartOffset
-                    );
-                    const multiColumnNodeSegments = pageNodeSegments.slice(
-                      multiColumnStartOffset
-                    );
+                    pageNodeSegments.forEach((segment) => {
+                      currentSectionIndex = resolveSectionIndexForNodeIndex(
+                        documentSections,
+                        segment.nodeIndex,
+                        currentSectionIndex
+                      );
+                      const currentGroup =
+                        sectionGroups[sectionGroups.length - 1];
+                      if (
+                        currentGroup &&
+                        currentGroup.sectionIndex === currentSectionIndex
+                      ) {
+                        currentGroup.segments.push(segment);
+                        return;
+                      }
 
-                    return (
-                      <>
-                        {renderNodeSegments(regularNodeSegments, { pageLayout })}
-                        <div
-                          style={{
-                            columnCount: finalSectionColumns.count,
-                            columnGap: finalSectionColumns.gapPx,
-                            columnFill: "balance",
-                          }}
-                        >
-                          {multiColumnNodeSegments.map((columnSegment) => {
-                            const columnNode =
-                              editor.model.nodes[columnSegment.nodeIndex];
-                            if (!columnNode) {
-                              return null;
+                      sectionGroups.push({
+                        sectionIndex: currentSectionIndex,
+                        segments: [segment],
+                      });
+                    });
+
+                    return sectionGroups.map((group, groupIndex) => {
+                      const sectionColumns =
+                        sectionColumnsBySectionIndex[group.sectionIndex];
+                      const overlaySegments = group.segments.filter(
+                        (segment) => {
+                          const segmentNode =
+                            editor.model.nodes[segment.nodeIndex];
+                          return (
+                            segmentNode?.type === "paragraph" &&
+                            paragraphActsAsDecorativeBehindTextBackgroundOverlay(
+                              segmentNode
+                            )
+                          );
+                        }
+                      );
+                      const flowSegments =
+                        overlaySegments.length === 0
+                          ? group.segments
+                          : group.segments.filter(
+                              (segment) =>
+                                !overlaySegments.some(
+                                  (overlaySegment) =>
+                                    overlaySegment.nodeIndex ===
+                                      segment.nodeIndex &&
+                                    overlaySegment.tableRowRange ===
+                                      segment.tableRowRange &&
+                                    overlaySegment.paragraphLineRange ===
+                                      segment.paragraphLineRange
+                                )
+                            );
+                      const segmentIdentityMatches = (
+                        left: DocumentPageNodeSegment,
+                        right: DocumentPageNodeSegment
+                      ): boolean =>
+                        left.nodeIndex === right.nodeIndex &&
+                        left.tableRowRange?.startRowIndex ===
+                          right.tableRowRange?.startRowIndex &&
+                        left.tableRowRange?.endRowIndex ===
+                          right.tableRowRange?.endRowIndex &&
+                        left.paragraphLineRange?.startLineIndex ===
+                          right.paragraphLineRange?.startLineIndex &&
+                        left.paragraphLineRange?.endLineIndex ===
+                          right.paragraphLineRange?.endLineIndex;
+                      const segmentIdentityKey = (
+                        segment: DocumentPageNodeSegment
+                      ): string =>
+                        `${segment.nodeIndex}::${
+                          segment.tableRowRange
+                            ? `rows-${segment.tableRowRange.startRowIndex}-${segment.tableRowRange.endRowIndex}`
+                            : segment.paragraphLineRange
+                            ? `lines-${segment.paragraphLineRange.startLineIndex}-${segment.paragraphLineRange.endLineIndex}`
+                            : "all"
+                        }`;
+                      const requiresPlainFlowRender = flowSegments.some(
+                        (segment) => {
+                          const segmentNode =
+                            editor.model.nodes[segment.nodeIndex];
+                          if (!segmentNode || segmentNode.type !== "paragraph") {
+                            return false;
+                          }
+                          return paragraphHasAbsoluteFloatingImage(segmentNode);
+                        }
+                      );
+                      const explicitColumnWidthsPx =
+                        sectionColumns &&
+                        sectionColumns.widthsPx?.length === sectionColumns.count
+                          ? sectionColumns.widthsPx
+                          : undefined;
+                      const renderSegmentInColumn = (
+                        columnSegment: DocumentPageNodeSegment
+                      ): React.ReactNode => {
+                        const columnNode =
+                          editor.model.nodes[columnSegment.nodeIndex];
+                        if (!columnNode) {
+                          return null;
+                        }
+
+                        const renderedNode = renderDocumentNode(
+                          columnNode,
+                          columnSegment.nodeIndex,
+                          columnSegment.tableRowRange,
+                          columnSegment.paragraphLineRange,
+                          {
+                            pageLayout,
+                          }
+                        );
+                        const segmentKeySuffix = columnSegment.tableRowRange
+                          ? `rows-${columnSegment.tableRowRange.startRowIndex}-${columnSegment.tableRowRange.endRowIndex}`
+                          : columnSegment.paragraphLineRange
+                          ? `lines-${columnSegment.paragraphLineRange.startLineIndex}-${columnSegment.paragraphLineRange.endLineIndex}`
+                          : "all";
+                        return (
+                          <div
+                            key={`column-layout-node-${pageIndex}-${columnSegment.nodeIndex}-${segmentKeySuffix}`}
+                            style={
+                              columnNode.type === "table"
+                                ? { breakInside: "avoid" }
+                                : undefined
                             }
+                          >
+                            {renderedNode}
+                          </div>
+                        );
+                      };
+                      if (
+                        !sectionColumns ||
+                        sectionColumns.count <= 1 ||
+                        requiresPlainFlowRender
+                      ) {
+                        return (
+                          <React.Fragment
+                            key={`page-${pageIndex}-section-group-${groupIndex}`}
+                          >
+                            {renderNodeSegments(group.segments, { pageLayout })}
+                          </React.Fragment>
+                        );
+                      }
 
-                            const renderedNode = renderDocumentNode(
-                              columnNode,
-                              columnSegment.nodeIndex,
-                              columnSegment.tableRowRange,
-                              columnSegment.paragraphLineRange,
-                              {
-                                pageLayout,
-                              }
-                            );
-                            const segmentKeySuffix = columnSegment.tableRowRange
-                              ? `rows-${columnSegment.tableRowRange.startRowIndex}-${columnSegment.tableRowRange.endRowIndex}`
-                              : columnSegment.paragraphLineRange
-                              ? `lines-${columnSegment.paragraphLineRange.startLineIndex}-${columnSegment.paragraphLineRange.endLineIndex}`
-                              : "all";
-                            return (
-                              <div
-                                key={`column-layout-node-${pageIndex}-${columnSegment.nodeIndex}-${segmentKeySuffix}`}
-                                style={
-                                  columnNode.type === "table"
-                                    ? { breakInside: "avoid" }
-                                    : undefined
+                      return (
+                        <div
+                          key={`page-${pageIndex}-section-group-${groupIndex}`}
+                          style={{ position: "relative" }}
+                        >
+                          {explicitColumnWidthsPx &&
+                          explicitColumnWidthsPx.length === 2 &&
+                          flowSegments.length > 0
+                            ? (() => {
+                                const [leftColumnWidthPx, rightColumnWidthPx] =
+                                  explicitColumnWidthsPx;
+                                const prefixHeightsPx = new Array(
+                                  flowSegments.length + 1
+                                ).fill(0);
+                                const suffixHeightsPx = new Array(
+                                  flowSegments.length + 1
+                                ).fill(0);
+                                for (
+                                  let flowIndex = 0;
+                                  flowIndex < flowSegments.length;
+                                  flowIndex += 1
+                                ) {
+                                  const segment = flowSegments[flowIndex];
+                                  const segmentNode =
+                                    editor.model.nodes[segment.nodeIndex];
+                                  prefixHeightsPx[flowIndex + 1] =
+                                    prefixHeightsPx[flowIndex] +
+                                    (segmentNode
+                                      ? estimateRenderedPageSegmentHeightPx(
+                                          segmentNode,
+                                          segment,
+                                          editor.model,
+                                          leftColumnWidthPx,
+                                          editor.model.metadata
+                                            .numberingDefinitions,
+                                          docGridLinePitchPxByNodeIndex.get(
+                                            segment.nodeIndex
+                                          )
+                                        )
+                                      : 0);
                                 }
+                                for (
+                                  let flowIndex = flowSegments.length - 1;
+                                  flowIndex >= 0;
+                                  flowIndex -= 1
+                                ) {
+                                  const segment = flowSegments[flowIndex];
+                                  const segmentNode =
+                                    editor.model.nodes[segment.nodeIndex];
+                                  suffixHeightsPx[flowIndex] =
+                                    suffixHeightsPx[flowIndex + 1] +
+                                    (segmentNode
+                                      ? estimateRenderedPageSegmentHeightPx(
+                                          segmentNode,
+                                          segment,
+                                          editor.model,
+                                          rightColumnWidthPx,
+                                          editor.model.metadata
+                                            .numberingDefinitions,
+                                          docGridLinePitchPxByNodeIndex.get(
+                                            segment.nodeIndex
+                                          )
+                                        )
+                                      : 0);
+                                }
+                                let bestBreakIndex = flowSegments.length;
+                                let bestBreakScore = Number.POSITIVE_INFINITY;
+                                for (
+                                  let breakIndex = 0;
+                                  breakIndex <= flowSegments.length;
+                                  breakIndex += 1
+                                ) {
+                                  const leftHeightPx =
+                                    prefixHeightsPx[breakIndex];
+                                  const rightHeightPx =
+                                    suffixHeightsPx[breakIndex];
+                                  const score = Math.max(
+                                    leftHeightPx,
+                                    rightHeightPx
+                                  );
+                                  if (score < bestBreakScore) {
+                                    bestBreakScore = score;
+                                    bestBreakIndex = breakIndex;
+                                  }
+                                }
+                                const leftSegments = flowSegments.slice(
+                                  0,
+                                  bestBreakIndex
+                                );
+                                const rightSegments =
+                                  flowSegments.slice(bestBreakIndex);
+                                const leftSegmentKeys = new Set(
+                                  leftSegments.map(segmentIdentityKey)
+                                );
+                                const rightSegmentKeys = new Set(
+                                  rightSegments.map(segmentIdentityKey)
+                                );
+                                const leftPrefixHeightBySegmentKey =
+                                  new Map<string, number>();
+                                let runningLeftHeightPx = 0;
+                                leftSegments.forEach((segment) => {
+                                  leftPrefixHeightBySegmentKey.set(
+                                    segmentIdentityKey(segment),
+                                    runningLeftHeightPx
+                                  );
+                                  const segmentNode =
+                                    editor.model.nodes[segment.nodeIndex];
+                                  runningLeftHeightPx += segmentNode
+                                    ? estimateRenderedPageSegmentHeightPx(
+                                        segmentNode,
+                                        segment,
+                                        editor.model,
+                                        leftColumnWidthPx,
+                                        editor.model.metadata
+                                          .numberingDefinitions,
+                                        docGridLinePitchPxByNodeIndex.get(
+                                          segment.nodeIndex
+                                        )
+                                      )
+                                    : 0;
+                                });
+                                const rightPrefixHeightBySegmentKey =
+                                  new Map<string, number>();
+                                let runningRightHeightPx = 0;
+                                rightSegments.forEach((segment) => {
+                                  rightPrefixHeightBySegmentKey.set(
+                                    segmentIdentityKey(segment),
+                                    runningRightHeightPx
+                                  );
+                                  const segmentNode =
+                                    editor.model.nodes[segment.nodeIndex];
+                                  runningRightHeightPx += segmentNode
+                                    ? estimateRenderedPageSegmentHeightPx(
+                                        segmentNode,
+                                        segment,
+                                        editor.model,
+                                        rightColumnWidthPx,
+                                        editor.model.metadata
+                                          .numberingDefinitions,
+                                        docGridLinePitchPxByNodeIndex.get(
+                                          segment.nodeIndex
+                                        )
+                                      )
+                                    : 0;
+                                });
+                                const overlayPlacements = overlaySegments
+                                  .map((overlaySegment) => {
+                                    const overlayNode =
+                                      editor.model.nodes[
+                                        overlaySegment.nodeIndex
+                                      ];
+                                    if (
+                                      !overlayNode ||
+                                      overlayNode.type !== "paragraph"
+                                    ) {
+                                      return null;
+                                    }
+                                    let precedingFlowCount = 0;
+                                    for (const groupedSegment of group.segments) {
+                                      if (
+                                        segmentIdentityMatches(
+                                          groupedSegment,
+                                          overlaySegment
+                                        )
+                                      ) {
+                                        break;
+                                      }
+                                      if (
+                                        flowSegments.some((flowSegment) =>
+                                          segmentIdentityMatches(
+                                            flowSegment,
+                                            groupedSegment
+                                          )
+                                        )
+                                      ) {
+                                        precedingFlowCount += 1;
+                                      }
+                                    }
+                                    const primaryOverlayImage =
+                                      overlayNode.children.find(
+                                        (child: ParagraphNode["children"][number]): child is ImageRunNode =>
+                                          child.type === "image" &&
+                                          Boolean(child.floating)
+                                      );
+                                    const primaryOverlayOffsetTopPx =
+                                      primaryOverlayImage?.floating?.yPx ?? 0;
+                                    const targetColumn = (() => {
+                                      if (
+                                        primaryOverlayImage?.floating
+                                          ?.horizontalRelativeTo === "column" &&
+                                        Number.isFinite(
+                                          primaryOverlayImage.widthPx
+                                        )
+                                      ) {
+                                        const imageWidthPx =
+                                          primaryOverlayImage.widthPx ?? 0;
+                                        const imageOffsetPx =
+                                          primaryOverlayImage.floating?.xPx ??
+                                          0;
+                                        const leftPlacedLeftPx =
+                                          imageOffsetPx;
+                                        const rightPlacedLeftPx =
+                                          leftColumnWidthPx +
+                                          sectionColumns.gapPx +
+                                          imageOffsetPx;
+                                        const leftPlacedCenterPx =
+                                          leftPlacedLeftPx + imageWidthPx / 2;
+                                        const rightPlacedCenterPx =
+                                          rightPlacedLeftPx + imageWidthPx / 2;
+                                        const leftColumnCenterPx =
+                                          leftColumnWidthPx / 2;
+                                        const rightColumnCenterPx =
+                                          leftColumnWidthPx +
+                                          sectionColumns.gapPx +
+                                          rightColumnWidthPx / 2;
+                                        const totalColumnWidthPx =
+                                          leftColumnWidthPx +
+                                          sectionColumns.gapPx +
+                                          rightColumnWidthPx;
+                                        const leftOverflowPenaltyPx =
+                                          Math.max(0, -leftPlacedLeftPx) +
+                                          Math.max(
+                                            0,
+                                            leftPlacedLeftPx +
+                                              imageWidthPx -
+                                              totalColumnWidthPx
+                                          );
+                                        const rightOverflowPenaltyPx =
+                                          Math.max(0, -rightPlacedLeftPx) +
+                                          Math.max(
+                                            0,
+                                            rightPlacedLeftPx +
+                                              imageWidthPx -
+                                              totalColumnWidthPx
+                                          );
+                                        const leftScore =
+                                          Math.abs(
+                                            leftPlacedCenterPx -
+                                              leftColumnCenterPx
+                                          ) +
+                                          leftOverflowPenaltyPx * 4;
+                                        const rightScore =
+                                          Math.abs(
+                                            rightPlacedCenterPx -
+                                              rightColumnCenterPx
+                                          ) +
+                                          rightOverflowPenaltyPx * 4;
+                                        if (leftScore !== rightScore) {
+                                          return leftScore < rightScore
+                                            ? "left"
+                                            : "right";
+                                        }
+                                      }
+                                      return precedingFlowCount >= bestBreakIndex
+                                        ? "right"
+                                        : "left";
+                                    })();
+                                    const targetPrefixHeightBySegmentKey =
+                                      targetColumn === "left"
+                                        ? leftPrefixHeightBySegmentKey
+                                        : rightPrefixHeightBySegmentKey;
+                                    const targetSegmentKeys =
+                                      targetColumn === "left"
+                                        ? leftSegmentKeys
+                                        : rightSegmentKeys;
+                                    const targetColumnFallbackHeightPx =
+                                      targetColumn === "left"
+                                        ? runningLeftHeightPx
+                                        : runningRightHeightPx;
+                                    const laterTargetFlowSegment =
+                                      group.segments.find((groupedSegment) => {
+                                        if (
+                                          segmentIdentityMatches(
+                                            groupedSegment,
+                                            overlaySegment
+                                          )
+                                        ) {
+                                          return false;
+                                        }
+                                        const overlayIndex =
+                                          group.segments.findIndex((candidate) =>
+                                            segmentIdentityMatches(
+                                              candidate,
+                                              overlaySegment
+                                            )
+                                          );
+                                        const groupedIndex =
+                                          group.segments.findIndex((candidate) =>
+                                            segmentIdentityMatches(
+                                              candidate,
+                                              groupedSegment
+                                            )
+                                          );
+                                        if (
+                                          overlayIndex === -1 ||
+                                          groupedIndex <= overlayIndex
+                                        ) {
+                                          return false;
+                                        }
+                                        return targetSegmentKeys.has(
+                                          segmentIdentityKey(groupedSegment)
+                                        );
+                                      });
+                                    const resolvedOverlayTopPx =
+                                      laterTargetFlowSegment &&
+                                      targetPrefixHeightBySegmentKey.has(
+                                        segmentIdentityKey(laterTargetFlowSegment)
+                                      )
+                                        ? Math.max(
+                                            0,
+                                            (targetPrefixHeightBySegmentKey.get(
+                                              segmentIdentityKey(
+                                                laterTargetFlowSegment
+                                              )
+                                            ) ?? targetColumnFallbackHeightPx) -
+                                              primaryOverlayOffsetTopPx
+                                          )
+                                        : (() => {
+                                            let accumulatedTopPx = 0;
+                                            for (const groupedSegment of group.segments) {
+                                              if (
+                                                segmentIdentityMatches(
+                                                  groupedSegment,
+                                                  overlaySegment
+                                                )
+                                              ) {
+                                                break;
+                                              }
+                                              const groupedSegmentKey =
+                                                segmentIdentityKey(
+                                                  groupedSegment
+                                                );
+                                              if (
+                                                !targetSegmentKeys.has(
+                                                  groupedSegmentKey
+                                                )
+                                              ) {
+                                                continue;
+                                              }
+                                              const groupedSegmentNode =
+                                                editor.model.nodes[
+                                                  groupedSegment.nodeIndex
+                                                ];
+                                              accumulatedTopPx += groupedSegmentNode
+                                                ? estimateRenderedPageSegmentHeightPx(
+                                                    groupedSegmentNode,
+                                                    groupedSegment,
+                                                    editor.model,
+                                                    targetColumn === "left"
+                                                      ? leftColumnWidthPx
+                                                      : rightColumnWidthPx,
+                                                    editor.model.metadata
+                                                      .numberingDefinitions,
+                                                    docGridLinePitchPxByNodeIndex.get(
+                                                      groupedSegment.nodeIndex
+                                                    )
+                                                  )
+                                                : 0;
+                                            }
+                                            return accumulatedTopPx;
+                                          })();
+                                    const topPx = Math.max(
+                                      0,
+                                      resolvedOverlayTopPx -
+                                        primaryOverlayOffsetTopPx
+                                    );
+                                    return {
+                                      overlayNode,
+                                      overlaySegment,
+                                      targetColumn,
+                                      topPx,
+                                    };
+                                  })
+                                  .filter(
+                                    (
+                                      placement
+                                    ): placement is {
+                                      overlayNode: ParagraphNode;
+                                      overlaySegment: DocumentPageNodeSegment;
+                                      targetColumn: "left" | "right";
+                                      topPx: number;
+                                    } => placement !== null
+                                  );
+                                return (
+                                  <div
+                                    style={{
+                                      display: "grid",
+                                      gridTemplateColumns: `${leftColumnWidthPx}px ${rightColumnWidthPx}px`,
+                                      columnGap: sectionColumns.gapPx,
+                                      alignItems: "start",
+                                      position: "relative",
+                                      zIndex: 1,
+                                    }}
+                                  >
+                                    {overlayPlacements.map(
+                                      ({
+                                        overlayNode,
+                                        overlaySegment,
+                                        targetColumn,
+                                        topPx,
+                                      }) => {
+                                        const segmentKeySuffix =
+                                          overlaySegment.tableRowRange
+                                            ? `rows-${overlaySegment.tableRowRange.startRowIndex}-${overlaySegment.tableRowRange.endRowIndex}`
+                                            : overlaySegment.paragraphLineRange
+                                            ? `lines-${overlaySegment.paragraphLineRange.startLineIndex}-${overlaySegment.paragraphLineRange.endLineIndex}`
+                                            : "all";
+                                        return (
+                                          <div
+                                            key={`column-layout-overlay-${pageIndex}-${overlaySegment.nodeIndex}-${segmentKeySuffix}`}
+                                            style={{
+                                              position: "absolute",
+                                              top: topPx,
+                                              left:
+                                                targetColumn === "left"
+                                                  ? 0
+                                                  : leftColumnWidthPx +
+                                                    sectionColumns.gapPx,
+                                              width:
+                                                targetColumn === "left"
+                                                  ? leftColumnWidthPx
+                                                  : rightColumnWidthPx,
+                                              pointerEvents: "none",
+                                              zIndex: 0,
+                                            }}
+                                          >
+                                            {renderDocumentNode(
+                                              overlayNode,
+                                              overlaySegment.nodeIndex,
+                                              overlaySegment.tableRowRange,
+                                              overlaySegment.paragraphLineRange,
+                                              {
+                                                pageLayout,
+                                              }
+                                            )}
+                                          </div>
+                                        );
+                                      }
+                                    )}
+                                    <div>{leftSegments.map(renderSegmentInColumn)}</div>
+                                    <div>{rightSegments.map(renderSegmentInColumn)}</div>
+                                  </div>
+                                );
+                              })()
+                            : (
+                              <div
+                                style={{
+                                  columnCount: sectionColumns.count,
+                                  columnGap: sectionColumns.gapPx,
+                                  columnFill: "balance",
+                                  position: "relative",
+                                  zIndex: 1,
+                                }}
                               >
-                                {renderedNode}
+                                {overlaySegments.map((overlaySegment) => {
+                                  const overlayNode =
+                                    editor.model.nodes[overlaySegment.nodeIndex];
+                                  if (!overlayNode) {
+                                    return null;
+                                  }
+                                  const segmentKeySuffix =
+                                    overlaySegment.tableRowRange
+                                      ? `rows-${overlaySegment.tableRowRange.startRowIndex}-${overlaySegment.tableRowRange.endRowIndex}`
+                                      : overlaySegment.paragraphLineRange
+                                      ? `lines-${overlaySegment.paragraphLineRange.startLineIndex}-${overlaySegment.paragraphLineRange.endLineIndex}`
+                                      : "all";
+                                  return (
+                                    <React.Fragment
+                                      key={`column-layout-overlay-${pageIndex}-${overlaySegment.nodeIndex}-${segmentKeySuffix}`}
+                                    >
+                                      {renderDocumentNode(
+                                        overlayNode,
+                                        overlaySegment.nodeIndex,
+                                        overlaySegment.tableRowRange,
+                                        overlaySegment.paragraphLineRange,
+                                        {
+                                          pageLayout,
+                                        }
+                                      )}
+                                    </React.Fragment>
+                                  );
+                                })}
+                                {flowSegments.map(renderSegmentInColumn)}
                               </div>
-                            );
-                          })}
+                            )}
                         </div>
-                      </>
-                    );
+                      );
+                    });
                   })()}
                 </div>
 
-                {pageFootnotes.length > 0 ? (
+                {isLastPage && referencedEndnotes.length > 0 ? (
                   <section
+                    data-docx-endnotes-section="true"
                     style={{
-                      marginTop: "auto",
+                      marginTop: 8,
                       paddingTop: 8,
                       borderTop: `1px solid ${
                         editor.documentTheme === "dark" ? "#4b5563" : "#9ca3af"
@@ -41821,62 +43394,6 @@ export function DocxEditorViewer({
                       fontSize: 12,
                     }}
                   >
-                    {pageFootnotes.map((note, index) => (
-                      <p
-                        key={`page-footnote-${pageIndex}-${note.id}-${index}`}
-                        id={`docx-footnote-${note.id}`}
-                        style={{
-                          margin: 0,
-                          whiteSpace: "pre-wrap",
-                          lineHeight: 1.35,
-                        }}
-                      >
-                        {renderDocumentNote(
-                          note,
-                          "footnote",
-                          `page-footnote-${pageIndex}-${note.id}-${index}`,
-                          pageNumber,
-                          pageHeaderFooterRunRenderOptions
-                        )}
-                      </p>
-                    ))}
-                  </section>
-                ) : null}
-
-                {isLastPage &&
-                (remainingFootnotes.length > 0 ||
-                  referencedEndnotes.length > 0) ? (
-                  <section
-                    style={{
-                      marginTop: pageFootnotes.length > 0 ? 10 : "auto",
-                      paddingTop: 8,
-                      borderTop: `1px solid ${
-                        editor.documentTheme === "dark" ? "#4b5563" : "#9ca3af"
-                      }`,
-                      display: "grid",
-                      gap: 6,
-                      fontSize: 12,
-                    }}
-                  >
-                    {remainingFootnotes.map((note, index) => (
-                      <p
-                        key={`remaining-footnote-${note.id}-${index}`}
-                        id={`docx-footnote-${note.id}`}
-                        style={{
-                          margin: 0,
-                          whiteSpace: "pre-wrap",
-                          lineHeight: 1.35,
-                        }}
-                      >
-                        {renderDocumentNote(
-                          note,
-                          "footnote",
-                          `remaining-footnote-${note.id}-${index}`,
-                          pageNumber,
-                          pageHeaderFooterRunRenderOptions
-                        )}
-                      </p>
-                    ))}
                     {referencedEndnotes.map((note, index) => (
                       <p
                         key={`last-page-endnote-${note.id}-${index}`}
@@ -41891,6 +43408,42 @@ export function DocxEditorViewer({
                           note,
                           "endnote",
                           `last-page-endnote-${note.id}-${index}`,
+                          pageNumber,
+                          pageHeaderFooterRunRenderOptions
+                        )}
+                      </p>
+                    ))}
+                  </section>
+                ) : null}
+
+                {pageBottomFootnotes.length > 0 ? (
+                  <section
+                    data-docx-footnotes-section="true"
+                    style={{
+                      marginTop: "auto",
+                      paddingTop: 8,
+                      borderTop: `1px solid ${
+                        editor.documentTheme === "dark" ? "#4b5563" : "#9ca3af"
+                      }`,
+                      display: "grid",
+                      gap: 6,
+                      fontSize: 12,
+                    }}
+                  >
+                    {pageBottomFootnotes.map((note, index) => (
+                      <p
+                        key={`page-footnote-${pageIndex}-${note.id}-${index}`}
+                        id={`docx-footnote-${note.id}`}
+                        style={{
+                          margin: 0,
+                          whiteSpace: "pre-wrap",
+                          lineHeight: 1.35,
+                        }}
+                      >
+                        {renderDocumentNote(
+                          note,
+                          "footnote",
+                          `page-footnote-${pageIndex}-${note.id}-${index}`,
                           pageNumber,
                           pageHeaderFooterRunRenderOptions
                         )}

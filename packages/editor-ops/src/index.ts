@@ -144,7 +144,8 @@ function cloneImageRun(run: ImageRunNode): ImageRunNode {
     contentType: run.contentType,
     data: run.data ? new Uint8Array(run.data) : undefined,
     floating: run.floating ? { ...run.floating } : undefined,
-    syntheticTextBox: run.syntheticTextBox
+    syntheticTextBox: run.syntheticTextBox,
+    textBoxText: run.textBoxText
   };
 }
 
@@ -1154,7 +1155,8 @@ export function serializeParagraphsForClipboard(paragraphs: ParagraphNode[]): st
               contentType: run.contentType,
               data: run.data ? Array.from(run.data) : undefined,
               floating: run.floating ? { ...run.floating } : undefined,
-              syntheticTextBox: run.syntheticTextBox
+              syntheticTextBox: run.syntheticTextBox,
+              textBoxText: run.textBoxText
             }
       )
     }))
@@ -1206,7 +1208,9 @@ export function parseParagraphsFromClipboard(input: string): ParagraphNode[] | u
             contentType: run.contentType,
             data: Array.isArray(run.data) ? new Uint8Array(run.data) : undefined,
             floating: run.floating && typeof run.floating === "object" ? { ...run.floating } : undefined,
-            syntheticTextBox: Boolean(run.syntheticTextBox)
+            syntheticTextBox: Boolean(run.syntheticTextBox),
+            textBoxText:
+              typeof run.textBoxText === "string" ? run.textBoxText : undefined
           });
           continue;
         }

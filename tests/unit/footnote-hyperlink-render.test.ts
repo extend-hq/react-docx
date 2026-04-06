@@ -32,6 +32,7 @@ describe("footnote hyperlink render", () => {
     expect(model.metadata.footnotes?.[0]?.text).toContain("Example");
     expect(model.metadata.footnotes?.[0]?.nodes?.length).toBeGreaterThan(0);
     expect((html.match(/data-docx-page-wrapper=\"true\"/g) ?? []).length).toBe(1);
+    expect(html).toContain('data-docx-footnotes-section="true"');
     expect(html).toContain('id="docx-footnote-1"');
     expect(html).toContain('href="http://www.example.com"');
     expect(html).toContain(">Example</a>");

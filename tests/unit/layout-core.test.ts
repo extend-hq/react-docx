@@ -478,6 +478,17 @@ describe("layout-core", () => {
           nodeIndex: 0,
           paragraphLineRange: {
             startLineIndex: 0,
+            endLineIndex: 1,
+            totalLineCount: 4,
+            lineHeightPx: 50
+          }
+        }
+      ],
+      [
+        {
+          nodeIndex: 0,
+          paragraphLineRange: {
+            startLineIndex: 1,
             endLineIndex: 2,
             totalLineCount: 4,
             lineHeightPx: 50
@@ -489,6 +500,17 @@ describe("layout-core", () => {
           nodeIndex: 0,
           paragraphLineRange: {
             startLineIndex: 2,
+            endLineIndex: 3,
+            totalLineCount: 4,
+            lineHeightPx: 50
+          }
+        }
+      ],
+      [
+        {
+          nodeIndex: 0,
+          paragraphLineRange: {
+            startLineIndex: 3,
             endLineIndex: 4,
             totalLineCount: 4,
             lineHeightPx: 50
@@ -555,6 +577,78 @@ describe("layout-core", () => {
       leftSegments: [{ nodeIndex: 0 }, { nodeIndex: 1 }],
       rightSegments: [{ nodeIndex: 2 }]
     });
+  });
+
+  it("leaves non-flow reserve for split paragraph bleed so partial lines do not get clipped at page boundaries", () => {
+    const model: DocModel = {
+      nodes: [
+        {
+          type: "paragraph",
+          children: [{ type: "text", text: "Long paragraph" }]
+        }
+      ],
+      metadata: {
+        sourceParts: 1,
+        warnings: [],
+        headerSections: [],
+        footerSections: [],
+        paragraphStyles: []
+      }
+    };
+
+    const pages = buildDocumentPageNodeSegments(
+      model,
+      120,
+      400,
+      TEST_PAGE_SEGMENTATION_CALLBACKS
+    );
+
+    expect(pages).toEqual([
+      [
+        {
+          nodeIndex: 0,
+          paragraphLineRange: {
+            startLineIndex: 0,
+            endLineIndex: 1,
+            totalLineCount: 4,
+            lineHeightPx: 50
+          }
+        }
+      ],
+      [
+        {
+          nodeIndex: 0,
+          paragraphLineRange: {
+            startLineIndex: 1,
+            endLineIndex: 2,
+            totalLineCount: 4,
+            lineHeightPx: 50
+          }
+        }
+      ],
+      [
+        {
+          nodeIndex: 0,
+          paragraphLineRange: {
+            startLineIndex: 2,
+            endLineIndex: 3,
+            totalLineCount: 4,
+            lineHeightPx: 50
+          }
+        }
+      ],
+      [
+        {
+          nodeIndex: 0,
+          paragraphLineRange: {
+            startLineIndex: 3,
+            endLineIndex: 4,
+            totalLineCount: 4,
+            lineHeightPx: 50
+          }
+        }
+      ]
+    ]);
   });
 
   it("prefers paragraph-start rendered page breaks for untouched import pagination", () => {

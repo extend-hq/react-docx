@@ -838,6 +838,41 @@ const THEME_WITH_CAMBRIA_MAJOR_XML = `<?xml version="1.0" encoding="UTF-8" stand
   </a:themeElements>
 </a:theme>`;
 
+const DOC_WITH_NO_DEFAULT_PARAGRAPH_STYLE_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p>
+      <w:r><w:t>Body text should not become Heading 1</w:t></w:r>
+    </w:p>
+  </w:body>
+</w:document>`;
+
+const STYLES_WITH_ONLY_HEADING_DEFINITIONS_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:docDefaults>
+    <w:rPrDefault>
+      <w:rPr>
+        <w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman"/>
+        <w:sz w:val="22"/>
+      </w:rPr>
+    </w:rPrDefault>
+  </w:docDefaults>
+  <w:style w:type="paragraph" w:styleId="Heading1">
+    <w:name w:val="heading 1"/>
+    <w:rPr>
+      <w:b/>
+      <w:sz w:val="48"/>
+    </w:rPr>
+  </w:style>
+  <w:style w:type="paragraph" w:styleId="Heading2">
+    <w:name w:val="heading 2"/>
+    <w:rPr>
+      <w:b/>
+      <w:sz w:val="36"/>
+    </w:rPr>
+  </w:style>
+</w:styles>`;
+
 const PAGINATION_STYLES_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
   <w:style w:type="paragraph" w:default="1" w:styleId="Normal">
@@ -1906,6 +1941,39 @@ describe("doc-model import", () => {
     }
 
     expect(paragraph.style?.styleId).toBe("Heading1");
+    expect(run.style?.fontFamily).toBe("Times New Roman");
+  });
+
+  it("does not fall back to Heading1 when no default paragraph style exists", async () => {
+    const zip = createZip([
+      { name: "[Content_Types].xml", content: CONTENT_TYPES_WITH_STYLES_XML },
+      { name: "_rels/.rels", content: ROOT_RELS_XML },
+      { name: "word/document.xml", content: DOC_WITH_NO_DEFAULT_PARAGRAPH_STYLE_XML },
+      { name: "word/styles.xml", content: STYLES_WITH_ONLY_HEADING_DEFINITIONS_XML }
+    ]);
+
+    const pkg = await parseDocx(zip);
+    const model = buildDocModel(pkg);
+
+    expect(model.metadata.defaultParagraphStyleId).toBeUndefined();
+
+    const paragraph = model.nodes[0];
+    expect(paragraph?.type).toBe("paragraph");
+    if (paragraph?.type !== "paragraph") {
+      return;
+    }
+
+    expect(paragraph.style?.styleId).toBeUndefined();
+    expect(paragraph.style?.headingLevel).toBeUndefined();
+
+    const run = paragraph.children[0];
+    expect(run?.type).toBe("text");
+    if (run?.type !== "text") {
+      return;
+    }
+
+    expect(run.style?.bold).toBeUndefined();
+    expect(run.style?.fontSizePt).toBe(11);
     expect(run.style?.fontFamily).toBe("Times New Roman");
   });
 

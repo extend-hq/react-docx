@@ -18,6 +18,9 @@ import {
 
 export const DEFAULT_PAGE_OVERFLOW_TOLERANCE_PX = 2;
 export const DEFAULT_MIN_PARAGRAPH_LINE_HEIGHT_PX = 14;
+const PARAGRAPH_SEGMENT_TOP_BLEED_PX = 22;
+const PARAGRAPH_SEGMENT_DESCENDER_BLEED_PX = 6;
+const PARAGRAPH_SEGMENT_VISUAL_SAFETY_PX = 24;
 
 export interface TableRowRange {
   startRowIndex: number;
@@ -108,6 +111,29 @@ function paragraphSegmentHasPartialLineRange(paragraphLineRange?: ParagraphLineR
   return (
     paragraphLineRange.startLineIndex > 0 ||
     paragraphLineRange.endLineIndex < paragraphLineRange.totalLineCount
+  );
+}
+
+function resolveParagraphSegmentNonFlowReservePx(
+  paragraphLineRange?: ParagraphLineRange
+): number {
+  if (!paragraphSegmentHasPartialLineRange(paragraphLineRange)) {
+    return 0;
+  }
+
+  const topPx =
+    paragraphLineRange && paragraphLineRange.startLineIndex > 0
+      ? Math.max(0, PARAGRAPH_SEGMENT_TOP_BLEED_PX)
+      : 0;
+  const bottomPx = Math.max(0, PARAGRAPH_SEGMENT_DESCENDER_BLEED_PX);
+  const lineHeightSafetyPx = Math.max(
+    0,
+    Math.ceil((paragraphLineRange?.lineHeightPx ?? 0) * 0.9)
+  );
+  return (
+    topPx +
+    bottomPx +
+    Math.max(0, PARAGRAPH_SEGMENT_VISUAL_SAFETY_PX, lineHeightSafetyPx)
   );
 }
 
@@ -690,10 +716,16 @@ export function buildDocumentPageNodeSegments(
           const mustKeepBottomSpacing = linesRemaining <= minLinesPerSegment;
           const bottomSpacingPx = mustKeepBottomSpacing ? afterSpacingPx : 0;
           const remainingHeightPx = Math.max(0, currentPageContentHeightPx - pageConsumedHeightPx);
+          const allRemainingSegmentReservePx = resolveParagraphSegmentNonFlowReservePx({
+            startLineIndex: lineCursor,
+            endLineIndex: paragraphLineCount,
+            totalLineCount: paragraphLineCount,
+            lineHeightPx: paragraphLineHeightPx
+          });
           const allRemainingHeightPx =
             topSpacingPx + linesRemaining * paragraphLineHeightPx + bottomSpacingPx;
 
-          if (allRemainingHeightPx <= remainingHeightPx) {
+          if (allRemainingHeightPx + allRemainingSegmentReservePx <= remainingHeightPx) {
             currentPageSegments.push({
               nodeIndex,
               paragraphLineRange: {
@@ -710,7 +742,16 @@ export function buildDocumentPageNodeSegments(
           }
 
           const maxLinesThisPage = Math.max(0, linesRemaining - minLinesPerSegment);
-          const availableForLinesPx = Math.max(0, remainingHeightPx - topSpacingPx);
+          const continuingSegmentReservePx = resolveParagraphSegmentNonFlowReservePx({
+            startLineIndex: lineCursor,
+            endLineIndex: Math.min(paragraphLineCount, lineCursor + maxLinesThisPage),
+            totalLineCount: paragraphLineCount,
+            lineHeightPx: paragraphLineHeightPx
+          });
+          const availableForLinesPx = Math.max(
+            0,
+            remainingHeightPx - topSpacingPx - continuingSegmentReservePx
+          );
           let linesThatFit = Math.floor(availableForLinesPx / paragraphLineHeightPx);
           linesThatFit = Math.min(linesThatFit, maxLinesThisPage);
 
@@ -739,7 +780,25 @@ export function buildDocumentPageNodeSegments(
             );
           }
 
-          const segmentEndLineIndex = Math.min(paragraphLineCount, lineCursor + linesThatFit);
+          let segmentEndLineIndex = Math.min(paragraphLineCount, lineCursor + linesThatFit);
+          while (linesThatFit > minLinesPerSegment) {
+            const segmentReservePx = resolveParagraphSegmentNonFlowReservePx({
+              startLineIndex: lineCursor,
+              endLineIndex: segmentEndLineIndex,
+              totalLineCount: paragraphLineCount,
+              lineHeightPx: paragraphLineHeightPx
+            });
+            if (
+              topSpacingPx +
+                (segmentEndLineIndex - lineCursor) * paragraphLineHeightPx +
+                segmentReservePx <=
+              remainingHeightPx
+            ) {
+              break;
+            }
+            linesThatFit -= 1;
+            segmentEndLineIndex = Math.min(paragraphLineCount, lineCursor + linesThatFit);
+          }
           currentPageSegments.push({
             nodeIndex,
             paragraphLineRange: {
