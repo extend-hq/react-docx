@@ -451,6 +451,7 @@ export interface NumberingPictureBulletDefinition {
 export interface DocumentNoteDefinition {
   id: number;
   text: string;
+  nodes?: DocNode[];
 }
 
 export interface DocumentCompatibilitySettings {
@@ -6252,7 +6253,8 @@ function parseDocumentNotesFromPart(
 
     notes.push({
       id: noteId,
-      text
+      text,
+      nodes: parsedNodes
     });
   }
 
@@ -6790,8 +6792,20 @@ export function buildDocModel(pkg: OoxmlPackage): DocModel {
           }
         : undefined,
       compatibility: compatibility ? { ...compatibility } : undefined,
-      footnotes: footnotes.length > 0 ? footnotes.map((note) => ({ ...note })) : undefined,
-      endnotes: endnotes.length > 0 ? endnotes.map((note) => ({ ...note })) : undefined
+      footnotes:
+        footnotes.length > 0
+          ? footnotes.map((note) => ({
+              ...note,
+              nodes: note.nodes?.map(cloneDocNode)
+            }))
+          : undefined,
+      endnotes:
+        endnotes.length > 0
+          ? endnotes.map((note) => ({
+              ...note,
+              nodes: note.nodes?.map(cloneDocNode)
+            }))
+          : undefined
     }
   };
 }
@@ -7123,8 +7137,14 @@ export function cloneDocModel(model: DocModel): DocModel {
       defaultParagraphStyleId: model.metadata.defaultParagraphStyleId,
       numberingDefinitions: cloneNumberingDefinitions(model.metadata.numberingDefinitions),
       compatibility: model.metadata.compatibility ? { ...model.metadata.compatibility } : undefined,
-      footnotes: model.metadata.footnotes?.map((note) => ({ ...note })),
-      endnotes: model.metadata.endnotes?.map((note) => ({ ...note }))
+      footnotes: model.metadata.footnotes?.map((note) => ({
+        ...note,
+        nodes: note.nodes?.map(cloneDocNode)
+      })),
+      endnotes: model.metadata.endnotes?.map((note) => ({
+        ...note,
+        nodes: note.nodes?.map(cloneDocNode)
+      }))
     }
   };
 }

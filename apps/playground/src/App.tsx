@@ -140,7 +140,11 @@ import {
 import { Separator } from "./components/ui/separator";
 import { Switch } from "./components/ui/switch";
 import { Toggle } from "./components/ui/toggle";
-import { Tooltip, TooltipContent, TooltipTrigger } from "./components/ui/tooltip";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "./components/ui/tooltip";
 
 const FONT_FAMILIES = [
   "Calibri",
@@ -173,9 +177,22 @@ const BORDER_CONTROL_OPTIONS: BorderControlOption[] = [
   { id: "all", label: "All Borders" },
   { id: "outside", label: "Outside Borders" },
   { id: "inside", label: "Inside Borders", contexts: ["table"] },
-  { id: "inside-horizontal", label: "Inside Horizontal Border", contexts: ["table"] },
-  { id: "inside-vertical", label: "Inside Vertical Border", contexts: ["table"] },
-  { id: "diagonal-down", label: "Diagonal Down Border", contexts: ["table"], separatorBefore: true },
+  {
+    id: "inside-horizontal",
+    label: "Inside Horizontal Border",
+    contexts: ["table"],
+  },
+  {
+    id: "inside-vertical",
+    label: "Inside Vertical Border",
+    contexts: ["table"],
+  },
+  {
+    id: "diagonal-down",
+    label: "Diagonal Down Border",
+    contexts: ["table"],
+    separatorBefore: true,
+  },
   { id: "diagonal-up", label: "Diagonal Up Border", contexts: ["table"] },
   { id: "horizontal-line", label: "Horizontal Line", separatorBefore: true },
 ];
@@ -313,7 +330,9 @@ const DATE_TEXT_FORMAT_OPTIONS: FormTextFormatOption[] = [
   { value: "HH:mm:ss", label: "HH:mm:ss" },
 ];
 
-function formTextFormatOptionsForInputType(inputType: string): FormTextFormatOption[] {
+function formTextFormatOptionsForInputType(
+  inputType: string
+): FormTextFormatOption[] {
   if (inputType === "number" || inputType === "calculated") {
     return NUMBER_TEXT_FORMAT_OPTIONS;
   }
@@ -496,9 +515,7 @@ function parseRgbColor(value?: string): [number, number, number] | undefined {
 
 function rgbToHex(red: number, green: number, blue: number): string {
   const toHex = (value: number): string =>
-    Math.round(clampColorChannel(value, 0, 255))
-      .toString(16)
-      .padStart(2, "0");
+    Math.round(clampColorChannel(value, 0, 255)).toString(16).padStart(2, "0");
   return `#${toHex(red)}${toHex(green)}${toHex(blue)}`;
 }
 
@@ -750,11 +767,25 @@ function contextActionIcon(
     case "image-behind-text":
       return <ArrowDown className="size-4" />;
     case "cut":
-      return <HugeiconsIcon icon={Scissor01Icon} strokeWidth={1.8} className="size-4" />;
+      return (
+        <HugeiconsIcon
+          icon={Scissor01Icon}
+          strokeWidth={1.8}
+          className="size-4"
+        />
+      );
     case "copy":
-      return <HugeiconsIcon icon={Copy01Icon} strokeWidth={1.8} className="size-4" />;
+      return (
+        <HugeiconsIcon icon={Copy01Icon} strokeWidth={1.8} className="size-4" />
+      );
     case "paste":
-      return <HugeiconsIcon icon={FilePasteIcon} strokeWidth={1.8} className="size-4" />;
+      return (
+        <HugeiconsIcon
+          icon={FilePasteIcon}
+          strokeWidth={1.8}
+          className="size-4"
+        />
+      );
     default:
       return null;
   }
@@ -783,13 +814,13 @@ function tableMenuToContextMenu(
       tableContext: {
         tableIndex: menu.context.tableIndex,
         rowIndex: menu.context.rowIndex,
-        cellIndex: menu.context.cellIndex
-      }
+        cellIndex: menu.context.cellIndex,
+      },
     },
     actions: menu.actions.map((action) => ({
       id: action.id,
       label: action.label,
-      destructive: action.destructive
+      destructive: action.destructive,
     })),
     runAction: (actionId) => {
       if (isTableContextActionId(actionId)) {
@@ -798,7 +829,7 @@ function tableMenuToContextMenu(
     },
     closeMenu: menu.closeMenu,
     position: menu.position,
-    documentTheme: menu.documentTheme
+    documentTheme: menu.documentTheme,
   };
 }
 
@@ -822,8 +853,10 @@ function shouldShowActionSeparator(
 
   const actionId = String(action.id);
   const previousActionId = String(previousAction.id);
-  const startsImageGroup = actionId.startsWith("image-") && !previousActionId.startsWith("image-");
-  const startsDestructiveGroup = Boolean(action.destructive) && !previousAction.destructive;
+  const startsImageGroup =
+    actionId.startsWith("image-") && !previousActionId.startsWith("image-");
+  const startsDestructiveGroup =
+    Boolean(action.destructive) && !previousAction.destructive;
   return startsImageGroup || startsDestructiveGroup;
 }
 
@@ -831,19 +864,25 @@ function renderMenuAction(
   action: DocxContextMenuRenderProps["actions"][number],
   runAction: DocxContextMenuRenderProps["runAction"]
 ): React.ReactNode {
-  const icon = action.checked
-    ? <Check className="size-4" />
-    : contextActionIcon(action.id);
+  const icon = action.checked ? (
+    <Check className="size-4" />
+  ) : (
+    contextActionIcon(action.id)
+  );
   if (action.children && action.children.length > 0) {
     return (
       <ContextMenuSub key={String(action.id)}>
         <ContextMenuSubTrigger disabled={action.disabled}>
           {icon || <span className="size-4" aria-hidden="true" />}
           {action.label}
-          {action.shortcut ? <ContextMenuShortcut>{action.shortcut}</ContextMenuShortcut> : null}
+          {action.shortcut ? (
+            <ContextMenuShortcut>{action.shortcut}</ContextMenuShortcut>
+          ) : null}
         </ContextMenuSubTrigger>
         <ContextMenuSubContent className="w-56" data-docx-context-menu="true">
-          {action.children.map((childAction) => renderMenuAction(childAction, runAction))}
+          {action.children.map((childAction) =>
+            renderMenuAction(childAction, runAction)
+          )}
         </ContextMenuSubContent>
       </ContextMenuSub>
     );
@@ -858,7 +897,9 @@ function renderMenuAction(
     >
       {icon || <span className="size-4" aria-hidden="true" />}
       {action.label}
-      {action.shortcut ? <ContextMenuShortcut>{action.shortcut}</ContextMenuShortcut> : null}
+      {action.shortcut ? (
+        <ContextMenuShortcut>{action.shortcut}</ContextMenuShortcut>
+      ) : null}
     </ContextMenuItem>
   );
 }
@@ -910,11 +951,15 @@ function ViewerContextMenuContentRenderer({
         sideOffset={0}
         className="w-56"
         data-docx-context-menu="true"
-        data-docx-table-context-menu={menu.context.kind === "table" ? "true" : undefined}
+        data-docx-table-context-menu={
+          menu.context.kind === "table" ? "true" : undefined
+        }
       >
         {menu.actions.map((action, index) => (
           <React.Fragment key={String(action.id)}>
-            {shouldShowActionSeparator(menu.actions, index) ? <ContextMenuSeparator /> : null}
+            {shouldShowActionSeparator(menu.actions, index) ? (
+              <ContextMenuSeparator />
+            ) : null}
             {renderMenuAction(action, menu.runAction)}
           </React.Fragment>
         ))}
@@ -1000,12 +1045,20 @@ type PlaygroundDocxTestSummary = {
 type PlaygroundDocxTestHooks = {
   getSummary: () => PlaygroundDocxTestSummary;
   getParagraphText: (nodeIndex: number) => string;
-  getTableCellText: (tableIndex: number, rowIndex: number, cellIndex: number) => string;
+  getTableCellText: (
+    tableIndex: number,
+    rowIndex: number,
+    cellIndex: number
+  ) => string;
   getTableShape: (
     tableIndex: number
   ) => { rowCount: number; columnCounts: number[] } | undefined;
   selectParagraph: (nodeIndex: number) => void;
-  selectTableCell: (tableIndex: number, rowIndex: number, cellIndex: number) => void;
+  selectTableCell: (
+    tableIndex: number,
+    rowIndex: number,
+    cellIndex: number
+  ) => void;
   setActiveTextRange: (range?: DocxTextRange) => void;
   commitParagraphText: (nodeIndex: number, text: string) => void;
   commitTableCellText: (
@@ -1014,7 +1067,11 @@ type PlaygroundDocxTestHooks = {
     cellIndex: number,
     text: string
   ) => void;
-  clearTableCellContents: (tableIndex: number, rowIndex: number, cellIndex: number) => void;
+  clearTableCellContents: (
+    tableIndex: number,
+    rowIndex: number,
+    cellIndex: number
+  ) => void;
   toggleBold: () => void;
   toggleItalic: () => void;
   toggleUnderline: () => void;
@@ -1027,7 +1084,11 @@ type PlaygroundDocxTestHooks = {
   toggleList: (listType: "unordered" | "ordered") => void;
   setLineSpacing: (lineMultiple: number) => void;
   insertTable: () => void;
-  insertTableRow: (tableIndex: number, rowIndex: number, direction: "above" | "below") => void;
+  insertTableRow: (
+    tableIndex: number,
+    rowIndex: number,
+    direction: "above" | "below"
+  ) => void;
   insertTableColumn: (
     tableIndex: number,
     cellIndex: number,
@@ -1035,7 +1096,11 @@ type PlaygroundDocxTestHooks = {
     rowIndex?: number
   ) => void;
   deleteTableRow: (tableIndex: number, rowIndex: number) => void;
-  deleteTableColumn: (tableIndex: number, cellIndex: number, rowIndex?: number) => void;
+  deleteTableColumn: (
+    tableIndex: number,
+    cellIndex: number,
+    rowIndex?: number
+  ) => void;
   undo: () => void;
   redo: () => void;
   exportDocx: () => void;
@@ -1076,7 +1141,10 @@ function walkModelValue(
 
 function textLengthFromInlineValue(value: unknown): number {
   if (Array.isArray(value)) {
-    return value.reduce((sum, entry) => sum + textLengthFromInlineValue(entry), 0);
+    return value.reduce(
+      (sum, entry) => sum + textLengthFromInlineValue(entry),
+      0
+    );
   }
 
   if (!value || typeof value !== "object") {
@@ -1110,7 +1178,9 @@ function textFromInlineValue(value: unknown): string {
   return textFromInlineValue(record.children);
 }
 
-function paragraphTextLengthFromNode(node: DocModel["nodes"][number] | undefined): number {
+function paragraphTextLengthFromNode(
+  node: DocModel["nodes"][number] | undefined
+): number {
   if (!node || node.type !== "paragraph") {
     return 0;
   }
@@ -1118,7 +1188,9 @@ function paragraphTextLengthFromNode(node: DocModel["nodes"][number] | undefined
   return textLengthFromInlineValue(node.children);
 }
 
-function paragraphTextFromNode(node: DocModel["nodes"][number] | undefined): string {
+function paragraphTextFromNode(
+  node: DocModel["nodes"][number] | undefined
+): string {
   if (!node || node.type !== "paragraph") {
     return "";
   }
@@ -1160,11 +1232,13 @@ function tableShapeFromModel(
 
   return {
     rowCount: tableNode.rows.length,
-    columnCounts: tableNode.rows.map((row) => row.cells.length)
+    columnCounts: tableNode.rows.map((row) => row.cells.length),
   };
 }
 
-function findFirstParagraphTarget(model: DocModel): PlaygroundDocxParagraphTarget | undefined {
+function findFirstParagraphTarget(
+  model: DocModel
+): PlaygroundDocxParagraphTarget | undefined {
   for (let nodeIndex = 0; nodeIndex < model.nodes.length; nodeIndex += 1) {
     const node = model.nodes[nodeIndex];
     if (node?.type !== "paragraph") {
@@ -1173,14 +1247,16 @@ function findFirstParagraphTarget(model: DocModel): PlaygroundDocxParagraphTarge
 
     return {
       nodeIndex,
-      textLength: paragraphTextLengthFromNode(node)
+      textLength: paragraphTextLengthFromNode(node),
     };
   }
 
   return undefined;
 }
 
-function findFirstTableCellTarget(model: DocModel): PlaygroundDocxTableCellTarget | undefined {
+function findFirstTableCellTarget(
+  model: DocModel
+): PlaygroundDocxTableCellTarget | undefined {
   for (let tableIndex = 0; tableIndex < model.nodes.length; tableIndex += 1) {
     const tableNode = model.nodes[tableIndex];
     if (tableNode?.type !== "table") {
@@ -1192,7 +1268,11 @@ function findFirstTableCellTarget(model: DocModel): PlaygroundDocxTableCellTarge
       for (let cellIndex = 0; cellIndex < row.cells.length; cellIndex += 1) {
         const cell = row.cells[cellIndex];
         const content = Array.isArray(cell.nodes) ? cell.nodes : [];
-        for (let paragraphIndex = 0; paragraphIndex < content.length; paragraphIndex += 1) {
+        for (
+          let paragraphIndex = 0;
+          paragraphIndex < content.length;
+          paragraphIndex += 1
+        ) {
           const paragraphNode = content[paragraphIndex];
           if (paragraphNode?.type !== "paragraph") {
             continue;
@@ -1203,7 +1283,7 @@ function findFirstTableCellTarget(model: DocModel): PlaygroundDocxTableCellTarge
             rowIndex,
             cellIndex,
             paragraphIndex,
-            textLength: paragraphTextLengthFromNode(paragraphNode)
+            textLength: paragraphTextLengthFromNode(paragraphNode),
           };
         }
       }
@@ -1213,7 +1293,9 @@ function findFirstTableCellTarget(model: DocModel): PlaygroundDocxTableCellTarge
   return undefined;
 }
 
-function buildDocxTestSummary(editor: DocxEditorController): PlaygroundDocxTestSummary {
+function buildDocxTestSummary(
+  editor: DocxEditorController
+): PlaygroundDocxTestSummary {
   let paragraphCount = 0;
   let tableCount = 0;
   let imageCount = 0;
@@ -1231,8 +1313,12 @@ function buildDocxTestSummary(editor: DocxEditorController): PlaygroundDocxTestS
     }
   });
 
-  const bodyParagraphNodeCount = editor.model.nodes.filter((node) => node.type === "paragraph").length;
-  const bodyTableNodeCount = editor.model.nodes.filter((node) => node.type === "table").length;
+  const bodyParagraphNodeCount = editor.model.nodes.filter(
+    (node) => node.type === "paragraph"
+  ).length;
+  const bodyTableNodeCount = editor.model.nodes.filter(
+    (node) => node.type === "table"
+  ).length;
   const sections = editor.model.metadata.sections ?? [];
 
   return {
@@ -1255,7 +1341,7 @@ function buildDocxTestSummary(editor: DocxEditorController): PlaygroundDocxTestS
     canUndo: editor.canUndo,
     canRedo: editor.canRedo,
     firstParagraph: findFirstParagraphTarget(editor.model),
-    firstTableCell: findFirstTableCellTarget(editor.model)
+    firstTableCell: findFirstTableCellTarget(editor.model),
   };
 }
 
@@ -1283,7 +1369,7 @@ function parseToolbarSectionColumns(
 
   return {
     count: Math.max(2, Math.round(count)),
-    gapPx
+    gapPx,
   };
 }
 
@@ -1295,15 +1381,12 @@ export function App(): React.JSX.Element {
   const { paragraphStyles, selectedParagraphStyleId, setParagraphStyle } =
     useDocxParagraphStyles(editor);
   const { lineSpacing, setLineSpacing } = useDocxLineSpacing(editor);
-  const { borderContext, activeBorderPresets, applyBorderPreset } = useDocxBorders(editor);
-  const {
-    selectedFormField,
-    updateSelectedFormFieldWidget,
-  } = useDocxFormFields(editor);
-  const {
-    showTrackedChanges,
-    setShowTrackedChanges,
-  } = useDocxTrackChanges(editor);
+  const { borderContext, activeBorderPresets, applyBorderPreset } =
+    useDocxBorders(editor);
+  const { selectedFormField, updateSelectedFormFieldWidget } =
+    useDocxFormFields(editor);
+  const { showTrackedChanges, setShowTrackedChanges } =
+    useDocxTrackChanges(editor);
   const [themeReady, setThemeReady] = React.useState(false);
   const paragraphStylePreviewHandle = React.useMemo(
     () => createHoverCardHandle<ParagraphStyleOption>(),
@@ -1373,7 +1456,10 @@ export function App(): React.JSX.Element {
         : editor.selection.tableIndex;
     const letterheadColumns =
       editor.selection.kind === "paragraph" &&
-      paragraphLetterheadFloatSideAtNodeIndex(editor.model.nodes, editor.selection.nodeIndex)
+      paragraphLetterheadFloatSideAtNodeIndex(
+        editor.model.nodes,
+        editor.selection.nodeIndex
+      )
         ? { count: 2, gapPx: 28 }
         : undefined;
     const sections = editor.model.metadata.sections ?? [];
@@ -1391,7 +1477,7 @@ export function App(): React.JSX.Element {
     editor.model.metadata.sectionPropertiesXml,
     editor.model.metadata.sections,
     editor.selection,
-    pageLayout.columns
+    pageLayout.columns,
   ]);
 
   React.useEffect(() => {
@@ -1408,8 +1494,17 @@ export function App(): React.JSX.Element {
       getParagraphText: (nodeIndex: number) => {
         return paragraphTextFromNode(editor.model.nodes[nodeIndex]);
       },
-      getTableCellText: (tableIndex: number, rowIndex: number, cellIndex: number) => {
-        return tableCellTextFromModel(editor.model, tableIndex, rowIndex, cellIndex);
+      getTableCellText: (
+        tableIndex: number,
+        rowIndex: number,
+        cellIndex: number
+      ) => {
+        return tableCellTextFromModel(
+          editor.model,
+          tableIndex,
+          rowIndex,
+          cellIndex
+        );
       },
       getTableShape: (tableIndex: number) => {
         return tableShapeFromModel(editor.model, tableIndex);
@@ -1417,7 +1512,11 @@ export function App(): React.JSX.Element {
       selectParagraph: (nodeIndex: number) => {
         editor.selectParagraph(nodeIndex);
       },
-      selectTableCell: (tableIndex: number, rowIndex: number, cellIndex: number) => {
+      selectTableCell: (
+        tableIndex: number,
+        rowIndex: number,
+        cellIndex: number
+      ) => {
         editor.selectTableCell(tableIndex, rowIndex, cellIndex);
       },
       setActiveTextRange: (range?: DocxTextRange) => {
@@ -1426,10 +1525,19 @@ export function App(): React.JSX.Element {
       commitParagraphText: (nodeIndex: number, text: string) => {
         editor.commitParagraphText(nodeIndex, text);
       },
-      commitTableCellText: (tableIndex: number, rowIndex: number, cellIndex: number, text: string) => {
+      commitTableCellText: (
+        tableIndex: number,
+        rowIndex: number,
+        cellIndex: number,
+        text: string
+      ) => {
         editor.commitTableCellText(tableIndex, rowIndex, cellIndex, text);
       },
-      clearTableCellContents: (tableIndex: number, rowIndex: number, cellIndex: number) => {
+      clearTableCellContents: (
+        tableIndex: number,
+        rowIndex: number,
+        cellIndex: number
+      ) => {
         editor.clearTableCellContents(tableIndex, [{ rowIndex, cellIndex }]);
       },
       toggleBold: () => {
@@ -1468,7 +1576,11 @@ export function App(): React.JSX.Element {
       insertTable: () => {
         editor.insertTable();
       },
-      insertTableRow: (tableIndex: number, rowIndex: number, direction: "above" | "below") => {
+      insertTableRow: (
+        tableIndex: number,
+        rowIndex: number,
+        direction: "above" | "below"
+      ) => {
         editor.insertTableRow(tableIndex, rowIndex, direction);
       },
       insertTableColumn: (
@@ -1482,7 +1594,11 @@ export function App(): React.JSX.Element {
       deleteTableRow: (tableIndex: number, rowIndex: number) => {
         editor.deleteTableRow(tableIndex, rowIndex);
       },
-      deleteTableColumn: (tableIndex: number, cellIndex: number, rowIndex?: number) => {
+      deleteTableColumn: (
+        tableIndex: number,
+        cellIndex: number,
+        rowIndex?: number
+      ) => {
         editor.deleteTableColumn(tableIndex, cellIndex, rowIndex);
       },
       undo: () => {
@@ -1494,10 +1610,16 @@ export function App(): React.JSX.Element {
       exportDocx: () => {
         editor.exportDocx();
       },
-      insertImageBytes: async (fileName: string, mimeType: string, bytes: number[]) => {
-        const file = new File([new Uint8Array(bytes)], fileName, { type: mimeType });
+      insertImageBytes: async (
+        fileName: string,
+        mimeType: string,
+        bytes: number[]
+      ) => {
+        const file = new File([new Uint8Array(bytes)], fileName, {
+          type: mimeType,
+        });
         await editor.insertImageFile(file);
-      }
+      },
     };
 
     return () => {
@@ -1527,8 +1649,12 @@ export function App(): React.JSX.Element {
   );
   const hasExpandedTextSelection = Boolean(
     editor.activeTextRange &&
-      (editor.activeTextRange.start.offset !== editor.activeTextRange.end.offset ||
-        !isParagraphLocationEqual(editor.activeTextRange.start, editor.activeTextRange.end))
+      (editor.activeTextRange.start.offset !==
+        editor.activeTextRange.end.offset ||
+        !isParagraphLocationEqual(
+          editor.activeTextRange.start,
+          editor.activeTextRange.end
+        ))
   );
   const selectedHighlightPresetId = (() => {
     const normalized = (selectedRunStyle?.highlight ?? "").trim().toLowerCase();
@@ -1566,7 +1692,9 @@ export function App(): React.JSX.Element {
   );
   const activeBorderControlOptions = React.useMemo(
     () =>
-      enabledBorderControlOptions.filter((option) => activeBorderPresets[option.id]),
+      enabledBorderControlOptions.filter(
+        (option) => activeBorderPresets[option.id]
+      ),
     [activeBorderPresets, enabledBorderControlOptions]
   );
   const borderTriggerLabel =
@@ -1602,7 +1730,9 @@ export function App(): React.JSX.Element {
   }, [formWidgetDialogOpen, selectedFormField]);
 
   const updateFormWidgetDraft = React.useCallback(
-    (updater: (draft: FormWidgetDialogDraft) => FormWidgetDialogDraft): void => {
+    (
+      updater: (draft: FormWidgetDialogDraft) => FormWidgetDialogDraft
+    ): void => {
       setFormWidgetDraft((currentDraft) =>
         updater(currentDraft ?? createFormWidgetDialogDraft(selectedFormField))
       );
@@ -1640,7 +1770,8 @@ export function App(): React.JSX.Element {
     return !Number.isFinite(parsed) || parsed <= 0;
   }, [formWidgetDraft, selectedFormField]);
 
-  const selectedFormFieldInputType = formWidgetDraft?.text.inputType ?? "regular";
+  const selectedFormFieldInputType =
+    formWidgetDraft?.text.inputType ?? "regular";
   const selectedFormFieldFormatOptions = React.useMemo(
     () => formTextFormatOptionsForInputType(selectedFormFieldInputType),
     [selectedFormFieldInputType]
@@ -1649,7 +1780,9 @@ export function App(): React.JSX.Element {
     const draftValue = formWidgetDraft?.text.textFormat?.trim() ?? "";
     if (
       draftValue &&
-      selectedFormFieldFormatOptions.some((option) => option.value === draftValue)
+      selectedFormFieldFormatOptions.some(
+        (option) => option.value === draftValue
+      )
     ) {
       return draftValue;
     }
@@ -1662,7 +1795,10 @@ export function App(): React.JSX.Element {
     if (selectedFormFieldInputType === "number") {
       return "Default number";
     }
-    if (selectedFormFieldInputType === "date" || selectedFormFieldInputType === "currentDate") {
+    if (
+      selectedFormFieldInputType === "date" ||
+      selectedFormFieldInputType === "currentDate"
+    ) {
       return "Default date";
     }
     if (selectedFormFieldInputType === "currentTime") {
@@ -1673,25 +1809,31 @@ export function App(): React.JSX.Element {
   const selectedFormFieldDefaultValueDisabled =
     selectedFormFieldInputType === "currentDate" ||
     selectedFormFieldInputType === "currentTime";
-  const selectedFormFieldDefaultValuePlaceholder = selectedFormFieldDefaultValueDisabled
-    ? selectedFormFieldInputType === "currentDate"
-      ? "Auto-generated from current date"
-      : "Auto-generated from current time"
-    : selectedFormFieldInputType === "calculated"
+  const selectedFormFieldDefaultValuePlaceholder =
+    selectedFormFieldDefaultValueDisabled
+      ? selectedFormFieldInputType === "currentDate"
+        ? "Auto-generated from current date"
+        : "Auto-generated from current time"
+      : selectedFormFieldInputType === "calculated"
       ? "Enter expression"
       : `Enter ${selectedFormFieldDefaultValueLabel.toLowerCase()}`;
   const selectedFormFieldFormatLabel =
-    selectedFormFieldInputType === "number" || selectedFormFieldInputType === "calculated"
+    selectedFormFieldInputType === "number" ||
+    selectedFormFieldInputType === "calculated"
       ? "Number format"
-      : selectedFormFieldInputType === "date" || selectedFormFieldInputType === "currentDate"
-        ? "Date format"
-        : selectedFormFieldInputType === "currentTime"
-          ? "Time format"
-          : "Text format";
+      : selectedFormFieldInputType === "date" ||
+        selectedFormFieldInputType === "currentDate"
+      ? "Date format"
+      : selectedFormFieldInputType === "currentTime"
+      ? "Time format"
+      : "Text format";
   const selectedFormFieldFormatSelectWidthCh = React.useMemo(() => {
-    const maxLabelLength = selectedFormFieldFormatOptions.reduce((largest, option) => {
-      return Math.max(largest, option.label.length);
-    }, 0);
+    const maxLabelLength = selectedFormFieldFormatOptions.reduce(
+      (largest, option) => {
+        return Math.max(largest, option.label.length);
+      },
+      0
+    );
     return Math.max(16, Math.min(44, maxLabelLength + 6));
   }, [selectedFormFieldFormatOptions]);
 
@@ -1717,8 +1859,8 @@ export function App(): React.JSX.Element {
         maxLengthRaw === ""
           ? undefined
           : Number.isFinite(parsedMaxLength) && parsedMaxLength >= 0
-            ? Math.round(parsedMaxLength)
-            : undefined;
+          ? Math.round(parsedMaxLength)
+          : undefined;
       updateSelectedFormFieldWidget({
         text: {
           inputType: formWidgetDraft.text.inputType,
@@ -1771,7 +1913,8 @@ export function App(): React.JSX.Element {
     () =>
       Math.max(
         1,
-        (pageLayout.pageHeightPx + pageLayout.viewportDefaults.pageGapPx) * zoomScale
+        (pageLayout.pageHeightPx + pageLayout.viewportDefaults.pageGapPx) *
+          zoomScale
       ),
     [pageLayout.pageHeightPx, pageLayout.viewportDefaults.pageGapPx, zoomScale]
   );
@@ -1809,7 +1952,10 @@ export function App(): React.JSX.Element {
 
     const first = virtualItems[0];
     const last = virtualItems[virtualItems.length - 1];
-    const startPageIndex = Math.max(0, Math.min(first?.index ?? 0, viewerPageCount - 1));
+    const startPageIndex = Math.max(
+      0,
+      Math.min(first?.index ?? 0, viewerPageCount - 1)
+    );
     const endPageIndex = Math.max(
       startPageIndex,
       Math.min(last?.index ?? startPageIndex, viewerPageCount - 1)
@@ -1819,14 +1965,24 @@ export function App(): React.JSX.Element {
       endPageIndex,
     };
   }, [disablePageVirtualization, viewerPageCount, virtualItems]);
-  const handleViewerPageCountChange = React.useCallback((pageCount: number): void => {
-    const nextCount = Number.isFinite(pageCount) ? Math.max(1, Math.round(pageCount)) : 1;
-    setViewerPageCount((current) => (current === nextCount ? current : nextCount));
-  }, []);
+  const handleViewerPageCountChange = React.useCallback(
+    (pageCount: number): void => {
+      const nextCount = Number.isFinite(pageCount)
+        ? Math.max(1, Math.round(pageCount))
+        : 1;
+      setViewerPageCount((current) =>
+        current === nextCount ? current : nextCount
+      );
+    },
+    []
+  );
   const handleRequestPageReveal = React.useCallback(
     (pageIndex: number): void => {
       const safeCount = Math.max(1, viewerPageCount);
-      const clampedPageIndex = Math.max(0, Math.min(Math.round(pageIndex), safeCount - 1));
+      const clampedPageIndex = Math.max(
+        0,
+        Math.min(Math.round(pageIndex), safeCount - 1)
+      );
       pageVirtualizer.scrollToIndex(clampedPageIndex, {
         align: "center",
       });
@@ -1857,18 +2013,15 @@ export function App(): React.JSX.Element {
         props.change.kind === "insertion"
           ? Upload
           : props.change.kind === "deletion"
-            ? Strikethrough
-            : props.change.kind === "move-from"
-              ? Undo2
-              : props.change.kind === "move-to"
-                ? Redo2
-                : props.change.kind === "paragraph-format-change"
-                  ? AlignLeft
-                  : FileDiff;
-      const chipBackground = withAlpha(
-        props.accentColor,
-        isDark ? 0.3 : 0.16
-      );
+          ? Strikethrough
+          : props.change.kind === "move-from"
+          ? Undo2
+          : props.change.kind === "move-to"
+          ? Redo2
+          : props.change.kind === "paragraph-format-change"
+          ? AlignLeft
+          : FileDiff;
+      const chipBackground = withAlpha(props.accentColor, isDark ? 0.3 : 0.16);
 
       return (
         <Card
@@ -1877,10 +2030,9 @@ export function App(): React.JSX.Element {
           style={{
             ...props.style,
             borderLeft: `3px solid ${props.accentColor}`,
-            boxShadow:
-              isDark
-                ? "0 2px 8px rgba(2, 6, 23, 0.7)"
-                : "0 2px 6px rgba(15, 23, 42, 0.16)",
+            boxShadow: isDark
+              ? "0 2px 8px rgba(2, 6, 23, 0.7)"
+              : "0 2px 6px rgba(15, 23, 42, 0.16)",
           }}
         >
           <CardHeader className="px-3 pb-0">
@@ -1927,7 +2079,11 @@ export function App(): React.JSX.Element {
   );
   const renderTableContextMenu = React.useCallback(
     (props: DocxTableContextMenuRenderProps): React.ReactNode => {
-      return <ViewerContextMenuContentRenderer menu={tableMenuToContextMenu(props)} />;
+      return (
+        <ViewerContextMenuContentRenderer
+          menu={tableMenuToContextMenu(props)}
+        />
+      );
     },
     []
   );
@@ -2031,8 +2187,12 @@ export function App(): React.JSX.Element {
   React.useEffect(() => {
     const hasCollapsedSelectionInLink = Boolean(
       editor.activeTextRange &&
-        editor.activeTextRange.start.offset === editor.activeTextRange.end.offset &&
-        isParagraphLocationEqual(editor.activeTextRange.start, editor.activeTextRange.end) &&
+        editor.activeTextRange.start.offset ===
+          editor.activeTextRange.end.offset &&
+        isParagraphLocationEqual(
+          editor.activeTextRange.start,
+          editor.activeTextRange.end
+        ) &&
         editor.selectedLink
     );
 
@@ -2132,8 +2292,9 @@ export function App(): React.JSX.Element {
 
               <HoverCard handle={paragraphStylePreviewHandle}>
                 {({ payload }) => {
-                  const previewOption =
-                    payload as ParagraphStyleOption | undefined;
+                  const previewOption = payload as
+                    | ParagraphStyleOption
+                    | undefined;
                   return (
                     <>
                       <Select
@@ -2161,18 +2322,15 @@ export function App(): React.JSX.Element {
                           setParagraphStyle(value);
                         }}
                       >
-                        <SelectTrigger
-                          className="min-w-[130px] w-auto"
-                        >
+                        <SelectTrigger className="min-w-[130px] w-auto">
                           <SelectValue className="truncate">
                             {selectedParagraphStyleLabel}
                           </SelectValue>
                         </SelectTrigger>
                         <SelectContent className="min-w-[210px]">
                           {paragraphStyleOptions.map((option) => {
-                            const previewTriggerId = paragraphStylePreviewTriggerId(
-                              option.id
-                            );
+                            const previewTriggerId =
+                              paragraphStylePreviewTriggerId(option.id);
                             return (
                               <SelectItem
                                 key={option.id}
@@ -2189,14 +2347,18 @@ export function App(): React.JSX.Element {
                                   );
                                 }}
                               >
-                                <span className="block truncate">{option.name}</span>
+                                <span className="block truncate">
+                                  {option.name}
+                                </span>
                                 <HoverCardTrigger
                                   id={previewTriggerId}
                                   handle={paragraphStylePreviewHandle}
                                   payload={option}
                                   delay={0}
                                   closeDelay={120}
-                                  render={<span className="absolute inset-0 block" />}
+                                  render={
+                                    <span className="absolute inset-0 block" />
+                                  }
                                 />
                               </SelectItem>
                             );
@@ -2259,10 +2421,7 @@ export function App(): React.JSX.Element {
                 <SelectContent>
                   {FONT_FAMILIES.map((fontFamily) => (
                     <SelectItem key={fontFamily} value={fontFamily}>
-                      <span
-                        className="block truncate"
-                        style={{ fontFamily }}
-                      >
+                      <span className="block truncate" style={{ fontFamily }}>
                         {fontFamily}
                       </span>
                     </SelectItem>
@@ -2330,7 +2489,10 @@ export function App(): React.JSX.Element {
                   }}
                 >
                   <SelectTrigger className="min-w-[110px] w-auto">
-                    <SelectValue placeholder="Line space" className="truncate" />
+                    <SelectValue
+                      placeholder="Line space"
+                      className="truncate"
+                    />
                   </SelectTrigger>
                   <SelectContent>
                     {LINE_SPACING_OPTIONS.map((spacing) => (
@@ -2526,7 +2688,10 @@ export function App(): React.JSX.Element {
                     />
                     <span className="truncate">{borderTriggerLabel}</span>
                     {borderActiveCountBadge ? (
-                      <Badge variant="secondary" className="h-4 min-w-4 px-1 text-[10px]">
+                      <Badge
+                        variant="secondary"
+                        className="h-4 min-w-4 px-1 text-[10px]"
+                      >
                         {borderActiveCountBadge}
                       </Badge>
                     ) : null}
@@ -2534,13 +2699,18 @@ export function App(): React.JSX.Element {
                   <DropdownMenuContent className="w-56">
                     {BORDER_CONTROL_OPTIONS.map((option) => {
                       const enabledForContext =
-                        !option.contexts || option.contexts.includes(borderContext);
+                        !option.contexts ||
+                        option.contexts.includes(borderContext);
                       const checked = activeBorderPresets[option.id];
-                      const BorderOptionIcon = borderControlOptionIcon(option.id);
+                      const BorderOptionIcon = borderControlOptionIcon(
+                        option.id
+                      );
 
                       return (
                         <React.Fragment key={option.id}>
-                          {option.separatorBefore ? <DropdownMenuSeparator /> : null}
+                          {option.separatorBefore ? (
+                            <DropdownMenuSeparator />
+                          ) : null}
                           <DropdownMenuCheckboxItem
                             checked={checked}
                             disabled={!enabledForContext}
@@ -2655,8 +2825,13 @@ export function App(): React.JSX.Element {
                 </div>
                 <Separator orientation="vertical" className="h-6" />
                 <div className="flex items-center gap-2 px-2">
-                  <span className="text-sm text-muted-foreground">Read only</span>
-                  <Switch checked={isReadOnly} onCheckedChange={setIsReadOnly} />
+                  <span className="text-sm text-muted-foreground">
+                    Read only
+                  </span>
+                  <Switch
+                    checked={isReadOnly}
+                    onCheckedChange={setIsReadOnly}
+                  />
                 </div>
               </ButtonGroup>
             </div>
@@ -2714,8 +2889,8 @@ export function App(): React.JSX.Element {
                   </span>
                 </div>
 
-                {(selectedFormField.field.fieldType === "text" ||
-                  selectedFormField.field.fieldType === "date") ? (
+                {selectedFormField.field.fieldType === "text" ||
+                selectedFormField.field.fieldType === "date" ? (
                   <div className="space-y-3">
                     <div className="grid gap-1.5">
                       <span className="text-xs text-muted-foreground">
@@ -2740,7 +2915,8 @@ export function App(): React.JSX.Element {
                                   (draft.text.textFormat?.trim() ?? "")
                               )
                                 ? draft.text.textFormat
-                                : (nextFormatOptions[0]?.value ?? draft.text.textFormat),
+                                : nextFormatOptions[0]?.value ??
+                                  draft.text.textFormat,
                             },
                           }));
                         }}
@@ -2752,8 +2928,12 @@ export function App(): React.JSX.Element {
                           <SelectItem value="regular">Regular text</SelectItem>
                           <SelectItem value="number">Number</SelectItem>
                           <SelectItem value="date">Date</SelectItem>
-                          <SelectItem value="currentDate">Current date</SelectItem>
-                          <SelectItem value="currentTime">Current time</SelectItem>
+                          <SelectItem value="currentDate">
+                            Current date
+                          </SelectItem>
+                          <SelectItem value="currentTime">
+                            Current time
+                          </SelectItem>
                           <SelectItem value="calculated">Calculated</SelectItem>
                         </SelectContent>
                       </Select>
@@ -2767,7 +2947,9 @@ export function App(): React.JSX.Element {
                         value={formWidgetDraft?.text.defaultText ?? ""}
                         placeholder={selectedFormFieldDefaultValuePlaceholder}
                         disabled={selectedFormFieldDefaultValueDisabled}
-                        onChange={(event: React.ChangeEvent<HTMLInputElement>) => {
+                        onChange={(
+                          event: React.ChangeEvent<HTMLInputElement>
+                        ) => {
                           const nextValue = event.target.value;
                           updateFormWidgetDraft((draft) => ({
                             ...draft,
@@ -2789,7 +2971,9 @@ export function App(): React.JSX.Element {
                         min={0}
                         placeholder="Unlimited"
                         value={formWidgetDraft?.text.maxLength ?? ""}
-                        onChange={(event: React.ChangeEvent<HTMLInputElement>) => {
+                        onChange={(
+                          event: React.ChangeEvent<HTMLInputElement>
+                        ) => {
                           const nextValue = event.target.value;
                           updateFormWidgetDraft((draft) => ({
                             ...draft,
@@ -2828,7 +3012,9 @@ export function App(): React.JSX.Element {
                       >
                         <SelectTrigger
                           className="max-w-full"
-                          style={{ width: `${selectedFormFieldFormatSelectWidthCh}ch` }}
+                          style={{
+                            width: `${selectedFormFieldFormatSelectWidthCh}ch`,
+                          }}
                         >
                           <SelectValue />
                         </SelectTrigger>
@@ -2891,8 +3077,7 @@ export function App(): React.JSX.Element {
                           if (!value) {
                             return;
                           }
-                          const nextMode =
-                            value === "exact" ? "exact" : "auto";
+                          const nextMode = value === "exact" ? "exact" : "auto";
                           updateFormWidgetDraft((draft) => ({
                             ...draft,
                             checkbox: {
@@ -2916,7 +3101,8 @@ export function App(): React.JSX.Element {
                       </Select>
                     </div>
 
-                    {(formWidgetDraft?.checkbox.sizeMode ?? "auto") === "exact" ? (
+                    {(formWidgetDraft?.checkbox.sizeMode ?? "auto") ===
+                    "exact" ? (
                       <div className="grid gap-1.5">
                         <span className="text-xs text-muted-foreground">
                           Exact size (pt)
@@ -2926,7 +3112,9 @@ export function App(): React.JSX.Element {
                           min={1}
                           step={0.5}
                           value={formWidgetDraft?.checkbox.sizePt ?? "10"}
-                          onChange={(event: React.ChangeEvent<HTMLInputElement>) => {
+                          onChange={(
+                            event: React.ChangeEvent<HTMLInputElement>
+                          ) => {
                             const nextValue = event.target.value;
                             updateFormWidgetDraft((draft) => ({
                               ...draft,
@@ -2951,10 +3139,7 @@ export function App(): React.JSX.Element {
             ) : null}
 
             <DialogFooter>
-              <Button
-                variant="outline"
-                onClick={handleCancelFormWidgetDialog}
-              >
+              <Button variant="outline" onClick={handleCancelFormWidgetDialog}>
                 Cancel
               </Button>
               <Button

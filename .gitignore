@@ -12,6 +12,7 @@ test-results
 tmp/
 .tmp-*
 *.tmp
+scripts/compare-docx-to-libreoffice.mjs
 tests/visual/
 tests/fixtures/docx-regression/
 tests/fixtures/docx-regression-local/
