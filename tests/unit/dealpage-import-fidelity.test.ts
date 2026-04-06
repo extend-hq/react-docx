@@ -43,6 +43,22 @@ function extractRenderedPages(html: string): string[] {
   );
 }
 
+function extractParagraphHost(html: string, nodeIndex: number): string {
+  const marker = `data-docx-paragraph-node-index="${nodeIndex}"`;
+  const markerIndex = html.indexOf(marker);
+  if (markerIndex === -1) {
+    return "";
+  }
+
+  const start = html.lastIndexOf("<div", markerIndex);
+  const end = html.indexOf(">", markerIndex);
+  if (start === -1 || end === -1) {
+    return "";
+  }
+
+  return html.slice(start, end + 1);
+}
+
 describe("deal page one-pager import fidelity", () => {
   it("keeps poster-style behind-text background art on a single rendered page", async () => {
     const zip = readFileSync(DOCX_PATH);
@@ -77,5 +93,10 @@ describe("deal page one-pager import fidelity", () => {
     expect(pages[0]).toContain("top:23.133px");
     expect(pages[0]).toContain("width:529.933px");
     expect(pages[0]).toContain("height:250.067px");
+    const bottomLeftHost = extractParagraphHost(pages[0], 18);
+    expect(bottomLeftHost).toContain('data-docx-paragraph-node-index="18"');
+    expect(bottomLeftHost).toContain("height:0");
+    expect(bottomLeftHost).toContain("line-height:0");
+    expect(bottomLeftHost).not.toContain("min-height");
   });
 });

@@ -90,7 +90,7 @@ describe("moraga pagination fidelity", () => {
     expect(pages.length).toBeGreaterThan(5);
     expect(renderedPages.length).toBeGreaterThan(5);
     expect(html).not.toContain("overflow:hidden visible");
-    expect(html).toContain("clip-path:inset(0 0 0 0)");
+    expect(html).not.toContain("clip-path:inset(0 0 0 0)");
   });
 
   it("does not collapse to one page when browser pretext measurement is available", async () => {

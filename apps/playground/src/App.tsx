@@ -19,6 +19,7 @@ import {
   useDocxFormFields,
   useDocxLineSpacing,
   useDocxPageLayout,
+  useDocxPagination,
   useDocxParagraphStyles,
   useDocxTrackChanges,
 } from "@react-docx/react-viewer";
@@ -1378,6 +1379,7 @@ export function App(): React.JSX.Element {
   const editor = useDocxEditor();
   const { documentTheme, setDocumentTheme } = useDocxDocumentTheme(editor);
   const { layout: pageLayout } = useDocxPageLayout(editor);
+  const { pagination } = useDocxPagination(editor);
   const { paragraphStyles, selectedParagraphStyleId, setParagraphStyle } =
     useDocxParagraphStyles(editor);
   const { lineSpacing, setLineSpacing } = useDocxLineSpacing(editor);
@@ -1924,6 +1926,83 @@ export function App(): React.JSX.Element {
     estimateSize: () => estimatedPageExtentPx,
     overscan: 2,
   });
+  React.useLayoutEffect(() => {
+    if (disablePageVirtualization) {
+      return;
+    }
+
+    const scrollElement = viewerScrollRef.current;
+    if (
+      !scrollElement ||
+      typeof window === "undefined" ||
+      typeof document === "undefined"
+    ) {
+      return;
+    }
+
+    let frameId: number | null = null;
+    const observedElements = new Set<HTMLElement>();
+    const resizeObserver =
+      typeof ResizeObserver === "function"
+        ? new ResizeObserver(() => {
+            if (frameId !== null) {
+              return;
+            }
+            frameId = window.requestAnimationFrame(() => {
+              frameId = null;
+              observedElements.forEach((element) => {
+                pageVirtualizer.measureElement(element);
+              });
+            });
+          })
+        : undefined;
+
+    const syncMeasuredPageWrappers = (): void => {
+      const pageWrappers = Array.from(
+        scrollElement.querySelectorAll<HTMLElement>(
+          '[data-docx-page-wrapper="true"][data-index]'
+        )
+      );
+      const nextElements = new Set(pageWrappers);
+
+      observedElements.forEach((element) => {
+        if (!nextElements.has(element)) {
+          resizeObserver?.unobserve(element);
+        }
+      });
+      pageWrappers.forEach((element) => {
+        if (!observedElements.has(element)) {
+          resizeObserver?.observe(element);
+        }
+        pageVirtualizer.measureElement(element);
+      });
+
+      observedElements.clear();
+      nextElements.forEach((element) => observedElements.add(element));
+    };
+
+    syncMeasuredPageWrappers();
+
+    const mutationObserver =
+      typeof MutationObserver === "function"
+        ? new MutationObserver(() => {
+            syncMeasuredPageWrappers();
+          })
+        : undefined;
+    mutationObserver?.observe(scrollElement, {
+      childList: true,
+      subtree: true,
+    });
+
+    return () => {
+      if (frameId !== null) {
+        window.cancelAnimationFrame(frameId);
+      }
+      mutationObserver?.disconnect();
+      resizeObserver?.disconnect();
+      observedElements.clear();
+    };
+  }, [disablePageVirtualization, pageVirtualizer, viewerPageCount, zoomScale]);
   const virtualItems = pageVirtualizer.getVirtualItems();
   const visiblePageRange = React.useMemo(() => {
     if (viewerPageCount <= 0) {
@@ -2674,6 +2753,14 @@ export function App(): React.JSX.Element {
                     {activeSectionColumns
                       ? `${activeSectionColumns.count} columns`
                       : "1 column"}
+                  </span>
+                </div>
+              </ButtonGroup>
+
+              <ButtonGroup>
+                <div className="border-input bg-input/20 dark:bg-input/30 h-8 rounded-md border px-2 py-1.5 text-xs/relaxed text-muted-foreground flex items-center gap-2">
+                  <span>
+                    Page {pagination.currentPage} / {pagination.totalPages}
                   </span>
                 </div>
               </ButtonGroup>

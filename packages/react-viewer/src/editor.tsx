@@ -810,6 +810,7 @@ const TRACKED_CHANGE_GUTTER_CARD_LEFT_PX = 28;
 const TRACKED_CHANGE_GUTTER_CARD_RIGHT_PX = 10;
 const TRACKED_CHANGE_GUTTER_CARD_GAP_PX = 8;
 const TRACKED_CHANGE_GUTTER_CARD_MIN_HEIGHT_PX = 52;
+const INITIAL_PAGINATION_STABILITY_IDLE_MS = 240;
 
 function scheduleDomWrite(callback: () => void): void {
   if (
@@ -3171,6 +3172,8 @@ export interface DocxEditorController {
   availableParagraphStyles: ParagraphStyleDefinition[];
   trackedChanges: DocxTrackedChange[];
   showTrackedChanges: boolean;
+  currentPage: number;
+  totalPages: number;
   hasUnorderedList: boolean;
   hasOrderedList: boolean;
   canUndo: boolean;
@@ -3181,6 +3184,7 @@ export interface DocxEditorController {
   setStatus: React.Dispatch<React.SetStateAction<string>>;
   setDocumentTheme: (theme: DocxDocumentTheme) => void;
   setShowTrackedChanges: (showTrackedChanges: boolean) => void;
+  syncPaginationInfo: (pagination: DocxPaginationInfo) => void;
   toggleShowTrackedChanges: () => void;
   importDocxFile: (file: File) => Promise<void>;
   newDocument: () => void;
@@ -3538,6 +3542,15 @@ export interface DocxPageLayoutInfo {
 
 export interface UseDocxPageLayoutResult {
   layout: DocxPageLayoutInfo;
+}
+
+export interface DocxPaginationInfo {
+  currentPage: number;
+  totalPages: number;
+}
+
+export interface UseDocxPaginationResult {
+  pagination: DocxPaginationInfo;
 }
 
 export const defaultStarterModel: DocModel = {
@@ -4580,6 +4593,36 @@ function paragraphActsAsLeadingCoverLayoutSpacer(
   );
 }
 
+function paragraphStartsNewPageAfterLeadingCoverLayout(
+  model: DocModel,
+  nodeIndex: number,
+  paragraph: ParagraphNode,
+  pageContentWidthPx: number,
+  pageContentHeightPx: number
+): boolean {
+  if (
+    nodeIndex <= 0 ||
+    !paragraphStartsNormalFlowContent(paragraph) ||
+    paragraphHasExplicitPageBreak(paragraph) ||
+    paragraphHasPageBreakBefore(paragraph)
+  ) {
+    return false;
+  }
+
+  const previousNode = model.nodes[nodeIndex - 1];
+  if (!previousNode || previousNode.type !== "paragraph") {
+    return false;
+  }
+
+  return paragraphActsAsLeadingCoverLayoutSpacer(
+    model,
+    nodeIndex - 1,
+    previousNode,
+    pageContentWidthPx,
+    pageContentHeightPx
+  );
+}
+
 function paragraphLooksLikeCheckboxChoiceRow(
   paragraph: ParagraphNode
 ): boolean {
@@ -4859,12 +4902,18 @@ function resolveFloatingForImageWrapMode(
 }
 
 function buildParagraphPretextLayoutSource(
-  paragraph: ParagraphNode
+  paragraph: ParagraphNode,
+  options?: {
+    allowExplicitLineBreakText?: boolean;
+  }
 ): ParagraphPretextLayoutSource | undefined {
   if (paragraphHasNumbering(paragraph) || paragraphHasFormField(paragraph)) {
     return undefined;
   }
-  if (paragraphContainsExplicitLineBreakText(paragraph)) {
+  if (
+    !options?.allowExplicitLineBreakText &&
+    paragraphContainsExplicitLineBreakText(paragraph)
+  ) {
     return undefined;
   }
 
@@ -6267,7 +6316,12 @@ function collectDocxSectionStartPageBreakNodeIndexes(
       continue;
     }
 
-    if (sectionBreakPropertiesStartNewPage(section.sectionPropertiesXml)) {
+    const sectionPropertiesXml = section.sectionPropertiesXml;
+    if (!sectionPropertiesXml) {
+      continue;
+    }
+
+    if (sectionBreakPropertiesStartNewPage(sectionPropertiesXml)) {
       breaks.add(startNodeIndex);
     }
   }
@@ -8341,6 +8395,22 @@ function collectDocxEstimatedOverflowBreakStartNodeIndexes(
     ) {
       continue;
     }
+    if (
+      node.type === "paragraph" &&
+      pageConsumedHeightPx > 0 &&
+      paragraphStartsNewPageAfterLeadingCoverLayout(
+        model,
+        nodeIndex,
+        node,
+        nodeMetrics.pageContentWidthPx,
+        nodeMetrics.pageContentHeightPx
+      )
+    ) {
+      breaks.add(nodeIndex);
+      pageConsumedHeightPx = 0;
+      previousParagraphAfterPx = 0;
+      currentPageContentHeightPx = nodeMetrics.pageContentHeightPx;
+    }
     const directNodeBeforeSpacingPx =
       node.type === "paragraph" ? paragraphBeforeSpacingPx(node) : 0;
     const directNodeAfterSpacingPx =
@@ -9036,6 +9106,25 @@ export function buildDocumentPageNodeSegments(
       continue;
     }
     if (node.type === "paragraph") {
+      if (
+        paragraphStartsNewPageAfterLeadingCoverLayout(
+          model,
+          nodeIndex,
+          node,
+          nodeMetrics.pageContentWidthPx,
+          nodeMetrics.pageContentHeightPx
+        ) &&
+        currentPageSegments.length > 0
+      ) {
+        startNextPage();
+        pageConsumedHeightPx = 0;
+        previousParagraphAfterPx = 0;
+        currentPageContentHeightPx = resolveMetricsPageContentHeightPx(
+          currentPageIndex,
+          nodeMetrics
+        );
+      }
+
       if (paragraphHasPageBreakBefore(node) && currentPageSegments.length > 0) {
         startNextPage();
         pageConsumedHeightPx = 0;
@@ -10981,6 +11070,8 @@ function paragraphBlockStyle(
     paragraphIsFloatingImageAnchorOnly(paragraph);
   const suppressStackingContextForBehindTextAnchorOnlyParagraph =
     paragraphIsBehindTextAbsoluteFloatingImageAnchorOnly(paragraph);
+  const suppressFlowFootprintForBehindTextAnchorOnlyParagraph =
+    paragraphActsAsDecorativeBehindTextBackgroundOverlay(paragraph);
   const headingLevel = paragraph.style?.headingLevel;
   const applyWordLikeHeadingFallback = !paragraph.sourceXml;
   const hasSoftLineBreak = paragraphText(paragraph).includes("\n");
@@ -11002,13 +11093,23 @@ function paragraphBlockStyle(
     ...(paragraph.style?.align === "justify" && hasSoftLineBreak
       ? ({ textAlignLast: "justify" } as React.CSSProperties)
       : undefined),
-    lineHeight: paragraphLineHeight(
-      paragraph,
-      docGridLinePitchPx,
-      disableDocGridSnap
-    ),
-    marginTop: beforeSpacing,
-    marginBottom: afterSpacing,
+    lineHeight: suppressFlowFootprintForBehindTextAnchorOnlyParagraph
+      ? 0
+      : paragraphLineHeight(
+          paragraph,
+          docGridLinePitchPx,
+          disableDocGridSnap
+        ),
+    ...(suppressFlowFootprintForBehindTextAnchorOnlyParagraph
+      ? {
+          height: 0,
+          marginTop: 0,
+          marginBottom: 0,
+        }
+      : {
+          marginTop: beforeSpacing,
+          marginBottom: afterSpacing,
+        }),
     marginLeft: suppressIndentForFloatingAnchorOnlyParagraph ? 0 : leftIndent,
     marginRight: suppressIndentForFloatingAnchorOnlyParagraph ? 0 : rightIndent,
     backgroundColor: paragraph.style?.backgroundColor,
@@ -11017,7 +11118,10 @@ function paragraphBlockStyle(
       suppressIndentForFloatingAnchorOnlyParagraph
         ? undefined
         : firstLineIndent ?? (hangingIndent ? -hangingIndent : undefined),
-    minHeight: paragraphIsEffectivelyEmpty(paragraph)
+    minHeight:
+      suppressFlowFootprintForBehindTextAnchorOnlyParagraph
+        ? undefined
+        : paragraphIsEffectivelyEmpty(paragraph)
       ? `${
           estimateParagraphLineHeightPx(
             paragraph,
@@ -19547,6 +19651,11 @@ export function useDocxEditor(
     React.useState<DocxDocumentTheme>(options.initialDocumentTheme ?? "light");
   const [showTrackedChanges, setShowTrackedChangesState] =
     React.useState<boolean>(options.initialShowTrackedChanges ?? false);
+  const [paginationInfo, setPaginationInfo] =
+    React.useState<DocxPaginationInfo>({
+      currentPage: 1,
+      totalPages: 1,
+    });
   const [history, setHistory] = React.useState<{
     past: DocxHistorySnapshot[];
     future: DocxHistorySnapshot[];
@@ -19632,6 +19741,13 @@ export function useDocxEditor(
   React.useEffect(() => {
     pendingRunStyleRef.current = pendingRunStyle;
   }, [pendingRunStyle]);
+
+  React.useEffect(() => {
+    setPaginationInfo({
+      currentPage: 1,
+      totalPages: 1,
+    });
+  }, [documentLoadNonce]);
 
   const clearSelectionSession = React.useCallback(
     (expectedKind?: DocxSelectionSessionKind): void => {
@@ -23890,6 +24006,35 @@ export function useDocxEditor(
     [applyModelChange]
   );
 
+  const syncPaginationInfo = React.useCallback(
+    (nextPaginationInfo: DocxPaginationInfo): void => {
+      setPaginationInfo((current) => {
+        const nextTotalPages = Math.max(
+          1,
+          Math.round(nextPaginationInfo.totalPages || 1)
+        );
+        const nextCurrentPage = clampNumber(
+          Math.round(nextPaginationInfo.currentPage || 1),
+          1,
+          nextTotalPages
+        );
+
+        if (
+          current.currentPage === nextCurrentPage &&
+          current.totalPages === nextTotalPages
+        ) {
+          return current;
+        }
+
+        return {
+          currentPage: nextCurrentPage,
+          totalPages: nextTotalPages,
+        };
+      });
+    },
+    []
+  );
+
   return {
     model,
     documentLoadNonce,
@@ -23898,6 +24043,8 @@ export function useDocxEditor(
     documentTheme,
     trackedChanges,
     showTrackedChanges,
+    currentPage: paginationInfo.currentPage,
+    totalPages: paginationInfo.totalPages,
     selection,
     activeTextRange,
     historyRestoreRequest,
@@ -23923,6 +24070,7 @@ export function useDocxEditor(
     setStatus,
     setDocumentTheme,
     setShowTrackedChanges,
+    syncPaginationInfo,
     toggleShowTrackedChanges,
     importDocxFile,
     newDocument,
@@ -24305,6 +24453,20 @@ export function useDocxPageLayout(
       layout,
     }),
     [layout]
+  );
+}
+
+export function useDocxPagination(
+  editor: Pick<DocxEditorController, "currentPage" | "totalPages">
+): UseDocxPaginationResult {
+  return React.useMemo(
+    () => ({
+      pagination: {
+        currentPage: editor.currentPage,
+        totalPages: editor.totalPages,
+      },
+    }),
+    [editor.currentPage, editor.totalPages]
   );
 }
 
@@ -26975,8 +27137,8 @@ export function DocxEditorViewer({
   }, [pageCount, visiblePageEndIndex, visiblePageStartIndex]);
   const paginationMeasurementEnabled =
     hideDocumentUntilPaginationSettled || postImportPaginationUnlocked;
-  const visiblePagesNeedMeasurementUnlock = React.useMemo(() => {
-    if (hideDocumentUntilPaginationSettled || pageCount === 0) {
+  const visiblePagesHavePendingPaginationMeasurements = React.useMemo(() => {
+    if (pageCount === 0) {
       return false;
     }
 
@@ -27004,13 +27166,15 @@ export function DocxEditorViewer({
     return false;
   }, [
     editor.model.nodes,
-    hideDocumentUntilPaginationSettled,
     measuredPageContentHeightByIndex,
     pageCount,
     pageNodeSegmentsByPage,
     tableMeasuredRowHeights,
     visiblePageIndexes,
   ]);
+  const visiblePagesNeedMeasurementUnlock =
+    !hideDocumentUntilPaginationSettled &&
+    visiblePagesHavePendingPaginationMeasurements;
   React.useEffect(() => {
     if (!visiblePagesNeedMeasurementUnlock) {
       return;
@@ -27789,13 +27953,6 @@ export function DocxEditorViewer({
       return;
     }
 
-    const pageMeasurementsReady = visiblePageIndexes.every((pageIndex) =>
-      Number.isFinite(measuredPageContentHeightByIndex[pageIndex])
-    );
-    if (!pageMeasurementsReady) {
-      return;
-    }
-
     const segmentationSignature = visiblePageIndexes
       .map((pageIndex) =>
         (pageNodeSegmentsByPage[pageIndex] ?? [])
@@ -27847,7 +28004,8 @@ export function DocxEditorViewer({
     }
 
     let revealCancelled = false;
-    const confirmStableFrame = (remainingFrames: number): void => {
+    let revealTimeoutId: number | null = null;
+    const settleAndReveal = (): void => {
       if (
         typeof window === "undefined" ||
         typeof window.requestAnimationFrame !== "function"
@@ -27856,31 +28014,33 @@ export function DocxEditorViewer({
         return;
       }
 
-      initialPaginationRevealFrameRef.current = window.requestAnimationFrame(
-        () => {
-          if (revealCancelled) {
-            return;
+      revealTimeoutId = window.setTimeout(() => {
+        revealTimeoutId = null;
+        initialPaginationRevealFrameRef.current = window.requestAnimationFrame(
+          () => {
+            if (revealCancelled) {
+              return;
+            }
+            if (Date.now() < paginationMeasurementSuspendUntilRef.current) {
+              return;
+            }
+            if (initialPaginationStableSignatureRef.current !== nextSignature) {
+              return;
+            }
+            initialPaginationRevealFrameRef.current = null;
+            setIsInitialPaginationSettled(true);
           }
-          if (Date.now() < paginationMeasurementSuspendUntilRef.current) {
-            return;
-          }
-          if (initialPaginationStableSignatureRef.current !== nextSignature) {
-            return;
-          }
-          if (remainingFrames > 1) {
-            confirmStableFrame(remainingFrames - 1);
-            return;
-          }
-          initialPaginationRevealFrameRef.current = null;
-          setIsInitialPaginationSettled(true);
-        }
-      );
+        );
+      }, INITIAL_PAGINATION_STABILITY_IDLE_MS);
     };
 
-    confirmStableFrame(2);
+    settleAndReveal();
 
     return () => {
       revealCancelled = true;
+      if (revealTimeoutId !== null && typeof window !== "undefined") {
+        window.clearTimeout(revealTimeoutId);
+      }
       if (
         initialPaginationRevealFrameRef.current !== null &&
         typeof window !== "undefined" &&
@@ -38710,7 +38870,9 @@ export function DocxEditorViewer({
         editor.model.metadata.numberingDefinitions
       );
       const pretextParagraphSource = hasPartialLineRange
-        ? buildParagraphPretextLayoutSource(node)
+        ? buildParagraphPretextLayoutSource(node, {
+            allowExplicitLineBreakText: true,
+          })
         : undefined;
       const pretextParagraphLayout =
         hasPartialLineRange && pretextParagraphSource
@@ -38884,44 +39046,6 @@ export function DocxEditorViewer({
             baseTextStyle: firstRunStyle(node),
             blockHeightPx: pretextParagraphSliceLayout.height,
           })}
-        </div>
-      ) : hasPartialLineRange ? (
-        <div
-          style={{
-            height:
-              paragraphSegmentVisibleHeightPx +
-              paragraphSegmentClipBleedTopPx +
-              paragraphSegmentClipBleedBottomPx,
-            minHeight:
-              paragraphSegmentVisibleHeightPx +
-              paragraphSegmentClipBleedTopPx +
-              paragraphSegmentClipBleedBottomPx,
-            marginBottom: -(
-              paragraphSegmentClipBleedTopPx + paragraphSegmentClipBleedBottomPx
-            ),
-            overflow: "visible",
-            clipPath: "inset(0 0 0 0)",
-          }}
-        >
-          <div
-            style={{
-              transform: `translateY(${
-                paragraphSegmentClipBleedTopPx - paragraphSegmentTranslateYPx
-              }px)`,
-            }}
-          >
-            {renderInteractiveParagraphRuns(
-              node,
-              `node-${nodeIndex}-lines-${paragraphSegmentStartLine}-${paragraphSegmentEndLine}`,
-              {
-                kind: "paragraph",
-                nodeIndex,
-              },
-              {
-                pageFlowTopPx: paragraphPageFlowTopPx,
-              }
-            )}
-          </div>
         </div>
       ) : (
         renderInteractiveParagraphRuns(
@@ -43032,6 +43156,7 @@ export function DocxEditorViewer({
               key={`page-${pageIndex}`}
               data-docx-page-wrapper="true"
               data-docx-page-index={pageIndex}
+              data-index={pageIndex}
               style={{
                 width: pageWrapperWidthPx,
                 margin: "0 auto",
@@ -43177,6 +43302,7 @@ export function DocxEditorViewer({
             key={`page-${pageIndex}`}
             data-docx-page-wrapper="true"
             data-docx-page-index={pageIndex}
+            data-index={pageIndex}
             style={{
               position: "relative",
               width: pageWrapperWidthPx,
