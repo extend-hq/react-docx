@@ -1252,6 +1252,15 @@ function tableXml(
     tableProps.push(`<w:tblLayout w:type="${table.style.layout}"/>`);
   }
 
+  const tableCellSpacingTwips = twipsToXmlNonNegative(
+    table.style?.cellSpacingTwips
+  );
+  if (tableCellSpacingTwips !== undefined) {
+    tableProps.push(
+      `<w:tblCellSpacing w:w="${tableCellSpacingTwips}" w:type="dxa"/>`
+    );
+  }
+
   const tableCellMarginXml = tableBoxSpacingXml(table.style?.cellMarginTwips, "w:tblCellMar");
   if (tableCellMarginXml) {
     tableProps.push(tableCellMarginXml);

@@ -34,14 +34,11 @@ describe("rfp pagination fidelity", () => {
     );
 
     const firstPageNodeIndexes = pages[0]?.map((segment) => segment.nodeIndex) ?? [];
-    console.log("page-count", pages.length);
-    console.log(
-      "page-1",
-      firstPageNodeIndexes,
-      "page-2",
-      pages[1]?.map((segment) => segment.nodeIndex) ?? []
-    );
+    const secondPageNodeIndexes =
+      pages[1]?.map((segment) => segment.nodeIndex) ?? [];
+
     expect(firstPageNodeIndexes).toContain(22);
     expect(firstPageNodeIndexes).toContain(23);
+    expect(secondPageNodeIndexes[0]).toBe(25);
   });
 });

@@ -200,6 +200,8 @@ const WORD_TABLE_CELL_FALLBACK_PADDING_PX = {
   left: 4,
 } as const;
 const DEFAULT_UNSPECIFIED_DOCX_FONT_FAMILY = "Times New Roman";
+const MAX_TRAILING_SECTION_TAIL_PARAGRAPHS = 18;
+const MAX_TRAILING_SECTION_TAIL_OVERFLOW_PX = 700;
 const SPLITTABLE_TABLE_ROW_ESTIMATE_EXTRA_LINE_COUNT = 2;
 const SPLITTABLE_TABLE_ROW_DEEP_CONTENT_NODE_THRESHOLD = 8;
 const PAGE_BREAK_XML_PATTERN = /<w:br\b[^>]*w:type="page"[^>]*\/?>/i;
@@ -4862,6 +4864,9 @@ function buildParagraphPretextLayoutSource(
   if (paragraphHasNumbering(paragraph) || paragraphHasFormField(paragraph)) {
     return undefined;
   }
+  if (paragraphContainsExplicitLineBreakText(paragraph)) {
+    return undefined;
+  }
 
   const runs: ParagraphPretextLayoutRun[] = [];
   let combinedText = "";
@@ -6246,6 +6251,198 @@ function collectDocxHardPageBreakStartNodeIndexes(
   return breaks;
 }
 
+function collectDocxSectionStartPageBreakNodeIndexes(
+  model: DocModel
+): Set<number> {
+  const breaks = new Set<number>();
+  const sections = resolveDocumentSectionsFromMetadata(model.metadata);
+  for (
+    let sectionIndex = 1;
+    sectionIndex < sections.length;
+    sectionIndex += 1
+  ) {
+    const section = sections[sectionIndex];
+    const startNodeIndex = Math.max(0, Math.round(section.startNodeIndex));
+    if (startNodeIndex <= 0 || startNodeIndex >= model.nodes.length) {
+      continue;
+    }
+
+    if (sectionBreakPropertiesStartNewPage(section.sectionPropertiesXml)) {
+      breaks.add(startNodeIndex);
+    }
+  }
+
+  return breaks;
+}
+
+function buildNextHardBreakStartNodeIndexLookup(
+  nodeCount: number,
+  hardBreakStartNodeIndexes: Set<number>
+): number[] {
+  const nextBreakStartNodeIndexes = new Array<number>(nodeCount).fill(-1);
+  let nextBreakStartNodeIndex = -1;
+
+  for (let nodeIndex = nodeCount - 1; nodeIndex >= 0; nodeIndex -= 1) {
+    nextBreakStartNodeIndexes[nodeIndex] = nextBreakStartNodeIndex;
+    if (hardBreakStartNodeIndexes.has(nodeIndex)) {
+      nextBreakStartNodeIndex = nodeIndex;
+    }
+  }
+
+  return nextBreakStartNodeIndexes;
+}
+
+function paragraphIsSimpleTrailingSectionTailCandidate(
+  paragraph: ParagraphNode
+): boolean {
+  if (
+    !paragraphHasVisibleText(paragraph) ||
+    paragraphHasImage(paragraph) ||
+    paragraphHasFormField(paragraph) ||
+    paragraphHasExplicitPageBreak(paragraph) ||
+    paragraphHasPageBreakBefore(paragraph) ||
+    paragraphStartsWithLastRenderedPageBreak(paragraph) ||
+    sectionBreakAfterParagraphStartsNewPage(paragraph)
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+function shouldKeepTrailingSectionTailOnCurrentPage(
+  model: DocModel,
+  startNodeIndex: number,
+  pageConsumedHeightPx: number,
+  previousParagraphAfterPx: number,
+  pageContentWidthPx: number,
+  pageContentHeightPx: number,
+  hardBreakStartNodeIndexes: Set<number>,
+  sectionStartPageBreakNodeIndexes: Set<number>,
+  nextHardBreakStartNodeIndexByNodeIndex: number[],
+  estimateNodeHeightPx: (
+    nodeIndex: number,
+    node: DocModel["nodes"][number],
+    pageContentWidthPx: number
+  ) => number,
+  resolveNodeBeforeSpacingPx: (
+    nodeIndex: number,
+    paragraph: ParagraphNode,
+    consumedHeightPx: number
+  ) => number,
+  resolveNodeAfterSpacingPx: (
+    nodeIndex: number,
+    paragraph: ParagraphNode
+  ) => number
+): boolean {
+  if (pageConsumedHeightPx <= 0 || startNodeIndex <= 0) {
+    return false;
+  }
+
+  const nextHardBreakStartNodeIndex =
+    nextHardBreakStartNodeIndexByNodeIndex[startNodeIndex] ?? -1;
+  if (
+    nextHardBreakStartNodeIndex <= startNodeIndex ||
+    !hardBreakStartNodeIndexes.has(nextHardBreakStartNodeIndex) ||
+    !sectionStartPageBreakNodeIndexes.has(nextHardBreakStartNodeIndex)
+  ) {
+    return false;
+  }
+
+  const remainingHeightPx = pageContentHeightPx - pageConsumedHeightPx;
+
+  let tailConsumedHeightPx = 0;
+  let tailPreviousParagraphAfterPx = previousParagraphAfterPx;
+  let substantiveParagraphCount = 0;
+
+  for (
+    let nodeIndex = startNodeIndex;
+    nodeIndex < nextHardBreakStartNodeIndex;
+    nodeIndex += 1
+  ) {
+    const node = model.nodes[nodeIndex];
+    if (
+      node.type === "paragraph" &&
+      paragraphIsStructuralSectionBreakSpacer(node)
+    ) {
+      tailPreviousParagraphAfterPx = 0;
+      continue;
+    }
+    if (
+      node.type === "paragraph" &&
+      paragraphActsAsLeadingCoverLayoutOverlay(
+        model,
+        nodeIndex,
+        node,
+        pageContentWidthPx,
+        pageContentHeightPx
+      )
+    ) {
+      return false;
+    }
+    if (
+      node.type === "paragraph" &&
+      paragraphActsAsDecorativeBehindTextBackgroundOverlay(node)
+    ) {
+      return false;
+    }
+    if (
+      node.type === "paragraph" &&
+      paragraphCollapsesIntoPreviousParagraph(node, model.nodes[nodeIndex - 1])
+    ) {
+      continue;
+    }
+    if (node.type !== "paragraph") {
+      return false;
+    }
+    if (!paragraphIsSimpleTrailingSectionTailCandidate(node)) {
+      return false;
+    }
+
+    substantiveParagraphCount += 1;
+    if (substantiveParagraphCount > MAX_TRAILING_SECTION_TAIL_PARAGRAPHS) {
+      return false;
+    }
+
+    const directBeforeSpacingPx = paragraphBeforeSpacingPx(node);
+    const directAfterSpacingPx = paragraphAfterSpacingPx(node);
+    const nodeBeforeSpacingPx = resolveNodeBeforeSpacingPx(
+      nodeIndex,
+      node,
+      pageConsumedHeightPx + tailConsumedHeightPx
+    );
+    const nodeAfterSpacingPx = resolveNodeAfterSpacingPx(nodeIndex, node);
+    const rawNodeHeightPx = Math.max(
+      1,
+      estimateNodeHeightPx(nodeIndex, node, pageContentWidthPx) -
+        directBeforeSpacingPx -
+        directAfterSpacingPx +
+        nodeBeforeSpacingPx +
+        nodeAfterSpacingPx
+    );
+    const collapsedMarginPx =
+      pageConsumedHeightPx + tailConsumedHeightPx > 0
+        ? Math.min(tailPreviousParagraphAfterPx, nodeBeforeSpacingPx)
+        : 0;
+    const effectiveNodeHeightPx = Math.max(
+      1,
+      rawNodeHeightPx - collapsedMarginPx
+    );
+    tailConsumedHeightPx += effectiveNodeHeightPx;
+    tailPreviousParagraphAfterPx = nodeAfterSpacingPx;
+  }
+
+  if (substantiveParagraphCount === 0) {
+    return false;
+  }
+
+  const overflowPx = tailConsumedHeightPx - remainingHeightPx;
+  return (
+    overflowPx > PAGE_OVERFLOW_TOLERANCE_PX &&
+    overflowPx <= MAX_TRAILING_SECTION_TAIL_OVERFLOW_PX
+  );
+}
+
 function paragraphDominantFontSizePt(
   paragraph: ParagraphNode
 ): number | undefined {
@@ -6397,6 +6594,14 @@ function singleLineAutoScaleForFontFamily(fontFamily?: string): number {
 
 function paragraphLineCount(paragraph: ParagraphNode): number {
   return paragraphLineCountWithinWidth(paragraph);
+}
+
+function paragraphContainsExplicitLineBreakText(
+  paragraph: ParagraphNode
+): boolean {
+  return paragraph.children.some(
+    (child) => child.type === "text" && /[\r\n]/.test(child.text)
+  );
 }
 
 function estimatedGlyphWidthPx(character: string, fontSizePx: number): number {
@@ -6856,7 +7061,8 @@ function estimateWrappedLineCountForParagraph(
   const paragraphEligibleForPlainPretextLineCount =
     !paragraph.style?.numbering &&
     !paragraph.style?.indent &&
-    (!paragraph.style?.tabStops || paragraph.style.tabStops.length === 0);
+    (!paragraph.style?.tabStops || paragraph.style.tabStops.length === 0) &&
+    !paragraphContainsExplicitLineBreakText(paragraph);
 
   if (
     paragraphEligibleForPlainPretextLineCount &&
@@ -8033,6 +8239,13 @@ function collectDocxEstimatedOverflowBreakStartNodeIndexes(
   const metricsBySection = paginationMetricsBySection?.length
     ? paginationMetricsBySection
     : [fallbackMetrics];
+  const sectionStartPageBreakNodeIndexes =
+    collectDocxSectionStartPageBreakNodeIndexes(model);
+  const nextHardBreakStartNodeIndexByNodeIndex =
+    buildNextHardBreakStartNodeIndexLookup(
+      model.nodes.length,
+      hardBreakStartNodeIndexes
+    );
 
   let pageConsumedHeightPx = 0;
   let previousParagraphAfterPx = 0;
@@ -8265,9 +8478,43 @@ function collectDocxEstimatedOverflowBreakStartNodeIndexes(
     }
 
     const remainingHeightPx = currentPageContentHeightPx - pageConsumedHeightPx;
+    const canKeepTrailingSectionTailOnCurrentPage =
+      shouldKeepTrailingSectionTailOnCurrentPage(
+        model,
+        nodeIndex,
+        pageConsumedHeightPx,
+        previousParagraphAfterPx,
+        nodeMetrics.pageContentWidthPx,
+        currentPageContentHeightPx,
+        hardBreakStartNodeIndexes,
+        sectionStartPageBreakNodeIndexes,
+        nextHardBreakStartNodeIndexByNodeIndex,
+        (_candidateNodeIndex, candidateNode, candidatePageContentWidthPx) =>
+          estimateDocNodeHeightPx(
+            candidateNode,
+            candidatePageContentWidthPx,
+            numberingDefinitions,
+            nodeMetrics.docGridLinePitchPx
+          ),
+        (candidateNodeIndex, candidateParagraph, consumedHeightPx) =>
+          effectiveParagraphBeforeSpacingPx(
+            model,
+            candidateNodeIndex,
+            candidateParagraph,
+            consumedHeightPx,
+            suppressSpacingBeforeAfterPageBreak
+          ),
+        (candidateNodeIndex, candidateParagraph) =>
+          effectiveParagraphAfterSpacingPx(
+            model,
+            candidateNodeIndex,
+            candidateParagraph
+          )
+      );
     if (
       pageConsumedHeightPx > 0 &&
-      requiredHeightPx > remainingHeightPx + PAGE_OVERFLOW_TOLERANCE_PX
+      requiredHeightPx > remainingHeightPx + PAGE_OVERFLOW_TOLERANCE_PX &&
+      !canKeepTrailingSectionTailOnCurrentPage
     ) {
       breaks.add(nodeIndex);
       pageConsumedHeightPx = 0;
@@ -8629,6 +8876,13 @@ export function buildDocumentPageNodeSegments(
     options?.preferLastRenderedParagraphStartBreaks ?? false;
   const hardBreakStartNodeIndexes =
     collectDocxHardPageBreakStartNodeIndexes(model);
+  const sectionStartPageBreakNodeIndexes =
+    collectDocxSectionStartPageBreakNodeIndexes(model);
+  const nextHardBreakStartNodeIndexByNodeIndex =
+    buildNextHardBreakStartNodeIndexLookup(
+      model.nodes.length,
+      hardBreakStartNodeIndexes
+    );
   const estimatedRowHeightsByTableNodeIndex = new Map<number, number[]>();
   const measuredPageContentHeightsPxByPageIndex =
     options?.measuredPageContentHeightsPxByPageIndex;
@@ -9121,9 +9375,43 @@ export function buildDocumentPageNodeSegments(
 
       const remainingHeightPx =
         currentPageContentHeightPx - pageConsumedHeightPx;
+      const canKeepTrailingSectionTailOnCurrentPage =
+        shouldKeepTrailingSectionTailOnCurrentPage(
+          model,
+          nodeIndex,
+          pageConsumedHeightPx,
+          previousParagraphAfterPx,
+          nodeMetrics.pageContentWidthPx,
+          currentPageContentHeightPx,
+          hardBreakStartNodeIndexes,
+          sectionStartPageBreakNodeIndexes,
+          nextHardBreakStartNodeIndexByNodeIndex,
+          (_candidateNodeIndex, candidateNode, candidatePageContentWidthPx) =>
+            estimateDocNodeHeightPx(
+              candidateNode,
+              candidatePageContentWidthPx,
+              numberingDefinitions,
+              nodeMetrics.docGridLinePitchPx
+            ),
+          (candidateNodeIndex, candidateParagraph, consumedHeightPx) =>
+            effectiveParagraphBeforeSpacingPx(
+              model,
+              candidateNodeIndex,
+              candidateParagraph,
+              consumedHeightPx,
+              shouldSuppressSpacingAtPageBreaks
+            ),
+          (candidateNodeIndex, candidateParagraph) =>
+            effectiveParagraphAfterSpacingPx(
+              model,
+              candidateNodeIndex,
+              candidateParagraph
+            )
+        );
       if (
         pageConsumedHeightPx > 0 &&
-        requiredHeightPx > remainingHeightPx + PAGE_OVERFLOW_TOLERANCE_PX
+        requiredHeightPx > remainingHeightPx + PAGE_OVERFLOW_TOLERANCE_PX &&
+        !canKeepTrailingSectionTailOnCurrentPage
       ) {
         startNextPage();
         pageConsumedHeightPx = 0;
@@ -11669,7 +11957,7 @@ function emuToPixels(value: number | undefined): number | undefined {
     return undefined;
   }
 
-  return Math.max(0, Math.round((value as number) / 9525));
+  return Math.max(0, Number(((value as number) / 9525).toFixed(3)));
 }
 
 function resolveSyntheticTextBoxFieldText(
@@ -12221,7 +12509,152 @@ function syntheticTextBoxContainsPictureLayer(image: ImageRunNode): boolean {
     return false;
   }
 
-  return /<pic:pic\b|<a:blip\b/i.test(image.sourceXml);
+  if (/<pic:pic\b|<a:blip\b/i.test(image.sourceXml)) {
+    return true;
+  }
+
+  if (!/<wpg:wgp\b/i.test(image.sourceXml)) {
+    return false;
+  }
+
+  const groupedShapes = balancedTagXmlBlocks(image.sourceXml, "wps:wsp");
+  return groupedShapes.some((shapeXml) => {
+    const shapePropertiesXml = balancedTagXmlBlocks(shapeXml, "wps:spPr")[0] ?? "";
+    if (!shapePropertiesXml || /<w:txbxContent\b/i.test(shapeXml)) {
+      return false;
+    }
+
+    const lineXml = balancedTagXmlBlocks(shapePropertiesXml, "a:ln")[0] ?? "";
+    return (
+      /<a:solidFill\b|<a:gradFill\b|<a:blipFill\b/i.test(shapePropertiesXml) ||
+      (Boolean(lineXml) && !/<a:noFill\b/i.test(lineXml))
+    );
+  });
+}
+
+function parseDrawingImageTransformFromSourceXml(
+  sourceXml?: string
+): {
+  rotationDegrees?: number;
+  flipH?: boolean;
+  flipV?: boolean;
+} | undefined {
+  if (!sourceXml) {
+    return undefined;
+  }
+
+  const transformXml =
+    balancedTagXmlBlocks(sourceXml, "a:xfrm")[0] ??
+    sourceXml.match(/<a:xfrm\b[^>]*\/?>/i)?.[0] ??
+    "";
+  if (!transformXml) {
+    return undefined;
+  }
+
+  const rotationRaw = Number(xmlAttribute(transformXml, "rot"));
+  const rotationDegrees = Number.isFinite(rotationRaw)
+    ? Number(((rotationRaw as number) / 60000).toFixed(3))
+    : undefined;
+  const flipHRaw = xmlAttribute(transformXml, "flipH")?.trim().toLowerCase();
+  const flipVRaw = xmlAttribute(transformXml, "flipV")?.trim().toLowerCase();
+  const flipH = flipHRaw === "1" || flipHRaw === "true";
+  const flipV = flipVRaw === "1" || flipVRaw === "true";
+
+  if (!Number.isFinite(rotationDegrees) && !flipH && !flipV) {
+    return undefined;
+  }
+
+  return {
+    rotationDegrees,
+    flipH: flipH || undefined,
+    flipV: flipV || undefined,
+  };
+}
+
+function joinCssTransforms(
+  ...parts: Array<string | undefined>
+): string | undefined {
+  const resolved = parts.filter(
+    (part): part is string => Boolean(part && part.trim().length > 0)
+  );
+  return resolved.length > 0 ? resolved.join(" ") : undefined;
+}
+
+function resolveImageRenderTransformStyle(
+  image: ImageRunNode,
+  options?: {
+    frameWidthPx?: number;
+    frameHeightPx?: number;
+    fillFrame?: boolean;
+    baseTransform?: string;
+  }
+): React.CSSProperties {
+  const transform = parseDrawingImageTransformFromSourceXml(image.sourceXml);
+  const rotationDegrees = transform?.rotationDegrees;
+  const frameWidthPx = Number.isFinite(options?.frameWidthPx)
+    ? Math.max(1, Math.round(options?.frameWidthPx as number))
+    : undefined;
+  const frameHeightPx = Number.isFinite(options?.frameHeightPx)
+    ? Math.max(1, Math.round(options?.frameHeightPx as number))
+    : undefined;
+  const fillFrame = options?.fillFrame === true;
+  const normalizedQuarterTurn =
+    Number.isFinite(rotationDegrees) &&
+    Math.abs(Math.abs(rotationDegrees as number) % 180 - 90) < 0.5
+      ? (((Math.round((rotationDegrees as number) / 90) % 4) + 4) % 4) * 90
+      : undefined;
+  const flipScaleTransform =
+    transform?.flipH || transform?.flipV
+      ? `scale(${transform?.flipH ? -1 : 1}, ${transform?.flipV ? -1 : 1})`
+      : undefined;
+
+  if (
+    fillFrame &&
+    Number.isFinite(frameWidthPx) &&
+    Number.isFinite(frameHeightPx) &&
+    Number.isFinite(normalizedQuarterTurn)
+  ) {
+    const safeFrameWidthPx = frameWidthPx as number;
+    const safeFrameHeightPx = frameHeightPx as number;
+    const rotationTransform =
+      normalizedQuarterTurn === 90
+        ? `translate(${safeFrameWidthPx}px, 0px) rotate(90deg)`
+        : normalizedQuarterTurn === 180
+        ? `translate(${safeFrameWidthPx}px, ${safeFrameHeightPx}px) rotate(180deg)`
+        : normalizedQuarterTurn === 270
+        ? `translate(0px, ${safeFrameHeightPx}px) rotate(-90deg)`
+        : undefined;
+
+    return {
+      width: `${safeFrameHeightPx}px`,
+      height: `${safeFrameWidthPx}px`,
+      maxWidth: "none",
+      transformOrigin: "top left",
+      transform: joinCssTransforms(
+        options?.baseTransform,
+        rotationTransform,
+        flipScaleTransform
+      ),
+    };
+  }
+
+  const rotationTransform =
+    Number.isFinite(rotationDegrees) && Math.abs(rotationDegrees as number) >= 0.01
+      ? `rotate(${rotationDegrees}deg)`
+      : undefined;
+  const transformValue = joinCssTransforms(
+    options?.baseTransform,
+    rotationTransform,
+    flipScaleTransform
+  );
+  if (!transformValue) {
+    return {};
+  }
+
+  return {
+    transformOrigin: "center center",
+    transform: transformValue,
+  };
 }
 
 function syntheticTextBoxActsAsTopAndBottomMasthead(
@@ -13066,6 +13499,8 @@ interface ParagraphRunRenderOptions {
   resolveStyleRefFieldValue?: (target: string) => string | undefined;
   floatingAnchorOriginCorrectionXPx?: number;
   sectionImageInteraction?: HeaderFooterImageInteraction;
+  paragraphOriginLeftPx?: number;
+  paragraphOriginTopPx?: number;
 }
 
 function renderParagraphRuns(
@@ -13732,6 +14167,13 @@ function renderParagraphRuns(
             filter: child.cssFilter,
             opacity: child.cssOpacity,
           };
+          const imageTransformStyle = resolveImageRenderTransformStyle(child, {
+            frameWidthPx: cropLayout?.frameWidthPx ?? widthPx,
+            frameHeightPx: cropLayout?.frameHeightPx ?? heightPx,
+            baseTransform: cropLayout
+              ? `translate(${-cropLayout.offsetXPx}px, ${-cropLayout.offsetYPx}px)`
+              : undefined,
+          });
 
           if (cropLayout) {
             return (
@@ -13774,8 +14216,8 @@ function renderParagraphRuns(
                     height: `${cropLayout.imageHeightPx}px`,
                     maxWidth: "none",
                     display: "block",
-                    transform: `translate(${-cropLayout.offsetXPx}px, ${-cropLayout.offsetYPx}px)`,
                     ...imageVisualStyle,
+                    ...imageTransformStyle,
                   }}
                 />
               </span>
@@ -13810,6 +14252,10 @@ function renderParagraphRuns(
                     ? undefined
                     : 0,
                 ...imageVisualStyle,
+                ...resolveImageRenderTransformStyle(child, {
+                  frameWidthPx: widthPx,
+                  frameHeightPx: heightPx,
+                }),
                 ...trackedImageStyle,
                 ...floatingStyleWithMovePreview,
                 cursor: sectionImageCursor,
@@ -15367,6 +15813,7 @@ function deriveColumnWidthsFromTableRows(
 ): number[] | undefined {
   let bestCandidate: number[] | undefined;
   let bestPositiveCount = -1;
+  let bestTotalWidth = -1;
 
   for (const row of table.rows) {
     const candidate: number[] = [];
@@ -15395,14 +15842,21 @@ function deriveColumnWidthsFromTableRows(
     }
 
     const positiveCount = candidate.filter((value) => value > 0).length;
-    if (positiveCount <= 0 || positiveCount < bestPositiveCount) {
+    if (positiveCount <= 0) {
       continue;
     }
 
-    bestCandidate = candidate;
-    bestPositiveCount = positiveCount;
-    if (positiveCount === columnCount) {
-      break;
+    const totalWidth = candidate.reduce(
+      (sum, value) => sum + (value > 0 ? value : 0),
+      0
+    );
+    if (
+      positiveCount > bestPositiveCount ||
+      (positiveCount === bestPositiveCount && totalWidth > bestTotalWidth)
+    ) {
+      bestCandidate = candidate;
+      bestPositiveCount = positiveCount;
+      bestTotalWidth = totalWidth;
     }
   }
 
@@ -15800,6 +16254,14 @@ function tableBorderSetHasVisibleEdges(
 }
 
 function tableUsesSeparateBorderModel(table: TableNode): boolean {
+  const explicitCellSpacingPx = twipsToPixels(table.style?.cellSpacingTwips);
+  if (
+    Number.isFinite(explicitCellSpacingPx) &&
+    (explicitCellSpacingPx as number) > 0
+  ) {
+    return true;
+  }
+
   const tableBorders = table.style?.borders;
   if (
     tableBorderVisible(tableBorders?.insideH) ||
@@ -15813,7 +16275,29 @@ function tableUsesSeparateBorderModel(table: TableNode): boolean {
   );
 }
 
-function tableElementBorderStyle(table: TableNode): React.CSSProperties {
+function resolveTableSeparateBorderSpacingPx(table: TableNode): number {
+  const explicitCellSpacingPx = twipsToPixels(table.style?.cellSpacingTwips);
+  if (
+    Number.isFinite(explicitCellSpacingPx) &&
+    (explicitCellSpacingPx as number) > 0
+  ) {
+    return Math.max(0, Math.round(explicitCellSpacingPx as number));
+  }
+
+  if (
+    tableUsesSeparateBorderModel(table) &&
+    tableBorderSetHasVisibleEdges(table.style?.borders)
+  ) {
+    return 1;
+  }
+
+  return 0;
+}
+
+function tableElementBorderStyle(
+  table: TableNode,
+  borderSpacingPx = resolveTableSeparateBorderSpacingPx(table)
+): React.CSSProperties {
   if (!tableUsesSeparateBorderModel(table)) {
     return {
       borderCollapse: "collapse",
@@ -15822,7 +16306,7 @@ function tableElementBorderStyle(table: TableNode): React.CSSProperties {
 
   return {
     borderCollapse: "separate",
-    borderSpacing: 0,
+    borderSpacing: `${Math.max(0, Math.round(borderSpacingPx))}px`,
   };
 }
 
@@ -24303,11 +24787,19 @@ function renderHeaderNode(
     rawResolvedTableWidthPx,
     maxTableWidthPx
   );
+  const tableBorderSpacingPx = resolveTableSeparateBorderSpacingPx(node);
+  const tableColumnFitWidthPx = tableUsesSeparateBorderModel(node)
+    ? Math.max(
+        1,
+        resolvedTableWidthPx -
+          tableBorderSpacingPx * Math.max(0, columnCount + 1)
+      )
+    : resolvedTableWidthPx;
   const { columnWidthsPx: tableColumnWidthsPx } =
     resolveFittedTableColumnWidths(
       node,
       rawTableColumnWidthsPx,
-      resolvedTableWidthPx
+      tableColumnFitWidthPx
     );
   const tableRowHeightsPx = embeddedTableResize
     ? embeddedTableResize.resolveRowHeights(tableRuntimeKey, node)
@@ -24524,7 +25016,7 @@ function renderHeaderNode(
         style={{
           width:
             resolvedTableWidthPx > 0 ? `${resolvedTableWidthPx}px` : "100%",
-          ...tableElementBorderStyle(node),
+          ...tableElementBorderStyle(node, tableBorderSpacingPx),
           tableLayout: node.style?.layout === "autofit" ? "auto" : "fixed",
         }}
       >
@@ -35484,6 +35976,8 @@ export function DocxEditorViewer({
           ? {
               left: documentLayout.marginsPx.left,
               top: documentLayout.marginsPx.top,
+              columnLeft: documentLayout.marginsPx.left,
+              columnTop: documentLayout.marginsPx.top,
               pageWidth: documentLayout.pageWidthPx,
             }
           : undefined;
@@ -35501,6 +35995,12 @@ export function DocxEditorViewer({
         0,
         Math.round(options?.pageFlowTopPx ?? 0)
       );
+      const bodyParagraphOriginLeftPx = interactiveBodyFloatingPageOriginPx
+        ? documentLayout.marginsPx.left
+        : undefined;
+      const bodyParagraphOriginTopPx = interactiveBodyFloatingPageOriginPx
+        ? paragraphPageFlowTopPx
+        : undefined;
       const resizedWidthPxByImageIndex = new Map<number, number>();
       const resizedHeightPxByImageIndex = new Map<number, number>();
       const movePreviewByImageIndex = new Map<
@@ -35664,6 +36164,8 @@ export function DocxEditorViewer({
             showTrackedChanges: trackedChangesEnabled,
             numberingDefinitions: editor.model.metadata.numberingDefinitions,
             tocLinkColorByLevel,
+            paragraphOriginLeftPx: bodyParagraphOriginLeftPx,
+            paragraphOriginTopPx: bodyParagraphOriginTopPx,
           }
         );
       }
@@ -35922,6 +36424,16 @@ export function DocxEditorViewer({
                     filter: manualImage.cssFilter,
                     opacity: manualImage.cssOpacity,
                   };
+                  const imageTransformStyle = resolveImageRenderTransformStyle(
+                    manualImage,
+                    {
+                      frameWidthPx: cropLayout?.frameWidthPx ?? widthPx,
+                      frameHeightPx: cropLayout?.frameHeightPx ?? heightPx,
+                      baseTransform: cropLayout
+                        ? `translate(${-cropLayout.offsetXPx}px, ${-cropLayout.offsetYPx}px)`
+                        : undefined,
+                    }
+                  );
 
                   if (cropLayout) {
                     return (
@@ -35943,9 +36455,9 @@ export function DocxEditorViewer({
                             maxWidth: "none",
                             verticalAlign: "middle",
                             display: "block",
-                            transform: `translate(${-cropLayout.offsetXPx}px, ${-cropLayout.offsetYPx}px)`,
                             cursor: isReadOnly ? "default" : "move",
                             ...imageVisualStyle,
+                            ...imageTransformStyle,
                           }}
                         />
                       </span>
@@ -35964,6 +36476,10 @@ export function DocxEditorViewer({
                         display: "block",
                         cursor: isReadOnly ? "default" : "move",
                         ...imageVisualStyle,
+                        ...resolveImageRenderTransformStyle(manualImage, {
+                          frameWidthPx: widthPx,
+                          frameHeightPx: heightPx,
+                        }),
                       }}
                     />
                   );
@@ -36106,16 +36622,22 @@ export function DocxEditorViewer({
               documentLayout.marginsPx.top -
               documentLayout.marginsPx.bottom
           )
-            ? fullPageCoverAbsoluteFloatingImageStyle(manualImage, documentLayout, {
-                deltaX: movePreview?.deltaX ?? 0,
-                deltaY: movePreview?.deltaY ?? 0,
-              })
-            : absoluteFloatingImageStyle(manualImage, {
-                pageOriginLeft: interactiveBodyFloatingPageOriginPx?.left ?? 0,
-                pageOriginTop: interactiveBodyFloatingPageOriginPx?.top ?? 0,
-                deltaX: movePreview?.deltaX ?? 0,
-                deltaY: movePreview?.deltaY ?? 0,
-              });
+              ? fullPageCoverAbsoluteFloatingImageStyle(manualImage, documentLayout, {
+                  deltaX: movePreview?.deltaX ?? 0,
+                  deltaY: movePreview?.deltaY ?? 0,
+                })
+              : absoluteFloatingImageStyle(manualImage, {
+                  pageOriginLeft: interactiveBodyFloatingPageOriginPx?.left ?? 0,
+                  pageOriginTop: interactiveBodyFloatingPageOriginPx?.top ?? 0,
+                  columnOriginLeft:
+                    interactiveBodyFloatingPageOriginPx?.columnLeft ?? 0,
+                  columnOriginTop:
+                    interactiveBodyFloatingPageOriginPx?.columnTop ?? 0,
+                  paragraphOriginLeft: bodyParagraphOriginLeftPx,
+                  paragraphOriginTop: bodyParagraphOriginTopPx,
+                  deltaX: movePreview?.deltaX ?? 0,
+                  deltaY: movePreview?.deltaY ?? 0,
+                });
           const renderableImageSrc =
             syntheticTextBoxSvg(
               manualImage,
@@ -36347,6 +36869,12 @@ export function DocxEditorViewer({
             : absoluteFloatingImageStyle(manualImage, {
                 pageOriginLeft: interactiveBodyFloatingPageOriginPx?.left ?? 0,
                 pageOriginTop: interactiveBodyFloatingPageOriginPx?.top ?? 0,
+                columnOriginLeft:
+                  interactiveBodyFloatingPageOriginPx?.columnLeft ?? 0,
+                columnOriginTop:
+                  interactiveBodyFloatingPageOriginPx?.columnTop ?? 0,
+                paragraphOriginLeft: bodyParagraphOriginLeftPx,
+                paragraphOriginTop: bodyParagraphOriginTopPx,
                 deltaX: movePreview?.deltaX ?? 0,
                 deltaY: movePreview?.deltaY ?? 0,
               });
@@ -36728,6 +37256,13 @@ export function DocxEditorViewer({
                 documentLayout.marginsPx.top -
                 documentLayout.marginsPx.bottom
             );
+          const coverImageTransform = parseDrawingImageTransformFromSourceXml(
+            child.sourceXml
+          );
+          const coverImageUsesAnchoredGeometry =
+            isLikelyFullPageCoverImage &&
+            Number.isFinite(coverImageTransform?.rotationDegrees) &&
+            Math.abs(coverImageTransform?.rotationDegrees ?? 0) >= 0.01;
           const dualWrapExclusionLayout = isWrappedFloatingImage
             ? wrappedFloatingImageDualExclusionLayout(child, {
                 containerWidthPx: paragraphRenderTextWidthPx,
@@ -36752,7 +37287,7 @@ export function DocxEditorViewer({
                 deltaY: movePreview?.deltaY ?? 0,
               })
             : isAbsoluteFloatingImage
-            ? isLikelyFullPageCoverImage
+            ? isLikelyFullPageCoverImage && !coverImageUsesAnchoredGeometry
               ? fullPageCoverAbsoluteFloatingImageStyle(child, documentLayout, {
                   deltaX: movePreview?.deltaX ?? 0,
                   deltaY: movePreview?.deltaY ?? 0,
@@ -36760,6 +37295,12 @@ export function DocxEditorViewer({
               : absoluteFloatingImageStyle(child, {
                   pageOriginLeft: interactiveBodyFloatingPageOriginPx?.left ?? 0,
                   pageOriginTop: interactiveBodyFloatingPageOriginPx?.top ?? 0,
+                  columnOriginLeft:
+                    interactiveBodyFloatingPageOriginPx?.columnLeft ?? 0,
+                  columnOriginTop:
+                    interactiveBodyFloatingPageOriginPx?.columnTop ?? 0,
+                  paragraphOriginLeft: bodyParagraphOriginLeftPx,
+                  paragraphOriginTop: bodyParagraphOriginTopPx,
                   deltaX: movePreview?.deltaX ?? 0,
                   deltaY: movePreview?.deltaY ?? 0,
                 })
@@ -36799,7 +37340,8 @@ export function DocxEditorViewer({
             isAbsoluteFloatingImage &&
             child.floating?.behindDocument === true &&
             !liftLiveSyntheticTextBoxAboveArtwork;
-          const imageShouldFillFrame = isLikelyFullPageCoverImage;
+          const imageShouldFillFrame =
+            isLikelyFullPageCoverImage && !coverImageUsesAnchoredGeometry;
           const imageFrameStyle: React.CSSProperties = {
             display: "inline-block",
             position:
@@ -37047,6 +37589,24 @@ export function DocxEditorViewer({
                     filter: child.cssFilter,
                     opacity: child.cssOpacity,
                   };
+                  const imageTransformStyle = resolveImageRenderTransformStyle(
+                    child,
+                    {
+                      frameWidthPx:
+                        imageShouldFillFrame && widthPx
+                          ? widthPx
+                          : cropLayout?.frameWidthPx ?? widthPx,
+                      frameHeightPx:
+                        imageShouldFillFrame && heightPx
+                          ? heightPx
+                          : cropLayout?.frameHeightPx ?? heightPx,
+                      fillFrame: imageShouldFillFrame,
+                      baseTransform:
+                        cropLayout && !imageShouldFillFrame
+                          ? `translate(${-cropLayout.offsetXPx}px, ${-cropLayout.offsetYPx}px)`
+                          : undefined,
+                    }
+                  );
                   const imageCursor =
                     isReadOnly || behavesAsDecorativeBehindTextBackground
                       ? "default"
@@ -37103,15 +37663,13 @@ export function DocxEditorViewer({
                             maxWidth: "none",
                             verticalAlign: "middle",
                             display: "block",
-                            transform: imageShouldFillFrame
-                              ? undefined
-                              : `translate(${-cropLayout.offsetXPx}px, ${-cropLayout.offsetYPx}px)`,
                             objectFit: imageShouldFillFrame ? "cover" : undefined,
                             cursor: imageCursor,
                             ...(behavesAsDecorativeBehindTextBackground
                               ? { pointerEvents: "none", userSelect: "none" }
                               : undefined),
                             ...imageVisualStyle,
+                            ...imageTransformStyle,
                           }}
                         />
                       </span>
@@ -37166,6 +37724,11 @@ export function DocxEditorViewer({
                           ? { pointerEvents: "none", userSelect: "none" }
                           : undefined),
                         ...imageVisualStyle,
+                        ...resolveImageRenderTransformStyle(child, {
+                          frameWidthPx: widthPx,
+                          frameHeightPx: heightPx,
+                          fillFrame: imageShouldFillFrame,
+                        }),
                       }}
                     />
                   );
@@ -38336,8 +38899,8 @@ export function DocxEditorViewer({
             marginBottom: -(
               paragraphSegmentClipBleedTopPx + paragraphSegmentClipBleedBottomPx
             ),
-            overflowX: "hidden",
-            overflowY: "visible",
+            overflow: "visible",
+            clipPath: "inset(0 0 0 0)",
           }}
         >
           <div
@@ -39187,11 +39750,21 @@ export function DocxEditorViewer({
             rawResolvedTableWidthPx,
             maxTableWidthPx
           );
+          const tableBorderSpacingPx = resolveTableSeparateBorderSpacingPx(
+            node
+          );
+          const tableColumnFitWidthPx = tableUsesSeparateBorderModel(node)
+            ? Math.max(
+                1,
+                resolvedTableWidthPx -
+                  tableBorderSpacingPx * Math.max(0, columnCount + 1)
+              )
+            : resolvedTableWidthPx;
           const { columnWidthsPx, effectiveColumnCount } =
             resolveFittedTableColumnWidths(
               node,
               rawColumnWidthsPx,
-              resolvedTableWidthPx
+              tableColumnFitWidthPx
             );
           const rowHeightsPx = resolveTableRowHeights(nodeIndex, node);
           const tableCellMarginTwips = node.style?.cellMarginTwips;
@@ -39402,7 +39975,7 @@ export function DocxEditorViewer({
                     resolvedTableWidthPx > 0
                       ? `${resolvedTableWidthPx}px`
                       : "100%",
-                  ...tableElementBorderStyle(node),
+                  ...tableElementBorderStyle(node, tableBorderSpacingPx),
                   tableLayout:
                     node.style?.layout === "autofit" ? "auto" : "fixed",
                 }}
@@ -42307,6 +42880,42 @@ export function DocxEditorViewer({
         writeSectionParagraphDraft,
       ]
     );
+  const activateHeaderFooterEdit = React.useCallback(
+    (
+      region: DocxSectionRegion,
+      partName: string | undefined,
+      pageIndex: number,
+      options?: {
+        draftKey?: string;
+        point?: {
+          x: number;
+          y: number;
+        };
+      }
+    ): void => {
+      if (isReadOnly || !partName) {
+        return;
+      }
+
+      if (options?.draftKey) {
+        pendingSectionParagraphFocusRef.current = {
+          draftKey: options.draftKey,
+          point: options.point,
+        };
+      } else {
+        pendingSectionParagraphFocusRef.current = undefined;
+      }
+
+      clearTableCellSelection();
+      editor.setActiveTextRange(undefined);
+      setActiveHeaderFooterEdit({
+        region,
+        partName,
+        pageIndex,
+      });
+    },
+    [clearTableCellSelection, editor, isReadOnly]
+  );
 
   return (
     <div
@@ -42510,6 +43119,12 @@ export function DocxEditorViewer({
         );
         const footerNeedsFullPageOverlay =
           sectionNodesNeedFullPageFooterOverlay(pageSections.footerNodes);
+        const inactiveFooterActivationZoneHeightPx = Math.max(
+          48,
+          Math.round(
+            pageLayout.marginsPx.bottom + pageLayout.footerDistancePx + 24
+          )
+        );
         const headerOverlayTop = Math.max(0, pageLayout.headerDistancePx);
         const footerOverlayBottom = Math.max(0, pageLayout.footerDistancePx);
         const headerTopOffsetPx = headerOverlayTop - pageLayout.marginsPx.top;
@@ -42666,23 +43281,18 @@ export function DocxEditorViewer({
                     const draftKey = paragraphHost?.getAttribute(
                       "data-docx-section-paragraph-key"
                     );
-                    if (draftKey) {
-                      pendingSectionParagraphFocusRef.current = {
-                        draftKey,
+                    activateHeaderFooterEdit(
+                      "header",
+                      pageSections.headerPartName,
+                      pageIndex,
+                      {
+                        draftKey: draftKey ?? undefined,
                         point: {
                           x: event.clientX,
                           y: event.clientY,
                         },
-                      };
-                    }
-
-                    clearTableCellSelection();
-                    editor.setActiveTextRange(undefined);
-                    setActiveHeaderFooterEdit({
-                      region: "header",
-                      partName: pageSections.headerPartName,
-                      pageIndex,
-                    });
+                      }
+                    );
                   }}
                 >
                   {pageSections.headerNodes.map((node, index) =>
@@ -43469,166 +44079,192 @@ export function DocxEditorViewer({
               </div>
 
               {pageSections.footerNodes.length > 0 ? (
-                <div
-                  ref={(element) => {
-                    if (element) {
-                      pageFooterElementsRef.current.set(pageIndex, element);
-                    } else {
-                      pageFooterElementsRef.current.delete(pageIndex);
-                    }
-                  }}
-                  style={{
-                    display: "grid",
-                    gap: 8,
-                    position: "absolute",
-                    left: 0,
-                    right: 0,
-                    ...(footerNeedsFullPageOverlay
-                      ? {
-                          top: 0,
-                          bottom: 0,
-                          alignContent: "end",
+                <>
+                  {footerNeedsFullPageOverlay &&
+                  !pageHeaderFooterEditActive &&
+                  !isReadOnly &&
+                  pageSections.footerPartName ? (
+                    <div
+                      data-docx-footer-activation-zone="true"
+                      style={{
+                        position: "absolute",
+                        left: 0,
+                        right: 0,
+                        bottom: 0,
+                        height: inactiveFooterActivationZoneHeightPx,
+                        zIndex: 2,
+                        pointerEvents: "auto",
+                        cursor: "text",
+                      }}
+                      onDoubleClick={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        activateHeaderFooterEdit(
+                          "footer",
+                          pageSections.footerPartName,
+                          pageIndex
+                        );
+                      }}
+                    />
+                  ) : null}
+                  <div
+                    ref={(element) => {
+                      if (element) {
+                        pageFooterElementsRef.current.set(pageIndex, element);
+                      } else {
+                        pageFooterElementsRef.current.delete(pageIndex);
+                      }
+                    }}
+                    style={{
+                      display: "grid",
+                      gap: 8,
+                      position: "absolute",
+                      left: 0,
+                      right: 0,
+                      ...(footerNeedsFullPageOverlay
+                        ? {
+                            top: 0,
+                            bottom: 0,
+                            alignContent: "end",
+                          }
+                        : {
+                            bottom: footerBottomOffsetPx,
+                          }),
+                      width: "100%",
+                      maxWidth: "100%",
+                      boxSizing: "border-box",
+                      paddingLeft: footerNeedsPageWideLayout
+                        ? 0
+                        : pageLayout.marginsPx.left,
+                      paddingRight: footerNeedsPageWideLayout
+                        ? 0
+                        : pageLayout.marginsPx.right,
+                      paddingBottom: footerNeedsFullPageOverlay
+                        ? footerBottomOffsetPx
+                        : 0,
+                      pointerEvents:
+                        isReadOnly ||
+                        pageHeaderFooterEditActive ||
+                        !footerNeedsFullPageOverlay
+                          ? "auto"
+                          : "none",
+                      opacity:
+                        pageHeaderFooterEditActive || isReadOnly
+                          ? 1
+                          : HEADER_FOOTER_INACTIVE_OPACITY,
+                      transition: "opacity 120ms ease",
+                      outline: "none",
+                      boxShadow: "none",
+                      zIndex: 1,
+                    }}
+                    contentEditable={pageHeaderFooterEditActive && !isReadOnly}
+                    suppressContentEditableWarning
+                    data-docx-header-footer-region="footer"
+                    onFocus={(event) => {
+                      event.currentTarget.style.outline = "none";
+                      event.currentTarget.style.boxShadow = "none";
+                    }}
+                    onInputCapture={(event) => {
+                      if (
+                        !pageHeaderFooterEditActive ||
+                        !pageSections.footerPartName
+                      ) {
+                        return;
+                      }
+                      schedulePaginationMeasurementResume();
+                      updateSectionParagraphDraftFromTarget(event.target);
+                    }}
+                    onBlurCapture={(event) => {
+                      if (
+                        !pageHeaderFooterEditActive ||
+                        !pageSections.footerPartName
+                      ) {
+                        return;
+                      }
+                      const relatedTarget = event.relatedTarget as Node | null;
+                      if (
+                        relatedTarget &&
+                        event.currentTarget.contains(relatedTarget)
+                      ) {
+                        return;
+                      }
+                      commitSectionRegionDraftsFromContainer(
+                        event.currentTarget,
+                        "footer",
+                        pageSections.footerPartName
+                      );
+                    }}
+                    onDoubleClick={(event) => {
+                      if (isReadOnly || !pageSections.footerPartName) {
+                        return;
+                      }
+                      event.preventDefault();
+                      event.stopPropagation();
+
+                      const target = event.target;
+                      const paragraphHost =
+                        target instanceof Element
+                          ? target.closest<HTMLElement>(
+                              "[data-docx-section-paragraph-key]"
+                            )
+                          : null;
+                      const draftKey = paragraphHost?.getAttribute(
+                        "data-docx-section-paragraph-key"
+                      );
+                      activateHeaderFooterEdit(
+                        "footer",
+                        pageSections.footerPartName,
+                        pageIndex,
+                        {
+                          draftKey: draftKey ?? undefined,
+                          point: {
+                            x: event.clientX,
+                            y: event.clientY,
+                          },
                         }
-                      : {
-                          bottom: footerBottomOffsetPx,
-                        }),
-                    width: "100%",
-                    maxWidth: "100%",
-                    boxSizing: "border-box",
-                    paddingLeft: footerNeedsPageWideLayout
-                      ? 0
-                      : pageLayout.marginsPx.left,
-                    paddingRight: footerNeedsPageWideLayout
-                      ? 0
-                      : pageLayout.marginsPx.right,
-                    paddingBottom: footerNeedsFullPageOverlay
-                      ? footerBottomOffsetPx
-                      : 0,
-                    pointerEvents:
-                      isReadOnly || pageHeaderFooterEditActive
-                        ? "auto"
-                        : "none",
-                    opacity:
-                      pageHeaderFooterEditActive || isReadOnly
-                        ? 1
-                        : HEADER_FOOTER_INACTIVE_OPACITY,
-                    transition: "opacity 120ms ease",
-                    outline: "none",
-                    boxShadow: "none",
-                    zIndex: 1,
-                  }}
-                  contentEditable={pageHeaderFooterEditActive && !isReadOnly}
-                  suppressContentEditableWarning
-                  data-docx-header-footer-region="footer"
-                  onFocus={(event) => {
-                    event.currentTarget.style.outline = "none";
-                    event.currentTarget.style.boxShadow = "none";
-                  }}
-                  onInputCapture={(event) => {
-                    if (
-                      !pageHeaderFooterEditActive ||
-                      !pageSections.footerPartName
-                    ) {
-                      return;
-                    }
-                    schedulePaginationMeasurementResume();
-                    updateSectionParagraphDraftFromTarget(event.target);
-                  }}
-                  onBlurCapture={(event) => {
-                    if (
-                      !pageHeaderFooterEditActive ||
-                      !pageSections.footerPartName
-                    ) {
-                      return;
-                    }
-                    const relatedTarget = event.relatedTarget as Node | null;
-                    if (
-                      relatedTarget &&
-                      event.currentTarget.contains(relatedTarget)
-                    ) {
-                      return;
-                    }
-                    commitSectionRegionDraftsFromContainer(
-                      event.currentTarget,
-                      "footer",
-                      pageSections.footerPartName
-                    );
-                  }}
-                  onDoubleClick={(event) => {
-                    if (isReadOnly || !pageSections.footerPartName) {
-                      return;
-                    }
-                    event.preventDefault();
-                    event.stopPropagation();
-
-                    const target = event.target;
-                    const paragraphHost =
-                      target instanceof Element
-                        ? target.closest<HTMLElement>(
-                            "[data-docx-section-paragraph-key]"
-                          )
-                        : null;
-                    const draftKey = paragraphHost?.getAttribute(
-                      "data-docx-section-paragraph-key"
-                    );
-                    if (draftKey) {
-                      pendingSectionParagraphFocusRef.current = {
-                        draftKey,
-                        point: {
-                          x: event.clientX,
-                          y: event.clientY,
+                      );
+                    }}
+                  >
+                    {pageSections.footerNodes.map((node, index) =>
+                      renderHeaderNode(
+                        node,
+                        `footer-${pageIndex}-${index}`,
+                        editor.documentTheme,
+                        editor.model.metadata.numberingDefinitions,
+                        headingStyles,
+                        footerNeedsPageWideLayout
+                          ? pageLayout.pageWidthPx
+                          : pageContentWidthPx,
+                        scrollToBookmark,
+                        {
+                          left: footerNeedsPageWideLayout
+                            ? 0
+                            : pageLayout.marginsPx.left,
+                          top: pageLayout.marginsPx.top,
+                          columnLeft: footerNeedsPageWideLayout
+                            ? pageLayout.marginsPx.left
+                            : 0,
+                          columnTop: 0,
+                          pageWidth: pageLayout.pageWidthPx,
                         },
-                      };
-                    }
-
-                    clearTableCellSelection();
-                    editor.setActiveTextRange(undefined);
-                    setActiveHeaderFooterEdit({
-                      region: "footer",
-                      partName: pageSections.footerPartName,
-                      pageIndex,
-                    });
-                  }}
-                >
-                  {pageSections.footerNodes.map((node, index) =>
-                    renderHeaderNode(
-                      node,
-                      `footer-${pageIndex}-${index}`,
-                      editor.documentTheme,
-                      editor.model.metadata.numberingDefinitions,
-                      headingStyles,
-                      footerNeedsPageWideLayout
-                        ? pageLayout.pageWidthPx
-                        : pageContentWidthPx,
-                      scrollToBookmark,
-                      {
-                        left: footerNeedsPageWideLayout
-                          ? 0
-                          : pageLayout.marginsPx.left,
-                        top: pageLayout.marginsPx.top,
-                        columnLeft: footerNeedsPageWideLayout
-                          ? pageLayout.marginsPx.left
-                          : 0,
-                        columnTop: 0,
-                        pageWidth: pageLayout.pageWidthPx,
-                      },
-                      {
-                        footnote: footnoteDisplayIndexById,
-                        endnote: endnoteDisplayIndexById,
-                      },
-                      pageNumber,
-                      totalPagesForFieldResolution,
-                      {
-                        ...pageHeaderFooterRunRenderOptions,
-                        headerFooterRegion: "footer",
-                      },
-                      footerEditScope,
-                      footerImageInteraction,
-                      undefined,
-                      index
-                    )
-                  )}
-                </div>
+                        {
+                          footnote: footnoteDisplayIndexById,
+                          endnote: endnoteDisplayIndexById,
+                        },
+                        pageNumber,
+                        totalPagesForFieldResolution,
+                        {
+                          ...pageHeaderFooterRunRenderOptions,
+                          headerFooterRegion: "footer",
+                        },
+                        footerEditScope,
+                        footerImageInteraction,
+                        undefined,
+                        index
+                      )
+                    )}
+                  </div>
+                </>
               ) : null}
             </div>
 

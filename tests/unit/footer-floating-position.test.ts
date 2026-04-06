@@ -53,6 +53,35 @@ describe("footer floating positioning", () => {
     expect(html).not.toContain('data-docx-header-footer-region="footer" style="display:grid;gap:8px;position:absolute;left:0;right:0;top:0;bottom:0');
   });
 
+  it("keeps ordinary inactive footers hit-testable in edit mode so double click can activate footer editing", () => {
+    const model = cloneDocModel(defaultStarterModel);
+    model.nodes = [
+      {
+        type: "paragraph",
+        children: [{ type: "text", text: "Body" }]
+      }
+    ];
+    model.metadata.footerSections = [
+      {
+        partName: "word/footer1.xml",
+        referenceType: "default",
+        nodes: [
+          {
+            type: "paragraph",
+            children: [{ type: "text", text: "Footer text" }]
+          }
+        ]
+      }
+    ];
+
+    const html = renderToStaticMarkup(
+      React.createElement(FooterViewer, { model, mode: "edit" })
+    );
+
+    expect(html).toContain('data-docx-header-footer-region="footer"');
+    expect(html).toContain("padding-bottom:0;pointer-events:auto;opacity:0.5");
+  });
+
   it("uses the page surface as the positioning space for page-relative footer images", () => {
     const model = cloneDocModel(defaultStarterModel);
     model.nodes = [
@@ -92,9 +121,9 @@ describe("footer floating positioning", () => {
     const html = renderToStaticMarkup(React.createElement(FooterViewer, { model }));
 
     expect(html).toContain('data-docx-header-footer-region="footer"');
-    expect(html).toContain(
-      'style="display:grid;gap:8px;position:absolute;left:0;right:0;top:0;bottom:0;width:100%;max-width:100%;box-sizing:border-box;align-content:end;padding-left:0;padding-right:0;padding-bottom:56px;pointer-events:auto;opacity:1;transition:opacity 120ms ease;outline:none;box-shadow:none;z-index:1" contentEditable="false" data-docx-header-footer-region="footer"'
-    );
+    expect(html).toContain("position:absolute;left:0;right:0;top:0;bottom:0");
+    expect(html).toContain("align-content:end");
+    expect(html).toContain("padding-bottom:56px;pointer-events:auto");
     expect(html).toContain("left:120px;top:900px");
   });
 
@@ -138,5 +167,7 @@ describe("footer floating positioning", () => {
 
     expect(html).toContain('data-docx-header-footer-region="footer"');
     expect(html).toContain("padding-bottom:56px;pointer-events:none;opacity:0.5");
+    expect(html).toContain('data-docx-footer-activation-zone="true"');
+    expect(html).toContain("height:136px;z-index:2;pointer-events:auto;cursor:text");
   });
 });

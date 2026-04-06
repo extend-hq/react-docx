@@ -271,6 +271,81 @@ const GROUPED_VECTOR_SHAPE_DOC_XML = `<?xml version="1.0" encoding="UTF-8" stand
   </w:body>
 </w:document>`;
 
+const GROUPED_VECTOR_TEXTBOX_DOC_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document
+  xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+  xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+  xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+  xmlns:wpg="http://schemas.microsoft.com/office/word/2010/wordprocessingGroup"
+  xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"
+  mc:Ignorable="wp14"
+>
+  <w:body>
+    <w:p>
+      <w:r>
+        <w:drawing>
+          <wp:anchor behindDoc="0" layoutInCell="1" allowOverlap="1" simplePos="0">
+            <wp:simplePos x="0" y="0"/>
+            <wp:positionH relativeFrom="page"><wp:posOffset>0</wp:posOffset></wp:positionH>
+            <wp:positionV relativeFrom="page"><wp:posOffset>0</wp:posOffset></wp:positionV>
+            <wp:extent cx="8793480" cy="10320655"/>
+            <wp:wrapNone/>
+            <wp:docPr id="1" name="Group 24"/>
+            <a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+              <a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingGroup">
+                <wpg:wgp>
+                  <wpg:cNvGrpSpPr/>
+                  <wpg:grpSpPr>
+                    <a:xfrm>
+                      <a:off x="0" y="0"></a:off>
+                      <a:ext cx="8793480" cy="10320655"></a:ext>
+                      <a:chOff x="0" y="0"></a:chOff>
+                      <a:chExt cx="6858000" cy="9144000"></a:chExt>
+                    </a:xfrm>
+                  </wpg:grpSpPr>
+                  <wps:wsp>
+                    <wps:cNvPr id="0" name=""/>
+                    <wps:cNvSpPr/>
+                    <wps:spPr>
+                      <a:xfrm>
+                        <a:off x="228600" y="0"></a:off>
+                        <a:ext cx="6629400" cy="9144000"></a:ext>
+                      </a:xfrm>
+                      <a:prstGeom prst="rect"><a:avLst/></a:prstGeom>
+                      <a:solidFill><a:srgbClr val="E97132"/></a:solidFill>
+                      <a:ln><a:noFill/></a:ln>
+                    </wps:spPr>
+                    <wps:bodyPr/>
+                  </wps:wsp>
+                  <wps:wsp>
+                    <wps:cNvPr id="1" name="Title Box"/>
+                    <wps:cNvSpPr txBox="1"/>
+                    <wps:spPr>
+                      <a:xfrm>
+                        <a:off x="457200" y="2286000"></a:off>
+                        <a:ext cx="5486400" cy="914400"></a:ext>
+                      </a:xfrm>
+                      <a:prstGeom prst="rect"><a:avLst/></a:prstGeom>
+                      <a:ln><a:noFill/></a:ln>
+                    </wps:spPr>
+                    <wps:txbx>
+                      <w:txbxContent>
+                        <w:p><w:r><w:t>Orange Title</w:t></w:r></w:p>
+                      </w:txbxContent>
+                    </wps:txbx>
+                    <wps:bodyPr wrap="square"/>
+                  </wps:wsp>
+                </wpg:wgp>
+              </a:graphicData>
+            </a:graphic>
+          </wp:anchor>
+        </w:drawing>
+      </w:r>
+    </w:p>
+    <w:sectPr/>
+  </w:body>
+</w:document>`;
+
 const ONE_BY_ONE_JPEG_BASE64 =
   "/9j/4AAQSkZJRgABAQAAAQABAAD/2wCEAAkGBxAQEBAQEBAVEBUVFRUVFRUVFRUVFRUVFRUWFhUVFRUYHSggGBolHRUVITEhJSkrLi4uFx8zODMsNygtLisBCgoKDg0OGxAQGy0fHR0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLf/AABEIAAEAAQMBIgACEQEDEQH/xAAXAAADAQAAAAAAAAAAAAAAAAAAAQMC/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAwDAQACEAMQAAAB6A//xAAXEAADAQAAAAAAAAAAAAAAAAAAAREC/9oACAEBAAEFAiUf/8QAFBEBAAAAAAAAAAAAAAAAAAAAEP/aAAgBAwEBPwEf/8QAFBEBAAAAAAAAAAAAAAAAAAAAEP/aAAgBAgEBPwEf/8QAFxABAQEBAAAAAAAAAAAAAAAAAQARIf/aAAgBAQAGPwJrP//EABcQAQEBAQAAAAAAAAAAAAAAAAERACH/2gAIAQEAAT8hR5iP/9oADAMBAAIAAwAAABBf/8QAFBEBAAAAAAAAAAAAAAAAAAAAEP/aAAgBAwEBPxAf/8QAFBEBAAAAAAAAAAAAAAAAAAAAEP/aAAgBAgEBPxAf/8QAFxABAAMAAAAAAAAAAAAAAAAAAREhQf/aAAgBAQABPxBBbQ7/2Q==";
 
@@ -331,5 +406,32 @@ describe("grouped picture textbox render", () => {
     expect(svgMarkup).toContain("fill=\"#76A88B\"");
     expect((svgMarkup.match(/<path /g) ?? []).length).toBeGreaterThanOrEqual(4);
     expect(svgMarkup).not.toContain("M4 0 Z");
+  });
+
+  it("keeps grouped vector background layers and textbox content as the imported SVG in the viewer", async () => {
+    const zip = createZip([
+      { name: "[Content_Types].xml", content: CONTENT_TYPES_XML },
+      { name: "_rels/.rels", content: ROOT_RELS_XML },
+      { name: "word/document.xml", content: GROUPED_VECTOR_TEXTBOX_DOC_XML }
+    ]);
+
+    const pkg = await parseDocx(zip);
+    const model = buildDocModel(pkg);
+    const imageNode = ((model.nodes[0] as any)?.children ?? []).find(
+      (child: any) => child.type === "image" && child.alt === "Group 24"
+    );
+    const svgDataUri = imageNode?.src as string | undefined;
+    const svgMarkup =
+      typeof svgDataUri === "string" && svgDataUri.startsWith("data:image/svg+xml")
+        ? decodeURIComponent(svgDataUri.slice(svgDataUri.indexOf(",") + 1))
+        : "";
+    const html = renderToStaticMarkup(React.createElement(ImportedViewer, { model }));
+
+    expect(svgMarkup).toContain('fill="#E97132"');
+    expect(svgMarkup).toContain("Orange Title");
+    expect(svgMarkup).not.toContain('width="1" height="1"');
+    expect(html).toContain("data:image/svg+xml;charset=utf-8,");
+    expect(html).toContain("Orange%20Title");
+    expect(html).not.toContain('data-docx-textbox-editor="true"');
   });
 });

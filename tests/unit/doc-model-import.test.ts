@@ -60,6 +60,62 @@ const DOCUMENT_RELS_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"
   <Relationship Id="rId5" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image1.png"/>
 </Relationships>`;
 
+const CONTENT_TYPES_WITH_SVG_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Default Extension="png" ContentType="image/png"/>
+  <Default Extension="svg" ContentType="image/svg+xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>`;
+
+const DRAWING_SVG_FALLBACK_DOC_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture" xmlns:asvg="http://schemas.microsoft.com/office/drawing/2016/SVG/main">
+  <w:body>
+    <w:p>
+      <w:r>
+        <w:drawing>
+          <wp:anchor behindDoc="1">
+            <wp:positionH relativeFrom="column"><wp:posOffset>0</wp:posOffset></wp:positionH>
+            <wp:positionV relativeFrom="paragraph"><wp:posOffset>0</wp:posOffset></wp:positionV>
+            <wp:extent cx="1524000" cy="762000"/>
+            <wp:wrapNone/>
+            <wp:docPr id="1" name="Cover art"/>
+            <a:graphic>
+              <a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">
+                <pic:pic>
+                  <pic:blipFill>
+                    <a:blip r:embed="rId5">
+                      <a:extLst>
+                        <a:ext uri="{96DAC541-7B7A-43D3-8B79-37D633B846F1}">
+                          <asvg:svgBlip r:embed="rId6"/>
+                        </a:ext>
+                      </a:extLst>
+                    </a:blip>
+                    <a:stretch/>
+                  </pic:blipFill>
+                  <pic:spPr>
+                    <a:xfrm><a:off x="0" y="0"/><a:ext cx="1524000" cy="762000"/></a:xfrm>
+                    <a:prstGeom prst="rect"><a:avLst/></a:prstGeom>
+                  </pic:spPr>
+                </pic:pic>
+              </a:graphicData>
+            </a:graphic>
+          </wp:anchor>
+        </w:drawing>
+      </w:r>
+    </w:p>
+  </w:body>
+</w:document>`;
+
+const DOCUMENT_RELS_WITH_SVG_FALLBACK_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId5" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image1.png"/>
+  <Relationship Id="rId6" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image2.svg"/>
+</Relationships>`;
+
+const SIMPLE_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="160" height="80" viewBox="0 0 160 80"><rect width="160" height="80" fill="#00B4D8"/><circle cx="130" cy="20" r="14" fill="#90E0EF"/></svg>`;
+
 const HYPERLINK_DOC_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
   <w:body>
@@ -172,6 +228,46 @@ const FORM_CONTROLS_DOC_XML = `<?xml version="1.0" encoding="UTF-8" standalone="
     </w:p>
   </w:body>
 </w:document>`;
+
+const ACTIVEX_CHECKBOX_OBJECT_DOC_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office">
+  <w:body>
+    <w:p>
+      <w:r>
+        <w:object w:dxaOrig="225" w:dyaOrig="225" w14:anchorId="4B610928">
+          <v:shapetype id="_x0000_t75" coordsize="21600,21600" o:spt="75" o:preferrelative="t" path="m@4@5l@4@11@9@11@9@5xe" filled="f" stroked="f">
+            <v:stroke joinstyle="miter"/>
+            <v:path o:extrusionok="f" gradientshapeok="t" o:connecttype="rect"/>
+            <o:lock v:ext="edit" aspectratio="t"/>
+          </v:shapetype>
+          <v:shape id="_x0000_i1199" type="#_x0000_t75" style="width:20.05pt;height:17.9pt" o:ole="">
+            <v:imagedata r:id="rId6" o:title=""/>
+          </v:shape>
+          <w:control r:id="rId7" w:name="DefaultOcxName" w:shapeid="_x0000_i1199"/>
+        </w:object>
+      </w:r>
+      <w:r><w:t xml:space="preserve">Administrative Services</w:t></w:r>
+    </w:p>
+  </w:body>
+</w:document>`;
+
+const ACTIVEX_CHECKBOX_DOCUMENT_RELS_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId6" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image2.wmf"/>
+  <Relationship Id="rId7" Type="http://schemas.microsoft.com/office/2006/relationships/activeXControl" Target="activeX/activeX1.xml"/>
+</Relationships>`;
+
+const ACTIVEX_CHECKBOX_XML = `<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<ax:ocx ax:classid="{5512D116-5CC6-11CF-8D67-00AA00BDCE1D}" ax:persistence="persistStream" r:id="rId1" xmlns:ax="http://schemas.microsoft.com/office/2006/activeX" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"/>`;
+
+const ACTIVEX_CHECKBOX_RELS_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.microsoft.com/office/2006/relationships/activeXControlBinary" Target="activeX1.bin"/>
+</Relationships>`;
+
+const ACTIVEX_CHECKBOX_BINARY = new TextEncoder().encode(
+  '<INPUT TYPE="checkbox" CHECKED NAME="field-1" VALUE="1">'
+);
 
 const DOCUMENT_RELS_WITH_HYPERLINK_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
@@ -1567,6 +1663,45 @@ describe("doc-model import", () => {
     }
   });
 
+  it("imports ActiveX checkbox objects as structured checkbox form fields", async () => {
+    const zip = createZip([
+      { name: "[Content_Types].xml", content: CONTENT_TYPES_XML },
+      { name: "_rels/.rels", content: ROOT_RELS_XML },
+      { name: "word/document.xml", content: ACTIVEX_CHECKBOX_OBJECT_DOC_XML },
+      {
+        name: "word/_rels/document.xml.rels",
+        content: ACTIVEX_CHECKBOX_DOCUMENT_RELS_XML
+      },
+      { name: "word/activeX/activeX1.xml", content: ACTIVEX_CHECKBOX_XML },
+      {
+        name: "word/activeX/_rels/activeX1.xml.rels",
+        content: ACTIVEX_CHECKBOX_RELS_XML
+      },
+      { name: "word/activeX/activeX1.bin", content: ACTIVEX_CHECKBOX_BINARY },
+      { name: "word/media/image2.wmf", content: new Uint8Array([1, 2, 3, 4]) }
+    ]);
+
+    const pkg = await parseDocx(zip);
+    const model = buildDocModel(pkg);
+
+    const firstParagraph = model.nodes[0];
+    expect(firstParagraph?.type).toBe("paragraph");
+    if (firstParagraph?.type === "paragraph") {
+      const checkboxField = firstParagraph.children.find(
+        (child) => child.type === "form-field" && child.fieldType === "checkbox"
+      );
+      expect(checkboxField?.type).toBe("form-field");
+      if (checkboxField?.type === "form-field") {
+        expect(checkboxField.checked).toBe(true);
+        expect(checkboxField.widget?.name).toBe("field-1");
+      }
+
+      expect(
+        firstParagraph.children.some((child) => child.type === "image")
+      ).toBe(false);
+    }
+  });
+
   it("imports header images, table row shading, cell spans, and run styles", async () => {
     const zip = createZip([
       { name: "[Content_Types].xml", content: CONTENT_TYPES_WITH_HEADER_XML },
@@ -1661,6 +1796,36 @@ describe("doc-model import", () => {
         (child) => child.type === "text" && child.text.includes("Overlay Title")
       );
       expect(overlayTextInFlow).toBeUndefined();
+    }
+  });
+
+  it("prefers svgBlip assets over raster preview fallbacks in drawings", async () => {
+    const zip = createZip([
+      { name: "[Content_Types].xml", content: CONTENT_TYPES_WITH_SVG_XML },
+      { name: "_rels/.rels", content: ROOT_RELS_XML },
+      { name: "word/document.xml", content: DRAWING_SVG_FALLBACK_DOC_XML },
+      {
+        name: "word/_rels/document.xml.rels",
+        content: DOCUMENT_RELS_WITH_SVG_FALLBACK_XML,
+      },
+      { name: "word/media/image1.png", content: ONE_BY_ONE_PNG },
+      { name: "word/media/image2.svg", content: SIMPLE_SVG },
+    ]);
+
+    const pkg = await parseDocx(zip);
+    const model = buildDocModel(pkg);
+
+    const firstParagraph = model.nodes[0];
+    expect(firstParagraph?.type).toBe("paragraph");
+    if (firstParagraph?.type === "paragraph") {
+      const imageRun = firstParagraph.children.find(
+        (child) => child.type === "image"
+      );
+      expect(imageRun?.type).toBe("image");
+      if (imageRun?.type === "image") {
+        expect(imageRun.contentType).toBe("image/svg+xml");
+        expect(imageRun.src?.startsWith("data:image/svg+xml")).toBe(true);
+      }
     }
   });
 

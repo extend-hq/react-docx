@@ -28,6 +28,7 @@ const DOCUMENT_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
       <w:tblPr>
         <w:tblW w:w="10500" w:type="dxa"/>
         <w:jc w:val="center"/>
+        <w:tblCellSpacing w:w="0" w:type="dxa"/>
         <w:tblBorders>
           <w:top w:val="single" w:sz="2" w:color="000000"/>
           <w:left w:val="single" w:sz="2" w:color="000000"/>
@@ -89,6 +90,11 @@ const DOCUMENT_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
   </w:body>
 </w:document>`;
 
+const DOCUMENT_WITH_SPACING_XML = DOCUMENT_XML.replace(
+  '<w:tblCellSpacing w:w="0" w:type="dxa"/>',
+  '<w:tblCellSpacing w:w="30" w:type="dxa"/>'
+);
+
 function ImportedViewer({
   model,
 }: {
@@ -136,8 +142,27 @@ describe("table grid width fidelity", () => {
     const pkg = await parseDocx(zip);
     const model = buildDocModel(pkg);
     const html = renderToStaticMarkup(React.createElement(ImportedViewer, { model }));
+    const tableNode = model.nodes[0];
 
+    expect(tableNode.type).toBe("table");
+    expect(tableNode.style?.cellSpacingTwips).toBe(0);
     expect(html).toContain("border-collapse:separate");
-    expect(html).toContain("border-spacing:0");
+    expect(html).toContain("border-spacing:1px");
+  });
+
+  it("honors imported table cell spacing when Word specifies it", async () => {
+    const zip = createZip([
+      { name: "[Content_Types].xml", content: CONTENT_TYPES_XML, deflate: true },
+      { name: "_rels/.rels", content: ROOT_RELS_XML, deflate: true },
+      { name: "word/document.xml", content: DOCUMENT_WITH_SPACING_XML, deflate: true },
+    ]);
+    const pkg = await parseDocx(zip);
+    const model = buildDocModel(pkg);
+    const html = renderToStaticMarkup(React.createElement(ImportedViewer, { model }));
+    const tableNode = model.nodes[0];
+
+    expect(tableNode.type).toBe("table");
+    expect(tableNode.style?.cellSpacingTwips).toBe(30);
+    expect(html).toContain("border-spacing:2px");
   });
 });

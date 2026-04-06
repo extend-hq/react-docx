@@ -55,11 +55,10 @@ describe("proposal cover import fidelity", () => {
 
     expect(page1Html).not.toContain("Executive Summary");
     expect(page2Html).toContain("Executive Summary");
-    expect(page1Html).toContain("left:-96px");
-    expect(page1Html).toContain("top:-96px");
-    expect(page1Html).toContain("width:816px");
-    expect(page1Html).toContain("height:1056px");
-    expect(page1Html).toContain("z-index:-98080");
+    expect(page1Html).toContain("rotate(90deg)");
+    expect(page1Html).toContain("image/svg+xml");
+    expect(page1Html).toContain("padding-left:9.6px");
+    expect(page1Html).toContain("padding-top:4.8px");
     expect(page1Html).toContain("{date}");
     expect(page1Html).toContain("data-docx-textbox-editor=\"true\"");
   });

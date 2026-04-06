@@ -340,6 +340,7 @@ export interface TableStyle {
   widthTwips?: number;
   indentTwips?: number;
   layout?: "fixed" | "autofit";
+  cellSpacingTwips?: number;
   cellMarginTwips?: TableBoxSpacing;
   columnWidthsTwips?: number[];
   borders?: TableBorderSet;
@@ -595,6 +596,7 @@ interface ParsedTableProperties {
   widthTwips?: number;
   indentTwips?: number;
   layout?: "fixed" | "autofit";
+  cellSpacingTwips?: number;
   cellMarginTwips?: TableBoxSpacing;
   floating?: NonNullable<TableStyle["floating"]>;
 }
@@ -1261,8 +1263,10 @@ function renderStandaloneWordShapeSvg(
   const groupXml = extractBalancedTagBlocks(runXml, "wpg:wgp")[0];
   if (groupXml) {
     const groupTransformXml = extractBalancedTagBlocks(groupXml, "a:xfrm")[0];
-    const childOffsetTag = groupTransformXml.match(/<a:chOff\b[^>]*\/>/i)?.[0] ?? "";
-    const childExtentTag = groupTransformXml.match(/<a:chExt\b[^>]*\/>/i)?.[0] ?? "";
+    const childOffsetTag =
+      groupTransformXml.match(/<a:chOff\b[^>]*\/?>/i)?.[0] ?? "";
+    const childExtentTag =
+      groupTransformXml.match(/<a:chExt\b[^>]*\/?>/i)?.[0] ?? "";
     const childOffsetX = parseIntegerAttribute(childOffsetTag, "x") ?? 0;
     const childOffsetY = parseIntegerAttribute(childOffsetTag, "y") ?? 0;
     const childExtentX = Math.max(1, parseIntegerAttribute(childExtentTag, "cx") ?? 1);
@@ -1287,8 +1291,8 @@ function renderStandaloneWordShapeSvg(
       .map((shapeXml, shapeIndex) => {
         const shapePropertiesXml = extractBalancedTagBlocks(shapeXml, "wps:spPr")[0] ?? "";
         const transformXml = extractBalancedTagBlocks(shapePropertiesXml, "a:xfrm")[0];
-        const offTag = transformXml.match(/<a:off\b[^>]*\/>/i)?.[0] ?? "";
-        const extTag = transformXml.match(/<a:ext\b[^>]*\/>/i)?.[0] ?? "";
+        const offTag = transformXml.match(/<a:off\b[^>]*\/?>/i)?.[0] ?? "";
+        const extTag = transformXml.match(/<a:ext\b[^>]*\/?>/i)?.[0] ?? "";
         const offXPx = (parseIntegerAttribute(offTag, "x") ?? 0) - childOffsetX;
         const offYPx = (parseIntegerAttribute(offTag, "y") ?? 0) - childOffsetY;
         const extXPx = parseIntegerAttribute(extTag, "cx") ?? 0;
@@ -1798,6 +1802,7 @@ function hasTableProperties(properties: ParsedTableProperties | undefined): bool
     properties.widthTwips !== undefined ||
     properties.indentTwips !== undefined ||
     properties.layout !== undefined ||
+    properties.cellSpacingTwips !== undefined ||
     properties.floating !== undefined ||
     properties.cellMarginTwips !== undefined
   );
@@ -1826,6 +1831,20 @@ function parseTableStylePropertiesFromXml(tablePropertiesXml: string | undefined
   const tableLayoutRaw = tableLayoutTag ? getAttribute(tableLayoutTag, "w:type")?.toLowerCase() : undefined;
   const layout = tableLayoutRaw === "fixed" || tableLayoutRaw === "autofit" ? tableLayoutRaw : undefined;
 
+  const tableCellSpacingTag = tablePropertiesXml.match(/<w:tblCellSpacing\b[^>]*\/?>/i)?.[0];
+  const tableCellSpacingType = tableCellSpacingTag
+    ? getAttribute(tableCellSpacingTag, "w:type")?.toLowerCase()
+    : undefined;
+  const tableCellSpacingRaw = tableCellSpacingTag
+    ? parseIntegerAttribute(tableCellSpacingTag, "w:w")
+    : undefined;
+  const cellSpacingTwips =
+    tableCellSpacingType === "dxa" &&
+    tableCellSpacingRaw !== undefined &&
+    tableCellSpacingRaw >= 0
+      ? tableCellSpacingRaw
+      : undefined;
+
   const tableCellMarginXml = tablePropertiesXml.match(/<w:tblCellMar\b[\s\S]*?<\/w:tblCellMar>|<w:tblCellMar\b[^>]*\/>/i)?.[0];
   const cellMarginTwips = tableCellMarginXml ? parseTableBoxSpacing(tableCellMarginXml) : undefined;
   const floating = parseFloatingTableStyle(tablePropertiesXml);
@@ -1834,6 +1853,7 @@ function parseTableStylePropertiesFromXml(tablePropertiesXml: string | undefined
     ...(widthTwips !== undefined ? { widthTwips } : undefined),
     ...(indentTwips !== undefined ? { indentTwips } : undefined),
     ...(layout !== undefined ? { layout } : undefined),
+    ...(cellSpacingTwips !== undefined ? { cellSpacingTwips } : undefined),
     ...(cellMarginTwips !== undefined ? { cellMarginTwips } : undefined),
     ...(floating !== undefined ? { floating } : undefined)
   };
@@ -1851,6 +1871,7 @@ function mergeTableStyleProperties(
     widthTwips: direct?.widthTwips ?? inherited?.widthTwips,
     indentTwips: direct?.indentTwips ?? inherited?.indentTwips,
     layout: direct?.layout ?? inherited?.layout,
+    cellSpacingTwips: direct?.cellSpacingTwips ?? inherited?.cellSpacingTwips,
     floating: direct?.floating ?? inherited?.floating,
     cellMarginTwips:
       direct?.cellMarginTwips !== undefined
@@ -4234,6 +4255,19 @@ function chartXmlToSvgDataUri(
   return svgDataUri(svg);
 }
 
+function resolvePreferredDrawingRelationshipId(runXml: string): string | undefined {
+  return (
+    runXml.match(
+      /<a:ext\b[^>]*>[\s\S]*?<asvg:svgBlip\b[^>]*r:embed="([^"]+)"/i
+    )?.[1] ??
+    runXml.match(
+      /<a:ext\b[^>]*>[\s\S]*?<asvg:svgBlip\b[^>]*r:link="([^"]+)"/i
+    )?.[1] ??
+    runXml.match(/<a:blip\b[^>]*r:embed="([^"]+)"/i)?.[1] ??
+    runXml.match(/<a:blip\b[^>]*r:link="([^"]+)"/i)?.[1]
+  );
+}
+
 function parseRunImageBlock(runXml: string, context: ParseContext): ImageRunNode | undefined {
   const normalizedRunXml = preferAlternateContentChoice(runXml);
   let activeRunXml = normalizedRunXml;
@@ -4250,8 +4284,7 @@ function parseRunImageBlock(runXml: string, context: ParseContext): ImageRunNode
 
   let chartRelationshipId = activeRunXml.match(/<c:chart\b[^>]*r:id="([^"]+)"/i)?.[1];
   let relationshipId =
-    activeRunXml.match(/<a:blip\b[^>]*r:embed="([^"]+)"/i)?.[1] ??
-    activeRunXml.match(/<a:blip\b[^>]*r:link="([^"]+)"/i)?.[1] ??
+    resolvePreferredDrawingRelationshipId(activeRunXml) ??
     activeRunXml.match(/<v:imagedata\b[^>]*r:id="([^"]+)"/i)?.[1] ??
     chartRelationshipId;
 
@@ -4261,8 +4294,7 @@ function parseRunImageBlock(runXml: string, context: ParseContext): ImageRunNode
     activeRunXml = runXml;
     chartRelationshipId = activeRunXml.match(/<c:chart\b[^>]*r:id="([^"]+)"/i)?.[1];
     relationshipId =
-      activeRunXml.match(/<a:blip\b[^>]*r:embed="([^"]+)"/i)?.[1] ??
-      activeRunXml.match(/<a:blip\b[^>]*r:link="([^"]+)"/i)?.[1] ??
+      resolvePreferredDrawingRelationshipId(activeRunXml) ??
       activeRunXml.match(/<v:imagedata\b[^>]*r:id="([^"]+)"/i)?.[1] ??
       chartRelationshipId;
 
@@ -4429,6 +4461,111 @@ function parseRunImages(runXml: string, context: ParseContext): ImageRunNode[] {
   }
 
   return images;
+}
+
+function parseRelationshipsFromParts(
+  parts: OoxmlPackage["parts"],
+  partName: string
+): Map<string, string> {
+  const map = new Map<string, string>();
+  const relationshipsPartName = relationshipPartNameForPart(partName);
+  const relationshipsPart = parts.get(relationshipsPartName)?.content;
+  if (!relationshipsPart) {
+    return map;
+  }
+
+  for (const match of relationshipsPart.matchAll(/<Relationship\b[^>]*>/g)) {
+    const tag = match[0];
+    const id = getAttribute(tag, "Id");
+    const target = getAttribute(tag, "Target");
+    if (!id || !target) {
+      continue;
+    }
+    map.set(id, resolvePartPath(partName, target));
+  }
+
+  return map;
+}
+
+function decodeActiveXBinaryMarkup(binary: Uint8Array): string {
+  const utf16 = new TextDecoder("utf-16le", { fatal: false }).decode(binary);
+  if (/input\s+type=/i.test(utf16)) {
+    return utf16;
+  }
+
+  return new TextDecoder("latin1", { fatal: false }).decode(binary);
+}
+
+function parseRunActiveXCheckboxField(
+  runXml: string,
+  context: ParseContext,
+  style?: TextStyle,
+  link?: string
+): FormFieldRunNode | undefined {
+  if (!/<w:object\b/i.test(runXml) || !/<w:control\b/i.test(runXml)) {
+    return undefined;
+  }
+
+  const controlTag = runXml.match(/<w:control\b[^>]*\/?>/i)?.[0];
+  const controlRelationshipId = controlTag
+    ? getAttribute(controlTag, "r:id")
+    : undefined;
+  const activeXPartName = controlRelationshipId
+    ? context.relationships.get(controlRelationshipId)
+    : undefined;
+  if (!activeXPartName) {
+    return undefined;
+  }
+
+  const activeXXml = context.parts.get(activeXPartName)?.content;
+  if (!activeXXml) {
+    return undefined;
+  }
+
+  const binaryRelationshipId = getAttribute(
+    activeXXml.match(/<ax:ocx\b[^>]*\/?>/i)?.[0] ?? "",
+    "r:id"
+  );
+  if (!binaryRelationshipId) {
+    return undefined;
+  }
+
+  const activeXRelationships = parseRelationshipsFromParts(
+    context.parts,
+    activeXPartName
+  );
+  const activeXBinaryPartName = activeXRelationships.get(binaryRelationshipId);
+  if (!activeXBinaryPartName) {
+    return undefined;
+  }
+
+  const activeXBinary = context.binaryAssets.get(activeXBinaryPartName);
+  if (!activeXBinary || activeXBinary.byteLength === 0) {
+    return undefined;
+  }
+
+  const markup = decodeActiveXBinaryMarkup(activeXBinary);
+  if (!/input\s+type\s*=\s*"checkbox"/i.test(markup)) {
+    return undefined;
+  }
+
+  const name =
+    markup.match(/\bname\s*=\s*"([^"]+)"/i)?.[1]?.trim() || undefined;
+
+  return {
+    type: "form-field",
+    fieldType: "checkbox",
+    sourceKind: "legacy",
+    checked: /\bchecked\b/i.test(markup),
+    checkedSymbol: "☒",
+    uncheckedSymbol: "☐",
+    widget: {
+      name,
+    },
+    style,
+    link,
+    sourceXml: runXml,
+  };
 }
 
 interface ParagraphRunToken {
@@ -5284,8 +5421,19 @@ function parseParagraph(paragraphXml: string, context: ParseContext): ParagraphN
     }
 
     const run = contentToken.token;
-    const images = parseRunImages(run.xml, context);
     const style = parseRunStyle(run.xml, context, paragraphStyle?.styleId);
+    const activeXCheckboxField = parseRunActiveXCheckboxField(
+      run.xml,
+      context,
+      style,
+      run.link
+    );
+    if (activeXCheckboxField) {
+      children.push(activeXCheckboxField);
+      continue;
+    }
+
+    const images = parseRunImages(run.xml, context);
     const parsedTokens = parseRunTextTokens(
       images.some((image) => image.syntheticTextBox)
         ? stripTextBoxContent(run.xml)
@@ -5675,6 +5823,7 @@ function parseTable(tableXml: string, context: ParseContext): TableNode {
   const widthTwips = mergedProperties?.widthTwips;
   const indentTwips = mergedProperties?.indentTwips;
   const layout = mergedProperties?.layout;
+  const cellSpacingTwips = mergedProperties?.cellSpacingTwips;
   const floating = mergedProperties?.floating;
   const cellMarginTwips = mergedProperties?.cellMarginTwips;
 
@@ -5868,6 +6017,7 @@ function parseTable(tableXml: string, context: ParseContext): TableNode {
     widthTwips !== undefined ||
     indentTwips !== undefined ||
     layout !== undefined ||
+    cellSpacingTwips !== undefined ||
     floating !== undefined ||
     cellMarginTwips !== undefined ||
     columnWidthsTwips.length > 0 ||
@@ -5881,6 +6031,7 @@ function parseTable(tableXml: string, context: ParseContext): TableNode {
           widthTwips,
           indentTwips,
           layout,
+          cellSpacingTwips,
           floating,
           cellMarginTwips,
           columnWidthsTwips: columnWidthsTwips.length > 0 ? columnWidthsTwips : undefined,
@@ -7066,6 +7217,7 @@ function cloneTable(table: TableNode): TableNode {
           widthTwips: table.style.widthTwips,
           indentTwips: table.style.indentTwips,
           layout: table.style.layout,
+          cellSpacingTwips: table.style.cellSpacingTwips,
           floating: cloneTableFloatingStyle(table.style.floating),
           cellMarginTwips: cloneTableBoxSpacing(table.style.cellMarginTwips),
           columnWidthsTwips: table.style.columnWidthsTwips
