@@ -58,7 +58,6 @@ import {
   ZoomOut,
 } from "lucide-react";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   ArrowExpandDiagonal01Icon,
   ArrowExpandDiagonal02Icon,
@@ -1429,9 +1428,6 @@ export function App(): React.JSX.Element {
   const fileInputRef = React.useRef<HTMLInputElement | null>(null);
   const imageInputRef = React.useRef<HTMLInputElement | null>(null);
   const viewerScrollRef = React.useRef<HTMLDivElement | null>(null);
-  const [viewerPageCount, setViewerPageCount] = React.useState<number>(1);
-  const [deferPageVirtualization, setDeferPageVirtualization] =
-    React.useState(false);
   const [linkEditorOpen, setLinkEditorOpen] = React.useState(false);
   const [linkEditorValue, setLinkEditorValue] = React.useState("");
   const [linkEditorPosition, setLinkEditorPosition] = React.useState<{
@@ -1911,193 +1907,6 @@ export function App(): React.JSX.Element {
 
   const isDark = currentTheme === "dark";
   const zoomScale = zoomPercent / 100;
-  React.useEffect(() => {
-    setViewerPageCount(1);
-    setDeferPageVirtualization(true);
-  }, [editor.documentLoadNonce]);
-
-  React.useEffect(() => {
-    if (typeof window === "undefined") {
-      return;
-    }
-
-    if (typeof navigator !== "undefined" && navigator.webdriver) {
-      setDeferPageVirtualization(true);
-      return;
-    }
-
-    if (viewerPageCount <= 1) {
-      setDeferPageVirtualization(true);
-      return;
-    }
-
-    const timeoutId = window.setTimeout(() => {
-      setDeferPageVirtualization(false);
-    }, 500);
-
-    return () => {
-      window.clearTimeout(timeoutId);
-    };
-  }, [viewerPageCount]);
-
-  const disablePageVirtualization =
-    deferPageVirtualization ||
-    (typeof navigator !== "undefined" && navigator.webdriver);
-  const estimatedPageExtentPx = React.useMemo(
-    () =>
-      Math.max(
-        1,
-        (pageLayout.pageHeightPx + pageLayout.viewportDefaults.pageGapPx) *
-          zoomScale
-      ),
-    [pageLayout.pageHeightPx, pageLayout.viewportDefaults.pageGapPx, zoomScale]
-  );
-  const pageVirtualizer = useVirtualizer({
-    count: Math.max(1, viewerPageCount),
-    getScrollElement: () => viewerScrollRef.current,
-    estimateSize: () => estimatedPageExtentPx,
-    overscan: 2,
-  });
-  React.useLayoutEffect(() => {
-    if (disablePageVirtualization) {
-      return;
-    }
-
-    const scrollElement = viewerScrollRef.current;
-    if (
-      !scrollElement ||
-      typeof window === "undefined" ||
-      typeof document === "undefined"
-    ) {
-      return;
-    }
-
-    let frameId: number | null = null;
-    const observedElements = new Set<HTMLElement>();
-    const resizeObserver =
-      typeof ResizeObserver === "function"
-        ? new ResizeObserver(() => {
-            if (frameId !== null) {
-              return;
-            }
-            frameId = window.requestAnimationFrame(() => {
-              frameId = null;
-              observedElements.forEach((element) => {
-                pageVirtualizer.measureElement(element);
-              });
-            });
-          })
-        : undefined;
-
-    const syncMeasuredPageWrappers = (): void => {
-      const pageWrappers = Array.from(
-        scrollElement.querySelectorAll<HTMLElement>(
-          '[data-docx-page-wrapper="true"][data-index]'
-        )
-      );
-      const nextElements = new Set(pageWrappers);
-
-      observedElements.forEach((element) => {
-        if (!nextElements.has(element)) {
-          resizeObserver?.unobserve(element);
-        }
-      });
-      pageWrappers.forEach((element) => {
-        if (!observedElements.has(element)) {
-          resizeObserver?.observe(element);
-        }
-        pageVirtualizer.measureElement(element);
-      });
-
-      observedElements.clear();
-      nextElements.forEach((element) => observedElements.add(element));
-    };
-
-    syncMeasuredPageWrappers();
-
-    const mutationObserver =
-      typeof MutationObserver === "function"
-        ? new MutationObserver(() => {
-            syncMeasuredPageWrappers();
-          })
-        : undefined;
-    mutationObserver?.observe(scrollElement, {
-      childList: true,
-      subtree: true,
-    });
-
-    return () => {
-      if (frameId !== null) {
-        window.cancelAnimationFrame(frameId);
-      }
-      mutationObserver?.disconnect();
-      resizeObserver?.disconnect();
-      observedElements.clear();
-    };
-  }, [disablePageVirtualization, pageVirtualizer, viewerPageCount, zoomScale]);
-  const virtualItems = pageVirtualizer.getVirtualItems();
-  const visiblePageRange = React.useMemo(() => {
-    if (disablePageVirtualization) {
-      return undefined;
-    }
-
-    if (viewerPageCount <= 0) {
-      return {
-        startPageIndex: 0,
-        endPageIndex: -1,
-      };
-    }
-
-    if (virtualItems.length === 0) {
-      const fallbackEnd = Math.min(viewerPageCount - 1, 2);
-      return {
-        startPageIndex: 0,
-        endPageIndex: fallbackEnd,
-      };
-    }
-
-    const first = virtualItems[0];
-    const last = virtualItems[virtualItems.length - 1];
-    const startPageIndex = Math.max(
-      0,
-      Math.min(first?.index ?? 0, viewerPageCount - 1)
-    );
-    const endPageIndex = Math.max(
-      startPageIndex,
-      Math.min(last?.index ?? startPageIndex, viewerPageCount - 1)
-    );
-    return {
-      startPageIndex,
-      endPageIndex,
-    };
-  }, [disablePageVirtualization, viewerPageCount, virtualItems]);
-  const handleViewerPageCountChange = React.useCallback(
-    (pageCount: number): void => {
-      const nextCount = Number.isFinite(pageCount)
-        ? Math.max(1, Math.round(pageCount))
-        : 1;
-      setViewerPageCount((current) =>
-        current === nextCount ? current : nextCount
-      );
-    },
-    []
-  );
-  const handleRequestPageReveal = React.useCallback(
-    (pageIndex: number): void => {
-      const safeCount = Math.max(1, viewerPageCount);
-      const clampedPageIndex = Math.max(
-        0,
-        Math.min(Math.round(pageIndex), safeCount - 1)
-      );
-      pageVirtualizer.scrollToIndex(clampedPageIndex, {
-        align: "center",
-      });
-    },
-    [pageVirtualizer, viewerPageCount]
-  );
-  React.useEffect(() => {
-    pageVirtualizer.measure();
-  }, [estimatedPageExtentPx, pageVirtualizer]);
   const paragraphPreviewSurfaceStyle: React.CSSProperties =
     documentTheme === "dark"
       ? {
@@ -2961,9 +2770,6 @@ export function App(): React.JSX.Element {
               <DocxEditorViewer
                 editor={editor}
                 pageGapBackgroundColor={pageGapBackgroundColor}
-                visiblePageRange={visiblePageRange}
-                onPageCountChange={handleViewerPageCountChange}
-                onRequestPageReveal={handleRequestPageReveal}
                 mode={isReadOnly ? "read-only" : "edit"}
                 showTrackedChanges={showTrackedChanges}
                 renderTrackedChangeCard={renderTrackedChangeCard}

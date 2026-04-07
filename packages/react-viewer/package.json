@@ -30,6 +30,7 @@
     "@react-docx/layout-engine": "workspace:*",
     "@react-docx/ooxml-core": "workspace:*",
     "@react-docx/serializer": "workspace:*",
+    "@tanstack/react-virtual": "^3.13.12",
     "emf-converter": "^1.0.10",
     "fast-png": "^8.0.0",
     "utif": "^3.1.0"

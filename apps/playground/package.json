@@ -20,7 +20,6 @@
     "@react-docx/react-viewer": "workspace:*",
     "@react-docx/serializer": "workspace:*",
     "@tailwindcss/vite": "^4.2.1",
-    "@tanstack/react-virtual": "^3.13.12",
     "@vercel/analytics": "^1.5.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",

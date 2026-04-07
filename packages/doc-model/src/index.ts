@@ -2704,13 +2704,18 @@ function parseStyleSheet(pkg: OoxmlPackage): ParsedStyleSheet {
   const docDefaultsXml = extractBalancedTagBlocks(stylesXml, "w:docDefaults")[0] ?? "";
   const defaultParagraphStyle: ParagraphStyle | undefined = (() => {
     const paragraphDefaults = resolveStylePropertiesBlock(docDefaultsXml, "w:pPr");
+    const defaultParagraphHasNumPr = /<w:numPr\b/i.test(paragraphDefaults);
     const align = parseParagraphAlignFromXml(paragraphDefaults);
     const spacing = parseParagraphSpacingFromXml(paragraphDefaults);
     const indent = parseParagraphIndentFromXml(paragraphDefaults);
     const backgroundColor = parseParagraphShadingFromXml(paragraphDefaults);
     const borders = parseParagraphBorderSetFromXml(paragraphDefaults);
     const tabStops = parseParagraphTabStopsFromXml(paragraphDefaults);
-    const numbering = parseParagraphNumberingFromXml(paragraphDefaults);
+    const parsedDefaultNumbering = parseParagraphNumberingFromXml(paragraphDefaults);
+    const numbering =
+      defaultParagraphHasNumPr && !parsedDefaultNumbering
+        ? { numId: 0, ilvl: 0 }
+        : parsedDefaultNumbering;
     const contextualSpacing = parseOnOffAttribute(paragraphDefaults, "contextualSpacing");
     const keepNext = parseOnOffAttribute(paragraphDefaults, "keepNext");
     const keepLines = parseOnOffAttribute(paragraphDefaults, "keepLines");
@@ -2770,6 +2775,7 @@ function parseStyleSheet(pkg: OoxmlPackage): ParsedStyleSheet {
     const nextTag = styleXml.match(/<w:next\b[^>]*\/?>/i)?.[0] ?? "";
     const uiPriorityTag = styleXml.match(/<w:uiPriority\b[^>]*\/?>/i)?.[0] ?? "";
     const paragraphPropertiesXml = resolveStylePropertiesBlock(styleXml, "w:pPr");
+    const styleHasParagraphNumPr = /<w:numPr\b/i.test(paragraphPropertiesXml);
     const runPropertiesXml = resolveStylePropertiesBlock(styleXml, "w:rPr");
 
     const headingLevel =
@@ -2777,6 +2783,7 @@ function parseStyleSheet(pkg: OoxmlPackage): ParsedStyleSheet {
       normalizeHeadingLevel(getAttribute(nameTag, "w:val")) ||
       parseHeadingLevelFromOutline(paragraphPropertiesXml);
 
+    const parsedStyleNumbering = parseParagraphNumberingFromXml(paragraphPropertiesXml);
     rawStylesById.set(styleId, {
       id: styleId,
       type: styleType,
@@ -2785,7 +2792,10 @@ function parseStyleSheet(pkg: OoxmlPackage): ParsedStyleSheet {
       nextStyleId: getAttribute(nextTag, "w:val"),
       align: parseParagraphAlignFromXml(paragraphPropertiesXml),
       headingLevel,
-      numbering: parseParagraphNumberingFromXml(paragraphPropertiesXml),
+      numbering:
+        styleHasParagraphNumPr && !parsedStyleNumbering
+          ? { numId: 0, ilvl: 0 }
+          : parsedStyleNumbering,
       spacing: parseParagraphSpacingFromXml(paragraphPropertiesXml),
       indent: parseParagraphIndentFromXml(paragraphPropertiesXml),
       backgroundColor: parseParagraphShadingFromXml(paragraphPropertiesXml),
@@ -3920,6 +3930,44 @@ function cssLengthToPixels(value: string, unit: string): number | undefined {
   }
 }
 
+function parseCssStyleDeclarations(styleValue: string): Map<string, string> {
+  const declarations = new Map<string, string>();
+
+  styleValue
+    .split(";")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0)
+    .forEach((entry) => {
+      const separatorIndex = entry.indexOf(":");
+      if (separatorIndex <= 0) {
+        return;
+      }
+
+      const key = entry.slice(0, separatorIndex).trim().toLowerCase();
+      const value = entry.slice(separatorIndex + 1).trim();
+      if (!key || !value) {
+        return;
+      }
+
+      declarations.set(key, value);
+    });
+
+  return declarations;
+}
+
+function parseCssLengthPixels(styleToken: string | undefined): number | undefined {
+  if (!styleToken) {
+    return undefined;
+  }
+
+  const match = styleToken.match(/(-?[0-9]+(?:\.[0-9]+)?)\s*(px|pt|in|cm|mm)\b/i);
+  if (!match?.[1] || !match?.[2]) {
+    return undefined;
+  }
+
+  return cssLengthToPixels(match[1], match[2]);
+}
+
 function parseVmlSize(runXml: string): { widthPx?: number; heightPx?: number } {
   const shapeTagMatch = runXml.match(/<v:shape\b[^>]*>/i);
   const shapeTag = shapeTagMatch?.[0] ?? "";
@@ -3935,6 +3983,190 @@ function parseVmlSize(runXml: string): { widthPx?: number; heightPx?: number } {
     widthPx: widthMatch?.[1] && widthMatch?.[2] ? cssLengthToPixels(widthMatch[1], widthMatch[2]) : undefined,
     heightPx:
       heightMatch?.[1] && heightMatch?.[2] ? cssLengthToPixels(heightMatch[1], heightMatch[2]) : undefined
+  };
+}
+
+function parseVmlFloatingAnchorFromRunXml(
+  runXml: string
+): ImageRunNode["floating"] | undefined {
+  const shapeTag = runXml.match(/<v:shape\b[^>]*>/i)?.[0] ?? "";
+  const styleValue = getAttribute(shapeTag, "style");
+  if (!styleValue) {
+    return undefined;
+  }
+
+  const declarations = parseCssStyleDeclarations(styleValue);
+  if (declarations.size === 0) {
+    return undefined;
+  }
+
+  const normalizeRelativeTo = (
+    raw: string | undefined,
+    axis: "horizontal" | "vertical"
+  ): string | undefined => {
+    const normalized = raw?.trim().toLowerCase();
+    if (!normalized) {
+      return undefined;
+    }
+
+    if (
+      normalized === "page" ||
+      normalized === "margin" ||
+      normalized === "column" ||
+      normalized === "paragraph" ||
+      normalized === "line"
+    ) {
+      return normalized;
+    }
+
+    if (normalized === "text") {
+      return axis === "horizontal" ? "paragraph" : "paragraph";
+    }
+
+    if (normalized === "char" || normalized === "character") {
+      return axis === "horizontal" ? "line" : "line";
+    }
+
+    return undefined;
+  };
+
+  const normalizeAlign = (
+    raw: string | undefined
+  ): ImageRunNode["floating"]["horizontalAlign"] | ImageRunNode["floating"]["verticalAlign"] => {
+    const normalized = raw?.trim().toLowerCase();
+    if (
+      normalized === "left" ||
+      normalized === "center" ||
+      normalized === "right" ||
+      normalized === "inside" ||
+      normalized === "outside" ||
+      normalized === "top" ||
+      normalized === "bottom"
+    ) {
+      return normalized as
+        | "left"
+        | "center"
+        | "right"
+        | "inside"
+        | "outside"
+        | "top"
+        | "bottom";
+    }
+
+    return undefined;
+  };
+
+  const normalizeWrapType = (
+    raw: string | undefined
+  ): ImageRunNode["floating"]["wrapType"] => {
+    const normalized = raw?.trim().toLowerCase();
+    if (!normalized) {
+      return undefined;
+    }
+
+    if (normalized === "square") {
+      return "square";
+    }
+    if (normalized === "tight") {
+      return "tight";
+    }
+    if (normalized === "through") {
+      return "through";
+    }
+    if (
+      normalized === "topandbottom" ||
+      normalized === "top-and-bottom" ||
+      normalized === "topbottom"
+    ) {
+      return "topAndBottom";
+    }
+    if (normalized === "none" || normalized === "inline") {
+      return "none";
+    }
+
+    return undefined;
+  };
+
+  const parseNumeric = (raw: string | undefined): number | undefined => {
+    if (!raw) {
+      return undefined;
+    }
+    const parsed = Number(raw.trim());
+    if (!Number.isFinite(parsed)) {
+      return undefined;
+    }
+    return Math.round(parsed);
+  };
+
+  const xPx =
+    parseCssLengthPixels(declarations.get("left")) ??
+    parseCssLengthPixels(declarations.get("margin-left"));
+  const yPx =
+    parseCssLengthPixels(declarations.get("top")) ??
+    parseCssLengthPixels(declarations.get("margin-top"));
+  const horizontalRelativeTo = normalizeRelativeTo(
+    declarations.get("mso-position-horizontal-relative"),
+    "horizontal"
+  );
+  const verticalRelativeTo = normalizeRelativeTo(
+    declarations.get("mso-position-vertical-relative"),
+    "vertical"
+  );
+  const horizontalPositionMode = declarations
+    .get("mso-position-horizontal")
+    ?.trim()
+    .toLowerCase();
+  const verticalPositionMode = declarations
+    .get("mso-position-vertical")
+    ?.trim()
+    .toLowerCase();
+  const horizontalAlign =
+    horizontalPositionMode && horizontalPositionMode !== "absolute"
+      ? (normalizeAlign(horizontalPositionMode) as ImageRunNode["floating"]["horizontalAlign"])
+      : undefined;
+  const verticalAlign =
+    verticalPositionMode && verticalPositionMode !== "absolute"
+      ? (normalizeAlign(verticalPositionMode) as ImageRunNode["floating"]["verticalAlign"])
+      : undefined;
+  const distLPx = parseCssLengthPixels(declarations.get("mso-wrap-distance-left"));
+  const distRPx = parseCssLengthPixels(declarations.get("mso-wrap-distance-right"));
+  const distTPx = parseCssLengthPixels(declarations.get("mso-wrap-distance-top"));
+  const distBPx = parseCssLengthPixels(declarations.get("mso-wrap-distance-bottom"));
+  const wrapType = normalizeWrapType(declarations.get("mso-wrap-style"));
+  const zIndex = parseNumeric(declarations.get("z-index"));
+  const behindDocument = zIndex !== undefined ? zIndex < 0 : undefined;
+
+  if (
+    xPx === undefined &&
+    yPx === undefined &&
+    !horizontalRelativeTo &&
+    !verticalRelativeTo &&
+    !horizontalAlign &&
+    !verticalAlign &&
+    distLPx === undefined &&
+    distRPx === undefined &&
+    distTPx === undefined &&
+    distBPx === undefined &&
+    !wrapType &&
+    zIndex === undefined
+  ) {
+    return undefined;
+  }
+
+  return {
+    xPx,
+    yPx,
+    horizontalAlign,
+    verticalAlign,
+    horizontalRelativeTo,
+    verticalRelativeTo,
+    distLPx: distLPx !== undefined ? Math.max(0, distLPx) : undefined,
+    distRPx: distRPx !== undefined ? Math.max(0, distRPx) : undefined,
+    distTPx: distTPx !== undefined ? Math.max(0, distTPx) : undefined,
+    distBPx: distBPx !== undefined ? Math.max(0, distBPx) : undefined,
+    wrapType,
+    behindDocument: behindDocument === true,
+    zIndex,
   };
 }
 
@@ -4357,7 +4589,9 @@ function parseRunImageBlock(runXml: string, context: ParseContext): ImageRunNode
   let vmlSize = parseVmlSize(activeRunXml);
   let widthPx = extentMatch?.[1] ? emuToPixels(extentMatch[1]) : vmlSize.widthPx;
   let heightPx = extentMatch?.[2] ? emuToPixels(extentMatch[2]) : vmlSize.heightPx;
-  const floating = parseFloatingAnchorFromRunXml(normalizedRunXml);
+  let floating =
+    parseFloatingAnchorFromRunXml(activeRunXml) ??
+    parseVmlFloatingAnchorFromRunXml(activeRunXml);
 
   const docPrMatch = activeRunXml.match(/<wp:docPr\b[^>]*>/i);
   const docPrTag = docPrMatch?.[0] ?? "";
@@ -4384,6 +4618,9 @@ function parseRunImageBlock(runXml: string, context: ParseContext): ImageRunNode
     vmlSize = parseVmlSize(activeRunXml);
     widthPx = extentMatch?.[1] ? emuToPixels(extentMatch[1]) : vmlSize.widthPx;
     heightPx = extentMatch?.[2] ? emuToPixels(extentMatch[2]) : vmlSize.heightPx;
+    floating =
+      parseFloatingAnchorFromRunXml(activeRunXml) ??
+      parseVmlFloatingAnchorFromRunXml(activeRunXml);
   }
 
   const partName = relationshipId ? context.relationships.get(relationshipId) : undefined;
