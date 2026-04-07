@@ -1430,6 +1430,8 @@ export function App(): React.JSX.Element {
   const imageInputRef = React.useRef<HTMLInputElement | null>(null);
   const viewerScrollRef = React.useRef<HTMLDivElement | null>(null);
   const [viewerPageCount, setViewerPageCount] = React.useState<number>(1);
+  const [deferPageVirtualization, setDeferPageVirtualization] =
+    React.useState(false);
   const [linkEditorOpen, setLinkEditorOpen] = React.useState(false);
   const [linkEditorValue, setLinkEditorValue] = React.useState("");
   const [linkEditorPosition, setLinkEditorPosition] = React.useState<{
@@ -1909,8 +1911,38 @@ export function App(): React.JSX.Element {
 
   const isDark = currentTheme === "dark";
   const zoomScale = zoomPercent / 100;
+  React.useEffect(() => {
+    setViewerPageCount(1);
+    setDeferPageVirtualization(true);
+  }, [editor.documentLoadNonce]);
+
+  React.useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    if (typeof navigator !== "undefined" && navigator.webdriver) {
+      setDeferPageVirtualization(true);
+      return;
+    }
+
+    if (viewerPageCount <= 1) {
+      setDeferPageVirtualization(true);
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setDeferPageVirtualization(false);
+    }, 500);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [viewerPageCount]);
+
   const disablePageVirtualization =
-    typeof navigator !== "undefined" && navigator.webdriver;
+    deferPageVirtualization ||
+    (typeof navigator !== "undefined" && navigator.webdriver);
   const estimatedPageExtentPx = React.useMemo(
     () =>
       Math.max(
@@ -2005,19 +2037,14 @@ export function App(): React.JSX.Element {
   }, [disablePageVirtualization, pageVirtualizer, viewerPageCount, zoomScale]);
   const virtualItems = pageVirtualizer.getVirtualItems();
   const visiblePageRange = React.useMemo(() => {
+    if (disablePageVirtualization) {
+      return undefined;
+    }
+
     if (viewerPageCount <= 0) {
       return {
         startPageIndex: 0,
         endPageIndex: -1,
-      };
-    }
-
-    // Visual regression runs need every page mounted; virtualized page windows
-    // keep later pages shifting during screenshot capture.
-    if (disablePageVirtualization) {
-      return {
-        startPageIndex: 0,
-        endPageIndex: Math.max(0, viewerPageCount - 1),
       };
     }
 

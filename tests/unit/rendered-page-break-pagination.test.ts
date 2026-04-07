@@ -139,4 +139,55 @@ describe("rendered page break pagination", () => {
 
     expect(pages).toEqual([[{ nodeIndex: 0 }], [{ nodeIndex: 1 }]]);
   });
+
+  it("does not strand formatting-only empty paragraphs on a blank page before a rendered page break", () => {
+    const model: DocModel = {
+      nodes: [
+        {
+          type: "paragraph",
+          sourceXml: `<w:p><w:r><w:t>Intro</w:t></w:r></w:p>`,
+          children: [{ type: "text", text: "Intro" }]
+        },
+        {
+          type: "paragraph",
+          sourceXml:
+            `<w:p><w:pPr><w:rPr><w:b/><w:u w:val="single"/></w:rPr></w:pPr></w:p>`,
+          children: []
+        },
+        {
+          type: "paragraph",
+          sourceXml:
+            `<w:p><w:pPr><w:rPr><w:b/><w:u w:val="single"/></w:rPr></w:pPr></w:p>`,
+          children: []
+        },
+        {
+          type: "paragraph",
+          sourceXml:
+            `<w:p><w:r><w:lastRenderedPageBreak/></w:r>` +
+            `<w:r><w:t>Next page heading</w:t></w:r></w:p>`,
+          children: [{ type: "text", text: "Next page heading" }]
+        }
+      ],
+      metadata: {
+        sourceParts: 1,
+        warnings: [],
+        headerSections: [],
+        footerSections: [],
+        paragraphStyles: []
+      }
+    };
+
+    const pages = buildDocumentPageNodeSegments(
+      model,
+      28,
+      400,
+      undefined,
+      undefined,
+      {
+        preferLastRenderedParagraphStartBreaks: true
+      }
+    );
+
+    expect(pages).toEqual([[{ nodeIndex: 0 }], [{ nodeIndex: 3 }]]);
+  });
 });

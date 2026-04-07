@@ -4716,6 +4716,34 @@ function paragraphActsAsLeadingCoverLayoutSpacer(
   );
 }
 
+function paragraphActsAsLeadingCoverLayoutPreambleSpacer(
+  model: DocModel,
+  nodeIndex: number,
+  paragraph: ParagraphNode,
+  pageContentWidthPx: number,
+  pageContentHeightPx: number
+): boolean {
+  if (
+    !paragraphHasOnlyWhitespaceText(paragraph) ||
+    paragraphHasExplicitPageBreak(paragraph) ||
+    paragraph.style?.numbering
+  ) {
+    return false;
+  }
+
+  const nextNode = model.nodes[nodeIndex + 1];
+  if (!nextNode || nextNode.type !== "paragraph") {
+    return false;
+  }
+
+  return paragraphParticipatesInLeadingCoverLayout(
+    model,
+    nodeIndex + 1,
+    pageContentWidthPx,
+    pageContentHeightPx
+  );
+}
+
 function paragraphStartsNewPageAfterLeadingCoverLayout(
   model: DocModel,
   nodeIndex: number,
@@ -5928,6 +5956,49 @@ function paragraphIsStructuralSectionBreakSpacer(
   }
 
   return true;
+}
+
+function paragraphActsAsTrailingRenderedPageBreakSpacer(
+  model: DocModel,
+  nodeIndex: number,
+  paragraph: ParagraphNode
+): boolean {
+  if (
+    !paragraphIsEffectivelyEmpty(paragraph) ||
+    paragraphHasExplicitPageBreak(paragraph) ||
+    paragraphHasPageBreakBefore(paragraph) ||
+    paragraphStartsWithLastRenderedPageBreak(paragraph) ||
+    paragraphHasImage(paragraph) ||
+    paragraphHasFormField(paragraph)
+  ) {
+    return false;
+  }
+
+  let lookaheadIndex = nodeIndex + 1;
+  while (lookaheadIndex < model.nodes.length) {
+    const nextNode = model.nodes[lookaheadIndex];
+    if (nextNode?.type !== "paragraph") {
+      return false;
+    }
+    if (!paragraphIsEffectivelyEmpty(nextNode)) {
+      return (
+        paragraphHasPageBreakBefore(nextNode) ||
+        paragraphStartsWithLastRenderedPageBreak(nextNode)
+      );
+    }
+    if (
+      paragraphHasExplicitPageBreak(nextNode) ||
+      paragraphHasPageBreakBefore(nextNode) ||
+      paragraphStartsWithLastRenderedPageBreak(nextNode) ||
+      paragraphHasImage(nextNode) ||
+      paragraphHasFormField(nextNode)
+    ) {
+      return false;
+    }
+    lookaheadIndex += 1;
+  }
+
+  return false;
 }
 
 function paragraphContextualSpacingStyleKey(
@@ -8163,10 +8234,42 @@ function tableStyleIdFromSourceXml(table: TableNode): string | undefined {
   return styleId ? styleId : undefined;
 }
 
+function tableHasVisibleBorders(table: TableNode): boolean {
+  const borders = table.style?.borders;
+  if (!borders) {
+    return false;
+  }
+
+  return Object.values(borders).some(
+    (border) => border && border.type !== "none" && border.type !== "nil"
+  );
+}
+
+function tableContainsParagraphsWithoutExplicitSpacing(table: TableNode): boolean {
+  return table.rows.some((row) =>
+    row.cells.some((cell) =>
+      cell.nodes.some(
+        (node) =>
+          node.type === "paragraph" &&
+          !paragraphHasExplicitSpacing(node)
+      )
+    )
+  );
+}
+
 function tableUsesWordLikeParagraphDefaults(table: TableNode): boolean {
   const styleId = tableStyleIdFromSourceXml(table)?.toLowerCase();
-  return styleId === "tablegrid";
+  if (styleId === "tablegrid") {
+    return true;
+  }
+
+  return (
+    table.style?.layout === "fixed" &&
+    tableHasVisibleBorders(table) &&
+    tableContainsParagraphsWithoutExplicitSpacing(table)
+  );
 }
+
 
 function estimateTableRowHeightsPx(
   table: TableNode,
@@ -8504,6 +8607,26 @@ function collectDocxEstimatedOverflowBreakStartNodeIndexes(
     if (
       node.type === "paragraph" &&
       paragraphIsStructuralSectionBreakSpacer(node)
+    ) {
+      previousParagraphAfterPx = 0;
+      continue;
+    }
+    if (
+      node.type === "paragraph" &&
+      paragraphActsAsLeadingCoverLayoutPreambleSpacer(
+        model,
+        nodeIndex,
+        node,
+        nodeMetrics.pageContentWidthPx,
+        nodeMetrics.pageContentHeightPx
+      )
+    ) {
+      previousParagraphAfterPx = 0;
+      continue;
+    }
+    if (
+      node.type === "paragraph" &&
+      paragraphActsAsTrailingRenderedPageBreakSpacer(model, nodeIndex, node)
     ) {
       previousParagraphAfterPx = 0;
       continue;
@@ -9212,6 +9335,26 @@ export function buildDocumentPageNodeSegments(
     if (
       node.type === "paragraph" &&
       paragraphIsStructuralSectionBreakSpacer(node)
+    ) {
+      previousParagraphAfterPx = 0;
+      continue;
+    }
+    if (
+      node.type === "paragraph" &&
+      paragraphActsAsLeadingCoverLayoutPreambleSpacer(
+        model,
+        nodeIndex,
+        node,
+        nodeMetrics.pageContentWidthPx,
+        nodeMetrics.pageContentHeightPx
+      )
+    ) {
+      previousParagraphAfterPx = 0;
+      continue;
+    }
+    if (
+      node.type === "paragraph" &&
+      paragraphActsAsTrailingRenderedPageBreakSpacer(model, nodeIndex, node)
     ) {
       previousParagraphAfterPx = 0;
       continue;
@@ -27526,6 +27669,17 @@ export function DocxEditorViewer({
 
     onPageCountChange(pageCount);
   }, [onPageCountChange, pageCount]);
+  React.useEffect(() => {
+    const nextCurrentPage = clampNumber(
+      visiblePageStartIndex + 1,
+      1,
+      Math.max(1, pageCount)
+    );
+    editor.syncPaginationInfo({
+      currentPage: nextCurrentPage,
+      totalPages: Math.max(1, pageCount),
+    });
+  }, [editor.syncPaginationInfo, pageCount, visiblePageStartIndex]);
   const trackedChangesByPage = React.useMemo(() => {
     const pageBuckets = pageNodeSegmentsByPage.map(
       () => [] as DocxTrackedChange[]
@@ -40233,12 +40387,10 @@ export function DocxEditorViewer({
             node.rows.length,
             tableRowRange?.endRowIndex ?? node.rows.length
           );
-          const visibleRows = node.rows.slice(
-            tableRowStartIndex,
-            tableRowEndIndex
-          );
+          const visibleRows = node.rows.slice(tableRowStartIndex, tableRowEndIndex);
           const isSplitTableSegment =
-            tableRowStartIndex > 0 || tableRowEndIndex < node.rows.length;
+            tableRowStartIndex > 0 ||
+            tableRowEndIndex < node.rows.length;
           const isCornerResizing =
             !isSplitTableSegment && activeTableResize?.tableIndex === nodeIndex;
           const isColumnHandleActive =

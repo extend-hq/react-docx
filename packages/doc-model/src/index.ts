@@ -1324,8 +1324,16 @@ function renderStandaloneWordShapeSvg(
           context.styleSheet.themeColors
         );
         const textBoxParagraphs = parseTextBoxParagraphs(shapeXml, context);
+        const textBoxLayout = parseTextBoxLayout(shapeXml);
         const textBoxSvg =
-          textBoxParagraphs.length > 0 ? renderTextBoxSvg(textBoxParagraphs, shapeWidth, shapeHeight) : undefined;
+          textBoxParagraphs.length > 0
+            ? renderTextBoxSvg(
+                textBoxParagraphs,
+                shapeWidth,
+                shapeHeight,
+                textBoxLayout
+              )
+            : undefined;
         const positionedTextBoxSvg = textBoxSvg
           ? textBoxSvg.replace(
               /^<svg\b/i,
@@ -3630,6 +3638,14 @@ interface ParsedTextBoxParagraph {
   align?: ParagraphAlignment;
 }
 
+interface ParsedTextBoxLayout {
+  paddingLeftPx?: number;
+  paddingTopPx?: number;
+  paddingRightPx?: number;
+  paddingBottomPx?: number;
+  verticalAnchor?: "top" | "center" | "bottom";
+}
+
 function parseTextBoxParagraphs(
   runXml: string,
   context: ParseContext
@@ -3679,6 +3695,33 @@ function parseTextBoxParagraphs(
   }
 
   return resolved;
+}
+
+function parseTextBoxLayout(runXml: string): ParsedTextBoxLayout | undefined {
+  const normalizedRunXml = preferAlternateContentChoice(runXml);
+  const bodyPrXml =
+    extractBalancedTagBlocks(normalizedRunXml, "wps:bodyPr")[0] ??
+    normalizedRunXml.match(/<wps:bodyPr\b[^>]*\/?>/i)?.[0] ??
+    "";
+  if (!bodyPrXml) {
+    return undefined;
+  }
+
+  const anchorRaw = getAttribute(bodyPrXml, "anchor")?.trim().toLowerCase();
+  const verticalAnchor =
+    anchorRaw === "ctr"
+      ? "center"
+      : anchorRaw === "b"
+      ? "bottom"
+      : "top";
+
+  return {
+    paddingLeftPx: emuToPixels(getAttribute(bodyPrXml, "lIns")),
+    paddingTopPx: emuToPixels(getAttribute(bodyPrXml, "tIns")),
+    paddingRightPx: emuToPixels(getAttribute(bodyPrXml, "rIns")),
+    paddingBottomPx: emuToPixels(getAttribute(bodyPrXml, "bIns")),
+    verticalAnchor,
+  };
 }
 
 function parseDrawingImageCssFilter(runXml: string): string | undefined {
@@ -3759,23 +3802,50 @@ function parseDrawingImageCrop(
 function renderTextBoxSvg(
   paragraphs: ParsedTextBoxParagraph[],
   widthPx: number | undefined,
-  heightPx: number | undefined
+  heightPx: number | undefined,
+  layout?: ParsedTextBoxLayout
 ): string {
   const safeWidth = clamp(Math.round(widthPx ?? 320), 80, 2400);
-  const estimatedHeight = paragraphs.reduce((sum, paragraph) => {
+  const lineHeights = paragraphs.map((paragraph) => {
     const fontSizePt = paragraph.style?.fontSizePt ?? 12;
     const fontSizePx = Math.max(10, Math.round((fontSizePt * 96) / 72));
-    return sum + Math.max(14, Math.round(fontSizePx * 1.24));
-  }, 24);
+    return Math.max(14, Math.round(fontSizePx * 1.24));
+  });
+  const estimatedHeight = lineHeights.reduce((sum, lineHeight) => sum + lineHeight, 24);
   const safeHeight = clamp(Math.round(heightPx ?? estimatedHeight), 48, 2400);
-  const horizontalInset = Math.max(8, Math.round(safeWidth * 0.03));
-  const topInset = Math.max(8, Math.round(safeHeight * 0.04));
+  const horizontalInset = Math.max(
+    8,
+    Math.round(layout?.paddingLeftPx ?? safeWidth * 0.03)
+  );
+  const topInset = Math.max(
+    8,
+    Math.round(layout?.paddingTopPx ?? safeHeight * 0.04)
+  );
+  const rightInset = Math.max(
+    8,
+    Math.round(layout?.paddingRightPx ?? horizontalInset)
+  );
+  const bottomInset = Math.max(
+    8,
+    Math.round(layout?.paddingBottomPx ?? topInset)
+  );
   const maxTextWidth = Math.max(20, safeWidth - horizontalInset * 2);
+  const totalTextHeight = lineHeights.reduce(
+    (sum, lineHeight) => sum + lineHeight,
+    0
+  );
+  const availableHeight = Math.max(0, safeHeight - topInset - bottomInset);
+  const startOffsetY =
+    layout?.verticalAnchor === "center"
+      ? topInset + Math.max(0, Math.round((availableHeight - totalTextHeight) / 2))
+      : layout?.verticalAnchor === "bottom"
+      ? Math.max(topInset, safeHeight - bottomInset - totalTextHeight)
+      : topInset;
 
-  let cursorY = topInset;
+  let cursorY = startOffsetY;
   const lines: string[] = [];
 
-  for (const paragraph of paragraphs) {
+  for (const [paragraphIndex, paragraph] of paragraphs.entries()) {
     const fontSizePt = paragraph.style?.fontSizePt ?? 12;
     const fontSizePx = Math.max(10, Math.round((fontSizePt * 96) / 72));
     const estimatedTextWidth = estimateTextWidthPx(paragraph.text, fontSizePx);
@@ -3785,7 +3855,7 @@ function renderTextBoxSvg(
       estimatedTextWidth > maxTextWidth + 1
         ? ` textLength="${Math.round(maxTextWidth)}" lengthAdjust="spacingAndGlyphs"`
         : "";
-    const lineHeight = Math.max(14, Math.round(fittedFontSizePx * 1.24));
+    const lineHeight = lineHeights[paragraphIndex] ?? Math.max(14, Math.round(fittedFontSizePx * 1.24));
     cursorY += lineHeight;
     if (cursorY > safeHeight - 4) {
       break;
@@ -3802,7 +3872,7 @@ function renderTextBoxSvg(
       textAlign === "center"
         ? Math.round(safeWidth / 2)
         : textAlign === "right"
-          ? safeWidth - horizontalInset
+          ? safeWidth - rightInset
           : horizontalInset;
     const textDecoration = [
       paragraph.style?.underline ? "underline" : "",
@@ -4382,7 +4452,14 @@ function parseRunImageBlock(runXml: string, context: ParseContext): ImageRunNode
       return undefined;
     }
 
-    const textBoxSrc = svgDataUri(renderTextBoxSvg(textBoxParagraphs, widthPx, heightPx));
+    const textBoxSrc = svgDataUri(
+      renderTextBoxSvg(
+        textBoxParagraphs,
+        widthPx,
+        heightPx,
+        parseTextBoxLayout(activeRunXml)
+      )
+    );
     return {
       type: "image",
       src: textBoxSrc,

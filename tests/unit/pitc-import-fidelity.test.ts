@@ -42,7 +42,8 @@ describe("PITC import fidelity", () => {
       []
     );
 
-    expect(pages[1]?.[0]?.nodeIndex).toBeGreaterThanOrEqual(31);
+    expect(pages[0]?.[0]?.nodeIndex).toBe(1);
+    expect(pages[1]?.[0]?.nodeIndex).toBeGreaterThanOrEqual(32);
   });
 
   it("keeps absolute overlay anchor paragraphs on a single imported page", async () => {

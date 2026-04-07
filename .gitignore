@@ -7,6 +7,7 @@ dist
 coverage
 playwright-report
 test-results
+.playwright-cli/
 *.tsbuildinfo
 .DS_Store
 tmp/

@@ -546,6 +546,91 @@ const GROUPED_PICTURE_TEXTBOX_DOC_XML = `<?xml version="1.0" encoding="UTF-8" st
   </w:body>
 </w:document>`;
 
+const GROUPED_TEXTBOX_VERTICAL_ANCHOR_DOC_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:wpg="http://schemas.microsoft.com/office/word/2010/wordprocessingGroup" xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">
+  <w:body>
+    <w:p>
+      <w:r>
+        <w:drawing>
+          <wp:anchor behindDoc="1">
+            <wp:extent cx="6858000" cy="7315576"/>
+            <wp:docPr id="10" name="Group 10"/>
+            <a:graphic>
+              <a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingGroup">
+                <wpg:wgp>
+                  <wpg:grpSpPr>
+                    <a:xfrm>
+                      <a:off x="0" y="0"/>
+                      <a:ext cx="6858000" cy="7315576"/>
+                      <a:chOff x="0" y="0"/>
+                      <a:chExt cx="6858000" cy="7315576"/>
+                    </a:xfrm>
+                  </wpg:grpSpPr>
+                  <wps:wsp>
+                    <wps:cNvPr id="11" name="Text Box 11"/>
+                    <wps:cNvSpPr txBox="1"/>
+                    <wps:spPr>
+                      <a:xfrm>
+                        <a:off x="0" y="0"/>
+                        <a:ext cx="6858000" cy="7315576"/>
+                      </a:xfrm>
+                      <a:prstGeom prst="rect"><a:avLst/></a:prstGeom>
+                      <a:noFill/>
+                      <a:ln w="6350"><a:noFill/></a:ln>
+                    </wps:spPr>
+                    <wps:txbx>
+                      <w:txbxContent>
+                        <w:p>
+                          <w:pPr>
+                            <w:jc w:val="center"/>
+                            <w:rPr><w:b/><w:color w:val="9BE36E"/><w:sz w:val="72"/></w:rPr>
+                          </w:pPr>
+                          <w:r><w:rPr><w:b/><w:color w:val="9BE36E"/><w:sz w:val="72"/></w:rPr><w:t>BUSINESS PROPOSAL</w:t></w:r>
+                        </w:p>
+                        <w:p>
+                          <w:pPr>
+                            <w:spacing w:before="240"/>
+                            <w:jc w:val="center"/>
+                            <w:rPr><w:color w:val="123500"/><w:sz w:val="48"/></w:rPr>
+                          </w:pPr>
+                          <w:r><w:rPr><w:color w:val="123500"/><w:sz w:val="48"/></w:rPr><w:t>COMPANY NAME</w:t></w:r>
+                        </w:p>
+                      </w:txbxContent>
+                    </wps:txbx>
+                    <wps:bodyPr lIns="457200" tIns="457200" rIns="457200" bIns="457200" anchor="ctr"><a:prstTxWarp prst="textNoShape"><a:avLst/></a:prstTxWarp><a:noAutofit/></wps:bodyPr>
+                  </wps:wsp>
+                  <wps:wsp>
+                    <wps:cNvPr id="12" name="Rectangle 12"/>
+                    <wps:cNvSpPr txBox="1"/>
+                    <wps:spPr>
+                      <a:xfrm>
+                        <a:off x="0" y="5486400"/>
+                        <a:ext cx="6858000" cy="1828800"/>
+                      </a:xfrm>
+                      <a:prstGeom prst="rect"><a:avLst/></a:prstGeom>
+                      <a:solidFill><a:srgbClr val="9BE36E"/></a:solidFill>
+                      <a:ln w="6350"><a:noFill/></a:ln>
+                    </wps:spPr>
+                    <wps:txbx>
+                      <w:txbxContent>
+                        <w:p>
+                          <w:pPr><w:rPr><w:color w:val="FFFFFF"/><w:sz w:val="28"/></w:rPr></w:pPr>
+                          <w:r><w:rPr><w:color w:val="FFFFFF"/><w:sz w:val="28"/></w:rPr><w:t>Contact name</w:t></w:r>
+                        </w:p>
+                      </w:txbxContent>
+                    </wps:txbx>
+                    <wps:bodyPr lIns="457200" tIns="182880" rIns="457200" bIns="457200" anchor="b"><a:prstTxWarp prst="textNoShape"><a:avLst/></a:prstTxWarp><a:noAutofit/></wps:bodyPr>
+                  </wps:wsp>
+                </wpg:wgp>
+              </a:graphicData>
+            </a:graphic>
+          </wp:anchor>
+        </w:drawing>
+      </w:r>
+    </w:p>
+  </w:body>
+</w:document>`;
+
 const TEXTBOX_COLOR_ONLY_UNDERLINE_DOC_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">
   <w:body>
@@ -1890,6 +1975,42 @@ describe("doc-model import", () => {
         .join("");
       expect(inFlowText).toBe("After group");
       expect(inFlowText.includes("Commonwealth of Massachusetts")).toBe(false);
+    }
+  });
+
+  it("keeps grouped textbox SVG text vertically anchored for centered and bottom-anchored cover layouts", async () => {
+    const zip = createZip([
+      { name: "[Content_Types].xml", content: CONTENT_TYPES_XML },
+      { name: "_rels/.rels", content: ROOT_RELS_XML },
+      { name: "word/document.xml", content: GROUPED_TEXTBOX_VERTICAL_ANCHOR_DOC_XML },
+    ]);
+
+    const pkg = await parseDocx(zip);
+    const model = buildDocModel(pkg);
+
+    const firstParagraph = model.nodes[0];
+    expect(firstParagraph?.type).toBe("paragraph");
+    if (firstParagraph?.type === "paragraph") {
+      const groupedImage = firstParagraph.children.find(
+        (child) => child.type === "image" && child.syntheticTextBox
+      );
+      expect(groupedImage?.type).toBe("image");
+      if (groupedImage?.type === "image") {
+        const encodedSvg =
+          groupedImage.src?.replace(/^data:image\/svg\+xml;charset=utf-8,/, "") ?? "";
+        const decodedSvg = decodeURIComponent(encodedSvg);
+        const centeredTitleY = Number(
+          decodedSvg.match(
+            /<text[^>]*y="(\d+)"[^>]*>BUSINESS PROPOSAL<\/text>/
+          )?.[1]
+        );
+        const bottomAnchoredContactY = Number(
+          decodedSvg.match(/<text[^>]*y="(\d+)"[^>]*>Contact name<\/text>/)?.[1]
+        );
+
+        expect(centeredTitleY).toBeGreaterThan(300);
+        expect(bottomAnchoredContactY).toBeGreaterThan(130);
+      }
     }
   });
 
