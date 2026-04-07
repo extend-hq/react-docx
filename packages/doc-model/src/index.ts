@@ -472,6 +472,7 @@ export interface DocModel {
     warnings: string[];
     documentPageCount?: number;
     documentOpenTag?: string;
+    documentBackgroundColor?: string;
     sectionPropertiesXml?: string;
     sections?: DocumentSection[];
     headerSections: HeaderSection[];
@@ -497,6 +498,17 @@ interface ParseContext {
   binaryAssets: Map<string, Uint8Array>;
   styleSheet: ParsedStyleSheet;
   warnings: string[];
+}
+
+function parseDocumentBackgroundColor(documentXml: string): string | undefined {
+  const backgroundTag = documentXml.match(/<w:background\b[^>]*>/i)?.[0];
+  if (!backgroundTag) {
+    return undefined;
+  }
+
+  return normalizeHexColor(
+    backgroundTag.match(/\bw:color="([^"]+)"/i)?.[1]
+  );
 }
 
 interface RawStyleDefinition {
@@ -6867,6 +6879,8 @@ export function buildDocModel(pkg: OoxmlPackage): DocModel {
 
   const resolvedDocumentXml = documentXml ?? "";
   const documentOpenTag = extractDocumentOpenTag(resolvedDocumentXml);
+  const documentBackgroundColor =
+    parseDocumentBackgroundColor(resolvedDocumentXml);
   const documentPageCount = parseDocumentPageCountFromAppProperties(pkg);
   const compatibility = parseDocumentCompatibilitySettings(pkg);
   const sectionPropertiesXml = extractSectionPropertiesXml(resolvedDocumentXml);
@@ -6931,6 +6945,7 @@ export function buildDocModel(pkg: OoxmlPackage): DocModel {
       warnings,
       documentPageCount,
       documentOpenTag,
+      documentBackgroundColor,
       sectionPropertiesXml,
       sections,
       headerSections,
@@ -7289,6 +7304,7 @@ export function cloneDocModel(model: DocModel): DocModel {
       warnings: [...model.metadata.warnings],
       documentPageCount: model.metadata.documentPageCount,
       documentOpenTag: model.metadata.documentOpenTag,
+      documentBackgroundColor: model.metadata.documentBackgroundColor,
       sectionPropertiesXml: model.metadata.sectionPropertiesXml,
       sections: model.metadata.sections?.map((section) => ({
         startNodeIndex: section.startNodeIndex,

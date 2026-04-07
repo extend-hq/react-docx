@@ -50,6 +50,7 @@ import {
   DEFAULT_DOC_PAGE_MARGIN,
   DEFAULT_DOC_PAGE_WIDTH,
   parseSectionLayout,
+  parseSectionPageBorders,
   TWIPS_PER_PIXEL,
   type DocumentLayoutMetrics,
   twipsToPixels,
@@ -205,6 +206,7 @@ const MAX_TRAILING_SECTION_TAIL_OVERFLOW_PX = 700;
 const SPLITTABLE_TABLE_ROW_ESTIMATE_EXTRA_LINE_COUNT = 2;
 const SPLITTABLE_TABLE_ROW_DEEP_CONTENT_NODE_THRESHOLD = 8;
 const PAGE_BREAK_XML_PATTERN = /<w:br\b[^>]*w:type="page"[^>]*\/?>/i;
+const COLUMN_BREAK_XML_PATTERN = /<w:br\b[^>]*w:type="column"[^>]*\/?>/i;
 const LAST_RENDERED_PAGE_BREAK_XML_PATTERN =
   /<w:lastRenderedPageBreak\b[^>]*\/?>/i;
 const PAGE_BREAK_BEFORE_XML_PATTERN = /<w:pageBreakBefore\b[^>]*\/?>/i;
@@ -257,6 +259,7 @@ const paragraphBreakFlagsBySourceXml = new Map<
   string,
   {
     explicitPageBreak: boolean;
+    explicitColumnBreak: boolean;
     lastRenderedPageBreak: boolean;
     pageBreakBefore: boolean;
     sectionBreakStartsNewPage: boolean;
@@ -4369,6 +4372,78 @@ function paragraphHasVisibleText(paragraph: ParagraphNode): boolean {
   );
 }
 
+function normalizeFloatingTextBoxComparisonText(text: string): string {
+  return text
+    .replace(/\r/g, "")
+    .split("\n")
+    .map((line) => line.replace(/[\s\u00a0]+/g, " ").trim())
+    .filter((line) => line.length > 0)
+    .join("\n")
+    .trim();
+}
+
+function floatingTextBoxVisibleTextFromImage(
+  image: ImageRunNode
+): string | undefined {
+  if (
+    !shouldRenderAbsoluteFloatingImage(image) ||
+    !image.sourceXml ||
+    !/<w:txbxContent\b/i.test(image.sourceXml)
+  ) {
+    return undefined;
+  }
+
+  const paragraphs = syntheticTextBoxParagraphsFromRunXml(image.sourceXml);
+  if (paragraphs.length === 0) {
+    return undefined;
+  }
+
+  const text = paragraphs
+    .map((paragraph) => paragraph.segments.map((segment) => segment.text).join(""))
+    .join("\n");
+  const normalized = normalizeFloatingTextBoxComparisonText(text);
+  return normalized.length > 0 ? normalized : undefined;
+}
+
+function paragraphVisibleTextIsOnlyAbsoluteFloatingTextBoxContent(
+  paragraph: ParagraphNode
+): boolean {
+  if (!paragraphHasVisibleText(paragraph) || paragraphHasFormField(paragraph)) {
+    return false;
+  }
+
+  const paragraphVisibleText = normalizeFloatingTextBoxComparisonText(
+    paragraph.children
+      .filter((child): child is TextRunNode => child.type === "text")
+      .map((child) => child.text)
+      .join("")
+  );
+  if (!paragraphVisibleText) {
+    return false;
+  }
+
+  const floatingTextBoxTexts = paragraph.children
+    .filter(
+      (child): child is ImageRunNode =>
+        child.type === "image" && shouldRenderAbsoluteFloatingImage(child)
+    )
+    .map((child) => floatingTextBoxVisibleTextFromImage(child))
+    .filter((text): text is string => Boolean(text));
+
+  if (floatingTextBoxTexts.length === 0) {
+    return false;
+  }
+
+  if (floatingTextBoxTexts.includes(paragraphVisibleText)) {
+    return true;
+  }
+
+  return (
+    normalizeFloatingTextBoxComparisonText(floatingTextBoxTexts.join("\n")) ===
+    paragraphVisibleText
+  );
+}
+
 function paragraphHasOnlyWhitespaceText(paragraph: ParagraphNode): boolean {
   if (paragraphHasImage(paragraph) || paragraphHasFormField(paragraph)) {
     return false;
@@ -4437,10 +4512,57 @@ function paragraphIsLikelyFullPageCoverArtAnchor(
   );
 }
 
+function pageAnchoredImageLikelyStartsNearPageTop(
+  image: ImageRunNode,
+  layout: DocumentLayoutMetrics
+): boolean {
+  if (!shouldRenderAbsoluteFloatingImage(image) || !image.floating) {
+    return false;
+  }
+
+  const verticalRelativeTo = image.floating.verticalRelativeTo
+    ?.trim()
+    .toLowerCase();
+  if (verticalRelativeTo !== "page" && verticalRelativeTo !== "margin") {
+    return false;
+  }
+
+  const imageHeightPx = Math.max(0, Math.round(image.heightPx ?? 0));
+  const imageWidthPx = Math.max(0, Math.round(image.widthPx ?? 0));
+  const coverSized =
+    imageWidthPx >= Math.round(layout.pageWidthPx * 0.8) &&
+    imageHeightPx >= Math.round(layout.pageHeightPx * 0.7);
+  if (!coverSized) {
+    return false;
+  }
+
+  const topOffsetPx = image.floating.yPx ?? 0;
+  return topOffsetPx <= layout.marginsPx.top;
+}
+
+function paragraphActsAsPageAnchoredCoverOverlayHost(
+  paragraph: ParagraphNode,
+  layout: DocumentLayoutMetrics
+): boolean {
+  if (!paragraphNeedsPageWidthAnchorHost(paragraph)) {
+    return false;
+  }
+
+  return paragraph.children.some(
+    (child) =>
+      child.type === "image" &&
+      pageAnchoredImageLikelyStartsNearPageTop(child, layout)
+  );
+}
+
 function paragraphStartsNormalFlowContent(
   paragraph: ParagraphNode
 ): boolean {
   if (!paragraphHasVisibleText(paragraph)) {
+    return false;
+  }
+
+  if (paragraphVisibleTextIsOnlyAbsoluteFloatingTextBoxContent(paragraph)) {
     return false;
   }
 
@@ -4525,7 +4647,8 @@ function paragraphActsAsLeadingCoverLayoutOverlay(
       pageContentWidthPx,
       pageContentHeightPx
     ) ||
-    paragraphHasVisibleText(paragraph) ||
+    (paragraphHasVisibleText(paragraph) &&
+      !paragraphVisibleTextIsOnlyAbsoluteFloatingTextBoxContent(paragraph)) ||
     paragraphHasFormField(paragraph)
   ) {
     return false;
@@ -6044,6 +6167,7 @@ function paragraphHasExplicitPageBreak(paragraph: ParagraphNode): boolean {
 
   const flags = {
     explicitPageBreak: PAGE_BREAK_XML_PATTERN.test(xml),
+    explicitColumnBreak: COLUMN_BREAK_XML_PATTERN.test(xml),
     lastRenderedPageBreak: LAST_RENDERED_PAGE_BREAK_XML_PATTERN.test(xml),
     pageBreakBefore: isOnOffTagEnabled(
       xml.match(PAGE_BREAK_BEFORE_XML_PATTERN)?.[0]
@@ -6059,6 +6183,21 @@ function paragraphHasExplicitPageBreak(paragraph: ParagraphNode): boolean {
   };
   setCacheEntry(paragraphBreakFlagsBySourceXml, xml, flags);
   return flags.explicitPageBreak;
+}
+
+function paragraphHasExplicitColumnBreak(paragraph: ParagraphNode): boolean {
+  const xml = paragraph.sourceXml ?? "";
+  if (!xml) {
+    return false;
+  }
+
+  const cached = paragraphBreakFlagsBySourceXml.get(xml);
+  if (cached) {
+    return cached.explicitColumnBreak;
+  }
+
+  paragraphHasExplicitPageBreak(paragraph);
+  return paragraphBreakFlagsBySourceXml.get(xml)?.explicitColumnBreak ?? false;
 }
 
 function paragraphHasLastRenderedPageBreak(paragraph: ParagraphNode): boolean {
@@ -10786,6 +10925,7 @@ function resolveListParagraphIndent(
   const effectiveNumId =
     effectiveNumberingNumIdForParagraph(paragraph, numberingDefinitions) ??
     numbering.numId;
+  const numberingRecoveryActive = effectiveNumId !== numbering.numId;
   const ilvl = Math.max(0, Math.round(numbering.ilvl ?? 0));
   const level = findNumberingLevelDefinition(
     numberingDefinitions,
@@ -10819,6 +10959,7 @@ function resolveListParagraphIndent(
   const hasExplicitParagraphHangingTwips = Number.isFinite(
     explicitParagraphHangingTwips
   );
+  const preferRecoveredNumberingTextIndent = numberingRecoveryActive;
   if (!numberingHasVisibleMarker && !numberingProvidesUsableIndent) {
     return styleIndent;
   }
@@ -10907,7 +11048,13 @@ function resolveListParagraphIndent(
   const nextLeftTwipsRounded = Math.max(0, Math.round(nextLeftTwips ?? 0));
   let nextFirstLineTwips: number | undefined;
   let nextHangingTwips: number | undefined;
-  if (hasExplicitParagraphFirstLineTwips || hasExplicitParagraphHangingTwips) {
+  if (preferRecoveredNumberingTextIndent) {
+    nextFirstLineTwips = levelIndent?.firstLineTwips;
+    nextHangingTwips = levelIndent?.hangingTwips;
+  } else if (
+    hasExplicitParagraphFirstLineTwips ||
+    hasExplicitParagraphHangingTwips
+  ) {
     // Paragraph-level w:ind overrides numbering/style indentation semantics.
     // If firstLine is explicitly present without hanging, do not inherit hanging.
     // If hanging is explicitly present without firstLine, do not inherit firstLine.
@@ -39118,6 +39265,8 @@ export function DocxEditorViewer({
       );
       const pageAbsoluteAnchorOnlyParagraph =
         paragraphNeedsPageWidthAnchorHost(node);
+      const pageAnchoredCoverOverlayParagraph =
+        paragraphActsAsPageAnchoredCoverOverlayHost(node, resolvedPageLayout);
       const bodyFloatingPageOriginPx =
         requiresPageAbsoluteContext || pageAbsoluteAnchorOnlyParagraph
           ? {
@@ -39165,6 +39314,13 @@ export function DocxEditorViewer({
               position: "relative",
               width: resolvedPageLayout.pageWidthPx,
               maxWidth: resolvedPageLayout.pageWidthPx,
+              marginTop:
+                (typeof baseParagraphStyle.marginTop === "number"
+                  ? baseParagraphStyle.marginTop
+                  : 0) -
+                (pageAnchoredCoverOverlayParagraph
+                  ? resolvedPageLayout.marginsPx.top
+                  : 0),
               marginLeft: -resolvedPageLayout.marginsPx.left,
               marginRight: -resolvedPageLayout.marginsPx.right,
               minHeight: 0,
@@ -43459,10 +43615,35 @@ export function DocxEditorViewer({
           measuredPageContentHeightByIndex
         );
         const headerFooterBodyDimmed = pageHeaderFooterEditActive;
+        const pageBackgroundColor =
+          editor.model.metadata.documentBackgroundColor;
+        const pageBorders = parseSectionPageBorders(
+          pageInfo?.section.sectionPropertiesXml ??
+            editor.model.metadata.sectionPropertiesXml
+        );
+        const pageBorderOverlayStyle: React.CSSProperties | undefined =
+          pageBorders
+            ? {
+                position: "absolute",
+                top: pageBorders.top?.offsetPx ?? 0,
+                right: pageBorders.right?.offsetPx ?? 0,
+                bottom: pageBorders.bottom?.offsetPx ?? 0,
+                left: pageBorders.left?.offsetPx ?? 0,
+                pointerEvents: "none",
+                borderTop: pageBorders.top?.cssBorder,
+                borderRight: pageBorders.right?.cssBorder,
+                borderBottom: pageBorders.bottom?.cssBorder,
+                borderLeft: pageBorders.left?.cssBorder,
+                boxSizing: "border-box",
+                zIndex: 0,
+              }
+            : undefined;
         const pageSurfaceStyle: React.CSSProperties = {
           ...pageSurfaceBaseStyle,
           width: pageLayout.pageWidthPx,
           minHeight: pageLayout.pageHeightPx,
+          backgroundColor:
+            pageBackgroundColor ?? pageSurfaceBaseStyle.backgroundColor,
           paddingTop: pageLayout.marginsPx.top,
           paddingRight: pageLayout.marginsPx.right,
           paddingBottom: pageLayout.marginsPx.bottom,
@@ -43501,6 +43682,12 @@ export function DocxEditorViewer({
                 margin: 0,
               }}
             >
+              {pageBorderOverlayStyle ? (
+                <div
+                  data-docx-page-border-overlay="true"
+                  style={pageBorderOverlayStyle}
+                />
+              ) : null}
               {pageSections.headerNodes.length > 0 ? (
                 <div
                   ref={(element) => {
@@ -43864,24 +44051,43 @@ export function DocxEditorViewer({
                                         )
                                       : 0);
                                 }
-                                let bestBreakIndex = flowSegments.length;
-                                let bestBreakScore = Number.POSITIVE_INFINITY;
-                                for (
-                                  let breakIndex = 0;
-                                  breakIndex <= flowSegments.length;
-                                  breakIndex += 1
-                                ) {
-                                  const leftHeightPx =
-                                    prefixHeightsPx[breakIndex];
-                                  const rightHeightPx =
-                                    suffixHeightsPx[breakIndex];
-                                  const score = Math.max(
-                                    leftHeightPx,
-                                    rightHeightPx
-                                  );
-                                  if (score < bestBreakScore) {
-                                    bestBreakScore = score;
-                                    bestBreakIndex = breakIndex;
+                                const explicitColumnBreakFlowIndex =
+                                  flowSegments.findIndex((segment) => {
+                                    if (segment.tableRowRange) {
+                                      return false;
+                                    }
+                                    const segmentNode =
+                                      editor.model.nodes[segment.nodeIndex];
+                                    return (
+                                      segmentNode?.type === "paragraph" &&
+                                      paragraphHasExplicitColumnBreak(
+                                        segmentNode
+                                      )
+                                    );
+                                  });
+                                let bestBreakIndex =
+                                  explicitColumnBreakFlowIndex >= 0
+                                    ? explicitColumnBreakFlowIndex + 1
+                                    : flowSegments.length;
+                                if (explicitColumnBreakFlowIndex < 0) {
+                                  let bestBreakScore = Number.POSITIVE_INFINITY;
+                                  for (
+                                    let breakIndex = 0;
+                                    breakIndex <= flowSegments.length;
+                                    breakIndex += 1
+                                  ) {
+                                    const leftHeightPx =
+                                      prefixHeightsPx[breakIndex];
+                                    const rightHeightPx =
+                                      suffixHeightsPx[breakIndex];
+                                    const score = Math.max(
+                                      leftHeightPx,
+                                      rightHeightPx
+                                    );
+                                    if (score < bestBreakScore) {
+                                      bestBreakScore = score;
+                                      bestBreakIndex = breakIndex;
+                                    }
                                   }
                                 }
                                 const leftSegments = flowSegments.slice(

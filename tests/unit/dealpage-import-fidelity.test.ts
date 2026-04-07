@@ -99,4 +99,32 @@ describe("deal page one-pager import fidelity", () => {
     expect(bottomLeftHost).toContain("line-height:0");
     expect(bottomLeftHost).not.toContain("min-height");
   });
+
+  it("honors the authored column break when splitting the buyer support and journeys row", async () => {
+    const zip = readFileSync(DOCX_PATH);
+    const pkg = await parseDocx(zip);
+    const model = buildDocModel(pkg);
+    const html = renderToStaticMarkup(
+      React.createElement(ImportedViewer, { model })
+    );
+
+    const rightColumnStartMarker = 'data-docx-paragraph-node-index="20"';
+    const rightColumnStartIndex = html.indexOf(rightColumnStartMarker);
+    expect(rightColumnStartIndex).toBeGreaterThanOrEqual(0);
+    const rightColumnStartSnippet = html.slice(
+      Math.max(0, rightColumnStartIndex - 700),
+      rightColumnStartIndex + 300
+    );
+
+    expect(model.nodes[19]?.type).toBe("paragraph");
+    if (model.nodes[19]?.type === "paragraph") {
+      expect(model.nodes[19].sourceXml).toContain('w:type="column"');
+    }
+    expect(rightColumnStartSnippet).toContain(
+      'data-docx-paragraph-node-index="19"'
+    );
+    expect(rightColumnStartSnippet).toContain(
+      '</div></div></div><div style="height:100%"><div><div data-docx-paragraph-host="true" data-docx-paragraph-kind="paragraph" data-docx-paragraph-node-index="20"'
+    );
+  });
 });

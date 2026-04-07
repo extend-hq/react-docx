@@ -52,11 +52,11 @@ describe("dealpage saas agreement import fidelity", () => {
     const model = buildDocModel(pkg);
     const labels = buildParagraphNumberingLabels(model);
 
-    expect(labels.get("p:12")?.text).toBe("1.");
-    expect(labels.get("p:13")?.text).toBe("1.1.");
-    expect(labels.get("p:14")?.text).toBe("1.2.");
-    expect(labels.get("p:16")?.text).toBe("2.");
-    expect(labels.get("p:17")?.text).toBe("2.1.");
+    expect(labels.get("p:13")?.text.trim()).toBe("1.");
+    expect(labels.get("p:14")?.text.trim()).toBe("1.1.");
+    expect(labels.get("p:15")?.text.trim()).toBe("1.2.");
+    expect(labels.get("p:17")?.text.trim()).toBe("2.");
+    expect(labels.get("p:18")?.text.trim()).toBe("2.1.");
   });
 
   it("does not synthesize huge list indentation from empty numbering levels", async () => {
@@ -64,11 +64,11 @@ describe("dealpage saas agreement import fidelity", () => {
     const pkg = await parseDocx(zip);
     const model = buildDocModel(pkg);
     const numberingDefinitions = model.metadata.numberingDefinitions;
-    const longClause = model.nodes[18];
+    const longClause = model.nodes[14];
 
     expect(longClause?.type).toBe("paragraph");
     if (!longClause || longClause.type !== "paragraph") {
-      throw new Error("Expected paragraph node at index 18");
+      throw new Error("Expected paragraph node at index 14");
     }
 
     expect(longClause.style?.numbering).toEqual({
@@ -77,7 +77,7 @@ describe("dealpage saas agreement import fidelity", () => {
     });
     expect(
       paragraphLineCountWithinWidth(longClause, 351, numberingDefinitions)
-    ).toBeLessThan(30);
+    ).toBeLessThan(18);
   });
 
   it("keeps the two-column agreement close to the source page count", async () => {

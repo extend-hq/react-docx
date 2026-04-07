@@ -14,6 +14,19 @@ export interface DocumentLayoutMetrics {
   docGridLinePitchPx?: number;
 }
 
+export interface DocumentPageBorderEdge {
+  cssBorder?: string;
+  offsetPx?: number;
+  shadow?: boolean;
+}
+
+export interface DocumentPageBorders {
+  top?: DocumentPageBorderEdge;
+  right?: DocumentPageBorderEdge;
+  bottom?: DocumentPageBorderEdge;
+  left?: DocumentPageBorderEdge;
+}
+
 export const DEFAULT_DOC_PAGE_WIDTH = 900;
 export const DEFAULT_DOC_PAGE_HEIGHT = 1200;
 export const DEFAULT_DOC_PAGE_MARGIN = 56;
@@ -53,6 +66,134 @@ function readTwipsAttribute(tagXml: string | undefined, attribute: string): numb
 
   const parsed = Number(match[1]);
   return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function readStringAttribute(
+  tagXml: string | undefined,
+  attribute: string
+): string | undefined {
+  if (!tagXml) {
+    return undefined;
+  }
+
+  return tagXml.match(new RegExp(`${attribute}="([^"]+)"`, "i"))?.[1];
+}
+
+function normalizeHexColor(value?: string): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  const normalized = value.trim();
+  if (!normalized || normalized.toLowerCase() === "auto") {
+    return undefined;
+  }
+
+  if (/^[0-9a-fA-F]{6}$/.test(normalized)) {
+    return `#${normalized}`;
+  }
+
+  if (/^#[0-9a-fA-F]{6}$/.test(normalized)) {
+    return normalized;
+  }
+
+  return undefined;
+}
+
+function borderTypeToCssStyle(rawType?: string): string | undefined {
+  const value = rawType?.trim().toLowerCase();
+  if (!value || value === "none" || value === "nil") {
+    return undefined;
+  }
+
+  if (value === "double") {
+    return "double";
+  }
+
+  if (
+    value === "dashed" ||
+    value === "dashsmallgap" ||
+    value === "dotdash" ||
+    value === "dotdotdash"
+  ) {
+    return "dashed";
+  }
+
+  if (value === "dotted") {
+    return "dotted";
+  }
+
+  return "solid";
+}
+
+function pointsToPixels(points?: number): number | undefined {
+  if (!Number.isFinite(points)) {
+    return undefined;
+  }
+
+  return Math.max(0, Math.round((points as number) * (96 / 72)));
+}
+
+function parseSectionPageBorderEdge(
+  sectionPropertiesXml: string | undefined,
+  edge: "top" | "right" | "bottom" | "left"
+): DocumentPageBorderEdge | undefined {
+  if (!sectionPropertiesXml) {
+    return undefined;
+  }
+
+  const bordersXml = sectionPropertiesXml.match(
+    /<w:pgBorders\b[\s\S]*?<\/w:pgBorders>/i
+  )?.[0];
+  if (!bordersXml) {
+    return undefined;
+  }
+
+  const edgeTag = bordersXml.match(new RegExp(`<w:${edge}\\b[^>]*/?>`, "i"))?.[0];
+  if (!edgeTag) {
+    return undefined;
+  }
+
+  const cssStyle = borderTypeToCssStyle(readStringAttribute(edgeTag, "w:val"));
+  if (!cssStyle) {
+    return undefined;
+  }
+
+  const sizeEighthPt = Number(readStringAttribute(edgeTag, "w:sz"));
+  const widthPx =
+    Number.isFinite(sizeEighthPt) && sizeEighthPt > 0
+      ? Math.max(0.5, Number((sizeEighthPt / 6).toFixed(2)))
+      : 1;
+  const color =
+    normalizeHexColor(readStringAttribute(edgeTag, "w:color")) ?? "#000000";
+  const offsetPoints = Number(readStringAttribute(edgeTag, "w:space"));
+
+  return {
+    cssBorder: `${widthPx}px ${cssStyle} ${color}`,
+    offsetPx: pointsToPixels(offsetPoints) ?? 0,
+    shadow:
+      readStringAttribute(edgeTag, "w:shadow")?.trim().toLowerCase() === "1" ||
+      readStringAttribute(edgeTag, "w:shadow")?.trim().toLowerCase() === "true",
+  };
+}
+
+export function parseSectionPageBorders(
+  sectionPropertiesXml?: string
+): DocumentPageBorders | undefined {
+  if (!sectionPropertiesXml || !/<w:pgBorders\b/i.test(sectionPropertiesXml)) {
+    return undefined;
+  }
+
+  const borders: DocumentPageBorders = {
+    top: parseSectionPageBorderEdge(sectionPropertiesXml, "top"),
+    right: parseSectionPageBorderEdge(sectionPropertiesXml, "right"),
+    bottom: parseSectionPageBorderEdge(sectionPropertiesXml, "bottom"),
+    left: parseSectionPageBorderEdge(sectionPropertiesXml, "left"),
+  };
+
+  return borders.top || borders.right || borders.bottom || borders.left
+    ? borders
+    : undefined;
 }
 
 export function parseSectionLayout(sectionPropertiesXml?: string): DocumentLayoutMetrics {
