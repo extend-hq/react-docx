@@ -202,4 +202,58 @@ describe("image wrap state", () => {
     expect(style.left).toBe(211);
     expect(style.top).toBe(453);
   });
+
+  it("distinguishes page-relative and margin-relative anchor origins", async () => {
+    const { absoluteFloatingImageStyle } = await import(
+      "../../packages/react-viewer/src/editor"
+    );
+
+    const pageRelativeStyle = absoluteFloatingImageStyle(
+      {
+        type: "image",
+        widthPx: 240,
+        heightPx: 120,
+        floating: {
+          wrapType: "none",
+          behindDocument: false,
+          horizontalRelativeTo: "page",
+          verticalRelativeTo: "page",
+          xPx: -12,
+          yPx: -24
+        }
+      },
+      {
+        pageOriginLeft: 0,
+        pageOriginTop: 0,
+        marginOriginLeft: 96,
+        marginOriginTop: 96
+      }
+    );
+    const marginRelativeStyle = absoluteFloatingImageStyle(
+      {
+        type: "image",
+        widthPx: 240,
+        heightPx: 120,
+        floating: {
+          wrapType: "none",
+          behindDocument: false,
+          horizontalRelativeTo: "margin",
+          verticalRelativeTo: "margin",
+          xPx: -12,
+          yPx: -24
+        }
+      },
+      {
+        pageOriginLeft: 0,
+        pageOriginTop: 0,
+        marginOriginLeft: 96,
+        marginOriginTop: 96
+      }
+    );
+
+    expect(pageRelativeStyle.left).toBe(-12);
+    expect(pageRelativeStyle.top).toBe(-24);
+    expect(marginRelativeStyle.left).toBe(84);
+    expect(marginRelativeStyle.top).toBe(72);
+  });
 });

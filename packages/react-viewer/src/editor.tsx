@@ -10042,6 +10042,8 @@ export function absoluteFloatingImageStyle(
   options?: {
     pageOriginLeft?: number;
     pageOriginTop?: number;
+    marginOriginLeft?: number;
+    marginOriginTop?: number;
     columnOriginLeft?: number;
     columnOriginTop?: number;
     paragraphOriginLeft?: number;
@@ -10084,8 +10086,11 @@ export function absoluteFloatingImageStyle(
 
   const resolvedLeft =
     floating.xPx !== undefined
-      ? horizontalRelativeTo === "margin"
+      ? horizontalRelativeTo === "page"
         ? floating.xPx + (options?.pageOriginLeft ?? 0)
+        : horizontalRelativeTo === "margin"
+        ? floating.xPx +
+          (options?.marginOriginLeft ?? options?.pageOriginLeft ?? 0)
         : horizontalRelativeTo === "column"
         ? floating.xPx + (options?.columnOriginLeft ?? 0)
         : horizontalRelativeTo === "paragraph" || horizontalRelativeTo === "line"
@@ -10094,8 +10099,11 @@ export function absoluteFloatingImageStyle(
       : undefined;
   const resolvedTop =
     floating.yPx !== undefined
-      ? verticalRelativeTo === "margin"
+      ? verticalRelativeTo === "page"
         ? floating.yPx + (options?.pageOriginTop ?? 0)
+        : verticalRelativeTo === "margin"
+        ? floating.yPx +
+          (options?.marginOriginTop ?? options?.pageOriginTop ?? 0)
         : verticalRelativeTo === "column"
         ? floating.yPx + (options?.columnOriginTop ?? 0)
         : verticalRelativeTo === "paragraph" || verticalRelativeTo === "line"
@@ -10310,6 +10318,8 @@ function resolvePageSpanningAbsoluteFloatingDimensions(
   floatingPageOriginPx?: {
     left: number;
     top: number;
+    marginLeft?: number;
+    marginTop?: number;
     pageWidth?: number;
   }
 ): {
@@ -10347,10 +10357,15 @@ function resolvePageSpanningAbsoluteFloatingDimensions(
 
   const resolvedLeftPx = Number.isFinite(floating.xPx)
     ? horizontalRelativeTo === "margin"
-      ? Math.round((floating.xPx as number) + (floatingPageOriginPx?.left ?? 0))
+      ? Math.round(
+          (floating.xPx as number) +
+            (floatingPageOriginPx?.marginLeft ?? floatingPageOriginPx?.left ?? 0)
+        )
       : Math.round(floating.xPx as number)
     : horizontalRelativeTo === "margin"
-    ? Math.round(floatingPageOriginPx?.left ?? 0)
+    ? Math.round(
+        floatingPageOriginPx?.marginLeft ?? floatingPageOriginPx?.left ?? 0
+      )
     : 0;
   const minimumWidthPx = Math.max(
     1,
@@ -36134,8 +36149,10 @@ export function DocxEditorViewer({
         paragraphNeedsPageAnchoredAbsolutePositioningContext(paragraph) ||
         paragraphNeedsPageWidthAnchorHost(paragraph)
           ? {
-              left: documentLayout.marginsPx.left,
-              top: documentLayout.marginsPx.top,
+              left: 0,
+              top: 0,
+              marginLeft: documentLayout.marginsPx.left,
+              marginTop: documentLayout.marginsPx.top,
               columnLeft: documentLayout.marginsPx.left,
               columnTop: documentLayout.marginsPx.top,
               pageWidth: documentLayout.pageWidthPx,
@@ -36789,6 +36806,10 @@ export function DocxEditorViewer({
               : absoluteFloatingImageStyle(manualImage, {
                   pageOriginLeft: interactiveBodyFloatingPageOriginPx?.left ?? 0,
                   pageOriginTop: interactiveBodyFloatingPageOriginPx?.top ?? 0,
+                  marginOriginLeft:
+                    interactiveBodyFloatingPageOriginPx?.marginLeft ?? 0,
+                  marginOriginTop:
+                    interactiveBodyFloatingPageOriginPx?.marginTop ?? 0,
                   columnOriginLeft:
                     interactiveBodyFloatingPageOriginPx?.columnLeft ?? 0,
                   columnOriginTop:
@@ -37029,6 +37050,10 @@ export function DocxEditorViewer({
             : absoluteFloatingImageStyle(manualImage, {
                 pageOriginLeft: interactiveBodyFloatingPageOriginPx?.left ?? 0,
                 pageOriginTop: interactiveBodyFloatingPageOriginPx?.top ?? 0,
+                marginOriginLeft:
+                  interactiveBodyFloatingPageOriginPx?.marginLeft ?? 0,
+                marginOriginTop:
+                  interactiveBodyFloatingPageOriginPx?.marginTop ?? 0,
                 columnOriginLeft:
                   interactiveBodyFloatingPageOriginPx?.columnLeft ?? 0,
                 columnOriginTop:
@@ -37455,6 +37480,10 @@ export function DocxEditorViewer({
               : absoluteFloatingImageStyle(child, {
                   pageOriginLeft: interactiveBodyFloatingPageOriginPx?.left ?? 0,
                   pageOriginTop: interactiveBodyFloatingPageOriginPx?.top ?? 0,
+                  marginOriginLeft:
+                    interactiveBodyFloatingPageOriginPx?.marginLeft ?? 0,
+                  marginOriginTop:
+                    interactiveBodyFloatingPageOriginPx?.marginTop ?? 0,
                   columnOriginLeft:
                     interactiveBodyFloatingPageOriginPx?.columnLeft ?? 0,
                   columnOriginTop:
@@ -38949,8 +38978,10 @@ export function DocxEditorViewer({
       const bodyFloatingPageOriginPx =
         requiresPageAbsoluteContext || pageAbsoluteAnchorOnlyParagraph
           ? {
-              left: resolvedPageLayout.marginsPx.left,
-              top: resolvedPageLayout.marginsPx.top,
+              left: 0,
+              top: 0,
+              marginLeft: resolvedPageLayout.marginsPx.left,
+              marginTop: resolvedPageLayout.marginsPx.top,
               pageWidth: resolvedPageLayout.pageWidthPx,
             }
           : undefined;
@@ -43770,302 +43801,175 @@ export function DocxEditorViewer({
                                       )
                                     : 0;
                                 });
-                                const overlayPlacements = overlaySegments
-                                  .map((overlaySegment) => {
-                                    const overlayNode =
-                                      editor.model.nodes[
-                                        overlaySegment.nodeIndex
-                                      ];
+                                const overlayColumnBySegmentKey = new Map<
+                                  string,
+                                  "left" | "right"
+                                >();
+                                overlaySegments.forEach((overlaySegment) => {
+                                  const overlayNode =
+                                    editor.model.nodes[overlaySegment.nodeIndex];
+                                  if (
+                                    !overlayNode ||
+                                    overlayNode.type !== "paragraph"
+                                  ) {
+                                    return;
+                                  }
+                                  let precedingFlowCount = 0;
+                                  for (const groupedSegment of group.segments) {
                                     if (
-                                      !overlayNode ||
-                                      overlayNode.type !== "paragraph"
-                                    ) {
-                                      return null;
-                                    }
-                                    let precedingFlowCount = 0;
-                                    for (const groupedSegment of group.segments) {
-                                      if (
-                                        segmentIdentityMatches(
-                                          groupedSegment,
-                                          overlaySegment
-                                        )
-                                      ) {
-                                        break;
-                                      }
-                                      if (
-                                        flowSegments.some((flowSegment) =>
-                                          segmentIdentityMatches(
-                                            flowSegment,
-                                            groupedSegment
-                                          )
-                                        )
-                                      ) {
-                                        precedingFlowCount += 1;
-                                      }
-                                    }
-                                    const primaryOverlayImage =
-                                      overlayNode.children.find(
-                                        (child: ParagraphNode["children"][number]): child is ImageRunNode =>
-                                          child.type === "image" &&
-                                          Boolean(child.floating)
-                                      );
-                                    const primaryOverlayOffsetTopPx =
-                                      primaryOverlayImage?.floating?.yPx ?? 0;
-                                    const targetColumn = (() => {
-                                      if (
-                                        primaryOverlayImage?.floating
-                                          ?.horizontalRelativeTo === "column" &&
-                                        Number.isFinite(
-                                          primaryOverlayImage.widthPx
-                                        )
-                                      ) {
-                                        const imageWidthPx =
-                                          primaryOverlayImage.widthPx ?? 0;
-                                        const imageOffsetPx =
-                                          primaryOverlayImage.floating?.xPx ??
-                                          0;
-                                        const leftPlacedLeftPx =
-                                          imageOffsetPx;
-                                        const rightPlacedLeftPx =
-                                          leftColumnWidthPx +
-                                          sectionColumns.gapPx +
-                                          imageOffsetPx;
-                                        const leftPlacedCenterPx =
-                                          leftPlacedLeftPx + imageWidthPx / 2;
-                                        const rightPlacedCenterPx =
-                                          rightPlacedLeftPx + imageWidthPx / 2;
-                                        const leftColumnCenterPx =
-                                          leftColumnWidthPx / 2;
-                                        const rightColumnCenterPx =
-                                          leftColumnWidthPx +
-                                          sectionColumns.gapPx +
-                                          rightColumnWidthPx / 2;
-                                        const totalColumnWidthPx =
-                                          leftColumnWidthPx +
-                                          sectionColumns.gapPx +
-                                          rightColumnWidthPx;
-                                        const leftOverflowPenaltyPx =
-                                          Math.max(0, -leftPlacedLeftPx) +
-                                          Math.max(
-                                            0,
-                                            leftPlacedLeftPx +
-                                              imageWidthPx -
-                                              totalColumnWidthPx
-                                          );
-                                        const rightOverflowPenaltyPx =
-                                          Math.max(0, -rightPlacedLeftPx) +
-                                          Math.max(
-                                            0,
-                                            rightPlacedLeftPx +
-                                              imageWidthPx -
-                                              totalColumnWidthPx
-                                          );
-                                        const leftScore =
-                                          Math.abs(
-                                            leftPlacedCenterPx -
-                                              leftColumnCenterPx
-                                          ) +
-                                          leftOverflowPenaltyPx * 4;
-                                        const rightScore =
-                                          Math.abs(
-                                            rightPlacedCenterPx -
-                                              rightColumnCenterPx
-                                          ) +
-                                          rightOverflowPenaltyPx * 4;
-                                        if (leftScore !== rightScore) {
-                                          return leftScore < rightScore
-                                            ? "left"
-                                            : "right";
-                                        }
-                                      }
-                                      return precedingFlowCount >= bestBreakIndex
-                                        ? "right"
-                                        : "left";
-                                    })();
-                                    const targetPrefixHeightBySegmentKey =
-                                      targetColumn === "left"
-                                        ? leftPrefixHeightBySegmentKey
-                                        : rightPrefixHeightBySegmentKey;
-                                    const targetSegmentKeys =
-                                      targetColumn === "left"
-                                        ? leftSegmentKeys
-                                        : rightSegmentKeys;
-                                    const targetColumnFallbackHeightPx =
-                                      targetColumn === "left"
-                                        ? runningLeftHeightPx
-                                        : runningRightHeightPx;
-                                    const laterTargetFlowSegment =
-                                      group.segments.find((groupedSegment) => {
-                                        if (
-                                          segmentIdentityMatches(
-                                            groupedSegment,
-                                            overlaySegment
-                                          )
-                                        ) {
-                                          return false;
-                                        }
-                                        const overlayIndex =
-                                          group.segments.findIndex((candidate) =>
-                                            segmentIdentityMatches(
-                                              candidate,
-                                              overlaySegment
-                                            )
-                                          );
-                                        const groupedIndex =
-                                          group.segments.findIndex((candidate) =>
-                                            segmentIdentityMatches(
-                                              candidate,
-                                              groupedSegment
-                                            )
-                                          );
-                                        if (
-                                          overlayIndex === -1 ||
-                                          groupedIndex <= overlayIndex
-                                        ) {
-                                          return false;
-                                        }
-                                        return targetSegmentKeys.has(
-                                          segmentIdentityKey(groupedSegment)
-                                        );
-                                      });
-                                    const resolvedOverlayTopPx =
-                                      laterTargetFlowSegment &&
-                                      targetPrefixHeightBySegmentKey.has(
-                                        segmentIdentityKey(laterTargetFlowSegment)
+                                      segmentIdentityMatches(
+                                        groupedSegment,
+                                        overlaySegment
                                       )
-                                        ? Math.max(
-                                            0,
-                                            (targetPrefixHeightBySegmentKey.get(
-                                              segmentIdentityKey(
-                                                laterTargetFlowSegment
-                                              )
-                                            ) ?? targetColumnFallbackHeightPx) -
-                                              primaryOverlayOffsetTopPx
-                                          )
-                                        : (() => {
-                                            let accumulatedTopPx = 0;
-                                            for (const groupedSegment of group.segments) {
-                                              if (
-                                                segmentIdentityMatches(
-                                                  groupedSegment,
-                                                  overlaySegment
-                                                )
-                                              ) {
-                                                break;
-                                              }
-                                              const groupedSegmentKey =
-                                                segmentIdentityKey(
-                                                  groupedSegment
-                                                );
-                                              if (
-                                                !targetSegmentKeys.has(
-                                                  groupedSegmentKey
-                                                )
-                                              ) {
-                                                continue;
-                                              }
-                                              const groupedSegmentNode =
-                                                editor.model.nodes[
-                                                  groupedSegment.nodeIndex
-                                                ];
-                                              accumulatedTopPx += groupedSegmentNode
-                                                ? estimateRenderedPageSegmentHeightPx(
-                                                    groupedSegmentNode,
-                                                    groupedSegment,
-                                                    editor.model,
-                                                    targetColumn === "left"
-                                                      ? leftColumnWidthPx
-                                                      : rightColumnWidthPx,
-                                                    editor.model.metadata
-                                                      .numberingDefinitions,
-                                                    docGridLinePitchPxByNodeIndex.get(
-                                                      groupedSegment.nodeIndex
-                                                    )
-                                                  )
-                                                : 0;
-                                            }
-                                            return accumulatedTopPx;
-                                          })();
-                                    const topPx = Math.max(
-                                      0,
-                                      resolvedOverlayTopPx -
-                                        primaryOverlayOffsetTopPx
+                                    ) {
+                                      break;
+                                    }
+                                    if (
+                                      flowSegments.some((flowSegment) =>
+                                        segmentIdentityMatches(
+                                          flowSegment,
+                                          groupedSegment
+                                        )
+                                      )
+                                    ) {
+                                      precedingFlowCount += 1;
+                                    }
+                                  }
+                                  const primaryOverlayImage =
+                                    overlayNode.children.find(
+                                      (child: ParagraphNode["children"][number]): child is ImageRunNode =>
+                                        child.type === "image" &&
+                                        Boolean(child.floating)
                                     );
-                                    return {
-                                      overlayNode,
-                                      overlaySegment,
-                                      targetColumn,
-                                      topPx,
-                                    };
-                                  })
-                                  .filter(
-                                    (
-                                      placement
-                                    ): placement is {
-                                      overlayNode: ParagraphNode;
-                                      overlaySegment: DocumentPageNodeSegment;
-                                      targetColumn: "left" | "right";
-                                      topPx: number;
-                                    } => placement !== null
+                                  const targetColumn = (() => {
+                                    if (
+                                      primaryOverlayImage?.floating
+                                        ?.horizontalRelativeTo === "column" &&
+                                      Number.isFinite(
+                                        primaryOverlayImage.widthPx
+                                      )
+                                    ) {
+                                      const imageWidthPx =
+                                        primaryOverlayImage.widthPx ?? 0;
+                                      const imageOffsetPx =
+                                        primaryOverlayImage.floating?.xPx ?? 0;
+                                      const leftPlacedLeftPx = imageOffsetPx;
+                                      const rightPlacedLeftPx =
+                                        leftColumnWidthPx +
+                                        sectionColumns.gapPx +
+                                        imageOffsetPx;
+                                      const leftPlacedCenterPx =
+                                        leftPlacedLeftPx + imageWidthPx / 2;
+                                      const rightPlacedCenterPx =
+                                        rightPlacedLeftPx + imageWidthPx / 2;
+                                      const leftColumnCenterPx =
+                                        leftColumnWidthPx / 2;
+                                      const rightColumnCenterPx =
+                                        leftColumnWidthPx +
+                                        sectionColumns.gapPx +
+                                        rightColumnWidthPx / 2;
+                                      const totalColumnWidthPx =
+                                        leftColumnWidthPx +
+                                        sectionColumns.gapPx +
+                                        rightColumnWidthPx;
+                                      const leftOverflowPenaltyPx =
+                                        Math.max(0, -leftPlacedLeftPx) +
+                                        Math.max(
+                                          0,
+                                          leftPlacedLeftPx +
+                                            imageWidthPx -
+                                            totalColumnWidthPx
+                                        );
+                                      const rightOverflowPenaltyPx =
+                                        Math.max(0, -rightPlacedLeftPx) +
+                                        Math.max(
+                                          0,
+                                          rightPlacedLeftPx +
+                                            imageWidthPx -
+                                            totalColumnWidthPx
+                                        );
+                                      const leftScore =
+                                        Math.abs(
+                                          leftPlacedCenterPx - leftColumnCenterPx
+                                        ) +
+                                        leftOverflowPenaltyPx * 4;
+                                      const rightScore =
+                                        Math.abs(
+                                          rightPlacedCenterPx -
+                                            rightColumnCenterPx
+                                        ) +
+                                        rightOverflowPenaltyPx * 4;
+                                      if (leftScore !== rightScore) {
+                                        return leftScore < rightScore
+                                          ? "left"
+                                          : "right";
+                                      }
+                                    }
+                                    return precedingFlowCount >= bestBreakIndex
+                                      ? "right"
+                                      : "left";
+                                  })();
+                                  overlayColumnBySegmentKey.set(
+                                    segmentIdentityKey(overlaySegment),
+                                    targetColumn
                                   );
+                                });
+                                const leftRenderedSegments: DocumentPageNodeSegment[] =
+                                  [];
+                                const rightRenderedSegments: DocumentPageNodeSegment[] =
+                                  [];
+                                group.segments.forEach((groupedSegment) => {
+                                  const groupedSegmentKey =
+                                    segmentIdentityKey(groupedSegment);
+                                  const overlayColumn =
+                                    overlayColumnBySegmentKey.get(
+                                      groupedSegmentKey
+                                    );
+                                  if (overlayColumn === "left") {
+                                    leftRenderedSegments.push(groupedSegment);
+                                    return;
+                                  }
+                                  if (overlayColumn === "right") {
+                                    rightRenderedSegments.push(groupedSegment);
+                                    return;
+                                  }
+                                  if (leftSegmentKeys.has(groupedSegmentKey)) {
+                                    leftRenderedSegments.push(groupedSegment);
+                                    return;
+                                  }
+                                  if (rightSegmentKeys.has(groupedSegmentKey)) {
+                                    rightRenderedSegments.push(groupedSegment);
+                                  }
+                                });
                                 return (
                                   <div
                                     style={{
                                       display: "grid",
                                       gridTemplateColumns: `${leftColumnWidthPx}px ${rightColumnWidthPx}px`,
                                       columnGap: sectionColumns.gapPx,
-                                      alignItems: "start",
+                                      alignItems: "stretch",
                                       position: "relative",
                                       zIndex: 1,
                                     }}
                                   >
-                                    {overlayPlacements.map(
-                                      ({
-                                        overlayNode,
-                                        overlaySegment,
-                                        targetColumn,
-                                        topPx,
-                                      }) => {
-                                        const segmentKeySuffix =
-                                          overlaySegment.tableRowRange
-                                            ? `rows-${overlaySegment.tableRowRange.startRowIndex}-${overlaySegment.tableRowRange.endRowIndex}`
-                                            : overlaySegment.paragraphLineRange
-                                            ? `lines-${overlaySegment.paragraphLineRange.startLineIndex}-${overlaySegment.paragraphLineRange.endLineIndex}`
-                                            : "all";
-                                        return (
-                                          <div
-                                            key={`column-layout-overlay-${pageIndex}-${overlaySegment.nodeIndex}-${segmentKeySuffix}`}
-                                            style={{
-                                              position: "absolute",
-                                              top: topPx,
-                                              left:
-                                                targetColumn === "left"
-                                                  ? 0
-                                                  : leftColumnWidthPx +
-                                                    sectionColumns.gapPx,
-                                              width:
-                                                targetColumn === "left"
-                                                  ? leftColumnWidthPx
-                                                  : rightColumnWidthPx,
-                                              pointerEvents: "none",
-                                              zIndex: 0,
-                                            }}
-                                          >
-                                            {renderDocumentNode(
-                                              overlayNode,
-                                              overlaySegment.nodeIndex,
-                                              overlaySegment.tableRowRange,
-                                              overlaySegment.paragraphLineRange,
-                                              {
-                                                pageLayout,
-                                              }
-                                            )}
-                                          </div>
-                                        );
-                                      }
-                                    )}
-                                    <div>{leftSegments.map(renderSegmentInColumn)}</div>
-                                    <div>{rightSegments.map(renderSegmentInColumn)}</div>
+                                    <div
+                                      style={{
+                                        height: "100%",
+                                      }}
+                                    >
+                                      {leftRenderedSegments.map(
+                                        renderSegmentInColumn
+                                      )}
+                                    </div>
+                                    <div
+                                      style={{
+                                        height: "100%",
+                                      }}
+                                    >
+                                      {rightRenderedSegments.map(
+                                        renderSegmentInColumn
+                                      )}
+                                    </div>
                                   </div>
                                 );
                               })()

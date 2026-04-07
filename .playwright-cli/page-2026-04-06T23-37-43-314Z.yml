@@ -1,0 +1,140 @@
+- generic [ref=e4]:
+  - generic [ref=e6]:
+    - generic [ref=e8]:
+      - generic [ref=e9]: Ready
+      - button "Document" [ref=e10]:
+        - img
+        - text: Document
+      - button "Theme" [ref=e11]:
+        - img
+        - text: Theme
+    - generic [ref=e12]:
+      - group [ref=e13]:
+        - button "Undo" [disabled]:
+          - img
+          - text: Undo
+        - button "Redo" [disabled]:
+          - img
+          - text: Redo
+      - combobox [ref=e14]:
+        - generic [ref=e15]: Heading 1
+        - img
+      - textbox [ref=e16]: Heading1
+      - combobox [ref=e17]:
+        - generic [ref=e18]: Calibri
+        - img
+      - textbox [ref=e19]: Calibri
+      - combobox [ref=e20]:
+        - generic [ref=e21]: "12"
+        - img
+      - textbox [ref=e22]: "12"
+      - generic [ref=e23]:
+        - button "Line spacing" [ref=e24]:
+          - img
+        - combobox [ref=e25]:
+          - generic [ref=e26]: "1"
+          - img
+        - textbox [ref=e27]: "1"
+      - group [ref=e28]:
+        - button "Bold" [pressed] [ref=e29]:
+          - img
+          - text: Bold
+        - button "Italic" [ref=e30]:
+          - img
+          - text: Italic
+        - button "Underline" [ref=e31]:
+          - img
+          - text: Underline
+        - button "Strike" [ref=e32]:
+          - img
+          - text: Strike
+        - button "Superscript" [ref=e33]:
+          - img
+          - text: Superscript
+        - button "Subscript" [ref=e34]:
+          - img
+          - text: Subscript
+      - generic [ref=e35]:
+        - generic [ref=e36]: Text
+        - button "#111827" [ref=e37]:
+          - generic [ref=e39]: "#111827"
+          - img
+      - generic [ref=e40]:
+        - generic [ref=e41]:
+          - img [ref=e42]
+          - text: Highlight
+        - button "#fff59e" [ref=e45]:
+          - generic [ref=e47]: "#fff59e"
+          - img
+      - group [ref=e48]:
+        - button "Link" [ref=e49]:
+          - img
+          - text: Link
+      - group [ref=e50]:
+        - button "Left" [pressed] [ref=e51]:
+          - img
+          - text: Left
+        - button "Center" [ref=e52]:
+          - img
+          - text: Center
+        - button "Right" [ref=e53]:
+          - img
+          - text: Right
+        - button "Justify" [ref=e54]:
+          - img
+          - text: Justify
+      - group [ref=e55]:
+        - button "Bullet" [ref=e56]:
+          - img
+          - text: Bullet
+        - button "Numbered" [ref=e57]:
+          - img
+          - text: Numbered
+      - group [ref=e58]:
+        - generic [ref=e59]:
+          - img [ref=e60]
+          - generic [ref=e62]: 1 column
+      - group [ref=e63]:
+        - generic [ref=e65]: Page 1 / 1
+      - group [ref=e66]:
+        - button "No Border" [ref=e67]:
+          - img [ref=e68]
+          - generic [ref=e71]: No Border
+      - group [ref=e72]:
+        - button "Image" [ref=e73]:
+          - img
+          - text: Image
+        - button "Table" [ref=e74]:
+          - img
+          - text: Table
+      - group [ref=e75]:
+        - button "Zoom Out" [ref=e76]:
+          - img
+          - text: Zoom Out
+        - combobox [ref=e77]:
+          - generic [ref=e78]: "100"
+          - img
+        - textbox [ref=e79]: "100"
+        - button "Zoom In" [ref=e80]:
+          - img
+          - text: Zoom In
+      - group [ref=e81]:
+        - button "Import" [ref=e82]:
+          - img
+          - text: Import
+        - button "Download" [ref=e83]:
+          - img
+          - text: Download
+      - group [ref=e84]:
+        - generic [ref=e85]:
+          - generic [ref=e86]:
+            - img [ref=e87]
+            - text: Show edits
+          - switch [ref=e89]
+          - checkbox [ref=e90]
+        - separator [ref=e91]
+        - generic [ref=e92]:
+          - generic [ref=e93]: Read only
+          - switch [ref=e94]
+          - checkbox [ref=e95]
+  - generic [ref=e101]: Loading...

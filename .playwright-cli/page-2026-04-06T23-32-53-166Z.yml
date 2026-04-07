@@ -1,0 +1,212 @@
+- generic [ref=e4]:
+  - generic [ref=e6]:
+    - generic [ref=e8]:
+      - generic [ref=e9]: Loaded dealpage-one-pager.docx
+      - button "Document" [ref=e10]:
+        - img
+        - text: Document
+      - button "Theme" [ref=e11]:
+        - img
+        - text: Theme
+    - generic [ref=e12]:
+      - group [ref=e13]:
+        - button "Undo" [disabled]:
+          - img
+          - text: Undo
+        - button "Redo" [disabled]:
+          - img
+          - text: Redo
+      - combobox [ref=e14]:
+        - generic [ref=e15]: Normal
+        - img
+      - textbox [ref=e16]: Normal
+      - combobox [ref=e17]:
+        - generic [ref=e18]: Arial
+        - img
+      - textbox [ref=e19]: Arial
+      - combobox [ref=e20]:
+        - generic [ref=e21]: "28"
+        - img
+      - textbox [ref=e22]: "28"
+      - generic [ref=e23]:
+        - button "Line spacing" [ref=e24]:
+          - img
+        - combobox [ref=e25]:
+          - generic [ref=e26]: "1"
+          - img
+        - textbox [ref=e27]: "1"
+      - group [ref=e28]:
+        - button "Bold" [pressed] [ref=e29]:
+          - img
+          - text: Bold
+        - button "Italic" [ref=e30]:
+          - img
+          - text: Italic
+        - button "Underline" [ref=e31]:
+          - img
+          - text: Underline
+        - button "Strike" [ref=e32]:
+          - img
+          - text: Strike
+        - button "Superscript" [ref=e33]:
+          - img
+          - text: Superscript
+        - button "Subscript" [ref=e34]:
+          - img
+          - text: Subscript
+      - generic [ref=e35]:
+        - generic [ref=e36]: Text
+        - button "#ede9e3" [ref=e102]:
+          - generic [ref=e39]: "#ede9e3"
+          - img
+      - generic [ref=e40]:
+        - generic [ref=e41]:
+          - img [ref=e42]
+          - text: Highlight
+        - button "#fff59e" [ref=e45]:
+          - generic [ref=e47]: "#fff59e"
+          - img
+      - group [ref=e48]:
+        - button "Link" [ref=e49]:
+          - img
+          - text: Link
+      - group [ref=e50]:
+        - button "Left" [pressed] [ref=e51]:
+          - img
+          - text: Left
+        - button "Center" [ref=e52]:
+          - img
+          - text: Center
+        - button "Right" [ref=e53]:
+          - img
+          - text: Right
+        - button "Justify" [ref=e54]:
+          - img
+          - text: Justify
+      - group [ref=e55]:
+        - button "Bullet" [ref=e56]:
+          - img
+          - text: Bullet
+        - button "Numbered" [ref=e57]:
+          - img
+          - text: Numbered
+      - group [ref=e58]:
+        - generic [ref=e59]:
+          - img [ref=e60]
+          - generic [ref=e62]: 1 column
+      - group [ref=e63]:
+        - generic [ref=e65]: Page 1 / 1
+      - group [ref=e66]:
+        - button "No Border" [ref=e67]:
+          - img [ref=e68]
+          - generic [ref=e71]: No Border
+      - group [ref=e72]:
+        - button "Image" [ref=e73]:
+          - img
+          - text: Image
+        - button "Table" [ref=e74]:
+          - img
+          - text: Table
+      - group [ref=e75]:
+        - button "Zoom Out" [ref=e76]:
+          - img
+          - text: Zoom Out
+        - combobox [ref=e77]:
+          - generic [ref=e78]: "100"
+          - img
+        - textbox [ref=e79]: "100"
+        - button "Zoom In" [ref=e80]:
+          - img
+          - text: Zoom In
+      - group [ref=e81]:
+        - button "Import" [active] [ref=e82]:
+          - img
+          - text: Import
+        - button "Download" [ref=e83]:
+          - img
+          - text: Download
+      - group [ref=e84]:
+        - generic [ref=e85]:
+          - generic [ref=e86]:
+            - img [ref=e87]
+            - text: Show edits
+          - switch [ref=e89]
+          - checkbox [ref=e90]
+        - separator [ref=e91]
+        - generic [ref=e92]:
+          - generic [ref=e93]: Read only
+          - switch [ref=e94]
+          - checkbox [ref=e95]
+  - generic [ref=e106]:
+    - generic [ref=e107]:
+      - text: Make
+      - generic:
+        - img "Picture 1"
+      - text: buyer experience your advantage
+    - generic [ref=e110]: Enable buyers with access to instant, personalized information.
+    - generic:
+      - generic:
+        - img "Picture 2"
+    - generic [ref=e114]:
+      - text: Happier Buyers
+      - img "Picture 3" [ref=e116]
+      - text: Faster Sales Cycles
+      - img "Picture 4" [ref=e118]
+      - img "Picture 5" [ref=e120]
+      - img "Picture 6" [ref=e122]
+      - img "Picture 7" [ref=e124]
+      - text: More Wins
+    - generic:
+      - generic:
+        - img "Picture 8"
+      - generic:
+        - img "Picture 9"
+    - generic [ref=e126]:
+      - generic:
+        - generic:
+          - generic:
+            - img "Picture 10"
+      - generic [ref=e127]:
+        - generic [ref=e133]: Buyer
+        - generic [ref=e135]: Support
+        - generic [ref=e139]: Every buyer has different needs and questions. One-size-fits-all content that buyers need to dig through won’t do the trick.
+        - generic [ref=e143]: Enable your buyers with an assistant that can instantly answer their questions.
+      - generic [ref=e144]:
+        - generic [ref=e164]: Journeys
+        - generic [ref=e168]: Package content relevant to individual buyers. Personalize by industry, stage, persona, and more.
+        - generic [ref=e172]: Journeys increase engagement by 30-50%.
+    - generic [ref=e176]:
+      - generic [ref=e177]:
+        - generic [ref=e183]: Insights
+        - table [ref=e188]:
+          - rowgroup [ref=e193]:
+            - row "Where Collect valuable insights into" [ref=e194]:
+              - cell "Where" [ref=e195]:
+                - generic [ref=e197]: Where
+              - cell "Collect valuable insights into" [ref=e198]:
+                - generic [ref=e200]: Collect valuable insights into
+              - cell [ref=e201]
+            - row "your buyer’s behaviors," [ref=e204]:
+              - cell "your buyer’s behaviors," [ref=e205]:
+                - generic [ref=e207]: your buyer’s behaviors,
+              - cell [ref=e208]
+            - row "objections, and concerns." [ref=e211]:
+              - cell [ref=e212]
+              - cell "objections, and concerns." [ref=e215]:
+                - generic [ref=e217]: objections, and concerns.
+              - cell [ref=e218]
+        - generic [ref=e224]: Leverage insights to improve
+        - generic [ref=e228]: content, engage at the right
+        - generic [ref=e232]: times, and proactively handle
+        - generic [ref=e236]: objections.
+      - generic [ref=e237]:
+        - generic [ref=e245]: Contact Us
+        - generic [ref=e249]: www.dealpage.ai/contact
+        - generic [ref=e255]: Ani Gottiparthy
+        - generic [ref=e259]: CEO, Co-Founder
+        - generic [ref=e263]: ani@dealpage.ai
+        - generic [ref=e267]: 925-963-6784
+    - generic [ref=e271]: Trusted By
+    - generic:
+      - generic:
+        - img "Picture 11"
