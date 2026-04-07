@@ -10783,15 +10783,18 @@ function resolveListParagraphIndent(
     return paragraph.style?.indent;
   }
 
+  const effectiveNumId =
+    effectiveNumberingNumIdForParagraph(paragraph, numberingDefinitions) ??
+    numbering.numId;
   const ilvl = Math.max(0, Math.round(numbering.ilvl ?? 0));
   const level = findNumberingLevelDefinition(
     numberingDefinitions,
-    numbering.numId,
+    effectiveNumId,
     ilvl
   );
   const baseLevel = findNumberingLevelDefinition(
     numberingDefinitions,
-    numbering.numId,
+    effectiveNumId,
     0
   );
   const levelIndent = level?.indent;
@@ -15063,6 +15066,141 @@ function findNumberingLevelDefinition(
   return abstract?.levels.find((item) => item.ilvl === ilvl);
 }
 
+function numberingLevelHasVisibleMarker(
+  level: NumberingLevelDefinition | undefined
+): boolean {
+  return Boolean(
+    level?.pictureBullet?.src || (level?.text && level.text.trim().length > 0)
+  );
+}
+
+function numberingLevelIsBulletLike(
+  level: NumberingLevelDefinition | undefined
+): boolean {
+  const format = level?.format?.trim().toLowerCase();
+  return (
+    format === "bullet" ||
+    Boolean(level?.pictureBullet?.src) ||
+    isBulletLikeNumberingText(level?.text ?? "", level?.bulletFontFamily)
+  );
+}
+
+function numberingAbstractLevelsForNumId(
+  numberingDefinitions: NumberingDefinitionSet,
+  numId: number
+): NumberingLevelDefinition[] {
+  const instance = numberingDefinitions.instances.find(
+    (item) => item.numId === numId
+  );
+  if (!instance) {
+    return [];
+  }
+
+  const abstract = numberingDefinitions.abstracts.find(
+    (item) => item.abstractNumId === instance.abstractNumId
+  );
+  return [
+    ...(abstract?.levels ?? []),
+    ...(instance.levelOverrides ?? []),
+  ];
+}
+
+function effectiveNumberingNumIdForParagraph(
+  paragraph: ParagraphNode,
+  numberingDefinitions: NumberingDefinitionSet | undefined
+): number | undefined {
+  const numbering = paragraph.style?.numbering;
+  if (
+    !numberingDefinitions ||
+    !numbering ||
+    !Number.isFinite(numbering.numId) ||
+    numbering.numId <= 0
+  ) {
+    return numbering?.numId;
+  }
+
+  const numId = numbering.numId;
+  const ilvl = Math.max(0, Math.round(numbering.ilvl ?? 0));
+  const currentLevel = findNumberingLevelDefinition(
+    numberingDefinitions,
+    numId,
+    ilvl
+  );
+  if (
+    !numberingLevelIsBulletLike(currentLevel) ||
+    numberingLevelHasVisibleMarker(currentLevel)
+  ) {
+    return numId;
+  }
+
+  const currentAbstractLevels = numberingAbstractLevelsForNumId(
+    numberingDefinitions,
+    numId
+  );
+  if (
+    currentAbstractLevels.length === 0 ||
+    currentAbstractLevels.some(
+      (level) =>
+        !numberingLevelIsBulletLike(level) || numberingLevelHasVisibleMarker(level)
+    )
+  ) {
+    return numId;
+  }
+
+  const paragraphTextValue = paragraphText(paragraph).trim();
+  if (
+    paragraphTextValue.length === 0 ||
+    isBulletLikeNumberingText(paragraphTextValue) ||
+    /^[\u2022\u25cf\u25cb\u25a0\u25a1\u25aa\u25ab\u25c6\u25c7\u25e6\u2043]/.test(
+      paragraphTextValue
+    )
+  ) {
+    return numId;
+  }
+
+  const candidate = numberingDefinitions.instances.find((instance) => {
+    if (instance.numId === numId) {
+      return false;
+    }
+    const candidateLevel = findNumberingLevelDefinition(
+      numberingDefinitions,
+      instance.numId,
+      ilvl
+    );
+    if (!candidateLevel) {
+      return false;
+    }
+    const format = candidateLevel.format?.trim().toLowerCase();
+    if (!format || format === "none" || numberingLevelIsBulletLike(candidateLevel)) {
+      return false;
+    }
+    if (!candidateLevel.text || !/%\d+/.test(candidateLevel.text)) {
+      return false;
+    }
+    if (ilvl > 0) {
+      const parentLevel = findNumberingLevelDefinition(
+        numberingDefinitions,
+        instance.numId,
+        ilvl - 1
+      );
+      if (!parentLevel) {
+        return false;
+      }
+      const parentFormat = parentLevel.format?.trim().toLowerCase();
+      if (
+        !parentFormat ||
+        parentFormat === "none" ||
+        numberingLevelIsBulletLike(parentLevel)
+      ) {
+        return false;
+      }
+    }
+    return true;
+  });
+
+  return candidate?.numId ?? numId;
+}
+
 function numberingStartValue(
   numbering: NumberingDefinitionSet,
   numId: number,
@@ -15180,7 +15318,9 @@ export function buildParagraphNumberingLabels(
       return;
     }
 
-    const numId = paragraphNumbering.numId;
+    const numId =
+      effectiveNumberingNumIdForParagraph(paragraph, numbering) ??
+      paragraphNumbering.numId;
     const ilvl = Math.max(0, paragraphNumbering.ilvl ?? 0);
     const level = findNumberingLevelDefinition(numbering, numId, ilvl);
     const numberingInstance = numberingInstanceByNumId.get(numId);
@@ -15362,9 +15502,12 @@ function paragraphListType(
   const numbering = paragraph.style?.numbering;
   if (numbering && numbering.numId > 0) {
     if (numberingDefinitions) {
+      const effectiveNumId =
+        effectiveNumberingNumIdForParagraph(paragraph, numberingDefinitions) ??
+        numbering.numId;
       const level = findNumberingLevelDefinition(
         numberingDefinitions,
-        numbering.numId,
+        effectiveNumId,
         Math.max(0, numbering.ilvl ?? 0)
       );
       const format = level?.format?.trim().toLowerCase();

@@ -5,6 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { parseDocx } from "../../packages/ooxml-core/src";
 import { buildDocModel } from "../../packages/doc-model/src";
 import {
+  buildParagraphNumberingLabels,
   DocxEditorViewer,
   paragraphLineCountWithinWidth,
   useDocxEditor,
@@ -45,6 +46,19 @@ function extractRenderedPages(html: string): string[] {
 }
 
 describe("dealpage saas agreement import fidelity", () => {
+  it("recovers ordered section numbering from the broken bullet definition", async () => {
+    const zip = readFileSync(DOCX_PATH);
+    const pkg = await parseDocx(zip);
+    const model = buildDocModel(pkg);
+    const labels = buildParagraphNumberingLabels(model);
+
+    expect(labels.get("p:12")?.text).toBe("1.");
+    expect(labels.get("p:13")?.text).toBe("1.1.");
+    expect(labels.get("p:14")?.text).toBe("1.2.");
+    expect(labels.get("p:16")?.text).toBe("2.");
+    expect(labels.get("p:17")?.text).toBe("2.1.");
+  });
+
   it("does not synthesize huge list indentation from empty numbering levels", async () => {
     const zip = readFileSync(DOCX_PATH);
     const pkg = await parseDocx(zip);
@@ -63,7 +77,7 @@ describe("dealpage saas agreement import fidelity", () => {
     });
     expect(
       paragraphLineCountWithinWidth(longClause, 351, numberingDefinitions)
-    ).toBeLessThan(100);
+    ).toBeLessThan(30);
   });
 
   it("keeps the two-column agreement close to the source page count", async () => {
