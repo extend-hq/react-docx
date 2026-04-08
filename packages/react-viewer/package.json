@@ -1,0 +1,43 @@
+{
+  "name": "@react-docx/react-viewer",
+  "version": "0.1.0",
+  "description": "React components/hooks for DOCX viewing",
+  "type": "module",
+  "main": "dist/index.cjs",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "peerDependencies": {
+    "react": ">=18",
+    "react-dom": ">=18"
+  },
+  "dependencies": {
+    "@chenglou/pretext": "^0.0.2",
+    "@react-docx/doc-model": "workspace:*",
+    "@react-docx/editor-ops": "workspace:*",
+    "@react-docx/layout-engine": "workspace:*",
+    "@react-docx/ooxml-core": "workspace:*",
+    "@react-docx/serializer": "workspace:*",
+    "@tanstack/react-virtual": "^3.13.12",
+    "emf-converter": "^1.0.10",
+    "fast-png": "^8.0.0",
+    "utif": "^3.1.0"
+  },
+  "scripts": {
+    "build": "tsup src/index.tsx --format esm,cjs --dts --sourcemap --clean --external react,react-dom",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "clean": "rm -rf dist"
+  }
+}

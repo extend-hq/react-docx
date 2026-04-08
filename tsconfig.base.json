@@ -1,0 +1,26 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "allowImportingTsExtensions": true,
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "strict": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "declaration": true,
+    "sourceMap": true,
+    "baseUrl": ".",
+    "paths": {
+      "@react-docx/ooxml-core": ["packages/ooxml-core/src/index.ts"],
+      "@react-docx/doc-model": ["packages/doc-model/src/index.ts"],
+      "@react-docx/layout-core": ["packages/layout-core/src/index.ts"],
+      "@react-docx/layout-engine": ["packages/layout-engine/src/index.ts"],
+      "@react-docx/editor-ops": ["packages/editor-ops/src/index.ts"],
+      "@react-docx/serializer": ["packages/serializer/src/index.ts"],
+      "@react-docx/react-viewer": ["packages/react-viewer/src/index.tsx"]
+    }
+  }
+}
