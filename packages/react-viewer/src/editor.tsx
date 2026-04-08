@@ -230,6 +230,8 @@ const PARAGRAPH_SEGMENT_TOP_BLEED_PX = 22;
 const PARAGRAPH_SEGMENT_DESCENDER_BLEED_PX = 6;
 const PARAGRAPH_SEGMENT_VISUAL_SAFETY_PX = 24;
 const INITIAL_PAGINATION_PREMEASURE_PAGE_LIMIT = 8;
+const INITIAL_PAGINATION_PAGE_COUNT_OSCILLATION_DISTINCT_THRESHOLD = 2;
+const INITIAL_PAGINATION_PAGE_COUNT_OSCILLATION_CHANGE_THRESHOLD = 4;
 const DEFAULT_PAGE_VIRTUALIZATION_OVERSCAN = 2;
 const DEFAULT_PAGE_VIRTUALIZATION_SETTLE_DELAY_MS = 350;
 const ENABLE_TABLE_ROW_SLICING = false;
@@ -26897,6 +26899,28 @@ export function DocxEditorViewer({
     React.useState(!deferInitialPaginationPaint);
   const [postImportPaginationUnlocked, setPostImportPaginationUnlocked] =
     React.useState(false);
+  const [
+    initialPaginationReservedLayoutState,
+    setInitialPaginationReservedLayoutState,
+  ] = React.useState<{
+    pageCount: number;
+    totalHeightPx: number;
+  }>({
+    pageCount: 0,
+    totalHeightPx: 0,
+  });
+  const [
+    disableMeasuredImportPagination,
+    setDisableMeasuredImportPagination,
+  ] = React.useState(false);
+  const initialPaginationPageCountOscillationRef = React.useRef<{
+    lastPageCount?: number;
+    changeCount: number;
+    distinctPageCounts: Set<number>;
+  }>({
+    changeCount: 0,
+    distinctPageCounts: new Set<number>(),
+  });
   React.useEffect(() => {
     return subscribeRenderableImageSourceUpdates(() => {
       setRenderableImageSourceRevision((value) => value + 1);
@@ -26955,6 +26979,15 @@ export function DocxEditorViewer({
     pendingSectionParagraphFocusRef.current = undefined;
     setActiveEditableParagraphSegment(undefined);
     setPostImportPaginationUnlocked(false);
+    setInitialPaginationReservedLayoutState({
+      pageCount: 0,
+      totalHeightPx: 0,
+    });
+    setDisableMeasuredImportPagination(false);
+    initialPaginationPageCountOscillationRef.current = {
+      changeCount: 0,
+      distinctPageCounts: new Set<number>(),
+    };
   }, [editor.documentLoadNonce]);
   React.useEffect(() => {
     initialPaginationStableSignatureRef.current = undefined;
@@ -27492,7 +27525,10 @@ export function DocxEditorViewer({
     return targets;
   }, [editor.model.nodes]);
   const tableMeasuredRowHeightsForPagination = React.useMemo(() => {
-    const allowMeasuredImportPagination = !editor.canUndo && !editor.canRedo;
+    const allowMeasuredImportPagination =
+      !editor.canUndo &&
+      !editor.canRedo &&
+      !disableMeasuredImportPagination;
     const activeDraftKeys = [
       ...tableCellDraftsRef.current.keys(),
       ...tableCellParagraphDraftsRef.current.keys(),
@@ -27516,6 +27552,7 @@ export function DocxEditorViewer({
     editor.model.metadata.numberingDefinitions,
     editor.model.nodes,
     pageContentWidthPxByNodeIndex,
+    disableMeasuredImportPagination,
     tableDraftLayoutEpoch,
     tableMeasuredRowHeights,
   ]);
@@ -27544,6 +27581,7 @@ export function DocxEditorViewer({
       const allowMeasuredPageContentHeights =
         !editor.canUndo &&
         !editor.canRedo &&
+        !disableMeasuredImportPagination &&
         !floatingMovePreview &&
         !dropCapMovePreview;
       const baseMeasuredHeights =
@@ -27821,6 +27859,7 @@ export function DocxEditorViewer({
     isReadOnly,
     floatingMovePreview,
     dropCapMovePreview,
+    disableMeasuredImportPagination,
     measuredPageContentHeightByIndex,
     tableMeasuredRowHeightsForPagination,
   ]);
@@ -27835,6 +27874,14 @@ export function DocxEditorViewer({
     });
     return indexByNode;
   }, [pageNodeSegmentsByPage]);
+  const storedDocumentPageCount = React.useMemo(() => {
+    const value = editor.model.metadata.documentPageCount;
+    if (!Number.isFinite(value) || (value as number) <= 0) {
+      return undefined;
+    }
+
+    return Math.max(1, Math.round(value as number));
+  }, [editor.model.metadata.documentPageCount]);
   const pageSectionInfoByIndex = React.useMemo(() => {
     if (pageNodeSegmentsByPage.length === 0) {
       return [] as Array<{
@@ -28102,6 +28149,87 @@ export function DocxEditorViewer({
   const pageCount = pageNodeSegmentsByPage.length;
   const hideDocumentUntilPaginationSettled =
     deferInitialPaginationPaint && !isInitialPaginationSettled;
+  const estimateDocumentStackHeightPx = React.useCallback(
+    (count: number): number => {
+      const safeCount = Math.max(0, Math.round(count));
+      if (safeCount <= 0) {
+        return 0;
+      }
+
+      const fallbackLayout =
+        pageSectionInfoByIndex[pageSectionInfoByIndex.length - 1]?.layout ??
+        documentLayout;
+      let totalHeightPx = Math.max(0, (safeCount - 1) * DOC_PAGE_BREAK_GAP);
+      for (let pageIndex = 0; pageIndex < safeCount; pageIndex += 1) {
+        const pageLayout =
+          pageSectionInfoByIndex[pageIndex]?.layout ?? fallbackLayout;
+        totalHeightPx += Math.max(1, Math.round(pageLayout.pageHeightPx));
+      }
+      return totalHeightPx;
+    },
+    [documentLayout, pageSectionInfoByIndex]
+  );
+  React.useEffect(() => {
+    if (!hideDocumentUntilPaginationSettled) {
+      setInitialPaginationReservedLayoutState((current) => {
+        if (current.pageCount === 0 && current.totalHeightPx === 0) {
+          return current;
+        }
+        return {
+          pageCount: 0,
+          totalHeightPx: 0,
+        };
+      });
+      return;
+    }
+
+    const baselinePageCount = Math.max(
+      1,
+      pageCount,
+      storedDocumentPageCount ?? 0
+    );
+    setInitialPaginationReservedLayoutState((current) => {
+      const nextPageCount = Math.max(current.pageCount, baselinePageCount);
+      const nextTotalHeightPx = Math.max(
+        current.totalHeightPx,
+        estimateDocumentStackHeightPx(nextPageCount)
+      );
+      if (
+        current.pageCount === nextPageCount &&
+        current.totalHeightPx === nextTotalHeightPx
+      ) {
+        return current;
+      }
+      return {
+        pageCount: nextPageCount,
+        totalHeightPx: nextTotalHeightPx,
+      };
+    });
+  }, [
+    estimateDocumentStackHeightPx,
+    hideDocumentUntilPaginationSettled,
+    pageCount,
+    storedDocumentPageCount,
+  ]);
+  const preRevealStablePageCount =
+    storedDocumentPageCount ??
+    Math.max(1, initialPaginationReservedLayoutState.pageCount, pageCount);
+  const stableReportedPageCount = hideDocumentUntilPaginationSettled
+    ? preRevealStablePageCount
+    : pageCount;
+  const stableHiddenDocumentHeightPx = hideDocumentUntilPaginationSettled
+    ? Math.max(
+        initialPaginationReservedLayoutState.totalHeightPx,
+        estimateDocumentStackHeightPx(
+          Math.max(
+            1,
+            pageCount,
+            storedDocumentPageCount ?? 0,
+            initialPaginationReservedLayoutState.pageCount
+          )
+        )
+      )
+    : 0;
   const hasExternalVisiblePageRange =
     Number.isFinite(Number(visiblePageRange?.startPageIndex)) ||
     Number.isFinite(Number(visiblePageRange?.endPageIndex));
@@ -28366,8 +28494,8 @@ export function DocxEditorViewer({
       return;
     }
 
-    onPageCountChange(pageCount);
-  }, [onPageCountChange, pageCount]);
+    onPageCountChange(stableReportedPageCount);
+  }, [onPageCountChange, stableReportedPageCount]);
   React.useLayoutEffect(() => {
     if (
       !internalPageVirtualizationEnabled ||
@@ -28465,13 +28593,17 @@ export function DocxEditorViewer({
     const nextCurrentPage = clampNumber(
       visiblePageStartIndex + 1,
       1,
-      Math.max(1, pageCount)
+      Math.max(1, stableReportedPageCount)
     );
     editor.syncPaginationInfo({
       currentPage: nextCurrentPage,
-      totalPages: Math.max(1, pageCount),
+      totalPages: Math.max(1, stableReportedPageCount),
     });
-  }, [editor.syncPaginationInfo, pageCount, visiblePageStartIndex]);
+  }, [
+    editor.syncPaginationInfo,
+    stableReportedPageCount,
+    visiblePageStartIndex,
+  ]);
   const trackedChangesByPage = React.useMemo(() => {
     const pageBuckets = pageNodeSegmentsByPage.map(
       () => [] as DocxTrackedChange[]
@@ -29016,6 +29148,13 @@ export function DocxEditorViewer({
     visiblePageStartIndex,
   ]);
   React.useEffect(() => {
+    if (disableMeasuredImportPagination) {
+      setMeasuredPageContentHeightByIndex((current) =>
+        current.length === 0 ? current : []
+      );
+      return;
+    }
+
     if (!paginationMeasurementEnabled) {
       return;
     }
@@ -29208,6 +29347,7 @@ export function DocxEditorViewer({
       window.cancelAnimationFrame(frameId);
     };
   }, [
+    disableMeasuredImportPagination,
     documentLayout,
     measuredPageContentHeightByIndex,
     paginationMeasurementEnabled,
@@ -29216,6 +29356,49 @@ export function DocxEditorViewer({
     pageNodeSegmentsByPage,
     pageSectionInfoByIndex,
     pageHeaderAndFooterNodes,
+  ]);
+  React.useEffect(() => {
+    if (
+      !deferInitialPaginationPaint ||
+      isInitialPaginationSettled ||
+      disableMeasuredImportPagination
+    ) {
+      return;
+    }
+
+    if (pageCount <= 0) {
+      return;
+    }
+
+    const nextPageCount = Math.max(1, Math.round(pageCount));
+    const oscillationState = initialPaginationPageCountOscillationRef.current;
+    oscillationState.distinctPageCounts.add(nextPageCount);
+    if (
+      oscillationState.lastPageCount !== undefined &&
+      oscillationState.lastPageCount !== nextPageCount
+    ) {
+      oscillationState.changeCount += 1;
+    }
+    oscillationState.lastPageCount = nextPageCount;
+
+    if (
+      oscillationState.distinctPageCounts.size <
+        INITIAL_PAGINATION_PAGE_COUNT_OSCILLATION_DISTINCT_THRESHOLD ||
+      oscillationState.changeCount <
+        INITIAL_PAGINATION_PAGE_COUNT_OSCILLATION_CHANGE_THRESHOLD
+    ) {
+      return;
+    }
+
+    initialPaginationStableSignatureRef.current = undefined;
+    setDisableMeasuredImportPagination(true);
+    setMeasuredPageContentHeightByIndex([]);
+    setTableMeasuredRowHeights({});
+  }, [
+    deferInitialPaginationPaint,
+    disableMeasuredImportPagination,
+    isInitialPaginationSettled,
+    pageCount,
   ]);
   React.useEffect(() => {
     if (!deferInitialPaginationPaint || isInitialPaginationSettled) {
@@ -34703,6 +34886,13 @@ export function DocxEditorViewer({
   );
 
   React.useLayoutEffect(() => {
+    if (disableMeasuredImportPagination) {
+      setTableMeasuredRowHeights((current) =>
+        Object.keys(current).length === 0 ? current : {}
+      );
+      return;
+    }
+
     if (!paginationMeasurementEnabled) {
       return;
     }
@@ -34735,13 +34925,18 @@ export function DocxEditorViewer({
 
       const tableContainer = tableElementsRef.current.get(nodeIndex);
       if (tableContainer) {
-        Array.from(tableContainer.querySelectorAll("tbody > tr")).forEach(
+        Array.from(
+          tableContainer.querySelectorAll<HTMLElement>(
+            `tr[data-docx-table-index='${nodeIndex}'][data-docx-row-index]`
+          )
+        ).forEach(
           (rowElement) => {
-            const firstCell = rowElement.querySelector<HTMLElement>(
-              "[data-docx-row-index]"
-            );
+            if (rowElement.getAttribute("data-docx-row-sliced") === "true") {
+              return;
+            }
+
             const rowIndex = Number.parseInt(
-              firstCell?.getAttribute("data-docx-row-index") ?? "",
+              rowElement.getAttribute("data-docx-row-index") ?? "",
               10
             );
             if (!Number.isFinite(rowIndex)) {
@@ -34760,6 +34955,17 @@ export function DocxEditorViewer({
         `[data-docx-table-cell='true'][data-docx-table-index='${nodeIndex}'][data-docx-row-index]`
       );
       rowCells.forEach((cellElement) => {
+        if (cellElement.getAttribute("data-docx-row-sliced") === "true") {
+          return;
+        }
+
+        const containingRow = cellElement.closest("tr");
+        if (
+          containingRow?.getAttribute("data-docx-row-sliced") === "true"
+        ) {
+          return;
+        }
+
         const rowIndex = Number.parseInt(
           cellElement.getAttribute("data-docx-row-index") ?? "",
           10
@@ -34851,6 +35057,7 @@ export function DocxEditorViewer({
       return changed ? next : current;
     });
   }, [
+    disableMeasuredImportPagination,
     docGridLinePitchPxByNodeIndex,
     editor.model.metadata.numberingDefinitions,
     editor.model.nodes,
@@ -41774,6 +41981,10 @@ export function DocxEditorViewer({
                 <tbody>
                   {visibleRows.map((row, visibleRowIndex) => {
                     const rowIndex = tableRowStartIndex + visibleRowIndex;
+                    const isSlicedRow =
+                      hasTableRowSlice &&
+                      tableRowSlice !== undefined &&
+                      rowIndex === tableRowSlice.rowIndex;
                     const rowHeightPx = rowHeightsPx[rowIndex];
                     const hasCustomRowHeight =
                       tableRowHeights[nodeIndex]?.[rowIndex] !== undefined;
@@ -41789,6 +42000,9 @@ export function DocxEditorViewer({
                     return (
                       <tr
                         key={`row-${nodeIndex}-${rowIndex}`}
+                        data-docx-table-index={nodeIndex}
+                        data-docx-row-index={rowIndex}
+                        data-docx-row-sliced={isSlicedRow ? "true" : undefined}
                         style={resolvedRowHeightStyle}
                       >
                         {row.cells.map((cell, cellIndex) => {
@@ -42000,6 +42214,9 @@ export function DocxEditorViewer({
                               data-docx-table-cell="true"
                               data-docx-table-index={nodeIndex}
                               data-docx-row-index={rowIndex}
+                              data-docx-row-sliced={
+                                isSlicedRow ? "true" : undefined
+                              }
                               data-docx-cell-index={cellIndex}
                               colSpan={colSpan}
                               rowSpan={rowSpan}
@@ -44732,6 +44949,10 @@ export function DocxEditorViewer({
         position: "relative",
         display: "grid",
         gap: DOC_PAGE_BREAK_GAP,
+        minHeight:
+          hideDocumentUntilPaginationSettled && stableHiddenDocumentHeightPx > 0
+            ? stableHiddenDocumentHeightPx
+            : undefined,
         backgroundColor: pageGapBackgroundColor ?? "transparent",
         ...style,
       }}
