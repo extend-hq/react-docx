@@ -24,7 +24,7 @@
     "react-dom": ">=18"
   },
   "dependencies": {
-    "@chenglou/pretext": "^0.0.2",
+    "@chenglou/pretext": "^0.0.5",
     "@extend-ai/react-docx-doc-model": "workspace:*",
     "@extend-ai/react-docx-editor-ops": "workspace:*",
     "@extend-ai/react-docx-layout-engine": "workspace:*",
