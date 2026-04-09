@@ -10,8 +10,8 @@ import type {
   ParagraphStyle,
   TextRunNode,
   TextStyle
-} from "@react-docx/doc-model";
-import { cloneDocModel } from "@react-docx/doc-model";
+} from "@extend-ai/react-docx-doc-model";
+import { cloneDocModel } from "@extend-ai/react-docx-doc-model";
 
 export interface InsertParagraphOptions {
   paragraphStyle?: ParagraphStyle;

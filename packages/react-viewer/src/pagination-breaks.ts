@@ -1,4 +1,4 @@
-import type { DocModel, ParagraphNode, TableCellContentNode, TableNode } from "@react-docx/doc-model";
+import type { DocModel, ParagraphNode, TableCellContentNode, TableNode } from "@extend-ai/react-docx-doc-model";
 
 const PAGE_BREAK_XML_PATTERN = /<w:br\b[^>]*w:type="page"[^>]*\/?>/i;
 const PAGE_BREAK_BEFORE_XML_PATTERN = /<w:pageBreakBefore\b[^>]*\/?>/i;

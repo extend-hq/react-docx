@@ -3,7 +3,7 @@ import type {
   HeadingLevel,
   ParagraphAlignment,
   TextStyle
-} from "@react-docx/doc-model";
+} from "@extend-ai/react-docx-doc-model";
 import {
   layoutDocument,
   type LayoutOptions,
@@ -11,7 +11,7 @@ import {
   type LayoutParagraphBlock,
   type LayoutRun,
   type LayoutTableBlock
-} from "@react-docx/layout-engine";
+} from "@extend-ai/react-docx-layout-engine";
 export * from "./pagination";
 export * from "./page-segmentation";
 

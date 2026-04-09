@@ -1,5 +1,5 @@
 import * as React from "react";
-import type { DocModel } from "@react-docx/doc-model";
+import type { DocModel } from "@extend-ai/react-docx-doc-model";
 import type {
   DocxEditorController,
   DocxEditorViewerMode

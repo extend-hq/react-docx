@@ -1,5 +1,5 @@
 {
-  "name": "@react-docx/layout-engine",
+  "name": "@extend-ai/react-docx-layout-engine",
   "version": "0.1.0",
   "description": "Layout and pagination for normalized DOCX model",
   "type": "module",
@@ -15,10 +15,10 @@
   },
   "files": ["dist"],
   "publishConfig": {
-    "access": "public"
+    "access": "restricted"
   },
   "dependencies": {
-    "@react-docx/doc-model": "workspace:*"
+    "@extend-ai/react-docx-doc-model": "workspace:*"
   },
   "scripts": {
     "build": "tsup src/index.ts --format esm,cjs --dts --sourcemap --clean",

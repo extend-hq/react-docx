@@ -1,10 +1,10 @@
-import type { DocModel } from "@react-docx/doc-model";
+import type { DocModel } from "@extend-ai/react-docx-doc-model";
 import {
   layoutDocument,
   type LayoutOptions,
   type LayoutParagraphBlock,
   type LayoutTableBlock
-} from "@react-docx/layout-engine";
+} from "@extend-ai/react-docx-layout-engine";
 import { resolveDocumentLayout } from "../section-layout";
 import type {
   DocxLayoutDiagnostics,

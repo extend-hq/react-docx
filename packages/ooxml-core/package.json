@@ -1,5 +1,5 @@
 {
-  "name": "@react-docx/ooxml-core",
+  "name": "@extend-ai/react-docx-ooxml-core",
   "version": "0.1.0",
   "description": "OOXML package parsing and part management",
   "type": "module",
@@ -15,7 +15,7 @@
   },
   "files": ["dist"],
   "publishConfig": {
-    "access": "public"
+    "access": "restricted"
   },
   "scripts": {
     "build": "tsup src/index.ts --format esm,cjs --dts --sourcemap --clean",

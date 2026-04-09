@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { isLikelyFullPageCoverFloatingImage } from "../../packages/react-viewer/src/editor";
-import type { ImageRunNode } from "@react-docx/doc-model";
+import type { ImageRunNode } from "@extend-ai/react-docx-doc-model";
 
 function floatingImage(
   widthPx: number,

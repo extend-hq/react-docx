@@ -1,5 +1,5 @@
 {
-  "name": "@react-docx/editor-ops",
+  "name": "@extend-ai/react-docx-editor-ops",
   "version": "0.1.0",
   "description": "Editing operations for DOCX doc model",
   "type": "module",
@@ -15,10 +15,10 @@
   },
   "files": ["dist"],
   "publishConfig": {
-    "access": "public"
+    "access": "restricted"
   },
   "dependencies": {
-    "@react-docx/doc-model": "workspace:*"
+    "@extend-ai/react-docx-doc-model": "workspace:*"
   },
   "scripts": {
     "build": "tsup src/index.ts --format esm,cjs --dts --sourcemap --clean",

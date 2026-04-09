@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { DocModel, NumberingDefinitionSet } from "@react-docx/doc-model";
+import type { DocModel, NumberingDefinitionSet } from "@extend-ai/react-docx-doc-model";
 import {
   buildParagraphNumberingLabels,
   buildDocumentPageNodeSegments,

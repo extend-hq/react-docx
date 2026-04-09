@@ -14,13 +14,13 @@
     "sourceMap": true,
     "baseUrl": ".",
     "paths": {
-      "@react-docx/ooxml-core": ["packages/ooxml-core/src/index.ts"],
-      "@react-docx/doc-model": ["packages/doc-model/src/index.ts"],
-      "@react-docx/layout-core": ["packages/layout-core/src/index.ts"],
-      "@react-docx/layout-engine": ["packages/layout-engine/src/index.ts"],
-      "@react-docx/editor-ops": ["packages/editor-ops/src/index.ts"],
-      "@react-docx/serializer": ["packages/serializer/src/index.ts"],
-      "@react-docx/react-viewer": ["packages/react-viewer/src/index.tsx"]
+      "@extend-ai/react-docx-ooxml-core": ["packages/ooxml-core/src/index.ts"],
+      "@extend-ai/react-docx-doc-model": ["packages/doc-model/src/index.ts"],
+      "@extend-ai/react-docx-layout-core": ["packages/layout-core/src/index.ts"],
+      "@extend-ai/react-docx-layout-engine": ["packages/layout-engine/src/index.ts"],
+      "@extend-ai/react-docx-editor-ops": ["packages/editor-ops/src/index.ts"],
+      "@extend-ai/react-docx-serializer": ["packages/serializer/src/index.ts"],
+      "@extend-ai/react-docx": ["packages/react-viewer/src/index.tsx"]
     }
   }
 }

@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { createMinimalDocxPackage, packageToArrayBuffer, parseDocx } from "@react-docx/ooxml-core";
-import { buildDocModel } from "@react-docx/doc-model";
-import { insertParagraph, setParagraphHeading, setRunHighlight, toggleRunStyleFlag } from "@react-docx/editor-ops";
-import { serializeDocModel, serializeDocx } from "@react-docx/serializer";
+import { createMinimalDocxPackage, packageToArrayBuffer, parseDocx } from "@extend-ai/react-docx-ooxml-core";
+import { buildDocModel } from "@extend-ai/react-docx-doc-model";
+import { insertParagraph, setParagraphHeading, setRunHighlight, toggleRunStyleFlag } from "@extend-ai/react-docx-editor-ops";
+import { serializeDocModel, serializeDocx } from "@extend-ai/react-docx-serializer";
 
 const DOCUMENT_XML =
   '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Source Paragraph</w:t></w:r></w:p></w:body></w:document>';

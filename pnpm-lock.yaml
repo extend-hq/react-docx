@@ -50,19 +50,19 @@ importers:
       '@hugeicons/react':
         specifier: ^1.1.5
         version: 1.1.5(react@19.2.4)
-      '@react-docx/doc-model':
+      '@extend-ai/react-docx-doc-model':
         specifier: workspace:*
         version: link:../../packages/doc-model
-      '@react-docx/editor-ops':
+      '@extend-ai/react-docx-editor-ops':
         specifier: workspace:*
         version: link:../../packages/editor-ops
-      '@react-docx/ooxml-core':
+      '@extend-ai/react-docx-ooxml-core':
         specifier: workspace:*
         version: link:../../packages/ooxml-core
-      '@react-docx/react-viewer':
+      '@extend-ai/react-docx':
         specifier: workspace:*
         version: link:../../packages/react-viewer
-      '@react-docx/serializer':
+      '@extend-ai/react-docx-serializer':
         specifier: workspace:*
         version: link:../../packages/serializer
       '@tailwindcss/vite':
@@ -153,28 +153,28 @@ importers:
 
   packages/doc-model:
     dependencies:
-      '@react-docx/ooxml-core':
+      '@extend-ai/react-docx-ooxml-core':
         specifier: workspace:*
         version: link:../ooxml-core
 
   packages/editor-ops:
     dependencies:
-      '@react-docx/doc-model':
+      '@extend-ai/react-docx-doc-model':
         specifier: workspace:*
         version: link:../doc-model
 
   packages/layout-core:
     dependencies:
-      '@react-docx/doc-model':
+      '@extend-ai/react-docx-doc-model':
         specifier: workspace:*
         version: link:../doc-model
-      '@react-docx/layout-engine':
+      '@extend-ai/react-docx-layout-engine':
         specifier: workspace:*
         version: link:../layout-engine
 
   packages/layout-engine:
     dependencies:
-      '@react-docx/doc-model':
+      '@extend-ai/react-docx-doc-model':
         specifier: workspace:*
         version: link:../doc-model
 
@@ -185,19 +185,19 @@ importers:
       '@chenglou/pretext':
         specifier: ^0.0.2
         version: 0.0.2(typescript@5.9.3)
-      '@react-docx/doc-model':
+      '@extend-ai/react-docx-doc-model':
         specifier: workspace:*
         version: link:../doc-model
-      '@react-docx/editor-ops':
+      '@extend-ai/react-docx-editor-ops':
         specifier: workspace:*
         version: link:../editor-ops
-      '@react-docx/layout-engine':
+      '@extend-ai/react-docx-layout-engine':
         specifier: workspace:*
         version: link:../layout-engine
-      '@react-docx/ooxml-core':
+      '@extend-ai/react-docx-ooxml-core':
         specifier: workspace:*
         version: link:../ooxml-core
-      '@react-docx/serializer':
+      '@extend-ai/react-docx-serializer':
         specifier: workspace:*
         version: link:../serializer
       '@tanstack/react-virtual':
@@ -221,10 +221,10 @@ importers:
 
   packages/serializer:
     dependencies:
-      '@react-docx/doc-model':
+      '@extend-ai/react-docx-doc-model':
         specifier: workspace:*
         version: link:../doc-model
-      '@react-docx/ooxml-core':
+      '@extend-ai/react-docx-ooxml-core':
         specifier: workspace:*
         version: link:../ooxml-core
 

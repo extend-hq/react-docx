@@ -1,5 +1,5 @@
 import * as React from "react";
-import type { DocModel } from "@react-docx/doc-model";
+import type { DocModel } from "@extend-ai/react-docx-doc-model";
 import {
   layoutDocument,
   type LayoutBlock,
@@ -7,9 +7,9 @@ import {
   type LayoutParagraphBlock,
   type LayoutRun,
   type LayoutTableBlock
-} from "@react-docx/layout-engine";
-import { buildDocModel } from "@react-docx/doc-model";
-import { parseDocx } from "@react-docx/ooxml-core";
+} from "@extend-ai/react-docx-layout-engine";
+import { buildDocModel } from "@extend-ai/react-docx-doc-model";
+import { parseDocx } from "@extend-ai/react-docx-ooxml-core";
 import { DEFAULT_DOCUMENT_LAYOUT, parseSectionLayout, resolveDocumentLayout } from "./section-layout";
 import {
   imageUsesPlaceholderFallback,

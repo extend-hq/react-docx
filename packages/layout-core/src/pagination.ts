@@ -5,7 +5,7 @@ import type {
   ParagraphNode,
   TableCellContentNode,
   TableNode
-} from "@react-docx/doc-model";
+} from "@extend-ai/react-docx-doc-model";
 
 const TWIPS_PER_PIXEL = 15;
 const PAGE_BREAK_XML_PATTERN = /<w:br\b[^>]*w:type="page"[^>]*\/?>/i;

@@ -1,4 +1,4 @@
-import type { ImageRunNode } from "@react-docx/doc-model";
+import type { ImageRunNode } from "@extend-ai/react-docx-doc-model";
 import { convertEmfToDataUrl, convertWmfToDataUrl } from "emf-converter";
 import { encode as encodePng } from "fast-png";
 import UTIFModule from "utif";

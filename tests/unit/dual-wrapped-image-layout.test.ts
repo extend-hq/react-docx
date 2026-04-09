@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it, vi } from "vitest";
-import type { ParagraphNode } from "@react-docx/doc-model";
+import type { ParagraphNode } from "@extend-ai/react-docx-doc-model";
 
 class MockCanvasContext {
   font = "16px Calibri";

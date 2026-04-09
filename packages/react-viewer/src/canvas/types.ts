@@ -1,4 +1,4 @@
-import type { LayoutPage } from "@react-docx/layout-engine";
+import type { LayoutPage } from "@extend-ai/react-docx-layout-engine";
 
 export type DocxRenderEngine = "dom" | "canvas" | "auto";
 

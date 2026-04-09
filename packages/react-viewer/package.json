@@ -1,5 +1,5 @@
 {
-  "name": "@react-docx/react-viewer",
+  "name": "@extend-ai/react-docx",
   "version": "0.1.0",
   "description": "React components/hooks for DOCX viewing",
   "type": "module",
@@ -17,7 +17,7 @@
     "dist"
   ],
   "publishConfig": {
-    "access": "public"
+    "access": "restricted"
   },
   "peerDependencies": {
     "react": ">=18",
@@ -25,11 +25,11 @@
   },
   "dependencies": {
     "@chenglou/pretext": "^0.0.2",
-    "@react-docx/doc-model": "workspace:*",
-    "@react-docx/editor-ops": "workspace:*",
-    "@react-docx/layout-engine": "workspace:*",
-    "@react-docx/ooxml-core": "workspace:*",
-    "@react-docx/serializer": "workspace:*",
+    "@extend-ai/react-docx-doc-model": "workspace:*",
+    "@extend-ai/react-docx-editor-ops": "workspace:*",
+    "@extend-ai/react-docx-layout-engine": "workspace:*",
+    "@extend-ai/react-docx-ooxml-core": "workspace:*",
+    "@extend-ai/react-docx-serializer": "workspace:*",
     "@tanstack/react-virtual": "^3.13.12",
     "emf-converter": "^1.0.10",
     "fast-png": "^8.0.0",

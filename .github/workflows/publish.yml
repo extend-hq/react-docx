@@ -1,0 +1,169 @@
+name: Publish Packages
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write
+
+concurrency:
+  group: publish-packages
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Read workspace package metadata
+        id: meta
+        run: |
+          node <<'NODE' >> "$GITHUB_OUTPUT"
+          const fs = require("fs");
+          const path = require("path");
+
+          const packagesDir = path.join(process.cwd(), "packages");
+          const packageDirs = fs
+            .readdirSync(packagesDir, { withFileTypes: true })
+            .filter((entry) => entry.isDirectory())
+            .map((entry) => path.join(packagesDir, entry.name));
+
+          const packages = packageDirs
+            .map((dir) => {
+              const packageJsonPath = path.join(dir, "package.json");
+              if (!fs.existsSync(packageJsonPath)) {
+                return undefined;
+              }
+
+              const pkg = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
+              if (pkg.private) {
+                return undefined;
+              }
+
+              return {
+                name: pkg.name,
+                version: pkg.version,
+              };
+            })
+            .filter(Boolean);
+
+          if (packages.length === 0) {
+            throw new Error("No publishable workspace packages found under packages/*");
+          }
+
+          const versions = [...new Set(packages.map((pkg) => pkg.version))];
+          if (versions.length !== 1) {
+            throw new Error(
+              `Expected all publishable workspace packages to share one version, found: ${versions.join(", ")}`
+            );
+          }
+
+          const version = versions[0];
+          const tag = `v${version}`;
+
+          console.log(`version=${version}`);
+          console.log(`tag=${tag}`);
+          console.log(`package_count=${packages.length}`);
+          console.log(`package_names=${packages.map((pkg) => pkg.name).join(", ")}`);
+          console.log(`packages_json=${JSON.stringify(packages)}`);
+          NODE
+
+      - name: Check release state
+        id: state
+        run: |
+          if git rev-parse -q --verify "refs/tags/${{ steps.meta.outputs.tag }}" > /dev/null; then
+            echo "already_released=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "already_released=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Stop when this version is already released
+        if: steps.state.outputs.already_released == 'true'
+        run: echo "${{ steps.meta.outputs.tag }} already exists; skipping publish."
+
+      - name: Set up pnpm
+        if: steps.state.outputs.already_released != 'true'
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+
+      - name: Set up Node
+        if: steps.state.outputs.already_released != 'true'
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      - name: Install dependencies
+        if: steps.state.outputs.already_released != 'true'
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck packages
+        if: steps.state.outputs.already_released != 'true'
+        run: pnpm -r --filter './packages/*' run typecheck
+
+      - name: Build packages
+        if: steps.state.outputs.already_released != 'true'
+        run: pnpm -r --filter './packages/*' run build
+
+      - name: Publish with npm token bootstrap
+        if: steps.state.outputs.already_released != 'true' && env.NPM_TOKEN != ''
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: pnpm -r --filter './packages/*' publish --access restricted --no-git-checks
+
+      - name: Publish with npm trusted publishing
+        if: steps.state.outputs.already_released != 'true' && env.NPM_TOKEN == ''
+        run: pnpm -r --filter './packages/*' publish --access restricted --no-git-checks
+
+      - name: Push release tag
+        if: steps.state.outputs.already_released != 'true'
+        run: |
+          git tag "${{ steps.meta.outputs.tag }}"
+          git push origin "${{ steps.meta.outputs.tag }}"
+
+      - name: Create GitHub release
+        if: steps.state.outputs.already_released != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PACKAGES_JSON: ${{ steps.meta.outputs.packages_json }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          node <<'NODE' > /tmp/release-notes.md
+          const packages = JSON.parse(process.env.PACKAGES_JSON ?? "[]");
+          const version = process.env.VERSION;
+
+          const lines = [];
+          lines.push(`Published ${packages.length} package(s) to npm at version ${version}.`);
+          lines.push("");
+          lines.push("Packages:");
+          for (const pkg of packages) {
+            lines.push(`- \`${pkg.name}@${pkg.version}\``);
+          }
+          lines.push("");
+          lines.push("Install with:");
+          lines.push("");
+          lines.push("```bash");
+          for (const pkg of packages) {
+            lines.push(`pnpm add ${pkg.name}`);
+          }
+          lines.push("```");
+
+          process.stdout.write(lines.join("\n"));
+          NODE
+
+          gh release create "${TAG}" \
+            --title "${TAG}" \
+            --notes-file /tmp/release-notes.md

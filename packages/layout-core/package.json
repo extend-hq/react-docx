@@ -1,5 +1,5 @@
 {
-  "name": "@react-docx/layout-core",
+  "name": "@extend-ai/react-docx-layout-core",
   "version": "0.1.0",
   "description": "Pure layout resolution and snapshot boundary for DOCX rendering",
   "type": "module",
@@ -15,11 +15,11 @@
   },
   "files": ["dist"],
   "publishConfig": {
-    "access": "public"
+    "access": "restricted"
   },
   "dependencies": {
-    "@react-docx/doc-model": "workspace:*",
-    "@react-docx/layout-engine": "workspace:*"
+    "@extend-ai/react-docx-doc-model": "workspace:*",
+    "@extend-ai/react-docx-layout-engine": "workspace:*"
   },
   "scripts": {
     "build": "tsup src/index.ts --format esm,cjs --dts --sourcemap --clean",

@@ -14,7 +14,7 @@ export default defineConfig({
     }
   ],
   webServer: {
-    command: "pnpm --filter @react-docx/playground dev --host 127.0.0.1 --port 4173",
+    command: "pnpm --filter @extend-ai/react-docx-playground dev --host 127.0.0.1 --port 4173",
     url: "http://127.0.0.1:4173",
     reuseExistingServer: true,
     timeout: 120000

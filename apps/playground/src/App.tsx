@@ -1,5 +1,5 @@
 import * as React from "react";
-import type { DocModel } from "@react-docx/doc-model";
+import type { DocModel } from "@extend-ai/react-docx-doc-model";
 import {
   type DocxBorderContext,
   type DocxBorderPreset,
@@ -22,7 +22,7 @@ import {
   useDocxPagination,
   useDocxParagraphStyles,
   useDocxTrackChanges,
-} from "@react-docx/react-viewer";
+} from "@extend-ai/react-docx";
 import {
   ArrowDown,
   ArrowLeft,

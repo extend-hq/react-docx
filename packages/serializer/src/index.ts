@@ -10,9 +10,9 @@ import type {
   TableCellContentNode,
   TableNode,
   TextStyle
-} from "@react-docx/doc-model";
-import type { OoxmlPackage } from "@react-docx/ooxml-core";
-import { createMinimalDocxPackage, packageToArrayBuffer, withPart } from "@react-docx/ooxml-core";
+} from "@extend-ai/react-docx-doc-model";
+import type { OoxmlPackage } from "@extend-ai/react-docx-ooxml-core";
+import { createMinimalDocxPackage, packageToArrayBuffer, withPart } from "@extend-ai/react-docx-ooxml-core";
 
 interface Relationship {
   id: string;

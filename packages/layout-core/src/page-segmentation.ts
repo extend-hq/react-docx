@@ -3,7 +3,7 @@ import type {
   NumberingDefinitionSet,
   ParagraphNode,
   TableNode
-} from "@react-docx/doc-model";
+} from "@extend-ai/react-docx-doc-model";
 import {
   collectDocxHardPageBreakStartNodeIndexes,
   collectTableExplicitPageBreakInfo,

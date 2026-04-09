@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
-import type { DocModel } from "@react-docx/doc-model";
-import { buildDocModel } from "@react-docx/doc-model";
-import { layoutDocument } from "@react-docx/layout-engine";
-import { parseDocx } from "@react-docx/ooxml-core";
-import { serializeDocx } from "@react-docx/serializer";
+import type { DocModel } from "@extend-ai/react-docx-doc-model";
+import { buildDocModel } from "@extend-ai/react-docx-doc-model";
+import { layoutDocument } from "@extend-ai/react-docx-layout-engine";
+import { parseDocx } from "@extend-ai/react-docx-ooxml-core";
+import { serializeDocx } from "@extend-ai/react-docx-serializer";
 
 function createLargeModel(paragraphCount: number): DocModel {
   return {

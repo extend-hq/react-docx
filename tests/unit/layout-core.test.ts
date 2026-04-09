@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { DocModel } from "@react-docx/doc-model";
+import type { DocModel } from "@extend-ai/react-docx-doc-model";
 import {
   buildDocumentPageNodeSegments,
   buildLayoutSnapshot,
@@ -18,7 +18,7 @@ import {
   selectSectionVariantForPage,
   sectionTitlePageEnabled,
   sectionBreakPropertiesStartNewPage
-} from "@react-docx/layout-core";
+} from "@extend-ai/react-docx-layout-core";
 
 function createModel(): DocModel {
   return {

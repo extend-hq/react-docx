@@ -1,5 +1,5 @@
 {
-  "name": "@react-docx/doc-model",
+  "name": "@extend-ai/react-docx-doc-model",
   "version": "0.1.0",
   "description": "Normalized document model for DOCX",
   "type": "module",
@@ -15,10 +15,10 @@
   },
   "files": ["dist"],
   "publishConfig": {
-    "access": "public"
+    "access": "restricted"
   },
   "dependencies": {
-    "@react-docx/ooxml-core": "workspace:*"
+    "@extend-ai/react-docx-ooxml-core": "workspace:*"
   },
   "scripts": {
     "build": "tsup src/index.ts --format esm,cjs --dts --sourcemap --clean",

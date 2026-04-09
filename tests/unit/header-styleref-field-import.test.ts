@@ -1,7 +1,7 @@
 import * as React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { buildDocModel, type DocModel } from "@react-docx/doc-model";
-import { parseDocx } from "@react-docx/ooxml-core";
+import { buildDocModel, type DocModel } from "@extend-ai/react-docx-doc-model";
+import { parseDocx } from "@extend-ai/react-docx-ooxml-core";
 import { describe, expect, it } from "vitest";
 import {
   DocxEditorViewer,

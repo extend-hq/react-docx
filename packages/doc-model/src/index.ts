@@ -1,4 +1,4 @@
-import type { OoxmlPackage } from "@react-docx/ooxml-core";
+import type { OoxmlPackage } from "@extend-ai/react-docx-ooxml-core";
 
 export type ParagraphAlignment = "left" | "center" | "right" | "justify";
 export type HeadingLevel = 1 | 2 | 3 | 4 | 5 | 6;

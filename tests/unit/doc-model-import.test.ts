@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { buildDocModel } from "@react-docx/doc-model";
-import { parseDocx } from "@react-docx/ooxml-core";
+import { buildDocModel } from "@extend-ai/react-docx-doc-model";
+import { parseDocx } from "@extend-ai/react-docx-ooxml-core";
 import { createZip } from "./helpers/zip";
 
 const RED_TEXT_DOC_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>

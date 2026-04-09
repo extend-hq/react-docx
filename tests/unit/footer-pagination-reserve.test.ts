@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { FooterSection } from "@react-docx/doc-model";
+import type { FooterSection } from "@extend-ai/react-docx-doc-model";
 import {
   resolveFooterPaginationReservePx,
   resolveMeasuredBodyRenderedBottomPx,

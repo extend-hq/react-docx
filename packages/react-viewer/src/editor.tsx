@@ -27,16 +27,16 @@ import {
   type TableNode,
   type TableRowStyle,
   type TextRunNode,
-} from "@react-docx/doc-model";
+} from "@extend-ai/react-docx-doc-model";
 import {
   splitParagraphChildrenAtTextOffsets,
   updateParagraphText,
   updateTableCellParagraphTextRecursive,
   updateTableCellParagraphText,
   updateTableCellText,
-} from "@react-docx/editor-ops";
-import { type OoxmlPackage, parseDocx } from "@react-docx/ooxml-core";
-import { serializeDocx } from "@react-docx/serializer";
+} from "@extend-ai/react-docx-editor-ops";
+import { type OoxmlPackage, parseDocx } from "@extend-ai/react-docx-ooxml-core";
+import { serializeDocx } from "@extend-ai/react-docx-serializer";
 import {
   collectTableExplicitPageBreakInfo,
   collectTopLevelExplicitPageBreakStartNodeIndexes,

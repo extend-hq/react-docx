@@ -4,7 +4,7 @@ import {
   getPart,
   packageToArrayBuffer,
   parseDocx
-} from "@react-docx/ooxml-core";
+} from "@extend-ai/react-docx-ooxml-core";
 import { createZip } from "./helpers/zip";
 
 const DOCUMENT_XML =

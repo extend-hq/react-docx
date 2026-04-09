@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { resolveDocumentLayout, parseSectionLayout } from "@react-docx/react-viewer";
-import type { DocModel } from "@react-docx/doc-model";
+import { resolveDocumentLayout, parseSectionLayout } from "@extend-ai/react-docx";
+import type { DocModel } from "@extend-ai/react-docx-doc-model";
 
 const SECTION_PROPERTIES_XML = `<w:sectPr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
   <w:pgSz w:w="11906" w:h="16838"/>

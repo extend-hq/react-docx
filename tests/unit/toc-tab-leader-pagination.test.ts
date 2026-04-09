@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { DocModel } from "@react-docx/doc-model";
+import type { DocModel } from "@extend-ai/react-docx-doc-model";
 import { paragraphLineCountWithinWidth } from "../../packages/react-viewer/src/editor";
 
 describe("toc tab leader pagination", () => {

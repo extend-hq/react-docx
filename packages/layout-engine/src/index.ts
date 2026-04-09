@@ -7,7 +7,7 @@ import type {
   TableCellContentNode,
   TableNode,
   TextStyle
-} from "@react-docx/doc-model";
+} from "@extend-ai/react-docx-doc-model";
 
 export interface LayoutOptions {
   pageWidth?: number;

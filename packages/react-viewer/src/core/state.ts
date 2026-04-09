@@ -2,7 +2,7 @@ import type {
   DocModel,
   ParagraphNode,
   TextRunNode
-} from "@react-docx/doc-model";
+} from "@extend-ai/react-docx-doc-model";
 import type {
   DocxEditorSelection,
   DocxTextRange

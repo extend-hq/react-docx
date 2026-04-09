@@ -1,5 +1,5 @@
 {
-  "name": "@react-docx/serializer",
+  "name": "@extend-ai/react-docx-serializer",
   "version": "0.1.0",
   "description": "Serializer for converting doc model back to OOXML",
   "type": "module",
@@ -15,11 +15,11 @@
   },
   "files": ["dist"],
   "publishConfig": {
-    "access": "public"
+    "access": "restricted"
   },
   "dependencies": {
-    "@react-docx/doc-model": "workspace:*",
-    "@react-docx/ooxml-core": "workspace:*"
+    "@extend-ai/react-docx-doc-model": "workspace:*",
+    "@extend-ai/react-docx-ooxml-core": "workspace:*"
   },
   "scripts": {
     "build": "tsup src/index.ts --format esm,cjs --dts --sourcemap --clean",

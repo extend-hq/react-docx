@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { DocModel } from "@react-docx/doc-model";
+import type { DocModel } from "@extend-ai/react-docx-doc-model";
 import {
   copyParagraphs,
   parseParagraphsFromClipboard,
@@ -13,7 +13,7 @@ import {
   updateTableCellParagraphTextRecursive,
   updateTableCellParagraphText,
   updateTableCellText
-} from "@react-docx/editor-ops";
+} from "@extend-ai/react-docx-editor-ops";
 
 function sampleModel(): DocModel {
   return {
