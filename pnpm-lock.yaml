@@ -41,15 +41,9 @@ importers:
       '@base-ui/react':
         specifier: ^1.2.0
         version: 1.2.0(@types/react@19.2.14)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
-      '@fontsource-variable/inter':
-        specifier: ^5.2.8
-        version: 5.2.8
-      '@hugeicons/core-free-icons':
-        specifier: ^3.1.1
-        version: 3.1.1
-      '@hugeicons/react':
-        specifier: ^1.1.5
-        version: 1.1.5(react@19.2.4)
+      '@extend-ai/react-docx':
+        specifier: workspace:*
+        version: link:../../packages/react-viewer
       '@extend-ai/react-docx-doc-model':
         specifier: workspace:*
         version: link:../../packages/doc-model
@@ -59,12 +53,18 @@ importers:
       '@extend-ai/react-docx-ooxml-core':
         specifier: workspace:*
         version: link:../../packages/ooxml-core
-      '@extend-ai/react-docx':
-        specifier: workspace:*
-        version: link:../../packages/react-viewer
       '@extend-ai/react-docx-serializer':
         specifier: workspace:*
         version: link:../../packages/serializer
+      '@fontsource-variable/inter':
+        specifier: ^5.2.8
+        version: 5.2.8
+      '@hugeicons/core-free-icons':
+        specifier: ^3.1.1
+        version: 3.1.1
+      '@hugeicons/react':
+        specifier: ^1.1.5
+        version: 1.1.5(react@19.2.4)
       '@tailwindcss/vite':
         specifier: ^4.2.1
         version: 4.2.1(vite@6.4.1(@types/node@22.19.11)(jiti@2.6.1)(lightningcss@1.31.1))
@@ -183,8 +183,8 @@ importers:
   packages/react-viewer:
     dependencies:
       '@chenglou/pretext':
-        specifier: ^0.0.2
-        version: 0.0.2(typescript@5.9.3)
+        specifier: ^0.0.5
+        version: 0.0.5
       '@extend-ai/react-docx-doc-model':
         specifier: workspace:*
         version: link:../doc-model
@@ -455,10 +455,8 @@ packages:
   '@changesets/write@0.4.0':
     resolution: {integrity: sha512-CdTLvIOPiCNuH71pyDu3rA+Q0n65cmAbXnwWH84rKGiFumFzkmHNT8KHTMEchcxN+Kl8I54xGUhJ7l3E7X396Q==}
 
-  '@chenglou/pretext@0.0.2':
-    resolution: {integrity: sha512-bMPySDxbU1h+qU3D7HzTsz2vhBFIeO19Yp8gsYTJ219tjuX7WFsKJzk2oPVpwxl2P1VEuQGo6whg6Kr8gztphA==}
-    peerDependencies:
-      typescript: ^5
+  '@chenglou/pretext@0.0.5':
+    resolution: {integrity: sha512-A8GZN10REdFGsyuiUgLV8jjPDDFMg5GmgxGWV0I3igxBOnzj+jgz2VMmVD7g+SFyoctfeqHFxbNatKSzVRWtRg==}
 
   '@date-fns/tz@1.4.1':
     resolution: {integrity: sha512-P5LUNhtbj6YfI3iJjw5EL9eUAG6OitD0W3fWQcpQjDRc/QIsL0tRNuO1PcDvPccWL1fSTXXdE1ds+l95DV/OFA==}
@@ -4569,9 +4567,7 @@ snapshots:
       human-id: 4.1.3
       prettier: 2.8.8
 
-  '@chenglou/pretext@0.0.2(typescript@5.9.3)':
-    dependencies:
-      typescript: 5.9.3
+  '@chenglou/pretext@0.0.5': {}
 
   '@date-fns/tz@1.4.1': {}
 
