@@ -25,18 +25,21 @@
   },
   "dependencies": {
     "@chenglou/pretext": "^0.0.5",
-    "@extend-ai/react-docx-doc-model": "workspace:*",
-    "@extend-ai/react-docx-editor-ops": "workspace:*",
-    "@extend-ai/react-docx-layout-engine": "workspace:*",
-    "@extend-ai/react-docx-ooxml-core": "workspace:*",
-    "@extend-ai/react-docx-serializer": "workspace:*",
     "@tanstack/react-virtual": "^3.13.12",
     "emf-converter": "^1.0.10",
     "fast-png": "^8.0.0",
     "utif": "^3.1.0"
   },
+  "devDependencies": {
+    "@extend-ai/react-docx-doc-model": "workspace:*",
+    "@extend-ai/react-docx-editor-ops": "workspace:*",
+    "@extend-ai/react-docx-layout-core": "workspace:*",
+    "@extend-ai/react-docx-layout-engine": "workspace:*",
+    "@extend-ai/react-docx-ooxml-core": "workspace:*",
+    "@extend-ai/react-docx-serializer": "workspace:*"
+  },
   "scripts": {
-    "build": "tsup src/index.tsx --format esm,cjs --dts --sourcemap --clean --external react,react-dom",
+    "build": "tsup --config tsup.config.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "clean": "rm -rf dist"
   }

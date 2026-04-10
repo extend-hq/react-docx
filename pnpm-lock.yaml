@@ -44,18 +44,6 @@ importers:
       '@extend-ai/react-docx':
         specifier: workspace:*
         version: link:../../packages/react-viewer
-      '@extend-ai/react-docx-doc-model':
-        specifier: workspace:*
-        version: link:../../packages/doc-model
-      '@extend-ai/react-docx-editor-ops':
-        specifier: workspace:*
-        version: link:../../packages/editor-ops
-      '@extend-ai/react-docx-ooxml-core':
-        specifier: workspace:*
-        version: link:../../packages/ooxml-core
-      '@extend-ai/react-docx-serializer':
-        specifier: workspace:*
-        version: link:../../packages/serializer
       '@fontsource-variable/inter':
         specifier: ^5.2.8
         version: 5.2.8
@@ -185,21 +173,6 @@ importers:
       '@chenglou/pretext':
         specifier: ^0.0.5
         version: 0.0.5
-      '@extend-ai/react-docx-doc-model':
-        specifier: workspace:*
-        version: link:../doc-model
-      '@extend-ai/react-docx-editor-ops':
-        specifier: workspace:*
-        version: link:../editor-ops
-      '@extend-ai/react-docx-layout-engine':
-        specifier: workspace:*
-        version: link:../layout-engine
-      '@extend-ai/react-docx-ooxml-core':
-        specifier: workspace:*
-        version: link:../ooxml-core
-      '@extend-ai/react-docx-serializer':
-        specifier: workspace:*
-        version: link:../serializer
       '@tanstack/react-virtual':
         specifier: ^3.13.12
         version: 3.13.19(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
@@ -218,6 +191,25 @@ importers:
       utif:
         specifier: ^3.1.0
         version: 3.1.0
+    devDependencies:
+      '@extend-ai/react-docx-doc-model':
+        specifier: workspace:*
+        version: link:../doc-model
+      '@extend-ai/react-docx-editor-ops':
+        specifier: workspace:*
+        version: link:../editor-ops
+      '@extend-ai/react-docx-layout-core':
+        specifier: workspace:*
+        version: link:../layout-core
+      '@extend-ai/react-docx-layout-engine':
+        specifier: workspace:*
+        version: link:../layout-engine
+      '@extend-ai/react-docx-ooxml-core':
+        specifier: workspace:*
+        version: link:../ooxml-core
+      '@extend-ai/react-docx-serializer':
+        specifier: workspace:*
+        version: link:../serializer
 
   packages/serializer:
     dependencies:

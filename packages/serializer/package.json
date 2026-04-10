@@ -1,5 +1,6 @@
 {
   "name": "@extend-ai/react-docx-serializer",
+  "private": true,
   "version": "0.1.0",
   "description": "Serializer for converting doc model back to OOXML",
   "type": "module",

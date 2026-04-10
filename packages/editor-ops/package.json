@@ -1,5 +1,6 @@
 {
   "name": "@extend-ai/react-docx-editor-ops",
+  "private": true,
   "version": "0.1.0",
   "description": "Editing operations for DOCX doc model",
   "type": "module",

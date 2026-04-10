@@ -1,5 +1,6 @@
 {
   "name": "@extend-ai/react-docx-layout-engine",
+  "private": true,
   "version": "0.1.0",
   "description": "Layout and pagination for normalized DOCX model",
   "type": "module",

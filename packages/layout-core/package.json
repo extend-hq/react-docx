@@ -1,5 +1,6 @@
 {
   "name": "@extend-ai/react-docx-layout-core",
+  "private": true,
   "version": "0.1.0",
   "description": "Pure layout resolution and snapshot boundary for DOCX rendering",
   "type": "module",

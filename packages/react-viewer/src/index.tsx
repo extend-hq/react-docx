@@ -507,3 +507,10 @@ export {
   parseSectionLayout,
   resolveDocumentLayout
 } from "./section-layout";
+
+export * from "@extend-ai/react-docx-ooxml-core";
+export * from "@extend-ai/react-docx-doc-model";
+export * from "@extend-ai/react-docx-editor-ops";
+export * from "@extend-ai/react-docx-layout-engine";
+export * from "@extend-ai/react-docx-layout-core";
+export * from "@extend-ai/react-docx-serializer";

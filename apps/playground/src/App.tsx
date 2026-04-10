@@ -1,6 +1,6 @@
 import * as React from "react";
-import type { DocModel } from "@extend-ai/react-docx-doc-model";
 import {
+  type DocModel,
   type DocxBorderContext,
   type DocxBorderPreset,
   type DocxContextMenuActionId,
@@ -21,7 +21,7 @@ import {
   useDocxPageLayout,
   useDocxPagination,
   useDocxParagraphStyles,
-  useDocxTrackChanges,
+  useDocxTrackChanges
 } from "@extend-ai/react-docx";
 import {
   ArrowDown,
