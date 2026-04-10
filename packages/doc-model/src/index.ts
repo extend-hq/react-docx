@@ -250,15 +250,21 @@ export interface TableCellStyle {
 
 export type TableCellContentNode = ParagraphNode | TableNode;
 
-function isParagraphCellContent(node: TableCellContentNode): node is ParagraphNode {
+function isParagraphCellContent(
+  node: TableCellContentNode
+): node is ParagraphNode {
   return node.type === "paragraph";
 }
 
-function isTableCellContentTable(node: TableCellContentNode): node is TableNode {
+function isTableCellContentTable(
+  node: TableCellContentNode
+): node is TableNode {
   return node.type === "table";
 }
 
-function cellParagraphsFromContent(nodes: TableCellContentNode[]): ParagraphNode[] {
+function cellParagraphsFromContent(
+  nodes: TableCellContentNode[]
+): ParagraphNode[] {
   const paragraphs: ParagraphNode[] = [];
 
   const walk = (items: TableCellContentNode[]): void => {
@@ -282,7 +288,9 @@ function cellParagraphsFromContent(nodes: TableCellContentNode[]): ParagraphNode
   return paragraphs;
 }
 
-function cloneTableCellContent(nodes: TableCellContentNode[]): TableCellContentNode[] {
+function cloneTableCellContent(
+  nodes: TableCellContentNode[]
+): TableCellContentNode[] {
   return nodes.map((node) => {
     if (isParagraphCellContent(node)) {
       return cloneParagraph(node);
@@ -296,7 +304,10 @@ function cloneTableCellContent(nodes: TableCellContentNode[]): TableCellContentN
   });
 }
 
-function applyRunStyleToTableCellContent(nodes: TableCellContentNode[], runStyle: TextStyle): void {
+function applyRunStyleToTableCellContent(
+  nodes: TableCellContentNode[],
+  runStyle: TextStyle
+): void {
   for (const node of nodes) {
     if (isParagraphCellContent(node)) {
       applyRunStyleToParagraph(node, runStyle);
@@ -506,9 +517,7 @@ function parseDocumentBackgroundColor(documentXml: string): string | undefined {
     return undefined;
   }
 
-  return normalizeHexColor(
-    backgroundTag.match(/\bw:color="([^"]+)"/i)?.[1]
-  );
+  return normalizeHexColor(backgroundTag.match(/\bw:color="([^"]+)"/i)?.[1]);
 }
 
 interface RawStyleDefinition {
@@ -599,7 +608,9 @@ interface ParsedTableStyleDefinition {
   id: string;
   basedOnId?: string;
   name: string;
-  conditions: Partial<Record<TableConditionalStyleType, ParsedTableStyleCondition>>;
+  conditions: Partial<
+    Record<TableConditionalStyleType, ParsedTableStyleCondition>
+  >;
   floating?: NonNullable<TableStyle["floating"]>;
   properties?: ParsedTableProperties;
 }
@@ -633,14 +644,14 @@ const MIME_BY_EXTENSION: Record<string, string> = {
   wmf: "image/wmf",
   emf: "image/emf",
   webp: "image/webp",
-  svg: "image/svg+xml"
+  svg: "image/svg+xml",
 };
 
 function decodeXmlEntities(text: string): string {
   return text
     .replaceAll("&lt;", "<")
     .replaceAll("&gt;", ">")
-    .replaceAll("&quot;", "\"")
+    .replaceAll("&quot;", '"')
     .replaceAll("&apos;", "'")
     .replaceAll("&amp;", "&");
 }
@@ -656,7 +667,10 @@ interface TagRange {
 
 function extractBalancedTagRanges(xml: string, tagName: string): TagRange[] {
   const escapedTagName = escapeRegExp(tagName);
-  const tokenPattern = new RegExp(`<${escapedTagName}\\b[^>]*\\/?>|<\\/${escapedTagName}>`, "gi");
+  const tokenPattern = new RegExp(
+    `<${escapedTagName}\\b[^>]*\\/?>|<\\/${escapedTagName}>`,
+    "gi"
+  );
   const ranges: TagRange[] = [];
   const startStack: number[] = [];
 
@@ -676,7 +690,7 @@ function extractBalancedTagRanges(xml: string, tagName: string): TagRange[] {
       if (startStack.length === 0) {
         ranges.push({
           start,
-          end: tokenIndex + tokenXml.length
+          end: tokenIndex + tokenXml.length,
         });
       }
       continue;
@@ -687,7 +701,7 @@ function extractBalancedTagRanges(xml: string, tagName: string): TagRange[] {
       if (startStack.length === 0) {
         ranges.push({
           start: tokenIndex,
-          end: tokenIndex + tokenXml.length
+          end: tokenIndex + tokenXml.length,
         });
       }
       continue;
@@ -700,18 +714,23 @@ function extractBalancedTagRanges(xml: string, tagName: string): TagRange[] {
 }
 
 function extractBalancedTagBlocks(xml: string, tagName: string): string[] {
-  return extractBalancedTagRanges(xml, tagName).map((range) => xml.slice(range.start, range.end));
+  return extractBalancedTagRanges(xml, tagName).map((range) =>
+    xml.slice(range.start, range.end)
+  );
 }
 
 interface TaggedRange extends TagRange {
   tagName: string;
 }
 
-function extractBalancedTagBlocksInOrder(xml: string, tagNames: string[]): TaggedRange[] {
+function extractBalancedTagBlocksInOrder(
+  xml: string,
+  tagNames: string[]
+): TaggedRange[] {
   const ranges = tagNames.flatMap((tagName) =>
     extractBalancedTagRanges(xml, tagName).map((range) => ({
       ...range,
-      tagName
+      tagName,
     }))
   );
 
@@ -725,7 +744,8 @@ function extractBalancedTagBlocksInOrder(xml: string, tagNames: string[]): Tagge
   const topLevelRanges: TaggedRange[] = [];
   for (const range of ranges) {
     const nestedInsideParent = topLevelRanges.some(
-      (parentRange) => range.start >= parentRange.start && range.end <= parentRange.end
+      (parentRange) =>
+        range.start >= parentRange.start && range.end <= parentRange.end
     );
     if (nestedInsideParent) {
       continue;
@@ -736,7 +756,10 @@ function extractBalancedTagBlocksInOrder(xml: string, tagNames: string[]): Tagge
   return topLevelRanges;
 }
 
-function parseOnOffAttribute(xml: string, tagName: string): boolean | undefined {
+function parseOnOffAttribute(
+  xml: string,
+  tagName: string
+): boolean | undefined {
   const match = xml.match(new RegExp(`<w:${tagName}\\b([^>]*)\\/?>`, "i"));
   if (!match) {
     return undefined;
@@ -749,7 +772,9 @@ function parseOnOffAttribute(xml: string, tagName: string): boolean | undefined 
   }
 
   const value = valueMatch[1].toLowerCase();
-  return value !== "0" && value !== "false" && value !== "none" && value !== "off";
+  return (
+    value !== "0" && value !== "false" && value !== "none" && value !== "off"
+  );
 }
 
 function parseUnderlineAttribute(xml: string): boolean | undefined {
@@ -762,7 +787,9 @@ function parseUnderlineAttribute(xml: string): boolean | undefined {
   const valueMatch = attributes.match(/\bw:val="([^"]+)"/i);
   if (valueMatch) {
     const value = valueMatch[1].toLowerCase();
-    return value !== "0" && value !== "false" && value !== "none" && value !== "off";
+    return (
+      value !== "0" && value !== "false" && value !== "none" && value !== "off"
+    );
   }
 
   const compactAttributes = attributes.replace(/\s+/g, "").replace(/\/+$/g, "");
@@ -788,17 +815,28 @@ function parseUnderlineAttribute(xml: string): boolean | undefined {
   return true;
 }
 
-function normalizeAlignment(rawAlignment?: string): ParagraphAlignment | undefined {
+function normalizeAlignment(
+  rawAlignment?: string
+): ParagraphAlignment | undefined {
   if (!rawAlignment) {
     return undefined;
   }
 
   const value = rawAlignment.toLowerCase();
-  if (value === "both" || value === "distribute" || value === "thaidistribute") {
+  if (
+    value === "both" ||
+    value === "distribute" ||
+    value === "thaidistribute"
+  ) {
     return "justify";
   }
 
-  if (value === "left" || value === "center" || value === "right" || value === "justify") {
+  if (
+    value === "left" ||
+    value === "center" ||
+    value === "right" ||
+    value === "justify"
+  ) {
     return value;
   }
 
@@ -864,7 +902,7 @@ const DEFAULT_DRAWING_SCHEME_COLORS: ThemeColorMap = {
   accent6: "#ffc000",
   hlink: "#0563c1",
   folhlink: "#954f72",
-  followedhyperlink: "#954f72"
+  followedhyperlink: "#954f72",
 };
 
 function emuToPixels(value: number | string | undefined): number | undefined {
@@ -888,9 +926,16 @@ function resolveDrawingColorFromXml(
     return undefined;
   }
 
-  const srgb = normalizeHexColor(colorXml.match(/<a:srgbClr\b[^>]*val="([^"]+)"/i)?.[1]);
-  const sys = normalizeHexColor(colorXml.match(/<a:sysClr\b[^>]*lastClr="([^"]+)"/i)?.[1]);
-  const schemeToken = colorXml.match(/<a:schemeClr\b[^>]*val="([^"]+)"/i)?.[1]?.trim().toLowerCase();
+  const srgb = normalizeHexColor(
+    colorXml.match(/<a:srgbClr\b[^>]*val="([^"]+)"/i)?.[1]
+  );
+  const sys = normalizeHexColor(
+    colorXml.match(/<a:sysClr\b[^>]*lastClr="([^"]+)"/i)?.[1]
+  );
+  const schemeToken = colorXml
+    .match(/<a:schemeClr\b[^>]*val="([^"]+)"/i)?.[1]
+    ?.trim()
+    .toLowerCase();
   const scheme =
     (schemeToken ? themeColors[schemeToken] : undefined) ??
     (schemeToken ? DEFAULT_DRAWING_SCHEME_COLORS[schemeToken] : undefined);
@@ -908,7 +953,7 @@ function resolveDrawingColorFromXml(
 
   return {
     color,
-    opacity
+    opacity,
   };
 }
 
@@ -926,7 +971,7 @@ function gradientVectorForAngle(angleDegrees: number): {
     x1: `${50 - dx * 50}%`,
     y1: `${50 - dy * 50}%`,
     x2: `${50 + dx * 50}%`,
-    y2: `${50 + dy * 50}%`
+    y2: `${50 + dy * 50}%`,
   };
 }
 
@@ -935,13 +980,16 @@ function svgRotationTransform(
   widthPx: number,
   heightPx: number
 ): string {
-  if (!Number.isFinite(rotationDegrees) || Math.abs(rotationDegrees as number) < 0.01) {
+  if (
+    !Number.isFinite(rotationDegrees) ||
+    Math.abs(rotationDegrees as number) < 0.01
+  ) {
     return "";
   }
 
-  return ` transform="rotate(${(rotationDegrees as number).toFixed(3)} ${Math.round(widthPx / 2)} ${Math.round(
-    heightPx / 2
-  )})"`;
+  return ` transform="rotate(${(rotationDegrees as number).toFixed(
+    3
+  )} ${Math.round(widthPx / 2)} ${Math.round(heightPx / 2)})"`;
 }
 
 function svgRotationLayout(
@@ -956,11 +1004,14 @@ function svgRotationLayout(
 } {
   const safeWidth = Math.max(1, Math.round(widthPx));
   const safeHeight = Math.max(1, Math.round(heightPx));
-  if (!Number.isFinite(rotationDegrees) || Math.abs(rotationDegrees as number) < 0.01) {
+  if (
+    !Number.isFinite(rotationDegrees) ||
+    Math.abs(rotationDegrees as number) < 0.01
+  ) {
     return {
       transformAttribute: "",
       viewBoxWidthPx: safeWidth,
-      viewBoxHeightPx: safeHeight
+      viewBoxHeightPx: safeHeight,
     };
   }
 
@@ -973,13 +1024,13 @@ function svgRotationLayout(
     { x: 0, y: 0 },
     { x: safeWidth, y: 0 },
     { x: safeWidth, y: safeHeight },
-    { x: 0, y: safeHeight }
+    { x: 0, y: safeHeight },
   ].map(({ x, y }) => {
     const deltaX = x - centerX;
     const deltaY = y - centerY;
     return {
       x: centerX + deltaX * cos - deltaY * sin,
-      y: centerY + deltaX * sin + deltaY * cos
+      y: centerY + deltaX * sin + deltaY * cos,
     };
   });
   const minX = Math.min(...corners.map((corner) => corner.x));
@@ -990,12 +1041,14 @@ function svgRotationLayout(
   const viewBoxHeightPx = Math.max(1, Math.ceil(maxY - minY));
 
   return {
-    transformAttribute: ` transform="translate(${(-minX).toFixed(2)} ${(-minY).toFixed(2)}) rotate(${(
-      rotationDegrees as number
-    ).toFixed(3)} ${centerX.toFixed(2)} ${centerY.toFixed(2)})"`,
+    transformAttribute: ` transform="translate(${(-minX).toFixed(
+      2
+    )} ${(-minY).toFixed(2)}) rotate(${(rotationDegrees as number).toFixed(
+      3
+    )} ${centerX.toFixed(2)} ${centerY.toFixed(2)})"`,
     viewBoxWidthPx,
     viewBoxHeightPx,
-    preserveAspectRatio: "none"
+    preserveAspectRatio: "none",
   };
 }
 
@@ -1015,42 +1068,59 @@ function drawingShapeFillMarkup(
     if (resolved) {
       return {
         fillAttribute: `fill="${resolved.color}"${
-          resolved.opacity !== undefined ? ` fill-opacity="${resolved.opacity}"` : ""
+          resolved.opacity !== undefined
+            ? ` fill-opacity="${resolved.opacity}"`
+            : ""
         }`,
-        defs: []
+        defs: [],
       };
     }
   }
 
-  const gradientFillXml = extractBalancedTagBlocks(fillScopeXml, "a:gradFill")[0];
+  const gradientFillXml = extractBalancedTagBlocks(
+    fillScopeXml,
+    "a:gradFill"
+  )[0];
   if (gradientFillXml) {
     const gradientStops = extractBalancedTagBlocks(gradientFillXml, "a:gs")
       .map((stopXml) => {
-        const rawPosition = Number(getAttribute(stopXml.match(/<a:gs\b[^>]*>/i)?.[0] ?? "", "pos"));
+        const rawPosition = Number(
+          getAttribute(stopXml.match(/<a:gs\b[^>]*>/i)?.[0] ?? "", "pos")
+        );
         const resolved = resolveDrawingColorFromXml(stopXml, themeColors);
         if (!resolved) {
           return undefined;
         }
 
-        const clampedPosition = Number.isFinite(rawPosition) ? Math.max(0, Math.min(100, rawPosition / 1000)) : 0;
-        return `<stop offset="${clampedPosition}%" stop-color="${resolved.color}"${
-          resolved.opacity !== undefined ? ` stop-opacity="${resolved.opacity}"` : ""
+        const clampedPosition = Number.isFinite(rawPosition)
+          ? Math.max(0, Math.min(100, rawPosition / 1000))
+          : 0;
+        return `<stop offset="${clampedPosition}%" stop-color="${
+          resolved.color
+        }"${
+          resolved.opacity !== undefined
+            ? ` stop-opacity="${resolved.opacity}"`
+            : ""
         }/>`;
       })
       .filter((stop): stop is string => Boolean(stop));
 
     if (gradientStops.length > 0) {
-      const angleRaw = Number(getAttribute(gradientFillXml.match(/<a:lin\b[^>]*>/i)?.[0] ?? "", "ang"));
+      const angleRaw = Number(
+        getAttribute(gradientFillXml.match(/<a:lin\b[^>]*>/i)?.[0] ?? "", "ang")
+      );
       const angleDegrees = Number.isFinite(angleRaw) ? angleRaw / 60000 : 90;
       const vector = gradientVectorForAngle(angleDegrees);
 
       return {
         fillAttribute: `fill="url(#${gradientId})"`,
         defs: [
-          `<linearGradient id="${gradientId}" x1="${vector.x1}" y1="${vector.y1}" x2="${vector.x2}" y2="${vector.y2}">${gradientStops.join(
+          `<linearGradient id="${gradientId}" x1="${vector.x1}" y1="${
+            vector.y1
+          }" x2="${vector.x2}" y2="${vector.y2}">${gradientStops.join(
             ""
-          )}</linearGradient>`
-        ]
+          )}</linearGradient>`,
+        ],
       };
     }
   }
@@ -1058,30 +1128,38 @@ function drawingShapeFillMarkup(
   if (/<a:noFill\b/i.test(fillScopeXml)) {
     return {
       fillAttribute: 'fill="none"',
-      defs: []
+      defs: [],
     };
   }
 
-  const styleFillRefXml = extractBalancedTagBlocks(shapePropertiesXml, "a:fillRef")[0];
+  const styleFillRefXml = extractBalancedTagBlocks(
+    shapePropertiesXml,
+    "a:fillRef"
+  )[0];
   if (styleFillRefXml) {
     const resolved = resolveDrawingColorFromXml(styleFillRefXml, themeColors);
     if (resolved) {
       return {
         fillAttribute: `fill="${resolved.color}"${
-          resolved.opacity !== undefined ? ` fill-opacity="${resolved.opacity}"` : ""
+          resolved.opacity !== undefined
+            ? ` fill-opacity="${resolved.opacity}"`
+            : ""
         }`,
-        defs: []
+        defs: [],
       };
     }
   }
 
   return {
     fillAttribute: 'fill="none"',
-    defs: []
+    defs: [],
   };
 }
 
-function drawingShapeStrokeMarkup(shapePropertiesXml: string, themeColors: ThemeColorMap): string {
+function drawingShapeStrokeMarkup(
+  shapePropertiesXml: string,
+  themeColors: ThemeColorMap
+): string {
   const lineXml =
     extractBalancedTagBlocks(shapePropertiesXml, "a:ln")[0] ??
     shapePropertiesXml.match(/<a:ln\b[^>]*\/>/i)?.[0] ??
@@ -1090,27 +1168,41 @@ function drawingShapeStrokeMarkup(shapePropertiesXml: string, themeColors: Theme
     return 'stroke="none"';
   }
 
-  const lineWidthEmu = parseIntegerAttribute(lineXml.match(/<a:ln\b[^>]*>/i)?.[0] ?? "", "w");
+  const lineWidthEmu = parseIntegerAttribute(
+    lineXml.match(/<a:ln\b[^>]*>/i)?.[0] ?? "",
+    "w"
+  );
   if (Number.isFinite(lineWidthEmu) && (lineWidthEmu as number) <= 0) {
     return 'stroke="none"';
   }
 
   const resolved =
     resolveDrawingColorFromXml(lineXml, themeColors) ??
-    resolveDrawingColorFromXml(extractBalancedTagBlocks(shapePropertiesXml, "a:lnRef")[0], themeColors);
+    resolveDrawingColorFromXml(
+      extractBalancedTagBlocks(shapePropertiesXml, "a:lnRef")[0],
+      themeColors
+    );
   const widthPx = emuToPixels(lineWidthEmu);
 
   return `stroke="${resolved?.color ?? "#000000"}"${
-    resolved?.opacity !== undefined ? ` stroke-opacity="${resolved.opacity}"` : ""
+    resolved?.opacity !== undefined
+      ? ` stroke-opacity="${resolved.opacity}"`
+      : ""
   } stroke-width="${Math.max(1, widthPx ?? 1)}"`;
 }
 
-function drawingShapePathData(pathXml: string, widthPx: number, heightPx: number): string | undefined {
+function drawingShapePathData(
+  pathXml: string,
+  widthPx: number,
+  heightPx: number
+): string | undefined {
   const pathTag = pathXml.match(/<a:path\b[^>]*>/i)?.[0] ?? "";
   const baseWidth = Math.max(1, parseIntegerAttribute(pathTag, "w") ?? 21600);
   const baseHeight = Math.max(1, parseIntegerAttribute(pathTag, "h") ?? 21600);
   const commandMatches = [
-    ...pathXml.matchAll(/<(a:moveTo|a:lnTo|a:cubicBezTo|a:close)\b[\s\S]*?(?:<\/\1>|\/>)/gi)
+    ...pathXml.matchAll(
+      /<(a:moveTo|a:lnTo|a:cubicBezTo|a:close)\b[\s\S]*?(?:<\/\1>|\/>)/gi
+    ),
   ];
   if (commandMatches.length === 0) {
     return undefined;
@@ -1136,7 +1228,11 @@ function drawingShapePathData(pathXml: string, widthPx: number, heightPx: number
         return "Z";
       }
 
-      const pointMatches = [...commandXml.matchAll(/<a:pt\b[^>]*x="([^"]+)"[^>]*y="([^"]+)"[^>]*\/>/gi)];
+      const pointMatches = [
+        ...commandXml.matchAll(
+          /<a:pt\b[^>]*x="([^"]+)"[^>]*y="([^"]+)"[^>]*\/>/gi
+        ),
+      ];
       if (commandType.includes("moveto") || commandType.includes("lnto")) {
         const point = pointMatches[0];
         if (!point) {
@@ -1177,7 +1273,13 @@ function ellipsePathData(widthPx: number, heightPx: number): string {
   const safeHeight = Math.max(1, Math.round(heightPx));
   const rx = safeWidth / 2;
   const ry = safeHeight / 2;
-  return `M${rx} 0 C${safeWidth - rx * 0.45} 0 ${safeWidth} ${ry * 0.45} ${safeWidth} ${ry} C${safeWidth} ${safeHeight - ry * 0.45} ${safeWidth - rx * 0.45} ${safeHeight} ${rx} ${safeHeight} C${rx * 0.45} ${safeHeight} 0 ${safeHeight - ry * 0.45} 0 ${ry} C0 ${ry * 0.45} ${rx * 0.45} 0 ${rx} 0 Z`;
+  return `M${rx} 0 C${safeWidth - rx * 0.45} 0 ${safeWidth} ${
+    ry * 0.45
+  } ${safeWidth} ${ry} C${safeWidth} ${safeHeight - ry * 0.45} ${
+    safeWidth - rx * 0.45
+  } ${safeHeight} ${rx} ${safeHeight} C${rx * 0.45} ${safeHeight} 0 ${
+    safeHeight - ry * 0.45
+  } 0 ${ry} C0 ${ry * 0.45} ${rx * 0.45} 0 ${rx} 0 Z`;
 }
 
 function capsulePathData(widthPx: number, heightPx: number): string {
@@ -1185,11 +1287,27 @@ function capsulePathData(widthPx: number, heightPx: number): string {
   const safeHeight = Math.max(1, Math.round(heightPx));
   if (safeHeight >= safeWidth) {
     const rx = safeWidth / 2;
-    return `M${rx} 0 C${safeWidth - rx * 0.45} 0 ${safeWidth} ${rx * 0.45} ${safeWidth} ${rx} L${safeWidth} ${safeHeight - rx} C${safeWidth} ${safeHeight - rx * 0.45} ${safeWidth - rx * 0.45} ${safeHeight} ${rx} ${safeHeight} C${rx * 0.45} ${safeHeight} 0 ${safeHeight - rx * 0.45} 0 ${safeHeight - rx} L0 ${rx} C0 ${rx * 0.45} ${rx * 0.45} 0 ${rx} 0 Z`;
+    return `M${rx} 0 C${safeWidth - rx * 0.45} 0 ${safeWidth} ${
+      rx * 0.45
+    } ${safeWidth} ${rx} L${safeWidth} ${safeHeight - rx} C${safeWidth} ${
+      safeHeight - rx * 0.45
+    } ${safeWidth - rx * 0.45} ${safeHeight} ${rx} ${safeHeight} C${
+      rx * 0.45
+    } ${safeHeight} 0 ${safeHeight - rx * 0.45} 0 ${
+      safeHeight - rx
+    } L0 ${rx} C0 ${rx * 0.45} ${rx * 0.45} 0 ${rx} 0 Z`;
   }
 
   const ry = safeHeight / 2;
-  return `M0 ${ry} C0 ${ry * 0.45} ${ry * 0.45} 0 ${ry} 0 L${safeWidth - ry} 0 C${safeWidth - ry * 0.45} 0 ${safeWidth} ${ry * 0.45} ${safeWidth} ${ry} C${safeWidth} ${safeHeight - ry * 0.45} ${safeWidth - ry * 0.45} ${safeHeight} ${safeWidth - ry} ${safeHeight} L${ry} ${safeHeight} C${ry * 0.45} ${safeHeight} 0 ${safeHeight - ry * 0.45} 0 ${ry} Z`;
+  return `M0 ${ry} C0 ${ry * 0.45} ${ry * 0.45} 0 ${ry} 0 L${
+    safeWidth - ry
+  } 0 C${safeWidth - ry * 0.45} 0 ${safeWidth} ${
+    ry * 0.45
+  } ${safeWidth} ${ry} C${safeWidth} ${safeHeight - ry * 0.45} ${
+    safeWidth - ry * 0.45
+  } ${safeHeight} ${safeWidth - ry} ${safeHeight} L${ry} ${safeHeight} C${
+    ry * 0.45
+  } ${safeHeight} 0 ${safeHeight - ry * 0.45} 0 ${ry} Z`;
 }
 
 function drawingShapeHeuristicPathData(
@@ -1217,9 +1335,75 @@ function drawingShapeHeuristicPathData(
 function flowChartDelayPathData(widthPx: number, heightPx: number): string {
   const safeWidth = Math.max(1, Math.round(widthPx));
   const safeHeight = Math.max(1, Math.round(heightPx));
-  const radius = Math.max(1, Math.min(Math.round(safeHeight / 2), safeWidth - 1));
+  const radius = Math.max(
+    1,
+    Math.min(Math.round(safeHeight / 2), safeWidth - 1)
+  );
   const arcX = safeWidth - radius;
   return `M0 0 H${arcX} A${radius} ${radius} 0 0 1 ${arcX} ${safeHeight} H0 Z`;
+}
+
+function rightTrianglePathData(widthPx: number, heightPx: number): string {
+  const safeWidth = Math.max(1, Math.round(widthPx));
+  const safeHeight = Math.max(1, Math.round(heightPx));
+  return `M0 ${safeHeight} L${safeWidth} ${safeHeight} L0 0 Z`;
+}
+
+function drawingPresetPathData(
+  preset: string | undefined,
+  widthPx: number,
+  heightPx: number
+): string | undefined {
+  const normalizedPreset = preset?.trim();
+  if (!normalizedPreset) {
+    return undefined;
+  }
+
+  if (normalizedPreset === "flowChartDelay") {
+    return flowChartDelayPathData(widthPx, heightPx);
+  }
+
+  if (normalizedPreset === "rtTriangle") {
+    return rightTrianglePathData(widthPx, heightPx);
+  }
+
+  return undefined;
+}
+
+function svgGroupedShapeTransform(
+  x: number,
+  y: number,
+  widthPx: number,
+  heightPx: number,
+  transformXml: string | undefined
+): string {
+  const transforms = [`translate(${x} ${y})`];
+  const flipH = /^(?:1|true)$/i.test(
+    getAttribute(transformXml ?? "", "flipH") ?? ""
+  );
+  const flipV = /^(?:1|true)$/i.test(
+    getAttribute(transformXml ?? "", "flipV") ?? ""
+  );
+  const rotationRaw = Number(getAttribute(transformXml ?? "", "rot"));
+  const rotationDegrees =
+    Number.isFinite(rotationRaw) && Math.abs(rotationRaw) > 0
+      ? rotationRaw / 60000
+      : undefined;
+
+  if (flipH || flipV || Number.isFinite(rotationDegrees)) {
+    const centerX = Math.round(widthPx / 2);
+    const centerY = Math.round(heightPx / 2);
+    transforms.push(`translate(${centerX} ${centerY})`);
+    if (Number.isFinite(rotationDegrees)) {
+      transforms.push(`rotate(${(rotationDegrees as number).toFixed(3)})`);
+    }
+    if (flipH || flipV) {
+      transforms.push(`scale(${flipH ? -1 : 1} ${flipV ? -1 : 1})`);
+    }
+    transforms.push(`translate(${-centerX} ${-centerY})`);
+  }
+
+  return ` transform="${transforms.join(" ")}"`;
 }
 
 function renderGroupedPictureSvgElement(
@@ -1230,8 +1414,10 @@ function renderGroupedPictureSvgElement(
   scaleY: number,
   context: ParseContext
 ): string | undefined {
-  const picturePropertiesXml = extractBalancedTagBlocks(pictureXml, "pic:spPr")[0] ?? "";
-  const transformXml = extractBalancedTagBlocks(picturePropertiesXml, "a:xfrm")[0] ?? "";
+  const picturePropertiesXml =
+    extractBalancedTagBlocks(pictureXml, "pic:spPr")[0] ?? "";
+  const transformXml =
+    extractBalancedTagBlocks(picturePropertiesXml, "a:xfrm")[0] ?? "";
   const offTag = transformXml.match(/<a:off\b[^>]*\/>/i)?.[0] ?? "";
   const extTag = transformXml.match(/<a:ext\b[^>]*\/>/i)?.[0] ?? "";
   const offXPx = (parseIntegerAttribute(offTag, "x") ?? 0) - childOffsetX;
@@ -1261,7 +1447,9 @@ function renderGroupedPictureSvgElement(
     return undefined;
   }
 
-  const mimeType = contentTypeForPart(partName, context.contentTypes) ?? "application/octet-stream";
+  const mimeType =
+    contentTypeForPart(partName, context.contentTypes) ??
+    "application/octet-stream";
   const src = `data:${mimeType};base64,${bytesToBase64(binary)}`;
   return `<image href="${src}" x="${x}" y="${y}" width="${widthPx}" height="${heightPx}" preserveAspectRatio="none"/>`;
 }
@@ -1281,8 +1469,14 @@ function renderStandaloneWordShapeSvg(
       groupTransformXml.match(/<a:chExt\b[^>]*\/?>/i)?.[0] ?? "";
     const childOffsetX = parseIntegerAttribute(childOffsetTag, "x") ?? 0;
     const childOffsetY = parseIntegerAttribute(childOffsetTag, "y") ?? 0;
-    const childExtentX = Math.max(1, parseIntegerAttribute(childExtentTag, "cx") ?? 1);
-    const childExtentY = Math.max(1, parseIntegerAttribute(childExtentTag, "cy") ?? 1);
+    const childExtentX = Math.max(
+      1,
+      parseIntegerAttribute(childExtentTag, "cx") ?? 1
+    );
+    const childExtentY = Math.max(
+      1,
+      parseIntegerAttribute(childExtentTag, "cy") ?? 1
+    );
     const safeWidth = clamp(Math.round(widthPx ?? 320), 8, 2400);
     const safeHeight = clamp(Math.round(heightPx ?? 120), 8, 2400);
     const scaleX = safeWidth / childExtentX;
@@ -1301,8 +1495,12 @@ function renderStandaloneWordShapeSvg(
       .filter((element): element is string => Boolean(element));
     const shapeElements = extractBalancedTagBlocks(groupXml, "wps:wsp")
       .map((shapeXml, shapeIndex) => {
-        const shapePropertiesXml = extractBalancedTagBlocks(shapeXml, "wps:spPr")[0] ?? "";
-        const transformXml = extractBalancedTagBlocks(shapePropertiesXml, "a:xfrm")[0];
+        const shapePropertiesXml =
+          extractBalancedTagBlocks(shapeXml, "wps:spPr")[0] ?? "";
+        const transformXml = extractBalancedTagBlocks(
+          shapePropertiesXml,
+          "a:xfrm"
+        )[0];
         const offTag = transformXml.match(/<a:off\b[^>]*\/?>/i)?.[0] ?? "";
         const extTag = transformXml.match(/<a:ext\b[^>]*\/?>/i)?.[0] ?? "";
         const offXPx = (parseIntegerAttribute(offTag, "x") ?? 0) - childOffsetX;
@@ -1313,14 +1511,28 @@ function renderStandaloneWordShapeSvg(
         const shapeHeight = Math.max(1, Math.round(extYPx * scaleY));
         const x = Math.round(offXPx * scaleX);
         const y = Math.round(offYPx * scaleY);
-        const preset = getAttribute(shapePropertiesXml.match(/<a:prstGeom\b[^>]*>/i)?.[0] ?? "", "prst")?.trim();
+        const shapeTransform = svgGroupedShapeTransform(
+          x,
+          y,
+          shapeWidth,
+          shapeHeight,
+          transformXml
+        );
+        const preset = getAttribute(
+          shapePropertiesXml.match(/<a:prstGeom\b[^>]*>/i)?.[0] ?? "",
+          "prst"
+        )?.trim();
         const fill = drawingShapeFillMarkup(
-          `${shapePropertiesXml}${extractBalancedTagBlocks(shapeXml, "wps:style")[0] ?? ""}`,
+          `${shapePropertiesXml}${
+            extractBalancedTagBlocks(shapeXml, "wps:style")[0] ?? ""
+          }`,
           context.styleSheet.themeColors,
           `group-fill-${shapeIndex}`
         );
         const stroke = drawingShapeStrokeMarkup(
-          `${shapePropertiesXml}${extractBalancedTagBlocks(shapeXml, "wps:style")[0] ?? ""}`,
+          `${shapePropertiesXml}${
+            extractBalancedTagBlocks(shapeXml, "wps:style")[0] ?? ""
+          }`,
           context.styleSheet.themeColors
         );
         const textBoxParagraphs = parseTextBoxParagraphs(shapeXml, context);
@@ -1334,37 +1546,58 @@ function renderStandaloneWordShapeSvg(
                 textBoxLayout
               )
             : undefined;
-        const positionedTextBoxSvg = textBoxSvg
-          ? textBoxSvg.replace(
-              /^<svg\b/i,
-              `<svg x="${x}" y="${y}"`
-            )
+        const localTextBoxSvg = textBoxSvg
+          ? textBoxSvg.replace(/^<svg\b/i, '<svg x="0" y="0"')
           : "";
+        const presetPathData = drawingPresetPathData(
+          preset,
+          shapeWidth,
+          shapeHeight
+        );
 
         if (preset === "line") {
-          return `<line x1="${x}" y1="${y}" x2="${x + shapeWidth}" y2="${y + shapeHeight}" ${stroke} fill="none"/>`;
+          return `<g${shapeTransform}><line x1="0" y1="${Math.round(
+            shapeHeight / 2
+          )}" x2="${shapeWidth}" y2="${Math.round(
+            shapeHeight / 2
+          )}" ${stroke} fill="none"/>${localTextBoxSvg}</g>`;
         }
 
-        const pathXml = extractBalancedTagBlocks(shapePropertiesXml, "a:path")[0];
-        const directPathData = pathXml ? drawingShapePathData(pathXml, shapeWidth, shapeHeight) : undefined;
+        const pathXml = extractBalancedTagBlocks(
+          shapePropertiesXml,
+          "a:path"
+        )[0];
+        const directPathData = pathXml
+          ? drawingShapePathData(pathXml, shapeWidth, shapeHeight)
+          : undefined;
         const pathData =
           pathXml &&
           /<a:cubicBezTo\b/i.test(pathXml) &&
           (!directPathData || !directPathData.includes("C"))
-            ? drawingShapeHeuristicPathData(pathXml, shapeWidth, shapeHeight) ?? directPathData
+            ? drawingShapeHeuristicPathData(pathXml, shapeWidth, shapeHeight) ??
+              directPathData
             : directPathData;
         if (pathData) {
-          return `${fill.defs.join("")}<path d="${pathData}" transform="translate(${x} ${y})" ${fill.fillAttribute} ${stroke}/>${positionedTextBoxSvg}`;
+          return `${fill.defs.join(
+            ""
+          )}<g${shapeTransform}><path d="${pathData}" ${
+            fill.fillAttribute
+          } ${stroke}/>${localTextBoxSvg}</g>`;
         }
 
-        if (preset === "flowChartDelay") {
-          return `${fill.defs.join("")}<path d="${flowChartDelayPathData(
-            shapeWidth,
-            shapeHeight
-          )}" transform="translate(${x} ${y})" ${fill.fillAttribute} ${stroke}/>${positionedTextBoxSvg}`;
+        if (presetPathData) {
+          return `${fill.defs.join(
+            ""
+          )}<g${shapeTransform}><path d="${presetPathData}" ${
+            fill.fillAttribute
+          } ${stroke}/>${localTextBoxSvg}</g>`;
         }
 
-        return `${fill.defs.join("")}<rect x="${x}" y="${y}" width="${shapeWidth}" height="${shapeHeight}" ${fill.fillAttribute} ${stroke}/>${positionedTextBoxSvg}`;
+        return `${fill.defs.join(
+          ""
+        )}<g${shapeTransform}><rect x="0" y="0" width="${shapeWidth}" height="${shapeHeight}" ${
+          fill.fillAttribute
+        } ${stroke}/>${localTextBoxSvg}</g>`;
       })
       .filter((element): element is string => Boolean(element));
 
@@ -1381,65 +1614,94 @@ function renderStandaloneWordShapeSvg(
     return undefined;
   }
 
-  const shapePropertiesXml = extractBalancedTagBlocks(shapeXml, "wps:spPr")[0] ?? "";
+  const shapePropertiesXml =
+    extractBalancedTagBlocks(shapeXml, "wps:spPr")[0] ?? "";
   if (!shapePropertiesXml) {
     return undefined;
   }
 
   const safeWidth = clamp(Math.round(widthPx ?? 320), 8, 2400);
   const safeHeight = clamp(Math.round(heightPx ?? 240), 8, 2400);
-  const rotationRaw = Number(getAttribute(extractBalancedTagBlocks(shapePropertiesXml, "a:xfrm")[0] ?? "", "rot"));
-  const rotationDegrees = Number.isFinite(rotationRaw) ? rotationRaw / 60000 : undefined;
-  const rotationLayout = svgRotationLayout(rotationDegrees, safeWidth, safeHeight);
-  const preset = getAttribute(shapePropertiesXml.match(/<a:prstGeom\b[^>]*>/i)?.[0] ?? "", "prst")?.trim();
+  const rotationRaw = Number(
+    getAttribute(
+      extractBalancedTagBlocks(shapePropertiesXml, "a:xfrm")[0] ?? "",
+      "rot"
+    )
+  );
+  const rotationDegrees = Number.isFinite(rotationRaw)
+    ? rotationRaw / 60000
+    : undefined;
+  const rotationLayout = svgRotationLayout(
+    rotationDegrees,
+    safeWidth,
+    safeHeight
+  );
+  const preset = getAttribute(
+    shapePropertiesXml.match(/<a:prstGeom\b[^>]*>/i)?.[0] ?? "",
+    "prst"
+  )?.trim();
   const fill = drawingShapeFillMarkup(
-    `${shapePropertiesXml}${extractBalancedTagBlocks(shapeXml, "wps:style")[0] ?? ""}`,
+    `${shapePropertiesXml}${
+      extractBalancedTagBlocks(shapeXml, "wps:style")[0] ?? ""
+    }`,
     context.styleSheet.themeColors,
     "shape-fill"
   );
   const stroke = drawingShapeStrokeMarkup(
-    `${shapePropertiesXml}${extractBalancedTagBlocks(shapeXml, "wps:style")[0] ?? ""}`,
+    `${shapePropertiesXml}${
+      extractBalancedTagBlocks(shapeXml, "wps:style")[0] ?? ""
+    }`,
     context.styleSheet.themeColors
   );
   const pathXml = extractBalancedTagBlocks(shapePropertiesXml, "a:path")[0];
-  const directPathData = pathXml ? drawingShapePathData(pathXml, safeWidth, safeHeight) : undefined;
+  const directPathData = pathXml
+    ? drawingShapePathData(pathXml, safeWidth, safeHeight)
+    : undefined;
   const pathData =
     pathXml &&
     /<a:cubicBezTo\b/i.test(pathXml) &&
     (!directPathData || !directPathData.includes("C"))
-      ? drawingShapeHeuristicPathData(pathXml, safeWidth, safeHeight) ?? directPathData
+      ? drawingShapeHeuristicPathData(pathXml, safeWidth, safeHeight) ??
+        directPathData
       : directPathData;
+  const presetPathData = drawingPresetPathData(preset, safeWidth, safeHeight);
   let body = "";
 
   if (preset === "line") {
-    body = `<line x1="0" y1="${Math.round(safeHeight / 2)}" x2="${safeWidth}" y2="${Math.round(
+    body = `<line x1="0" y1="${Math.round(
+      safeHeight / 2
+    )}" x2="${safeWidth}" y2="${Math.round(
       safeHeight / 2
     )}" ${stroke} fill="none"${rotationLayout.transformAttribute}/>`;
   } else if (pathData) {
     body = `<path d="${pathData}" ${fill.fillAttribute} ${stroke}${rotationLayout.transformAttribute}/>`;
-  } else if (preset === "flowChartDelay") {
-    body = `<path d="${flowChartDelayPathData(
-      safeWidth,
-      safeHeight
-    )}" ${fill.fillAttribute} ${stroke}${rotationLayout.transformAttribute}/>`;
+  } else if (presetPathData) {
+    body = `<path d="${presetPathData}" ${fill.fillAttribute} ${stroke}${rotationLayout.transformAttribute}/>`;
   } else {
     body = `<rect x="0" y="0" width="${safeWidth}" height="${safeHeight}" ${fill.fillAttribute} ${stroke}${rotationLayout.transformAttribute}/>`;
   }
 
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${safeWidth}" height="${safeHeight}" viewBox="0 0 ${rotationLayout.viewBoxWidthPx} ${rotationLayout.viewBoxHeightPx}"${
-    rotationLayout.preserveAspectRatio ? ` preserveAspectRatio="${rotationLayout.preserveAspectRatio}"` : ""
-  }><defs>${fill.defs.join(
-    ""
-  )}</defs>${body}</svg>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${safeWidth}" height="${safeHeight}" viewBox="0 0 ${
+    rotationLayout.viewBoxWidthPx
+  } ${rotationLayout.viewBoxHeightPx}"${
+    rotationLayout.preserveAspectRatio
+      ? ` preserveAspectRatio="${rotationLayout.preserveAspectRatio}"`
+      : ""
+  }><defs>${fill.defs.join("")}</defs>${body}</svg>`;
 }
 
 function getAttribute(tagXml: string, attribute: string): string | undefined {
   const escapedAttribute = attribute.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const match = tagXml.match(new RegExp(`${escapedAttribute}=(?:"([^"]+)"|'([^']+)')`, "i"));
+  const match = tagXml.match(
+    new RegExp(`${escapedAttribute}=(?:"([^"]+)"|'([^']+)')`, "i")
+  );
   return match?.[1] ?? match?.[2];
 }
 
-function parseIntegerAttribute(tagXml: string, attribute: string): number | undefined {
+function parseIntegerAttribute(
+  tagXml: string,
+  attribute: string
+): number | undefined {
   const raw = getAttribute(tagXml, attribute);
   if (!raw) {
     return undefined;
@@ -1453,12 +1715,17 @@ function parseIntegerAttribute(tagXml: string, attribute: string): number | unde
   return Math.round(parsed);
 }
 
-function parseParagraphNumberingFromXml(xml: string): ParagraphNumbering | undefined {
+function parseParagraphNumberingFromXml(
+  xml: string
+): ParagraphNumbering | undefined {
   if (!xml) {
     return undefined;
   }
 
-  const numberingXml = extractBalancedTagBlocks(xml, "w:numPr")[0] ?? xml.match(/<w:numPr\b[^>]*\/>/i)?.[0] ?? "";
+  const numberingXml =
+    extractBalancedTagBlocks(xml, "w:numPr")[0] ??
+    xml.match(/<w:numPr\b[^>]*\/>/i)?.[0] ??
+    "";
   if (!numberingXml) {
     return undefined;
   }
@@ -1478,11 +1745,13 @@ function parseParagraphNumberingFromXml(xml: string): ParagraphNumbering | undef
 
   return {
     numId: Math.round(numId),
-    ilvl: Number.isFinite(ilvlValue) ? Math.max(0, Math.round(ilvlValue)) : 0
+    ilvl: Number.isFinite(ilvlValue) ? Math.max(0, Math.round(ilvlValue)) : 0,
   };
 }
 
-function parseParagraphSpacingFromXml(xml: string): ParagraphSpacing | undefined {
+function parseParagraphSpacingFromXml(
+  xml: string
+): ParagraphSpacing | undefined {
   if (!xml) {
     return undefined;
   }
@@ -1494,15 +1763,19 @@ function parseParagraphSpacingFromXml(xml: string): ParagraphSpacing | undefined
 
   const lineRuleRaw = getAttribute(spacingTag, "w:lineRule")?.toLowerCase();
   const lineRule =
-    lineRuleRaw === "auto" || lineRuleRaw === "exact" || lineRuleRaw === "atleast"
-      ? (lineRuleRaw === "atleast" ? "atLeast" : lineRuleRaw)
+    lineRuleRaw === "auto" ||
+    lineRuleRaw === "exact" ||
+    lineRuleRaw === "atleast"
+      ? lineRuleRaw === "atleast"
+        ? "atLeast"
+        : lineRuleRaw
       : undefined;
 
   const spacing: ParagraphSpacing = {
     beforeTwips: parseIntegerAttribute(spacingTag, "w:before"),
     afterTwips: parseIntegerAttribute(spacingTag, "w:after"),
     lineTwips: parseIntegerAttribute(spacingTag, "w:line"),
-    lineRule
+    lineRule,
   };
 
   if (
@@ -1531,7 +1804,7 @@ function parseParagraphIndentFromXml(xml: string): ParagraphIndent | undefined {
     leftTwips: parseIntegerAttribute(indentTag, "w:left"),
     rightTwips: parseIntegerAttribute(indentTag, "w:right"),
     firstLineTwips: parseIntegerAttribute(indentTag, "w:firstLine"),
-    hangingTwips: parseIntegerAttribute(indentTag, "w:hanging")
+    hangingTwips: parseIntegerAttribute(indentTag, "w:hanging"),
   };
 
   if (
@@ -1593,7 +1866,9 @@ function parseParagraphTabStopsFromXml(xml: string): ParagraphTabStop[] {
     return [];
   }
 
-  const tabsTag = xml.match(/<w:tabs\b[^>]*>[\s\S]*?<\/w:tabs>|<w:tabs\b[^>]*\/>/i)?.[0];
+  const tabsTag = xml.match(
+    /<w:tabs\b[^>]*>[\s\S]*?<\/w:tabs>|<w:tabs\b[^>]*\/>/i
+  )?.[0];
   const tabsXml = tabsTag ?? "";
   if (!tabsXml) {
     return [];
@@ -1616,11 +1891,13 @@ function parseParagraphTabStopsFromXml(xml: string): ParagraphTabStop[] {
     tabStops.push({
       alignment: alignment ?? "left",
       leader: leader ?? "none",
-      positionTwips
+      positionTwips,
     });
   }
 
-  return tabStops.sort((left, right) => (left.positionTwips ?? 0) - (right.positionTwips ?? 0));
+  return tabStops.sort(
+    (left, right) => (left.positionTwips ?? 0) - (right.positionTwips ?? 0)
+  );
 }
 
 function parseParagraphShadingFromXml(xml: string): string | undefined {
@@ -1643,10 +1920,17 @@ function parseOnOffValue(value: string | undefined): boolean | undefined {
   }
 
   const normalized = value.trim().toLowerCase();
-  return normalized !== "0" && normalized !== "false" && normalized !== "none" && normalized !== "off";
+  return (
+    normalized !== "0" &&
+    normalized !== "false" &&
+    normalized !== "none" &&
+    normalized !== "off"
+  );
 }
 
-function parseParagraphBorderStyle(tagXml: string | undefined): ParagraphBorderStyle | undefined {
+function parseParagraphBorderStyle(
+  tagXml: string | undefined
+): ParagraphBorderStyle | undefined {
   if (!tagXml) {
     return undefined;
   }
@@ -1668,15 +1952,19 @@ function parseParagraphBorderStyle(tagXml: string | undefined): ParagraphBorderS
 
   return {
     type,
-    ...(sizeEighthPt !== undefined && sizeEighthPt >= 0 ? { sizeEighthPt } : undefined),
+    ...(sizeEighthPt !== undefined && sizeEighthPt >= 0
+      ? { sizeEighthPt }
+      : undefined),
     ...(spacePt !== undefined && spacePt >= 0 ? { spacePt } : undefined),
     ...(color ? { color } : undefined),
     ...(frame !== undefined ? { frame } : undefined),
-    ...(shadow !== undefined ? { shadow } : undefined)
+    ...(shadow !== undefined ? { shadow } : undefined),
   };
 }
 
-function parseTextRunBorderStyle(tagXml: string | undefined): TextRunBorderStyle | undefined {
+function parseTextRunBorderStyle(
+  tagXml: string | undefined
+): TextRunBorderStyle | undefined {
   if (!tagXml) {
     return undefined;
   }
@@ -1698,31 +1986,49 @@ function parseTextRunBorderStyle(tagXml: string | undefined): TextRunBorderStyle
 
   return {
     type,
-    ...(sizeEighthPt !== undefined && sizeEighthPt >= 0 ? { sizeEighthPt } : undefined),
+    ...(sizeEighthPt !== undefined && sizeEighthPt >= 0
+      ? { sizeEighthPt }
+      : undefined),
     ...(spacePt !== undefined && spacePt >= 0 ? { spacePt } : undefined),
     ...(color ? { color } : undefined),
     ...(frame !== undefined ? { frame } : undefined),
-    ...(shadow !== undefined ? { shadow } : undefined)
+    ...(shadow !== undefined ? { shadow } : undefined),
   };
 }
 
-function parseParagraphBorderSetFromXml(xml: string): ParagraphBorderSet | undefined {
+function parseParagraphBorderSetFromXml(
+  xml: string
+): ParagraphBorderSet | undefined {
   if (!xml) {
     return undefined;
   }
 
   const paragraphBorderXml =
-    extractBalancedTagBlocks(xml, "w:pBdr")[0] ?? xml.match(/<w:pBdr\b[^>]*\/?>/i)?.[0] ?? "";
+    extractBalancedTagBlocks(xml, "w:pBdr")[0] ??
+    xml.match(/<w:pBdr\b[^>]*\/?>/i)?.[0] ??
+    "";
   if (!paragraphBorderXml) {
     return undefined;
   }
 
-  const top = parseParagraphBorderStyle(paragraphBorderXml.match(/<w:top\b[^>]*\/?>/i)?.[0]);
-  const right = parseParagraphBorderStyle(paragraphBorderXml.match(/<w:right\b[^>]*\/?>/i)?.[0]);
-  const bottom = parseParagraphBorderStyle(paragraphBorderXml.match(/<w:bottom\b[^>]*\/?>/i)?.[0]);
-  const left = parseParagraphBorderStyle(paragraphBorderXml.match(/<w:left\b[^>]*\/?>/i)?.[0]);
-  const between = parseParagraphBorderStyle(paragraphBorderXml.match(/<w:between\b[^>]*\/?>/i)?.[0]);
-  const bar = parseParagraphBorderStyle(paragraphBorderXml.match(/<w:bar\b[^>]*\/?>/i)?.[0]);
+  const top = parseParagraphBorderStyle(
+    paragraphBorderXml.match(/<w:top\b[^>]*\/?>/i)?.[0]
+  );
+  const right = parseParagraphBorderStyle(
+    paragraphBorderXml.match(/<w:right\b[^>]*\/?>/i)?.[0]
+  );
+  const bottom = parseParagraphBorderStyle(
+    paragraphBorderXml.match(/<w:bottom\b[^>]*\/?>/i)?.[0]
+  );
+  const left = parseParagraphBorderStyle(
+    paragraphBorderXml.match(/<w:left\b[^>]*\/?>/i)?.[0]
+  );
+  const between = parseParagraphBorderStyle(
+    paragraphBorderXml.match(/<w:between\b[^>]*\/?>/i)?.[0]
+  );
+  const bar = parseParagraphBorderStyle(
+    paragraphBorderXml.match(/<w:bar\b[^>]*\/?>/i)?.[0]
+  );
 
   if (!top && !right && !bottom && !left && !between && !bar) {
     return undefined;
@@ -1734,7 +2040,7 @@ function parseParagraphBorderSetFromXml(xml: string): ParagraphBorderSet | undef
     bottom,
     left,
     between,
-    bar
+    bar,
   };
 }
 
@@ -1746,9 +2052,13 @@ function parseTableBoxSpacing(xml: string): TableBoxSpacing | undefined {
 
   const spacing: TableBoxSpacing = {
     topTwips: topMatch ? parseIntegerAttribute(topMatch, "w:w") : undefined,
-    rightTwips: rightMatch ? parseIntegerAttribute(rightMatch, "w:w") : undefined,
-    bottomTwips: bottomMatch ? parseIntegerAttribute(bottomMatch, "w:w") : undefined,
-    leftTwips: leftMatch ? parseIntegerAttribute(leftMatch, "w:w") : undefined
+    rightTwips: rightMatch
+      ? parseIntegerAttribute(rightMatch, "w:w")
+      : undefined,
+    bottomTwips: bottomMatch
+      ? parseIntegerAttribute(bottomMatch, "w:w")
+      : undefined,
+    leftTwips: leftMatch ? parseIntegerAttribute(leftMatch, "w:w") : undefined,
   };
 
   if (
@@ -1763,7 +2073,9 @@ function parseTableBoxSpacing(xml: string): TableBoxSpacing | undefined {
   return spacing;
 }
 
-function parseTableBorderStyle(tagXml: string | undefined): TableBorderStyle | undefined {
+function parseTableBorderStyle(
+  tagXml: string | undefined
+): TableBorderStyle | undefined {
   if (!tagXml) {
     return undefined;
   }
@@ -1782,8 +2094,10 @@ function parseTableBorderStyle(tagXml: string | undefined): TableBorderStyle | u
 
   return {
     type,
-    ...(sizeEighthPt !== undefined && sizeEighthPt >= 0 ? { sizeEighthPt } : undefined),
-    ...(color ? { color } : undefined)
+    ...(sizeEighthPt !== undefined && sizeEighthPt >= 0
+      ? { sizeEighthPt }
+      : undefined),
+    ...(color ? { color } : undefined),
   };
 }
 
@@ -1792,12 +2106,25 @@ function parseTableBorderSet(xml: string): TableBorderSet | undefined {
   const right = parseTableBorderStyle(xml.match(/<w:right\b[^>]*\/?>/i)?.[0]);
   const bottom = parseTableBorderStyle(xml.match(/<w:bottom\b[^>]*\/?>/i)?.[0]);
   const left = parseTableBorderStyle(xml.match(/<w:left\b[^>]*\/?>/i)?.[0]);
-  const insideH = parseTableBorderStyle(xml.match(/<w:insideH\b[^>]*\/?>/i)?.[0]);
-  const insideV = parseTableBorderStyle(xml.match(/<w:insideV\b[^>]*\/?>/i)?.[0]);
+  const insideH = parseTableBorderStyle(
+    xml.match(/<w:insideH\b[^>]*\/?>/i)?.[0]
+  );
+  const insideV = parseTableBorderStyle(
+    xml.match(/<w:insideV\b[^>]*\/?>/i)?.[0]
+  );
   const tl2br = parseTableBorderStyle(xml.match(/<w:tl2br\b[^>]*\/?>/i)?.[0]);
   const tr2bl = parseTableBorderStyle(xml.match(/<w:tr2bl\b[^>]*\/?>/i)?.[0]);
 
-  if (!top && !right && !bottom && !left && !insideH && !insideV && !tl2br && !tr2bl) {
+  if (
+    !top &&
+    !right &&
+    !bottom &&
+    !left &&
+    !insideH &&
+    !insideV &&
+    !tl2br &&
+    !tr2bl
+  ) {
     return undefined;
   }
 
@@ -1809,11 +2136,13 @@ function parseTableBorderSet(xml: string): TableBorderSet | undefined {
     insideH,
     insideV,
     tl2br,
-    tr2bl
+    tr2bl,
   };
 }
 
-function hasTableProperties(properties: ParsedTableProperties | undefined): boolean {
+function hasTableProperties(
+  properties: ParsedTableProperties | undefined
+): boolean {
   if (!properties) {
     return false;
   }
@@ -1828,30 +2157,51 @@ function hasTableProperties(properties: ParsedTableProperties | undefined): bool
   );
 }
 
-function parseTableStylePropertiesFromXml(tablePropertiesXml: string | undefined): ParsedTableProperties | undefined {
+function parseTableStylePropertiesFromXml(
+  tablePropertiesXml: string | undefined
+): ParsedTableProperties | undefined {
   if (!tablePropertiesXml) {
     return undefined;
   }
 
   const tableWidthTag = tablePropertiesXml.match(/<w:tblW\b[^>]*>/i)?.[0];
-  const tableWidthType = tableWidthTag ? getAttribute(tableWidthTag, "w:type")?.toLowerCase() : undefined;
-  const tableWidthRaw = tableWidthTag ? parseIntegerAttribute(tableWidthTag, "w:w") : undefined;
+  const tableWidthType = tableWidthTag
+    ? getAttribute(tableWidthTag, "w:type")?.toLowerCase()
+    : undefined;
+  const tableWidthRaw = tableWidthTag
+    ? parseIntegerAttribute(tableWidthTag, "w:w")
+    : undefined;
   const widthTwips =
-    tableWidthType === "dxa" && tableWidthRaw !== undefined && tableWidthRaw > 0 ? tableWidthRaw : undefined;
+    tableWidthType === "dxa" && tableWidthRaw !== undefined && tableWidthRaw > 0
+      ? tableWidthRaw
+      : undefined;
 
   const tableIndentTag = tablePropertiesXml.match(/<w:tblInd\b[^>]*>/i)?.[0];
-  const tableIndentType = tableIndentTag ? getAttribute(tableIndentTag, "w:type")?.toLowerCase() : undefined;
-  const tableIndentRaw = tableIndentTag ? parseIntegerAttribute(tableIndentTag, "w:w") : undefined;
+  const tableIndentType = tableIndentTag
+    ? getAttribute(tableIndentTag, "w:type")?.toLowerCase()
+    : undefined;
+  const tableIndentRaw = tableIndentTag
+    ? parseIntegerAttribute(tableIndentTag, "w:w")
+    : undefined;
   const indentTwips =
-    tableIndentType === "dxa" && tableIndentRaw !== undefined && tableIndentRaw !== 0
+    tableIndentType === "dxa" &&
+    tableIndentRaw !== undefined &&
+    tableIndentRaw !== 0
       ? tableIndentRaw
       : undefined;
 
   const tableLayoutTag = tablePropertiesXml.match(/<w:tblLayout\b[^>]*>/i)?.[0];
-  const tableLayoutRaw = tableLayoutTag ? getAttribute(tableLayoutTag, "w:type")?.toLowerCase() : undefined;
-  const layout = tableLayoutRaw === "fixed" || tableLayoutRaw === "autofit" ? tableLayoutRaw : undefined;
+  const tableLayoutRaw = tableLayoutTag
+    ? getAttribute(tableLayoutTag, "w:type")?.toLowerCase()
+    : undefined;
+  const layout =
+    tableLayoutRaw === "fixed" || tableLayoutRaw === "autofit"
+      ? tableLayoutRaw
+      : undefined;
 
-  const tableCellSpacingTag = tablePropertiesXml.match(/<w:tblCellSpacing\b[^>]*\/?>/i)?.[0];
+  const tableCellSpacingTag = tablePropertiesXml.match(
+    /<w:tblCellSpacing\b[^>]*\/?>/i
+  )?.[0];
   const tableCellSpacingType = tableCellSpacingTag
     ? getAttribute(tableCellSpacingTag, "w:type")?.toLowerCase()
     : undefined;
@@ -1865,8 +2215,12 @@ function parseTableStylePropertiesFromXml(tablePropertiesXml: string | undefined
       ? tableCellSpacingRaw
       : undefined;
 
-  const tableCellMarginXml = tablePropertiesXml.match(/<w:tblCellMar\b[\s\S]*?<\/w:tblCellMar>|<w:tblCellMar\b[^>]*\/>/i)?.[0];
-  const cellMarginTwips = tableCellMarginXml ? parseTableBoxSpacing(tableCellMarginXml) : undefined;
+  const tableCellMarginXml = tablePropertiesXml.match(
+    /<w:tblCellMar\b[\s\S]*?<\/w:tblCellMar>|<w:tblCellMar\b[^>]*\/>/i
+  )?.[0];
+  const cellMarginTwips = tableCellMarginXml
+    ? parseTableBoxSpacing(tableCellMarginXml)
+    : undefined;
   const floating = parseFloatingTableStyle(tablePropertiesXml);
 
   return {
@@ -1875,7 +2229,7 @@ function parseTableStylePropertiesFromXml(tablePropertiesXml: string | undefined
     ...(layout !== undefined ? { layout } : undefined),
     ...(cellSpacingTwips !== undefined ? { cellSpacingTwips } : undefined),
     ...(cellMarginTwips !== undefined ? { cellMarginTwips } : undefined),
-    ...(floating !== undefined ? { floating } : undefined)
+    ...(floating !== undefined ? { floating } : undefined),
   };
 }
 
@@ -1897,8 +2251,8 @@ function mergeTableStyleProperties(
       direct?.cellMarginTwips !== undefined
         ? { ...direct.cellMarginTwips }
         : inherited?.cellMarginTwips !== undefined
-          ? { ...inherited.cellMarginTwips }
-          : undefined
+        ? { ...inherited.cellMarginTwips }
+        : undefined,
   };
 
   if (!hasTableProperties(merged)) {
@@ -1916,7 +2270,7 @@ const DEFAULT_TABLE_LOOK: ParsedTableLook = {
   noHBand: true,
   noVBand: true,
   rowBandSize: 1,
-  colBandSize: 1
+  colBandSize: 1,
 };
 
 function mergeTableLook(
@@ -1926,7 +2280,7 @@ function mergeTableLook(
   return {
     ...DEFAULT_TABLE_LOOK,
     ...(inherited ?? {}),
-    ...(direct ?? {})
+    ...(direct ?? {}),
   };
 }
 
@@ -1943,10 +2297,12 @@ const TABLE_CONDITIONAL_STYLE_TYPES: TableConditionalStyleType[] = [
   "nwCell",
   "neCell",
   "swCell",
-  "seCell"
+  "seCell",
 ];
 
-function normalizeTableConditionalStyleType(value?: string): TableConditionalStyleType | undefined {
+function normalizeTableConditionalStyleType(
+  value?: string
+): TableConditionalStyleType | undefined {
   const normalized = value?.trim().toLowerCase();
   if (!normalized) {
     return undefined;
@@ -1994,19 +2350,24 @@ function parseTableConditionalStyleFromXml(
   }
 
   const tablePropertiesXml = extractBalancedTagBlocks(xml, "w:tblPr")[0] ?? "";
-  const paragraphPropertiesXml = extractBalancedTagBlocks(xml, "w:pPr")[0] ?? "";
+  const paragraphPropertiesXml =
+    extractBalancedTagBlocks(xml, "w:pPr")[0] ?? "";
   const rowPropertiesXml = extractBalancedTagBlocks(xml, "w:trPr")[0] ?? "";
   const cellPropertiesXml = extractBalancedTagBlocks(xml, "w:tcPr")[0] ?? "";
   const runPropertiesXml = resolveStylePropertiesBlock(xml, "w:rPr");
   const tableLook = parseTableLook(tablePropertiesXml);
-  const paragraphAlignmentMatch = paragraphPropertiesXml.match(/<w:jc\b[^>]*w:val="([^"]+)"/i);
+  const paragraphAlignmentMatch = paragraphPropertiesXml.match(
+    /<w:jc\b[^>]*w:val="([^"]+)"/i
+  );
   const paragraphAlign = normalizeAlignment(paragraphAlignmentMatch?.[1]);
 
   const rowShadingTag = rowPropertiesXml.match(/<w:shd\b[^>]*\/?>/i)?.[0];
   const cellShadingTag =
     cellPropertiesXml.match(/<w:shd\b[^>]*\/?>/i)?.[0] ??
     tablePropertiesXml.match(/<w:shd\b[^>]*\/?>/i)?.[0];
-  const rowBackgroundColor = normalizeHexColor(rowShadingTag ? getAttribute(rowShadingTag, "w:fill") : undefined);
+  const rowBackgroundColor = normalizeHexColor(
+    rowShadingTag ? getAttribute(rowShadingTag, "w:fill") : undefined
+  );
   const cellBackgroundColor = normalizeHexColor(
     cellShadingTag ? getAttribute(cellShadingTag, "w:fill") : undefined
   );
@@ -2017,8 +2378,12 @@ function parseTableConditionalStyleFromXml(
   const cellBordersXml = cellPropertiesXml.match(
     /<w:tcBorders\b[\s\S]*?<\/w:tcBorders>|<w:tcBorders\b[^>]*\/>/i
   )?.[0];
-  const tableBorders = tableBordersXml ? parseTableBorderSet(tableBordersXml) : undefined;
-  const cellBorders = cellBordersXml ? parseTableBorderSet(cellBordersXml) : undefined;
+  const tableBorders = tableBordersXml
+    ? parseTableBorderSet(tableBordersXml)
+    : undefined;
+  const cellBorders = cellBordersXml
+    ? parseTableBorderSet(cellBordersXml)
+    : undefined;
   const tableProperties = parseTableStylePropertiesFromXml(tablePropertiesXml);
 
   if (
@@ -2042,7 +2407,7 @@ function parseTableConditionalStyleFromXml(
     tableBorders,
     cellBorders,
     tableProperties,
-    tableLook
+    tableLook,
   };
 }
 
@@ -2062,7 +2427,7 @@ function mergeTableBorderSets(
     insideH: direct?.insideH ?? inherited?.insideH,
     insideV: direct?.insideV ?? inherited?.insideV,
     tl2br: direct?.tl2br ?? inherited?.tl2br,
-    tr2bl: direct?.tr2bl ?? inherited?.tr2bl
+    tr2bl: direct?.tr2bl ?? inherited?.tr2bl,
   };
 
   if (
@@ -2090,14 +2455,25 @@ function mergeTableConditionalStyle(
   }
 
   const merged: ParsedTableStyleCondition = {
-    rowBackgroundColor: direct?.rowBackgroundColor ?? inherited?.rowBackgroundColor,
-    cellBackgroundColor: direct?.cellBackgroundColor ?? inherited?.cellBackgroundColor,
+    rowBackgroundColor:
+      direct?.rowBackgroundColor ?? inherited?.rowBackgroundColor,
+    cellBackgroundColor:
+      direct?.cellBackgroundColor ?? inherited?.cellBackgroundColor,
     paragraphAlign: direct?.paragraphAlign ?? inherited?.paragraphAlign,
     runStyle: mergeTextStyles(inherited?.runStyle, direct?.runStyle),
-    tableBorders: mergeTableBorderSets(inherited?.tableBorders, direct?.tableBorders),
-    cellBorders: mergeTableBorderSets(inherited?.cellBorders, direct?.cellBorders),
-    tableProperties: mergeTableStyleProperties(inherited?.tableProperties, direct?.tableProperties),
-    tableLook: mergeTableLook(direct?.tableLook, inherited?.tableLook)
+    tableBorders: mergeTableBorderSets(
+      inherited?.tableBorders,
+      direct?.tableBorders
+    ),
+    cellBorders: mergeTableBorderSets(
+      inherited?.cellBorders,
+      direct?.cellBorders
+    ),
+    tableProperties: mergeTableStyleProperties(
+      inherited?.tableProperties,
+      direct?.tableProperties
+    ),
+    tableLook: mergeTableLook(direct?.tableLook, inherited?.tableLook),
   };
 
   if (
@@ -2122,10 +2498,12 @@ const EMPTY_STYLE_SHEET: ParsedStyleSheet = {
   runStyleById: new Map(),
   tableStyleById: new Map(),
   themeColors: {},
-  themeFonts: {}
+  themeFonts: {},
 };
 
-function mergeTextStyles(...styles: Array<TextStyle | undefined>): TextStyle | undefined {
+function mergeTextStyles(
+  ...styles: Array<TextStyle | undefined>
+): TextStyle | undefined {
   const merged: TextStyle = {};
 
   for (const style of styles) {
@@ -2186,7 +2564,7 @@ function mergeParagraphSpacing(
     beforeTwips: direct?.beforeTwips ?? inherited?.beforeTwips,
     afterTwips: direct?.afterTwips ?? inherited?.afterTwips,
     lineTwips: direct?.lineTwips ?? inherited?.lineTwips,
-    lineRule: direct?.lineRule ?? inherited?.lineRule
+    lineRule: direct?.lineRule ?? inherited?.lineRule,
   };
 
   if (
@@ -2213,7 +2591,7 @@ function mergeParagraphIndent(
     leftTwips: direct?.leftTwips ?? inherited?.leftTwips,
     rightTwips: direct?.rightTwips ?? inherited?.rightTwips,
     firstLineTwips: direct?.firstLineTwips ?? inherited?.firstLineTwips,
-    hangingTwips: direct?.hangingTwips ?? inherited?.hangingTwips
+    hangingTwips: direct?.hangingTwips ?? inherited?.hangingTwips,
   };
 
   if (
@@ -2254,7 +2632,7 @@ function mergeParagraphBorderStyle(
     sizeEighthPt: direct?.sizeEighthPt ?? inherited?.sizeEighthPt,
     spacePt: direct?.spacePt ?? inherited?.spacePt,
     frame: direct?.frame ?? inherited?.frame,
-    shadow: direct?.shadow ?? inherited?.shadow
+    shadow: direct?.shadow ?? inherited?.shadow,
   };
 }
 
@@ -2272,10 +2650,17 @@ function mergeParagraphBorderSets(
     bottom: mergeParagraphBorderStyle(inherited?.bottom, direct?.bottom),
     left: mergeParagraphBorderStyle(inherited?.left, direct?.left),
     between: mergeParagraphBorderStyle(inherited?.between, direct?.between),
-    bar: mergeParagraphBorderStyle(inherited?.bar, direct?.bar)
+    bar: mergeParagraphBorderStyle(inherited?.bar, direct?.bar),
   };
 
-  if (!merged.top && !merged.right && !merged.bottom && !merged.left && !merged.between && !merged.bar) {
+  if (
+    !merged.top &&
+    !merged.right &&
+    !merged.bottom &&
+    !merged.left &&
+    !merged.between &&
+    !merged.bar
+  ) {
     return undefined;
   }
 
@@ -2312,7 +2697,9 @@ function mergeParagraphTabStops(
   }
 
   return combined.length > 0
-    ? combined.sort((left, right) => (left.positionTwips ?? 0) - (right.positionTwips ?? 0))
+    ? combined.sort(
+        (left, right) => (left.positionTwips ?? 0) - (right.positionTwips ?? 0)
+      )
     : undefined;
 }
 
@@ -2330,12 +2717,15 @@ function mergeParagraphBoolean(
 function parseParagraphDropCapFromXml(
   paragraphPropertiesXml: string
 ): NonNullable<ParagraphStyle["dropCap"]> | undefined {
-  const framePrTag = paragraphPropertiesXml.match(/<w:framePr\b[^>]*\/?>/i)?.[0] ?? "";
+  const framePrTag =
+    paragraphPropertiesXml.match(/<w:framePr\b[^>]*\/?>/i)?.[0] ?? "";
   if (!framePrTag) {
     return undefined;
   }
 
-  const dropCapRaw = getAttribute(framePrTag, "w:dropCap")?.trim().toLowerCase();
+  const dropCapRaw = getAttribute(framePrTag, "w:dropCap")
+    ?.trim()
+    .toLowerCase();
   if (dropCapRaw !== "drop" && dropCapRaw !== "margin") {
     return undefined;
   }
@@ -2359,12 +2749,17 @@ function parseParagraphDropCapFromXml(
     ...(verticalAnchor ? { verticalAnchor } : undefined),
     ...(xTwips !== undefined ? { xTwips } : undefined),
     ...(yTwips !== undefined ? { yTwips } : undefined),
-    ...(horizontalSpaceTwips !== undefined ? { horizontalSpaceTwips } : undefined),
-    ...(verticalSpaceTwips !== undefined ? { verticalSpaceTwips } : undefined)
+    ...(horizontalSpaceTwips !== undefined
+      ? { horizontalSpaceTwips }
+      : undefined),
+    ...(verticalSpaceTwips !== undefined ? { verticalSpaceTwips } : undefined),
   };
 }
 
-function resolveThemeFont(themeToken: string | undefined, themeFonts: ThemeFontMap): string | undefined {
+function resolveThemeFont(
+  themeToken: string | undefined,
+  themeFonts: ThemeFontMap
+): string | undefined {
   if (!themeToken) {
     return undefined;
   }
@@ -2392,7 +2787,10 @@ function resolveThemeFont(themeToken: string | undefined, themeFonts: ThemeFontM
   return undefined;
 }
 
-function parseTextStyleFromXml(xml: string, themeFonts: ThemeFontMap = {}): TextStyle | undefined {
+function parseTextStyleFromXml(
+  xml: string,
+  themeFonts: ThemeFontMap = {}
+): TextStyle | undefined {
   if (!xml) {
     return undefined;
   }
@@ -2410,32 +2808,59 @@ function parseTextStyleFromXml(xml: string, themeFonts: ThemeFontMap = {}): Text
     xml.match(/<w:sz\b[^>]*w:val="(\d+)"/i) ??
     xml.match(/<w:szCs\b[^>]*w:val="(\d+)"/i);
   const runFontsTag = xml.match(/<w:rFonts\b[^>]*\/?>/i)?.[0] ?? "";
-  const asciiFont = runFontsTag ? getAttribute(runFontsTag, "w:ascii") : undefined;
-  const hAnsiFont = runFontsTag ? getAttribute(runFontsTag, "w:hAnsi") : undefined;
-  const eastAsiaFont = runFontsTag ? getAttribute(runFontsTag, "w:eastAsia") : undefined;
-  const complexScriptFont = runFontsTag ? getAttribute(runFontsTag, "w:cs") : undefined;
-  const asciiThemeFont = runFontsTag ? getAttribute(runFontsTag, "w:asciiTheme") : undefined;
-  const hAnsiThemeFont = runFontsTag ? getAttribute(runFontsTag, "w:hAnsiTheme") : undefined;
-  const eastAsiaThemeFont = runFontsTag ? getAttribute(runFontsTag, "w:eastAsiaTheme") : undefined;
-  const complexScriptThemeFont = runFontsTag ? getAttribute(runFontsTag, "w:csTheme") : undefined;
+  const asciiFont = runFontsTag
+    ? getAttribute(runFontsTag, "w:ascii")
+    : undefined;
+  const hAnsiFont = runFontsTag
+    ? getAttribute(runFontsTag, "w:hAnsi")
+    : undefined;
+  const eastAsiaFont = runFontsTag
+    ? getAttribute(runFontsTag, "w:eastAsia")
+    : undefined;
+  const complexScriptFont = runFontsTag
+    ? getAttribute(runFontsTag, "w:cs")
+    : undefined;
+  const asciiThemeFont = runFontsTag
+    ? getAttribute(runFontsTag, "w:asciiTheme")
+    : undefined;
+  const hAnsiThemeFont = runFontsTag
+    ? getAttribute(runFontsTag, "w:hAnsiTheme")
+    : undefined;
+  const eastAsiaThemeFont = runFontsTag
+    ? getAttribute(runFontsTag, "w:eastAsiaTheme")
+    : undefined;
+  const complexScriptThemeFont = runFontsTag
+    ? getAttribute(runFontsTag, "w:csTheme")
+    : undefined;
   const verticalAlignMatch = xml.match(/<w:vertAlign\b[^>]*w:val="([^"]+)"/i);
   const drawingBoldMatch = xml.match(/<a:rPr\b[^>]*\bb="([^"]+)"/i);
   const drawingItalicMatch = xml.match(/<a:rPr\b[^>]*\bi="([^"]+)"/i);
   const drawingUnderlineMatch = xml.match(/<a:rPr\b[^>]*\bu="([^"]+)"/i);
-  const drawingStrikeMatch = xml.match(/<a:rPr\b[^>]*\b(?:strike|s)="([^"]+)"/i);
+  const drawingStrikeMatch = xml.match(
+    /<a:rPr\b[^>]*\b(?:strike|s)="([^"]+)"/i
+  );
   const drawingColorMatch = xml.match(
     /<a:rPr\b[\s\S]*?<a:(?:solidFill|srgbClr)\b[\s\S]*?<a:srgbClr\b[^>]*val="([^"]+)"/i
   );
   const drawingSizeMatch = xml.match(/<a:rPr\b[^>]*\bsz="(\d+)"/i);
-  const drawingFontMatch = xml.match(/<a:rPr\b[\s\S]*?<a:latin\b[^>]*typeface="([^"]+)"/i);
-  const drawingDefaultFontMatch = xml.match(/<a:defRPr\b[\s\S]*?<a:latin\b[^>]*typeface="([^"]+)"/i);
+  const drawingFontMatch = xml.match(
+    /<a:rPr\b[\s\S]*?<a:latin\b[^>]*typeface="([^"]+)"/i
+  );
+  const drawingDefaultFontMatch = xml.match(
+    /<a:defRPr\b[\s\S]*?<a:latin\b[^>]*typeface="([^"]+)"/i
+  );
   const drawingAnyLatinMatch = xml.match(/<a:latin\b[^>]*typeface="([^"]+)"/i);
   const runBorderTag = xml.match(/<w:bdr\b[^>]*\/?>/i)?.[0];
-  const decodedTextSamples = [...xml.matchAll(/<(?:w|a):t\b[^>]*>([\s\S]*?)<\/(?:w|a):t>/gi)]
+  const decodedTextSamples = [
+    ...xml.matchAll(/<(?:w|a):t\b[^>]*>([\s\S]*?)<\/(?:w|a):t>/gi),
+  ]
     .map((match) => decodeXmlEntities(match[1] ?? ""))
     .join("");
-  const containsEastAsiaGlyphs = /[\u2e80-\u9fff\u3040-\u30ff\uac00-\ud7af]/i.test(decodedTextSamples);
-  const containsComplexScriptGlyphs = /[\u0590-\u08ff\ufb1d-\ufefc]/i.test(decodedTextSamples);
+  const containsEastAsiaGlyphs =
+    /[\u2e80-\u9fff\u3040-\u30ff\uac00-\ud7af]/i.test(decodedTextSamples);
+  const containsComplexScriptGlyphs = /[\u0590-\u08ff\ufb1d-\ufefc]/i.test(
+    decodedTextSamples
+  );
 
   const style: TextStyle = {};
   if (bold !== undefined) {
@@ -2464,7 +2889,11 @@ function parseTextStyleFromXml(xml: string, themeFonts: ThemeFontMap = {}): Text
   }
   if (style.strike === undefined && drawingStrikeMatch?.[1]) {
     const value = drawingStrikeMatch[1].toLowerCase();
-    style.strike = value !== "nostrike" && value !== "none" && value !== "false" && value !== "0";
+    style.strike =
+      value !== "nostrike" &&
+      value !== "none" &&
+      value !== "false" &&
+      value !== "0";
   }
 
   const color = normalizeHexColor(colorMatch?.[1]);
@@ -2481,7 +2910,9 @@ function parseTextStyleFromXml(xml: string, themeFonts: ThemeFontMap = {}): Text
     style.highlight = highlightMatch[1];
   }
 
-  const shadingFill = normalizeHexColor(shadingTag ? getAttribute(shadingTag, "w:fill") : undefined);
+  const shadingFill = normalizeHexColor(
+    shadingTag ? getAttribute(shadingTag, "w:fill") : undefined
+  );
   if (shadingFill) {
     style.backgroundColor = shadingFill;
   }
@@ -2498,15 +2929,23 @@ function parseTextStyleFromXml(xml: string, themeFonts: ThemeFontMap = {}): Text
 
   const runFontFamily = asciiFont ?? hAnsiFont;
   const runThemeFontToken = asciiThemeFont ?? hAnsiThemeFont;
-  const eastAsiaFallbackFont = containsEastAsiaGlyphs ? eastAsiaFont : undefined;
-  const eastAsiaFallbackThemeToken = containsEastAsiaGlyphs ? eastAsiaThemeFont : undefined;
-  const complexScriptFallbackFont = containsComplexScriptGlyphs ? complexScriptFont : undefined;
+  const eastAsiaFallbackFont = containsEastAsiaGlyphs
+    ? eastAsiaFont
+    : undefined;
+  const eastAsiaFallbackThemeToken = containsEastAsiaGlyphs
+    ? eastAsiaThemeFont
+    : undefined;
+  const complexScriptFallbackFont = containsComplexScriptGlyphs
+    ? complexScriptFont
+    : undefined;
   const complexScriptFallbackThemeToken = containsComplexScriptGlyphs
     ? complexScriptThemeFont
     : undefined;
   const symbolFallbackFont =
     (eastAsiaFont ?? complexScriptFont) &&
-    /(symbol|emoji|dingbats?|wingdings|webdings)/i.test(eastAsiaFont ?? complexScriptFont ?? "")
+    /(symbol|emoji|dingbats?|wingdings|webdings)/i.test(
+      eastAsiaFont ?? complexScriptFont ?? ""
+    )
       ? eastAsiaFont ?? complexScriptFont
       : undefined;
 
@@ -2520,14 +2959,20 @@ function parseTextStyleFromXml(xml: string, themeFonts: ThemeFontMap = {}): Text
   } else if (eastAsiaFallbackFont) {
     style.fontFamily = eastAsiaFallbackFont;
   } else if (eastAsiaFallbackThemeToken) {
-    const themeFontFamily = resolveThemeFont(eastAsiaFallbackThemeToken, themeFonts);
+    const themeFontFamily = resolveThemeFont(
+      eastAsiaFallbackThemeToken,
+      themeFonts
+    );
     if (themeFontFamily) {
       style.fontFamily = themeFontFamily;
     }
   } else if (complexScriptFallbackFont) {
     style.fontFamily = complexScriptFallbackFont;
   } else if (complexScriptFallbackThemeToken) {
-    const themeFontFamily = resolveThemeFont(complexScriptFallbackThemeToken, themeFonts);
+    const themeFontFamily = resolveThemeFont(
+      complexScriptFallbackThemeToken,
+      themeFonts
+    );
     if (themeFontFamily) {
       style.fontFamily = themeFontFamily;
     }
@@ -2542,7 +2987,10 @@ function parseTextStyleFromXml(xml: string, themeFonts: ThemeFontMap = {}): Text
   }
 
   const verticalAlignValue = verticalAlignMatch?.[1]?.toLowerCase();
-  if (verticalAlignValue === "superscript" || verticalAlignValue === "subscript") {
+  if (
+    verticalAlignValue === "superscript" ||
+    verticalAlignValue === "subscript"
+  ) {
     style.verticalAlign = verticalAlignValue;
   }
 
@@ -2554,7 +3002,9 @@ function parseTextStyleFromXml(xml: string, themeFonts: ThemeFontMap = {}): Text
   return Object.keys(style).length > 0 ? style : undefined;
 }
 
-function parseParagraphAlignFromXml(xml: string): ParagraphAlignment | undefined {
+function parseParagraphAlignFromXml(
+  xml: string
+): ParagraphAlignment | undefined {
   const alignmentMatch = xml.match(/<w:jc\b[^>]*w:val="([^"]+)"/i);
   return normalizeAlignment(alignmentMatch?.[1]);
 }
@@ -2573,7 +3023,9 @@ function parseHeadingLevelFromOutline(xml: string): HeadingLevel | undefined {
   return undefined;
 }
 
-function parseStyleType(value?: string): RawStyleDefinition["type"] | undefined {
+function parseStyleType(
+  value?: string
+): RawStyleDefinition["type"] | undefined {
   if (!value) {
     return undefined;
   }
@@ -2591,7 +3043,10 @@ function parseStyleType(value?: string): RawStyleDefinition["type"] | undefined 
   return undefined;
 }
 
-function resolveStylePropertiesBlock(styleXml: string, tagName: "w:pPr" | "w:rPr"): string {
+function resolveStylePropertiesBlock(
+  styleXml: string,
+  tagName: "w:pPr" | "w:rPr"
+): string {
   const balanced = extractBalancedTagBlocks(styleXml, tagName)[0];
   if (balanced) {
     return balanced;
@@ -2616,13 +3071,20 @@ function parseThemeFonts(pkg: OoxmlPackage): ThemeFontMap {
     return {};
   }
 
-  const readTypeface = (xml: string, tagName: "latin" | "ea" | "cs"): string | undefined => {
-    const value = xml.match(new RegExp(`<a:${tagName}\\b[^>]*typeface="([^"]*)"`, "i"))?.[1]?.trim();
+  const readTypeface = (
+    xml: string,
+    tagName: "latin" | "ea" | "cs"
+  ): string | undefined => {
+    const value = xml
+      .match(new RegExp(`<a:${tagName}\\b[^>]*typeface="([^"]*)"`, "i"))?.[1]
+      ?.trim();
     return value ? value : undefined;
   };
 
-  const majorFontXml = extractBalancedTagBlocks(themeXml, "a:majorFont")[0] ?? "";
-  const minorFontXml = extractBalancedTagBlocks(themeXml, "a:minorFont")[0] ?? "";
+  const majorFontXml =
+    extractBalancedTagBlocks(themeXml, "a:majorFont")[0] ?? "";
+  const minorFontXml =
+    extractBalancedTagBlocks(themeXml, "a:minorFont")[0] ?? "";
 
   return {
     majorLatin: readTypeface(majorFontXml, "latin"),
@@ -2630,7 +3092,7 @@ function parseThemeFonts(pkg: OoxmlPackage): ThemeFontMap {
     majorComplexScript: readTypeface(majorFontXml, "cs"),
     minorLatin: readTypeface(minorFontXml, "latin"),
     minorEastAsia: readTypeface(minorFontXml, "ea"),
-    minorComplexScript: readTypeface(minorFontXml, "cs")
+    minorComplexScript: readTypeface(minorFontXml, "cs"),
   };
 }
 
@@ -2640,7 +3102,8 @@ function parseThemeColors(pkg: OoxmlPackage): ThemeColorMap {
     return {};
   }
 
-  const colorSchemeXml = extractBalancedTagBlocks(themeXml, "a:clrScheme")[0] ?? "";
+  const colorSchemeXml =
+    extractBalancedTagBlocks(themeXml, "a:clrScheme")[0] ?? "";
   if (!colorSchemeXml) {
     return {};
   }
@@ -2651,7 +3114,9 @@ function parseThemeColors(pkg: OoxmlPackage): ThemeColorMap {
       return normalizeHexColor(explicit);
     }
 
-    const fallback = colorXml.match(/<a:sysClr\b[^>]*\blastClr="([^"]+)"/i)?.[1];
+    const fallback = colorXml.match(
+      /<a:sysClr\b[^>]*\blastClr="([^"]+)"/i
+    )?.[1];
     return normalizeHexColor(fallback);
   };
 
@@ -2672,13 +3137,16 @@ function parseThemeColors(pkg: OoxmlPackage): ThemeColorMap {
     "bg2",
     "tx1",
     "tx2",
-    "followedHyperlink"
+    "followedHyperlink",
   ];
 
   const colors: ThemeColorMap = {};
   for (const name of colorNames) {
     const tagMatch = colorSchemeXml.match(
-      new RegExp(`<a:${name}\\b[^>]*>[\\s\\S]*?<\\/a:${name}>|<a:${name}\\b[^>]*/>`, "i")
+      new RegExp(
+        `<a:${name}\\b[^>]*>[\\s\\S]*?<\\/a:${name}>|<a:${name}\\b[^>]*/>`,
+        "i"
+      )
     )?.[0];
     if (!tagMatch) {
       continue;
@@ -2701,9 +3169,13 @@ function parseStyleSheet(pkg: OoxmlPackage): ParsedStyleSheet {
 
   const themeFonts = parseThemeFonts(pkg);
   const themeColors = parseThemeColors(pkg);
-  const docDefaultsXml = extractBalancedTagBlocks(stylesXml, "w:docDefaults")[0] ?? "";
+  const docDefaultsXml =
+    extractBalancedTagBlocks(stylesXml, "w:docDefaults")[0] ?? "";
   const defaultParagraphStyle: ParagraphStyle | undefined = (() => {
-    const paragraphDefaults = resolveStylePropertiesBlock(docDefaultsXml, "w:pPr");
+    const paragraphDefaults = resolveStylePropertiesBlock(
+      docDefaultsXml,
+      "w:pPr"
+    );
     const defaultParagraphHasNumPr = /<w:numPr\b/i.test(paragraphDefaults);
     const align = parseParagraphAlignFromXml(paragraphDefaults);
     const spacing = parseParagraphSpacingFromXml(paragraphDefaults);
@@ -2711,16 +3183,23 @@ function parseStyleSheet(pkg: OoxmlPackage): ParsedStyleSheet {
     const backgroundColor = parseParagraphShadingFromXml(paragraphDefaults);
     const borders = parseParagraphBorderSetFromXml(paragraphDefaults);
     const tabStops = parseParagraphTabStopsFromXml(paragraphDefaults);
-    const parsedDefaultNumbering = parseParagraphNumberingFromXml(paragraphDefaults);
+    const parsedDefaultNumbering =
+      parseParagraphNumberingFromXml(paragraphDefaults);
     const numbering =
       defaultParagraphHasNumPr && !parsedDefaultNumbering
         ? { numId: 0, ilvl: 0 }
         : parsedDefaultNumbering;
-    const contextualSpacing = parseOnOffAttribute(paragraphDefaults, "contextualSpacing");
+    const contextualSpacing = parseOnOffAttribute(
+      paragraphDefaults,
+      "contextualSpacing"
+    );
     const keepNext = parseOnOffAttribute(paragraphDefaults, "keepNext");
     const keepLines = parseOnOffAttribute(paragraphDefaults, "keepLines");
     const widowControl = parseOnOffAttribute(paragraphDefaults, "widowControl");
-    const pageBreakBefore = parseOnOffAttribute(paragraphDefaults, "pageBreakBefore");
+    const pageBreakBefore = parseOnOffAttribute(
+      paragraphDefaults,
+      "pageBreakBefore"
+    );
 
     if (
       !align &&
@@ -2751,7 +3230,7 @@ function parseStyleSheet(pkg: OoxmlPackage): ParsedStyleSheet {
       keepNext,
       keepLines,
       widowControl,
-      pageBreakBefore
+      pageBreakBefore,
     };
   })();
   const defaultRunStyle = parseTextStyleFromXml(
@@ -2773,8 +3252,12 @@ function parseStyleSheet(pkg: OoxmlPackage): ParsedStyleSheet {
     const nameTag = styleXml.match(/<w:name\b[^>]*\/?>/i)?.[0] ?? "";
     const basedOnTag = styleXml.match(/<w:basedOn\b[^>]*\/?>/i)?.[0] ?? "";
     const nextTag = styleXml.match(/<w:next\b[^>]*\/?>/i)?.[0] ?? "";
-    const uiPriorityTag = styleXml.match(/<w:uiPriority\b[^>]*\/?>/i)?.[0] ?? "";
-    const paragraphPropertiesXml = resolveStylePropertiesBlock(styleXml, "w:pPr");
+    const uiPriorityTag =
+      styleXml.match(/<w:uiPriority\b[^>]*\/?>/i)?.[0] ?? "";
+    const paragraphPropertiesXml = resolveStylePropertiesBlock(
+      styleXml,
+      "w:pPr"
+    );
     const styleHasParagraphNumPr = /<w:numPr\b/i.test(paragraphPropertiesXml);
     const runPropertiesXml = resolveStylePropertiesBlock(styleXml, "w:rPr");
 
@@ -2783,7 +3266,9 @@ function parseStyleSheet(pkg: OoxmlPackage): ParsedStyleSheet {
       normalizeHeadingLevel(getAttribute(nameTag, "w:val")) ||
       parseHeadingLevelFromOutline(paragraphPropertiesXml);
 
-    const parsedStyleNumbering = parseParagraphNumberingFromXml(paragraphPropertiesXml);
+    const parsedStyleNumbering = parseParagraphNumberingFromXml(
+      paragraphPropertiesXml
+    );
     rawStylesById.set(styleId, {
       id: styleId,
       type: styleType,
@@ -2801,27 +3286,42 @@ function parseStyleSheet(pkg: OoxmlPackage): ParsedStyleSheet {
       backgroundColor: parseParagraphShadingFromXml(paragraphPropertiesXml),
       borders: parseParagraphBorderSetFromXml(paragraphPropertiesXml),
       tabStops: parseParagraphTabStopsFromXml(paragraphPropertiesXml),
-      contextualSpacing: parseOnOffAttribute(paragraphPropertiesXml, "contextualSpacing"),
+      contextualSpacing: parseOnOffAttribute(
+        paragraphPropertiesXml,
+        "contextualSpacing"
+      ),
       keepNext: parseOnOffAttribute(paragraphPropertiesXml, "keepNext"),
       keepLines: parseOnOffAttribute(paragraphPropertiesXml, "keepLines"),
       widowControl: parseOnOffAttribute(paragraphPropertiesXml, "widowControl"),
-      pageBreakBefore: parseOnOffAttribute(paragraphPropertiesXml, "pageBreakBefore"),
+      pageBreakBefore: parseOnOffAttribute(
+        paragraphPropertiesXml,
+        "pageBreakBefore"
+      ),
       runStyle: parseTextStyleFromXml(runPropertiesXml, themeFonts),
       uiPriority: Number(getAttribute(uiPriorityTag, "w:val")),
       isDefault: getAttribute(styleTag, "w:default") === "1",
-      isPrimary: /<w:qFormat\b[^>]*\/?>/i.test(styleXml)
+      isPrimary: /<w:qFormat\b[^>]*\/?>/i.test(styleXml),
     });
 
     if (styleType === "table") {
-      const conditions: Partial<Record<TableConditionalStyleType, ParsedTableStyleCondition>> = {};
+      const conditions: Partial<
+        Record<TableConditionalStyleType, ParsedTableStyleCondition>
+      > = {};
       const wholeTableSourceXml = stripTableConditionalStyleBlocks(styleXml);
-      const wholeTableCondition = parseTableConditionalStyleFromXml(wholeTableSourceXml, themeFonts);
+      const wholeTableCondition = parseTableConditionalStyleFromXml(
+        wholeTableSourceXml,
+        themeFonts
+      );
       if (wholeTableCondition) {
         conditions.wholeTable = wholeTableCondition;
       }
 
-      for (const conditionalStyleXml of extractBalancedTagBlocks(styleXml, "w:tblStylePr")) {
-        const conditionalStyleTag = conditionalStyleXml.match(/<w:tblStylePr\b[^>]*>/i)?.[0] ?? "";
+      for (const conditionalStyleXml of extractBalancedTagBlocks(
+        styleXml,
+        "w:tblStylePr"
+      )) {
+        const conditionalStyleTag =
+          conditionalStyleXml.match(/<w:tblStylePr\b[^>]*>/i)?.[0] ?? "";
         const conditionalType = normalizeTableConditionalStyleType(
           getAttribute(conditionalStyleTag, "w:type")
         );
@@ -2829,7 +3329,10 @@ function parseStyleSheet(pkg: OoxmlPackage): ParsedStyleSheet {
           continue;
         }
 
-        const condition = parseTableConditionalStyleFromXml(conditionalStyleXml, themeFonts);
+        const condition = parseTableConditionalStyleFromXml(
+          conditionalStyleXml,
+          themeFonts
+        );
         if (!condition) {
           continue;
         }
@@ -2840,13 +3343,16 @@ function parseStyleSheet(pkg: OoxmlPackage): ParsedStyleSheet {
         id: styleId,
         basedOnId: getAttribute(basedOnTag, "w:val"),
         name: getAttribute(nameTag, "w:val") ?? styleId,
-        conditions
+        conditions,
       });
     }
   }
 
   const runStyleCache = new Map<string, TextStyle | undefined>();
-  const resolveRunStyle = (styleId: string, stack = new Set<string>()): TextStyle | undefined => {
+  const resolveRunStyle = (
+    styleId: string,
+    stack = new Set<string>()
+  ): TextStyle | undefined => {
     if (runStyleCache.has(styleId)) {
       return runStyleCache.get(styleId);
     }
@@ -2863,14 +3369,19 @@ function parseStyleSheet(pkg: OoxmlPackage): ParsedStyleSheet {
       return undefined;
     }
 
-    const inherited = style.basedOnId ? resolveRunStyle(style.basedOnId, stack) : undefined;
+    const inherited = style.basedOnId
+      ? resolveRunStyle(style.basedOnId, stack)
+      : undefined;
     const resolved = mergeTextStyles(inherited, style.runStyle);
     runStyleCache.set(styleId, resolved);
     stack.delete(styleId);
     return resolved;
   };
 
-  const paragraphStyleCache = new Map<string, ParagraphStyleDefinition | undefined>();
+  const paragraphStyleCache = new Map<
+    string,
+    ParagraphStyleDefinition | undefined
+  >();
   const resolveParagraphStyle = (
     styleId: string,
     stack = new Set<string>()
@@ -2892,7 +3403,8 @@ function parseStyleSheet(pkg: OoxmlPackage): ParsedStyleSheet {
     }
 
     const inherited =
-      style.basedOnId && rawStylesById.get(style.basedOnId)?.type === "paragraph"
+      style.basedOnId &&
+      rawStylesById.get(style.basedOnId)?.type === "paragraph"
         ? resolveParagraphStyle(style.basedOnId, stack)
         : undefined;
 
@@ -2906,18 +3418,32 @@ function parseStyleSheet(pkg: OoxmlPackage): ParsedStyleSheet {
       numbering: style.numbering ?? inherited?.numbering,
       spacing: mergeParagraphSpacing(inherited?.spacing, style.spacing),
       indent: mergeParagraphIndent(inherited?.indent, style.indent),
-      backgroundColor: mergeParagraphBackgroundColor(inherited?.backgroundColor, style.backgroundColor),
+      backgroundColor: mergeParagraphBackgroundColor(
+        inherited?.backgroundColor,
+        style.backgroundColor
+      ),
       borders: mergeParagraphBorderSets(inherited?.borders, style.borders),
       tabStops: mergeParagraphTabStops(inherited?.tabStops, style.tabStops),
-      contextualSpacing: mergeParagraphBoolean(inherited?.contextualSpacing, style.contextualSpacing),
+      contextualSpacing: mergeParagraphBoolean(
+        inherited?.contextualSpacing,
+        style.contextualSpacing
+      ),
       keepNext: mergeParagraphBoolean(inherited?.keepNext, style.keepNext),
       keepLines: mergeParagraphBoolean(inherited?.keepLines, style.keepLines),
-      widowControl: mergeParagraphBoolean(inherited?.widowControl, style.widowControl),
-      pageBreakBefore: mergeParagraphBoolean(inherited?.pageBreakBefore, style.pageBreakBefore),
+      widowControl: mergeParagraphBoolean(
+        inherited?.widowControl,
+        style.widowControl
+      ),
+      pageBreakBefore: mergeParagraphBoolean(
+        inherited?.pageBreakBefore,
+        style.pageBreakBefore
+      ),
       runStyle: mergeTextStyles(inherited?.runStyle, style.runStyle),
-      uiPriority: Number.isFinite(style.uiPriority) ? style.uiPriority : inherited?.uiPriority,
+      uiPriority: Number.isFinite(style.uiPriority)
+        ? style.uiPriority
+        : inherited?.uiPriority,
       isDefault: style.isDefault,
-      isPrimary: style.isPrimary
+      isPrimary: style.isPrimary,
     };
 
     paragraphStyleCache.set(styleId, resolved);
@@ -2930,15 +3456,21 @@ function parseStyleSheet(pkg: OoxmlPackage): ParsedStyleSheet {
     .map((style) => resolveParagraphStyle(style.id))
     .filter((style): style is ParagraphStyleDefinition => Boolean(style))
     .sort((left, right) => {
-      const leftPriority = Number.isFinite(left.uiPriority) ? (left.uiPriority as number) : 9999;
-      const rightPriority = Number.isFinite(right.uiPriority) ? (right.uiPriority as number) : 9999;
+      const leftPriority = Number.isFinite(left.uiPriority)
+        ? (left.uiPriority as number)
+        : 9999;
+      const rightPriority = Number.isFinite(right.uiPriority)
+        ? (right.uiPriority as number)
+        : 9999;
       if (leftPriority !== rightPriority) {
         return leftPriority - rightPriority;
       }
       return left.name.localeCompare(right.name);
     });
 
-  const paragraphStyleById = new Map(paragraphStyles.map((style) => [style.id, style]));
+  const paragraphStyleById = new Map(
+    paragraphStyles.map((style) => [style.id, style])
+  );
   const runStyleById = new Map<string, TextStyle>();
   for (const styleId of rawStylesById.keys()) {
     const resolved = resolveRunStyle(styleId);
@@ -2947,7 +3479,10 @@ function parseStyleSheet(pkg: OoxmlPackage): ParsedStyleSheet {
     }
   }
 
-  const tableStyleCache = new Map<string, ParsedTableStyleDefinition | undefined>();
+  const tableStyleCache = new Map<
+    string,
+    ParsedTableStyleDefinition | undefined
+  >();
   const resolveTableStyle = (
     styleId: string,
     stack = new Set<string>()
@@ -2968,8 +3503,12 @@ function parseStyleSheet(pkg: OoxmlPackage): ParsedStyleSheet {
       return undefined;
     }
 
-    const inherited = style.basedOnId ? resolveTableStyle(style.basedOnId, stack) : undefined;
-    const conditions: Partial<Record<TableConditionalStyleType, ParsedTableStyleCondition>> = {};
+    const inherited = style.basedOnId
+      ? resolveTableStyle(style.basedOnId, stack)
+      : undefined;
+    const conditions: Partial<
+      Record<TableConditionalStyleType, ParsedTableStyleCondition>
+    > = {};
     for (const conditionalType of TABLE_CONDITIONAL_STYLE_TYPES) {
       const mergedCondition = mergeTableConditionalStyle(
         inherited?.conditions[conditionalType],
@@ -2984,7 +3523,7 @@ function parseStyleSheet(pkg: OoxmlPackage): ParsedStyleSheet {
       id: style.id,
       basedOnId: style.basedOnId,
       name: style.name,
-      conditions
+      conditions,
     };
 
     tableStyleCache.set(styleId, resolved);
@@ -3013,19 +3552,40 @@ function parseStyleSheet(pkg: OoxmlPackage): ParsedStyleSheet {
     runStyleById,
     tableStyleById,
     defaultParagraphStyle: {
-      align: resolvedDefaultParagraphStyle?.align ?? defaultParagraphStyle?.align,
+      align:
+        resolvedDefaultParagraphStyle?.align ?? defaultParagraphStyle?.align,
       headingLevel: resolvedDefaultParagraphStyle?.headingLevel,
-      numbering: resolvedDefaultParagraphStyle?.numbering ?? defaultParagraphStyle?.numbering,
-      spacing: mergeParagraphSpacing(defaultParagraphStyle?.spacing, resolvedDefaultParagraphStyle?.spacing),
-      indent: mergeParagraphIndent(defaultParagraphStyle?.indent, resolvedDefaultParagraphStyle?.indent),
+      numbering:
+        resolvedDefaultParagraphStyle?.numbering ??
+        defaultParagraphStyle?.numbering,
+      spacing: mergeParagraphSpacing(
+        defaultParagraphStyle?.spacing,
+        resolvedDefaultParagraphStyle?.spacing
+      ),
+      indent: mergeParagraphIndent(
+        defaultParagraphStyle?.indent,
+        resolvedDefaultParagraphStyle?.indent
+      ),
       backgroundColor: mergeParagraphBackgroundColor(
         defaultParagraphStyle?.backgroundColor,
         resolvedDefaultParagraphStyle?.backgroundColor
       ),
-      borders: mergeParagraphBorderSets(defaultParagraphStyle?.borders, resolvedDefaultParagraphStyle?.borders),
-      tabStops: mergeParagraphTabStops(defaultParagraphStyle?.tabStops, resolvedDefaultParagraphStyle?.tabStops),
-      keepNext: mergeParagraphBoolean(defaultParagraphStyle?.keepNext, resolvedDefaultParagraphStyle?.keepNext),
-      keepLines: mergeParagraphBoolean(defaultParagraphStyle?.keepLines, resolvedDefaultParagraphStyle?.keepLines),
+      borders: mergeParagraphBorderSets(
+        defaultParagraphStyle?.borders,
+        resolvedDefaultParagraphStyle?.borders
+      ),
+      tabStops: mergeParagraphTabStops(
+        defaultParagraphStyle?.tabStops,
+        resolvedDefaultParagraphStyle?.tabStops
+      ),
+      keepNext: mergeParagraphBoolean(
+        defaultParagraphStyle?.keepNext,
+        resolvedDefaultParagraphStyle?.keepNext
+      ),
+      keepLines: mergeParagraphBoolean(
+        defaultParagraphStyle?.keepLines,
+        resolvedDefaultParagraphStyle?.keepLines
+      ),
       widowControl: mergeParagraphBoolean(
         defaultParagraphStyle?.widowControl,
         resolvedDefaultParagraphStyle?.widowControl
@@ -3035,12 +3595,15 @@ function parseStyleSheet(pkg: OoxmlPackage): ParsedStyleSheet {
         resolvedDefaultParagraphStyle?.pageBreakBefore
       ),
       styleId: defaultParagraphStyleId,
-      styleName: resolvedDefaultParagraphStyle?.name
+      styleName: resolvedDefaultParagraphStyle?.name,
     },
     defaultParagraphStyleId,
-    defaultRunStyle: mergeTextStyles(defaultRunStyle, resolvedDefaultParagraphStyle?.runStyle),
+    defaultRunStyle: mergeTextStyles(
+      defaultRunStyle,
+      resolvedDefaultParagraphStyle?.runStyle
+    ),
     themeColors,
-    themeFonts
+    themeFonts,
   };
 }
 
@@ -3078,7 +3641,7 @@ function parseContentTypes(pkg: OoxmlPackage): ContentTypeLookup {
 
   return {
     defaultByExtension,
-    overrideByPartName
+    overrideByPartName,
   };
 }
 
@@ -3124,10 +3687,15 @@ function relationshipPartNameForPart(partName: string): string {
   }
 
   const folder = segments.join("/");
-  return folder.length > 0 ? `${folder}/_rels/${fileName}.rels` : `_rels/${fileName}.rels`;
+  return folder.length > 0
+    ? `${folder}/_rels/${fileName}.rels`
+    : `_rels/${fileName}.rels`;
 }
 
-function parsePartRelationships(pkg: OoxmlPackage, partName: string): Map<string, string> {
+function parsePartRelationships(
+  pkg: OoxmlPackage,
+  partName: string
+): Map<string, string> {
   const map = new Map<string, string>();
   const relationshipsPartName = relationshipPartNameForPart(partName);
   const relationshipsPart = pkg.parts.get(relationshipsPartName)?.content;
@@ -3156,9 +3724,13 @@ function extensionFromPartName(partName: string): string | undefined {
   return partName.slice(lastDot + 1).toLowerCase();
 }
 
-function contentTypeForPart(partName: string, contentTypes: ContentTypeLookup): string | undefined {
+function contentTypeForPart(
+  partName: string,
+  contentTypes: ContentTypeLookup
+): string | undefined {
   const override =
-    contentTypes.overrideByPartName.get(partName) || contentTypes.overrideByPartName.get(`/${partName}`);
+    contentTypes.overrideByPartName.get(partName) ||
+    contentTypes.overrideByPartName.get(`/${partName}`);
   if (override) {
     return override;
   }
@@ -3168,7 +3740,10 @@ function contentTypeForPart(partName: string, contentTypes: ContentTypeLookup): 
     return undefined;
   }
 
-  return contentTypes.defaultByExtension.get(extension) ?? MIME_BY_EXTENSION[extension];
+  return (
+    contentTypes.defaultByExtension.get(extension) ??
+    MIME_BY_EXTENSION[extension]
+  );
 }
 
 function bytesToBase64(bytes: Uint8Array): string {
@@ -3220,7 +3795,10 @@ function resolveNodeBuiltin<T = unknown>(moduleName: string): T | undefined {
   }
 }
 
-function isWindowsMetafileContentType(contentType: string | undefined, partName?: string): boolean {
+function isWindowsMetafileContentType(
+  contentType: string | undefined,
+  partName?: string
+): boolean {
   const normalizedContentType = contentType?.trim().toLowerCase();
   if (
     normalizedContentType === "image/wmf" ||
@@ -3250,7 +3828,10 @@ function rasterizeWindowsMetafileToPngDataUri(
     writeFileSync(path: string, data: Uint8Array): void;
     existsSync(path: string): boolean;
     readFileSync(path: string): Uint8Array;
-    rmSync(path: string, options?: { recursive?: boolean; force?: boolean }): void;
+    rmSync(
+      path: string,
+      options?: { recursive?: boolean; force?: boolean }
+    ): void;
   }>("node:fs");
   const os = resolveNodeBuiltin<{ tmpdir(): string }>("node:os");
   const path = resolveNodeBuiltin<{
@@ -3274,14 +3855,16 @@ function rasterizeWindowsMetafileToPngDataUri(
 
   const sourceExtension = extensionFromPartName(partName ?? "") ?? "wmf";
   const baseName = "metafile-image";
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "react-docx-metafile-"));
+  const tempDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), "react-docx-metafile-")
+  );
   const sourcePath = path.join(tempDir, `${baseName}.${sourceExtension}`);
   const outputPath = path.join(tempDir, `${baseName}.png`);
   const sofficeCandidates = [
     process.env.SOFFICE_PATH,
     "soffice",
     "/opt/homebrew/bin/soffice",
-    "/Applications/LibreOffice.app/Contents/MacOS/soffice"
+    "/Applications/LibreOffice.app/Contents/MacOS/soffice",
   ].filter((candidate): candidate is string => Boolean(candidate));
 
   try {
@@ -3291,7 +3874,14 @@ function rasterizeWindowsMetafileToPngDataUri(
       try {
         childProcess.execFileSync(
           sofficePath,
-          ["--headless", "--convert-to", "png", "--outdir", tempDir, sourcePath],
+          [
+            "--headless",
+            "--convert-to",
+            "png",
+            "--outdir",
+            tempDir,
+            sourcePath,
+          ],
           { stdio: "ignore" }
         );
       } catch {
@@ -3301,7 +3891,9 @@ function rasterizeWindowsMetafileToPngDataUri(
       if (fs.existsSync(outputPath)) {
         trimRasterizedMetafilePng(outputPath, childProcess);
         const pngBytes = fs.readFileSync(outputPath);
-        return `data:image/png;base64,${bytesToBase64(new Uint8Array(pngBytes))}`;
+        return `data:image/png;base64,${bytesToBase64(
+          new Uint8Array(pngBytes)
+        )}`;
       }
     }
 
@@ -3399,7 +3991,7 @@ cropped.save(path, format="PNG")
   for (const pythonPath of pythonCandidates) {
     try {
       childProcess.execFileSync(pythonPath, ["-c", trimScript, pngPath], {
-        stdio: "ignore"
+        stdio: "ignore",
       });
       return;
     } catch {
@@ -3415,14 +4007,22 @@ function parseRunStyle(
 ): TextStyle | undefined {
   const runStyleId = runXml.match(/<w:rStyle\b[^>]*w:val="([^"]+)"/i)?.[1];
   const textBoxRunXml = extractBalancedTagBlocks(
-    extractBalancedTagBlocks(preferAlternateContentChoice(runXml), "w:txbxContent")[0] ?? "",
+    extractBalancedTagBlocks(
+      preferAlternateContentChoice(runXml),
+      "w:txbxContent"
+    )[0] ?? "",
     "w:r"
   )[0];
-  const direct = parseTextStyleFromXml(textBoxRunXml ?? runXml, context.styleSheet.themeFonts);
+  const direct = parseTextStyleFromXml(
+    textBoxRunXml ?? runXml,
+    context.styleSheet.themeFonts
+  );
   const inheritedParagraphRunStyle = paragraphStyleId
     ? context.styleSheet.paragraphStyleById.get(paragraphStyleId)?.runStyle
     : undefined;
-  const inheritedRunStyle = runStyleId ? context.styleSheet.runStyleById.get(runStyleId) : undefined;
+  const inheritedRunStyle = runStyleId
+    ? context.styleSheet.runStyleById.get(runStyleId)
+    : undefined;
 
   return mergeTextStyles(
     context.styleSheet.defaultRunStyle,
@@ -3437,16 +4037,21 @@ function preferAlternateContentChoice(xml: string): string {
     return xml;
   }
 
-  return xml.replace(/<mc:AlternateContent\b[\s\S]*?<\/mc:AlternateContent>/gi, (alternateXml) => {
-    const choiceXml = alternateXml.match(/<mc:Choice\b[\s\S]*?<\/mc:Choice>/i)?.[0];
-    if (!choiceXml) {
-      return alternateXml;
-    }
+  return xml.replace(
+    /<mc:AlternateContent\b[\s\S]*?<\/mc:AlternateContent>/gi,
+    (alternateXml) => {
+      const choiceXml = alternateXml.match(
+        /<mc:Choice\b[\s\S]*?<\/mc:Choice>/i
+      )?.[0];
+      if (!choiceXml) {
+        return alternateXml;
+      }
 
-    return choiceXml
-      .replace(/<mc:Choice\b[^>]*>/i, "")
-      .replace(/<\/mc:Choice>/i, "");
-  });
+      return choiceXml
+        .replace(/<mc:Choice\b[^>]*>/i, "")
+        .replace(/<\/mc:Choice>/i, "");
+    }
+  );
 }
 
 interface ParsedRunTextToken {
@@ -3473,9 +4078,11 @@ function parseRunTextTokens(runXml: string): ParsedRunTextToken[] {
       parts.push({ text: decodeXmlEntities(token[2]) });
       continue;
     }
-  if (token[3] !== undefined) {
+    if (token[3] !== undefined) {
       const referenceId = Number.parseInt(token[3], 10);
-      const safeId = Number.isFinite(referenceId) ? Math.round(referenceId) : undefined;
+      const safeId = Number.isFinite(referenceId)
+        ? Math.round(referenceId)
+        : undefined;
       if (safeId === undefined || safeId <= 0) {
         continue;
       }
@@ -3484,14 +4091,16 @@ function parseRunTextTokens(runXml: string): ParsedRunTextToken[] {
         text: "",
         noteReference: {
           kind: "footnote",
-          id: safeId
-        }
+          id: safeId,
+        },
       });
       continue;
     }
     if (token[4] !== undefined) {
       const referenceId = Number.parseInt(token[4], 10);
-      const safeId = Number.isFinite(referenceId) ? Math.round(referenceId) : undefined;
+      const safeId = Number.isFinite(referenceId)
+        ? Math.round(referenceId)
+        : undefined;
       if (safeId === undefined || safeId <= 0) {
         continue;
       }
@@ -3500,8 +4109,8 @@ function parseRunTextTokens(runXml: string): ParsedRunTextToken[] {
         text: "",
         noteReference: {
           kind: "endnote",
-          id: safeId
-        }
+          id: safeId,
+        },
       });
       continue;
     }
@@ -3537,16 +4146,30 @@ function parseFloatingAnchorFromRunXml(
     return undefined;
   }
 
-  const positionHBlock = runXml.match(/<wp:positionH\b[^>]*>[\s\S]*?<\/wp:positionH>/i)?.[0];
-  const positionVBlock = runXml.match(/<wp:positionV\b[^>]*>[\s\S]*?<\/wp:positionV>/i)?.[0];
+  const positionHBlock = runXml.match(
+    /<wp:positionH\b[^>]*>[\s\S]*?<\/wp:positionH>/i
+  )?.[0];
+  const positionVBlock = runXml.match(
+    /<wp:positionV\b[^>]*>[\s\S]*?<\/wp:positionV>/i
+  )?.[0];
   const positionHTag = positionHBlock?.match(/<wp:positionH\b[^>]*>/i)?.[0];
   const positionVTag = positionVBlock?.match(/<wp:positionV\b[^>]*>/i)?.[0];
-  const wrapTag = runXml.match(/<wp:(?:wrapNone|wrapSquare|wrapTight|wrapThrough|wrapTopAndBottom)\b[^>]*\/?>/i)?.[0];
+  const wrapTag = runXml.match(
+    /<wp:(?:wrapNone|wrapSquare|wrapTight|wrapThrough|wrapTopAndBottom)\b[^>]*\/?>/i
+  )?.[0];
 
-  const xOffsetRaw = positionHBlock?.match(/<wp:posOffset>(-?\d+)<\/wp:posOffset>/i)?.[1];
-  const yOffsetRaw = positionVBlock?.match(/<wp:posOffset>(-?\d+)<\/wp:posOffset>/i)?.[1];
-  const horizontalAlignRaw = positionHBlock?.match(/<wp:align>([^<]+)<\/wp:align>/i)?.[1];
-  const verticalAlignRaw = positionVBlock?.match(/<wp:align>([^<]+)<\/wp:align>/i)?.[1];
+  const xOffsetRaw = positionHBlock?.match(
+    /<wp:posOffset>(-?\d+)<\/wp:posOffset>/i
+  )?.[1];
+  const yOffsetRaw = positionVBlock?.match(
+    /<wp:posOffset>(-?\d+)<\/wp:posOffset>/i
+  )?.[1];
+  const horizontalAlignRaw = positionHBlock?.match(
+    /<wp:align>([^<]+)<\/wp:align>/i
+  )?.[1];
+  const verticalAlignRaw = positionVBlock?.match(
+    /<wp:align>([^<]+)<\/wp:align>/i
+  )?.[1];
   const distLRaw = getAttribute(anchorTag, "distL");
   const distRRaw = getAttribute(anchorTag, "distR");
   const distTRaw = getAttribute(anchorTag, "distT");
@@ -3559,30 +4182,41 @@ function parseFloatingAnchorFromRunXml(
     const resolved = emuToPixels(value);
     return resolved === undefined ? undefined : Math.max(0, resolved);
   };
-  const zIndex = zIndexRaw && Number.isFinite(Number(zIndexRaw)) ? Number(zIndexRaw) : undefined;
-  const horizontalRelativeTo = positionHTag ? getAttribute(positionHTag, "relativeFrom") : undefined;
-  const verticalRelativeTo = positionVTag ? getAttribute(positionVTag, "relativeFrom") : undefined;
+  const zIndex =
+    zIndexRaw && Number.isFinite(Number(zIndexRaw))
+      ? Number(zIndexRaw)
+      : undefined;
+  const horizontalRelativeTo = positionHTag
+    ? getAttribute(positionHTag, "relativeFrom")
+    : undefined;
+  const verticalRelativeTo = positionVTag
+    ? getAttribute(positionVTag, "relativeFrom")
+    : undefined;
   const horizontalAlign = horizontalAlignRaw?.trim().toLowerCase();
   const verticalAlign = verticalAlignRaw?.trim().toLowerCase();
   const distLPx = toPxFromEmu(distLRaw);
   const distRPx = toPxFromEmu(distRRaw);
   const distTPx = toPxFromEmu(distTRaw);
   const distBPx = toPxFromEmu(distBRaw);
-  const wrapTypeRaw = wrapTag?.match(/<wp:(wrapNone|wrapSquare|wrapTight|wrapThrough|wrapTopAndBottom)\b/i)?.[1];
-  const wrapTextRaw = wrapTag ? getAttribute(wrapTag, "wrapText")?.trim() : undefined;
+  const wrapTypeRaw = wrapTag?.match(
+    /<wp:(wrapNone|wrapSquare|wrapTight|wrapThrough|wrapTopAndBottom)\b/i
+  )?.[1];
+  const wrapTextRaw = wrapTag
+    ? getAttribute(wrapTag, "wrapText")?.trim()
+    : undefined;
   const behindDocument = getAttribute(anchorTag, "behindDoc") === "1";
   const wrapType =
     wrapTypeRaw === "wrapNone"
       ? "none"
       : wrapTypeRaw === "wrapSquare"
-        ? "square"
-        : wrapTypeRaw === "wrapTight"
-          ? "tight"
-          : wrapTypeRaw === "wrapThrough"
-            ? "through"
-            : wrapTypeRaw === "wrapTopAndBottom"
-              ? "topAndBottom"
-              : undefined;
+      ? "square"
+      : wrapTypeRaw === "wrapTight"
+      ? "tight"
+      : wrapTypeRaw === "wrapThrough"
+      ? "through"
+      : wrapTypeRaw === "wrapTopAndBottom"
+      ? "topAndBottom"
+      : undefined;
   const wrapText =
     wrapTextRaw === "bothSides" ||
     wrapTextRaw === "left" ||
@@ -3638,7 +4272,7 @@ function parseFloatingAnchorFromRunXml(
     wrapType,
     wrapText,
     behindDocument,
-    zIndex
+    zIndex,
   };
 }
 
@@ -3661,7 +4295,10 @@ function parseTextBoxParagraphs(
   context: ParseContext
 ): ParsedTextBoxParagraph[] {
   const normalizedRunXml = preferAlternateContentChoice(runXml);
-  const textBoxXml = extractBalancedTagBlocks(normalizedRunXml, "w:txbxContent")[0];
+  const textBoxXml = extractBalancedTagBlocks(
+    normalizedRunXml,
+    "w:txbxContent"
+  )[0];
   if (!textBoxXml) {
     return [];
   }
@@ -3676,13 +4313,21 @@ function parseTextBoxParagraphs(
     }
 
     const paragraphPropertiesXml =
-      extractBalancedTagBlocks(paragraphXml, "w:pPr")[0] ?? paragraphXml.match(/<w:pPr\b[^>]*\/?>/i)?.[0] ?? "";
-    const paragraphStyleId = paragraphPropertiesXml.match(/<w:pStyle\b[^>]*w:val="([^"]+)"/i)?.[1];
-    const paragraphStyle = paragraphStyleId ? context.styleSheet.paragraphStyleById.get(paragraphStyleId) : undefined;
+      extractBalancedTagBlocks(paragraphXml, "w:pPr")[0] ??
+      paragraphXml.match(/<w:pPr\b[^>]*\/?>/i)?.[0] ??
+      "";
+    const paragraphStyleId = paragraphPropertiesXml.match(
+      /<w:pStyle\b[^>]*w:val="([^"]+)"/i
+    )?.[1];
+    const paragraphStyle = paragraphStyleId
+      ? context.styleSheet.paragraphStyleById.get(paragraphStyleId)
+      : undefined;
 
     const firstRunXml = extractBalancedTagBlocks(paragraphXml, "w:r")[0];
     const runPropertiesXml = firstRunXml
-      ? extractBalancedTagBlocks(firstRunXml, "w:rPr")[0] ?? firstRunXml.match(/<w:rPr\b[^>]*\/?>/i)?.[0] ?? ""
+      ? extractBalancedTagBlocks(firstRunXml, "w:rPr")[0] ??
+        firstRunXml.match(/<w:rPr\b[^>]*\/?>/i)?.[0] ??
+        ""
       : "";
     const paragraphRunPropertiesXml =
       extractBalancedTagBlocks(paragraphPropertiesXml, "w:rPr")[0] ??
@@ -3692,15 +4337,20 @@ function parseTextBoxParagraphs(
     const style = mergeTextStyles(
       context.styleSheet.defaultRunStyle,
       paragraphStyle?.runStyle,
-      parseTextStyleFromXml(paragraphRunPropertiesXml, context.styleSheet.themeFonts),
+      parseTextStyleFromXml(
+        paragraphRunPropertiesXml,
+        context.styleSheet.themeFonts
+      ),
       parseTextStyleFromXml(runPropertiesXml, context.styleSheet.themeFonts)
     );
-    const align = parseParagraphAlignFromXml(paragraphPropertiesXml) ?? paragraphStyle?.align;
+    const align =
+      parseParagraphAlignFromXml(paragraphPropertiesXml) ??
+      paragraphStyle?.align;
 
     resolved.push({
       text: paragraphText,
       style,
-      align
+      align,
     });
   }
 
@@ -3719,11 +4369,7 @@ function parseTextBoxLayout(runXml: string): ParsedTextBoxLayout | undefined {
 
   const anchorRaw = getAttribute(bodyPrXml, "anchor")?.trim().toLowerCase();
   const verticalAnchor =
-    anchorRaw === "ctr"
-      ? "center"
-      : anchorRaw === "b"
-      ? "bottom"
-      : "top";
+    anchorRaw === "ctr" ? "center" : anchorRaw === "b" ? "bottom" : "top";
 
   return {
     paddingLeftPx: emuToPixels(getAttribute(bodyPrXml, "lIns")),
@@ -3741,8 +4387,12 @@ function parseDrawingImageCssFilter(runXml: string): string | undefined {
     filters.push("saturate(0.76)", "contrast(0.94)", "brightness(1.04)");
   }
 
-  const colorTemperatureRaw = runXml.match(/<a14:colorTemperature\b[^>]*colorTemp="(\d+)"/i)?.[1];
-  const colorTemperature = colorTemperatureRaw ? Number(colorTemperatureRaw) : undefined;
+  const colorTemperatureRaw = runXml.match(
+    /<a14:colorTemperature\b[^>]*colorTemp="(\d+)"/i
+  )?.[1];
+  const colorTemperature = colorTemperatureRaw
+    ? Number(colorTemperatureRaw)
+    : undefined;
   if (Number.isFinite(colorTemperature)) {
     if ((colorTemperature as number) >= 9000) {
       filters.push("hue-rotate(-6deg)", "saturate(1.04)");
@@ -3751,9 +4401,16 @@ function parseDrawingImageCssFilter(runXml: string): string | undefined {
     }
   }
 
-  const hasDuotoneAccent3 = /<a:duotone>[\s\S]*?<a:schemeClr\b[^>]*val="accent3"/i.test(runXml);
+  const hasDuotoneAccent3 =
+    /<a:duotone>[\s\S]*?<a:schemeClr\b[^>]*val="accent3"/i.test(runXml);
   if (hasDuotoneAccent3) {
-    filters.push("grayscale(1)", "sepia(0.55)", "hue-rotate(35deg)", "saturate(1.55)", "brightness(0.9)");
+    filters.push(
+      "grayscale(1)",
+      "sepia(0.55)",
+      "hue-rotate(35deg)",
+      "saturate(1.55)",
+      "brightness(0.9)"
+    );
   }
 
   return filters.length > 0 ? filters.join(" ") : undefined;
@@ -3801,10 +4458,12 @@ function parseDrawingImageCrop(
     leftFraction: parseCropFraction("l"),
     topFraction: parseCropFraction("t"),
     rightFraction: parseCropFraction("r"),
-    bottomFraction: parseCropFraction("b")
+    bottomFraction: parseCropFraction("b"),
   };
 
-  return Object.values(crop).some((value) => Number.isFinite(value) && (value as number) > 0)
+  return Object.values(crop).some(
+    (value) => Number.isFinite(value) && (value as number) > 0
+  )
     ? crop
     : undefined;
 }
@@ -3821,7 +4480,10 @@ function renderTextBoxSvg(
     const fontSizePx = Math.max(10, Math.round((fontSizePt * 96) / 72));
     return Math.max(14, Math.round(fontSizePx * 1.24));
   });
-  const estimatedHeight = lineHeights.reduce((sum, lineHeight) => sum + lineHeight, 24);
+  const estimatedHeight = lineHeights.reduce(
+    (sum, lineHeight) => sum + lineHeight,
+    24
+  );
   const safeHeight = clamp(Math.round(heightPx ?? estimatedHeight), 48, 2400);
   const horizontalInset = Math.max(
     8,
@@ -3847,7 +4509,8 @@ function renderTextBoxSvg(
   const availableHeight = Math.max(0, safeHeight - topInset - bottomInset);
   const startOffsetY =
     layout?.verticalAnchor === "center"
-      ? topInset + Math.max(0, Math.round((availableHeight - totalTextHeight) / 2))
+      ? topInset +
+        Math.max(0, Math.round((availableHeight - totalTextHeight) / 2))
       : layout?.verticalAnchor === "bottom"
       ? Math.max(topInset, safeHeight - bottomInset - totalTextHeight)
       : topInset;
@@ -3859,13 +4522,21 @@ function renderTextBoxSvg(
     const fontSizePt = paragraph.style?.fontSizePt ?? 12;
     const fontSizePx = Math.max(10, Math.round((fontSizePt * 96) / 72));
     const estimatedTextWidth = estimateTextWidthPx(paragraph.text, fontSizePx);
-    const overflowRatio = estimatedTextWidth > 0 ? maxTextWidth / estimatedTextWidth : 1;
-    const fittedFontSizePx = overflowRatio < 1 ? Math.max(10, Math.round(fontSizePx * overflowRatio)) : fontSizePx;
+    const overflowRatio =
+      estimatedTextWidth > 0 ? maxTextWidth / estimatedTextWidth : 1;
+    const fittedFontSizePx =
+      overflowRatio < 1
+        ? Math.max(10, Math.round(fontSizePx * overflowRatio))
+        : fontSizePx;
     const textLengthAttr =
       estimatedTextWidth > maxTextWidth + 1
-        ? ` textLength="${Math.round(maxTextWidth)}" lengthAdjust="spacingAndGlyphs"`
+        ? ` textLength="${Math.round(
+            maxTextWidth
+          )}" lengthAdjust="spacingAndGlyphs"`
         : "";
-    const lineHeight = lineHeights[paragraphIndex] ?? Math.max(14, Math.round(fittedFontSizePx * 1.24));
+    const lineHeight =
+      lineHeights[paragraphIndex] ??
+      Math.max(14, Math.round(fittedFontSizePx * 1.24));
     cursorY += lineHeight;
     if (cursorY > safeHeight - 4) {
       break;
@@ -3876,17 +4547,17 @@ function renderTextBoxSvg(
       textAlign === "center"
         ? "middle"
         : textAlign === "right"
-          ? "end"
-          : "start";
+        ? "end"
+        : "start";
     const x =
       textAlign === "center"
         ? Math.round(safeWidth / 2)
         : textAlign === "right"
-          ? safeWidth - rightInset
-          : horizontalInset;
+        ? safeWidth - rightInset
+        : horizontalInset;
     const textDecoration = [
       paragraph.style?.underline ? "underline" : "",
-      paragraph.style?.strike ? "line-through" : ""
+      paragraph.style?.strike ? "line-through" : "",
     ]
       .filter(Boolean)
       .join(" ");
@@ -3894,9 +4565,11 @@ function renderTextBoxSvg(
     lines.push(
       `<text xml:space="preserve" x="${x}" y="${cursorY}" text-anchor="${anchor}" font-size="${fittedFontSizePx}" fill="${
         paragraph.style?.color ?? "#111111"
-      }" font-family="${escapeXmlText(resolveSvgFontFamily(paragraph.style?.fontFamily))}" font-weight="${
-        paragraph.style?.bold ? "700" : "400"
-      }" font-style="${paragraph.style?.italic ? "italic" : "normal"}"${
+      }" font-family="${escapeXmlText(
+        resolveSvgFontFamily(paragraph.style?.fontFamily)
+      )}" font-weight="${paragraph.style?.bold ? "700" : "400"}" font-style="${
+        paragraph.style?.italic ? "italic" : "normal"
+      }"${
         textDecoration ? ` text-decoration="${textDecoration}"` : ""
       }${textLengthAttr}>${escapeXmlText(paragraph.text)}</text>`
     );
@@ -3955,12 +4628,16 @@ function parseCssStyleDeclarations(styleValue: string): Map<string, string> {
   return declarations;
 }
 
-function parseCssLengthPixels(styleToken: string | undefined): number | undefined {
+function parseCssLengthPixels(
+  styleToken: string | undefined
+): number | undefined {
   if (!styleToken) {
     return undefined;
   }
 
-  const match = styleToken.match(/(-?[0-9]+(?:\.[0-9]+)?)\s*(px|pt|in|cm|mm)\b/i);
+  const match = styleToken.match(
+    /(-?[0-9]+(?:\.[0-9]+)?)\s*(px|pt|in|cm|mm)\b/i
+  );
   if (!match?.[1] || !match?.[2]) {
     return undefined;
   }
@@ -3980,9 +4657,14 @@ function parseVmlSize(runXml: string): { widthPx?: number; heightPx?: number } {
   const heightMatch = style.match(/height:\s*([0-9.]+)\s*(px|pt|in|cm|mm)/i);
 
   return {
-    widthPx: widthMatch?.[1] && widthMatch?.[2] ? cssLengthToPixels(widthMatch[1], widthMatch[2]) : undefined,
+    widthPx:
+      widthMatch?.[1] && widthMatch?.[2]
+        ? cssLengthToPixels(widthMatch[1], widthMatch[2])
+        : undefined,
     heightPx:
-      heightMatch?.[1] && heightMatch?.[2] ? cssLengthToPixels(heightMatch[1], heightMatch[2]) : undefined
+      heightMatch?.[1] && heightMatch?.[2]
+        ? cssLengthToPixels(heightMatch[1], heightMatch[2])
+        : undefined,
   };
 }
 
@@ -4057,9 +4739,7 @@ function parseVmlFloatingAnchorFromRunXml(
     return undefined;
   };
 
-  const normalizeWrapType = (
-    raw: string | undefined
-  ): Floating["wrapType"] => {
+  const normalizeWrapType = (raw: string | undefined): Floating["wrapType"] => {
     const normalized = raw?.trim().toLowerCase();
     if (!normalized) {
       return undefined;
@@ -4129,10 +4809,18 @@ function parseVmlFloatingAnchorFromRunXml(
     verticalPositionMode && verticalPositionMode !== "absolute"
       ? (normalizeAlign(verticalPositionMode) as Floating["verticalAlign"])
       : undefined;
-  const distLPx = parseCssLengthPixels(declarations.get("mso-wrap-distance-left"));
-  const distRPx = parseCssLengthPixels(declarations.get("mso-wrap-distance-right"));
-  const distTPx = parseCssLengthPixels(declarations.get("mso-wrap-distance-top"));
-  const distBPx = parseCssLengthPixels(declarations.get("mso-wrap-distance-bottom"));
+  const distLPx = parseCssLengthPixels(
+    declarations.get("mso-wrap-distance-left")
+  );
+  const distRPx = parseCssLengthPixels(
+    declarations.get("mso-wrap-distance-right")
+  );
+  const distTPx = parseCssLengthPixels(
+    declarations.get("mso-wrap-distance-top")
+  );
+  const distBPx = parseCssLengthPixels(
+    declarations.get("mso-wrap-distance-bottom")
+  );
   const wrapType = normalizeWrapType(declarations.get("mso-wrap-style"));
   const zIndex = parseNumeric(declarations.get("z-index"));
   const behindDocument = zIndex !== undefined ? zIndex < 0 : undefined;
@@ -4193,7 +4881,7 @@ const CHART_COLOR_PALETTE = [
   "#a855f7",
   "#06b6d4",
   "#ef4444",
-  "#14b8a6"
+  "#14b8a6",
 ];
 
 function escapeXmlText(value: string): string {
@@ -4257,9 +4945,9 @@ function chartColor(rawColor: string | undefined, index: number): string {
 }
 
 function parseChartPoints(xml: string): string[] {
-  const values = [...xml.matchAll(/<c:pt\b[\s\S]*?<c:v>([\s\S]*?)<\/c:v>[\s\S]*?<\/c:pt>/gi)].map(
-    (match) => decodeXmlEntities(match[1] ?? "").trim()
-  );
+  const values = [
+    ...xml.matchAll(/<c:pt\b[\s\S]*?<c:v>([\s\S]*?)<\/c:v>[\s\S]*?<\/c:pt>/gi),
+  ].map((match) => decodeXmlEntities(match[1] ?? "").trim());
 
   if (values.length > 0) {
     return values;
@@ -4277,7 +4965,9 @@ function parseChartTitle(chartXml: string): string | undefined {
     return undefined;
   }
 
-  const title = [...titleXml.matchAll(/<(?:a:t|c:v)\b[^>]*>([\s\S]*?)<\/(?:a:t|c:v)>/gi)]
+  const title = [
+    ...titleXml.matchAll(/<(?:a:t|c:v)\b[^>]*>([\s\S]*?)<\/(?:a:t|c:v)>/gi),
+  ]
     .map((match) => decodeXmlEntities(match[1] ?? ""))
     .join(" ")
     .replace(/\s+/g, " ")
@@ -4318,13 +5008,19 @@ function parseChartData(chartXml: string): ParsedChartData | undefined {
   const series = seriesBlocks
     .map((seriesXml, index): ParsedChartSeries | undefined => {
       const name =
-        parseChartPoints(seriesXml.match(/<c:tx\b[\s\S]*?<\/c:tx>/i)?.[0] ?? "")[0] ??
-        `Series ${index + 1}`;
-      const values = parseChartPoints(seriesXml.match(/<c:val\b[\s\S]*?<\/c:val>/i)?.[0] ?? "").map(
-        parseChartNumber
+        parseChartPoints(
+          seriesXml.match(/<c:tx\b[\s\S]*?<\/c:tx>/i)?.[0] ?? ""
+        )[0] ?? `Series ${index + 1}`;
+      const values = parseChartPoints(
+        seriesXml.match(/<c:val\b[\s\S]*?<\/c:val>/i)?.[0] ?? ""
+      ).map(parseChartNumber);
+      const categories = parseChartPoints(
+        seriesXml.match(/<c:cat\b[\s\S]*?<\/c:cat>/i)?.[0] ?? ""
       );
-      const categories = parseChartPoints(seriesXml.match(/<c:cat\b[\s\S]*?<\/c:cat>/i)?.[0] ?? "");
-      const color = chartColor(seriesXml.match(/<a:srgbClr\b[^>]*val="([^"]+)"/i)?.[1], index);
+      const color = chartColor(
+        seriesXml.match(/<a:srgbClr\b[^>]*val="([^"]+)"/i)?.[1],
+        index
+      );
 
       if (values.length === 0) {
         return undefined;
@@ -4334,7 +5030,7 @@ function parseChartData(chartXml: string): ParsedChartData | undefined {
         name: name.trim() || `Series ${index + 1}`,
         values,
         categories,
-        color
+        color,
       };
     })
     .filter((item): item is ParsedChartSeries => Boolean(item));
@@ -4343,8 +5039,14 @@ function parseChartData(chartXml: string): ParsedChartData | undefined {
     return undefined;
   }
 
-  const pointCount = Math.max(...series.map((item) => Math.max(item.values.length, item.categories.length)), 0);
-  const categoriesTemplate = series.find((item) => item.categories.length > 0)?.categories ?? [];
+  const pointCount = Math.max(
+    ...series.map((item) =>
+      Math.max(item.values.length, item.categories.length)
+    ),
+    0
+  );
+  const categoriesTemplate =
+    series.find((item) => item.categories.length > 0)?.categories ?? [];
   const categories = Array.from({ length: pointCount }, (_, index) => {
     const label = categoriesTemplate[index] ?? `Item ${index + 1}`;
     return label.trim() || `Item ${index + 1}`;
@@ -4358,8 +5060,8 @@ function parseChartData(chartXml: string): ParsedChartData | undefined {
       ...item,
       values: Array.from({ length: pointCount }, (_, index) =>
         Number.isFinite(item.values[index]) ? item.values[index] : 0
-      )
-    }))
+      ),
+    })),
   };
 }
 
@@ -4376,13 +5078,17 @@ function renderCartesianChartSvg(
   widthPx: number,
   heightPx: number
 ): string {
-  const title = chart.title ? `<text x="16" y="20" font-size="14" fill="#111827">${escapeXmlText(chart.title)}</text>` : "";
+  const title = chart.title
+    ? `<text x="16" y="20" font-size="14" fill="#111827">${escapeXmlText(
+        chart.title
+      )}</text>`
+    : "";
 
   const margin = {
     top: chart.title ? 34 : 22,
     right: 20,
     bottom: 54,
-    left: 54
+    left: 54,
   };
   const plotWidth = Math.max(40, widthPx - margin.left - margin.right);
   const plotHeight = Math.max(40, heightPx - margin.top - margin.bottom);
@@ -4393,7 +5099,15 @@ function renderCartesianChartSvg(
   const grid = Array.from({ length: gridLines + 1 }, (_, step) => {
     const value = (maxValue * (gridLines - step)) / gridLines;
     const y = margin.top + (plotHeight * step) / gridLines;
-    return `<line x1="${margin.left}" y1="${y}" x2="${margin.left + plotWidth}" y2="${y}" stroke="#e5e7eb" stroke-width="1"/><text x="${margin.left - 6}" y="${y + 4}" text-anchor="end" font-size="10" fill="#6b7280">${value.toFixed(1)}</text>`;
+    return `<line x1="${margin.left}" y1="${y}" x2="${
+      margin.left + plotWidth
+    }" y2="${y}" stroke="#e5e7eb" stroke-width="1"/><text x="${
+      margin.left - 6
+    }" y="${
+      y + 4
+    }" text-anchor="end" font-size="10" fill="#6b7280">${value.toFixed(
+      1
+    )}</text>`;
   }).join("");
 
   const categoryCount = Math.max(1, chart.categories.length);
@@ -4401,7 +5115,11 @@ function renderCartesianChartSvg(
   const categoryLabels = chart.categories
     .map((category, index) => {
       const x = margin.left + groupWidth * index + groupWidth / 2;
-      return `<text x="${x}" y="${margin.top + plotHeight + 18}" text-anchor="middle" font-size="10" fill="#4b5563">${escapeXmlText(category)}</text>`;
+      return `<text x="${x}" y="${
+        margin.top + plotHeight + 18
+      }" text-anchor="middle" font-size="10" fill="#4b5563">${escapeXmlText(
+        category
+      )}</text>`;
     })
     .join("");
 
@@ -4438,18 +5156,28 @@ function renderCartesianChartSvg(
           .map((value, index) => {
             const safeValue = Math.max(0, value);
             const x = margin.left + groupWidth * index + groupWidth / 2;
-            const y = margin.top + plotHeight - (safeValue / maxValue) * plotHeight;
+            const y =
+              margin.top + plotHeight - (safeValue / maxValue) * plotHeight;
             return { x, y };
           })
-          .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
+          .filter(
+            (point) => Number.isFinite(point.x) && Number.isFinite(point.y)
+          );
 
         if (points.length === 0) {
           return "";
         }
 
-        const path = points.map((point, index) => `${index === 0 ? "M" : "L"}${point.x} ${point.y}`).join(" ");
+        const path = points
+          .map(
+            (point, index) => `${index === 0 ? "M" : "L"}${point.x} ${point.y}`
+          )
+          .join(" ");
         const circles = points
-          .map((point) => `<circle cx="${point.x}" cy="${point.y}" r="2.5" fill="${series.color}" />`)
+          .map(
+            (point) =>
+              `<circle cx="${point.x}" cy="${point.y}" r="2.5" fill="${series.color}" />`
+          )
           .join("");
         return `<path d="${path}" fill="none" stroke="${series.color}" stroke-width="2" />${circles}`;
       })
@@ -4460,9 +5188,11 @@ function renderCartesianChartSvg(
     .map((series, index) => {
       const x = margin.left + index * 120;
       const y = 8;
-      return `<rect x="${x}" y="${y}" width="10" height="10" rx="2" fill="${series.color}"/><text x="${
-        x + 14
-      }" y="${y + 9}" font-size="10" fill="#374151">${escapeXmlText(series.name)}</text>`;
+      return `<rect x="${x}" y="${y}" width="10" height="10" rx="2" fill="${
+        series.color
+      }"/><text x="${x + 14}" y="${
+        y + 9
+      }" font-size="10" fill="#374151">${escapeXmlText(series.name)}</text>`;
     })
     .join("");
 
@@ -4470,34 +5200,59 @@ function renderCartesianChartSvg(
     <rect x="0" y="0" width="${widthPx}" height="${heightPx}" fill="#ffffff"/>
     ${title}
     ${grid}
-    <line x1="${margin.left}" y1="${margin.top + plotHeight}" x2="${margin.left + plotWidth}" y2="${margin.top + plotHeight}" stroke="#9ca3af"/>
-    <line x1="${margin.left}" y1="${margin.top}" x2="${margin.left}" y2="${margin.top + plotHeight}" stroke="#9ca3af"/>
+    <line x1="${margin.left}" y1="${margin.top + plotHeight}" x2="${
+    margin.left + plotWidth
+  }" y2="${margin.top + plotHeight}" stroke="#9ca3af"/>
+    <line x1="${margin.left}" y1="${margin.top}" x2="${margin.left}" y2="${
+    margin.top + plotHeight
+  }" stroke="#9ca3af"/>
     ${seriesMarkup}
     ${categoryLabels}
     ${legend}
   </svg>`;
 }
 
-function polarToCartesian(cx: number, cy: number, radius: number, angle: number): { x: number; y: number } {
+function polarToCartesian(
+  cx: number,
+  cy: number,
+  radius: number,
+  angle: number
+): { x: number; y: number } {
   const radians = ((angle - 90) * Math.PI) / 180;
   return {
     x: cx + radius * Math.cos(radians),
-    y: cy + radius * Math.sin(radians)
+    y: cy + radius * Math.sin(radians),
   };
 }
 
-function renderPieChartSvg(chart: ParsedChartData, widthPx: number, heightPx: number): string {
+function renderPieChartSvg(
+  chart: ParsedChartData,
+  widthPx: number,
+  heightPx: number
+): string {
   const baseSeries = chart.series[0];
   const values = baseSeries?.values ?? [];
-  const total = Math.max(0.0001, values.reduce((sum, value) => sum + Math.max(0, value), 0));
+  const total = Math.max(
+    0.0001,
+    values.reduce((sum, value) => sum + Math.max(0, value), 0)
+  );
   const categories =
-    chart.categories.length > 0 ? chart.categories : values.map((_, index) => `Item ${index + 1}`);
-  const colors = chart.series.length > 1 ? chart.series.map((item) => item.color) : CHART_COLOR_PALETTE;
+    chart.categories.length > 0
+      ? chart.categories
+      : values.map((_, index) => `Item ${index + 1}`);
+  const colors =
+    chart.series.length > 1
+      ? chart.series.map((item) => item.color)
+      : CHART_COLOR_PALETTE;
 
   const centerX = Math.round(widthPx * 0.34);
   const centerY = Math.round(heightPx * 0.56);
-  const outerRadius = Math.max(30, Math.min(Math.round(Math.min(widthPx, heightPx) * 0.26), 160));
-  const innerRadius = chart.kind === "doughnut" ? Math.round(outerRadius * 0.55) : 0;
+  const outerRadius = Math.max(
+    30,
+    Math.min(Math.round(Math.min(widthPx, heightPx) * 0.26), 160)
+  );
+  const innerRadius =
+    chart.kind === "doughnut" ? Math.round(outerRadius * 0.55) : 0;
 
   let startAngle = 0;
   const slices = values
@@ -4508,13 +5263,33 @@ function renderPieChartSvg(chart: ParsedChartData, widthPx: number, heightPx: nu
       const largeArcFlag = endAngle - startAngle > 180 ? 1 : 0;
       const fill = colors[index % colors.length];
 
-      const startOuter = polarToCartesian(centerX, centerY, outerRadius, startAngle);
-      const endOuter = polarToCartesian(centerX, centerY, outerRadius, endAngle);
+      const startOuter = polarToCartesian(
+        centerX,
+        centerY,
+        outerRadius,
+        startAngle
+      );
+      const endOuter = polarToCartesian(
+        centerX,
+        centerY,
+        outerRadius,
+        endAngle
+      );
 
       let path = "";
       if (innerRadius > 0) {
-        const startInner = polarToCartesian(centerX, centerY, innerRadius, startAngle);
-        const endInner = polarToCartesian(centerX, centerY, innerRadius, endAngle);
+        const startInner = polarToCartesian(
+          centerX,
+          centerY,
+          innerRadius,
+          startAngle
+        );
+        const endInner = polarToCartesian(
+          centerX,
+          centerY,
+          innerRadius,
+          endAngle
+        );
         path = `M ${startOuter.x} ${startOuter.y} A ${outerRadius} ${outerRadius} 0 ${largeArcFlag} 1 ${endOuter.x} ${endOuter.y} L ${endInner.x} ${endInner.y} A ${innerRadius} ${innerRadius} 0 ${largeArcFlag} 0 ${startInner.x} ${startInner.y} Z`;
       } else {
         path = `M ${centerX} ${centerY} L ${startOuter.x} ${startOuter.y} A ${outerRadius} ${outerRadius} 0 ${largeArcFlag} 1 ${endOuter.x} ${endOuter.y} Z`;
@@ -4526,7 +5301,9 @@ function renderPieChartSvg(chart: ParsedChartData, widthPx: number, heightPx: nu
     .join("");
 
   const title = chart.title
-    ? `<text x="16" y="20" font-size="14" fill="#111827">${escapeXmlText(chart.title)}</text>`
+    ? `<text x="16" y="20" font-size="14" fill="#111827">${escapeXmlText(
+        chart.title
+      )}</text>`
     : "";
 
   const legend = categories
@@ -4535,9 +5312,13 @@ function renderPieChartSvg(chart: ParsedChartData, widthPx: number, heightPx: nu
       const y = 36 + index * 18;
       const color = colors[index % colors.length];
       const value = values[index] ?? 0;
-      return `<rect x="${x}" y="${y - 8}" width="10" height="10" rx="2" fill="${color}"/><text x="${
+      return `<rect x="${x}" y="${
+        y - 8
+      }" width="10" height="10" rx="2" fill="${color}"/><text x="${
         x + 14
-      }" y="${y}" font-size="10" fill="#374151">${escapeXmlText(category)} (${value})</text>`;
+      }" y="${y}" font-size="10" fill="#374151">${escapeXmlText(
+        category
+      )} (${value})</text>`;
     })
     .join("");
 
@@ -4570,7 +5351,9 @@ function chartXmlToSvgDataUri(
   return svgDataUri(svg);
 }
 
-function resolvePreferredDrawingRelationshipId(runXml: string): string | undefined {
+function resolvePreferredDrawingRelationshipId(
+  runXml: string
+): string | undefined {
   return (
     runXml.match(
       /<a:ext\b[^>]*>[\s\S]*?<asvg:svgBlip\b[^>]*r:embed="([^"]+)"/i
@@ -4583,13 +5366,22 @@ function resolvePreferredDrawingRelationshipId(runXml: string): string | undefin
   );
 }
 
-function parseRunImageBlock(runXml: string, context: ParseContext): ImageRunNode | undefined {
+function parseRunImageBlock(
+  runXml: string,
+  context: ParseContext
+): ImageRunNode | undefined {
   const normalizedRunXml = preferAlternateContentChoice(runXml);
   let activeRunXml = normalizedRunXml;
-  let extentMatch = activeRunXml.match(/<wp:extent\b[^>]*cx="(\d+)"[^>]*cy="(\d+)"/i);
+  let extentMatch = activeRunXml.match(
+    /<wp:extent\b[^>]*cx="(\d+)"[^>]*cy="(\d+)"/i
+  );
   let vmlSize = parseVmlSize(activeRunXml);
-  let widthPx = extentMatch?.[1] ? emuToPixels(extentMatch[1]) : vmlSize.widthPx;
-  let heightPx = extentMatch?.[2] ? emuToPixels(extentMatch[2]) : vmlSize.heightPx;
+  let widthPx = extentMatch?.[1]
+    ? emuToPixels(extentMatch[1])
+    : vmlSize.widthPx;
+  let heightPx = extentMatch?.[2]
+    ? emuToPixels(extentMatch[2])
+    : vmlSize.heightPx;
   let floating =
     parseFloatingAnchorFromRunXml(activeRunXml) ??
     parseVmlFloatingAnchorFromRunXml(activeRunXml);
@@ -4597,9 +5389,13 @@ function parseRunImageBlock(runXml: string, context: ParseContext): ImageRunNode
   const docPrMatch = activeRunXml.match(/<wp:docPr\b[^>]*>/i);
   const docPrTag = docPrMatch?.[0] ?? "";
   const alt =
-    getAttribute(docPrTag, "descr") || getAttribute(docPrTag, "title") || getAttribute(docPrTag, "name");
+    getAttribute(docPrTag, "descr") ||
+    getAttribute(docPrTag, "title") ||
+    getAttribute(docPrTag, "name");
 
-  let chartRelationshipId = activeRunXml.match(/<c:chart\b[^>]*r:id="([^"]+)"/i)?.[1];
+  let chartRelationshipId = activeRunXml.match(
+    /<c:chart\b[^>]*r:id="([^"]+)"/i
+  )?.[1];
   let relationshipId =
     resolvePreferredDrawingRelationshipId(activeRunXml) ??
     activeRunXml.match(/<v:imagedata\b[^>]*r:id="([^"]+)"/i)?.[1] ??
@@ -4609,27 +5405,37 @@ function parseRunImageBlock(runXml: string, context: ParseContext): ImageRunNode
   // if no image/chart relationship is available there.
   if (!relationshipId && normalizedRunXml !== runXml) {
     activeRunXml = runXml;
-    chartRelationshipId = activeRunXml.match(/<c:chart\b[^>]*r:id="([^"]+)"/i)?.[1];
+    chartRelationshipId = activeRunXml.match(
+      /<c:chart\b[^>]*r:id="([^"]+)"/i
+    )?.[1];
     relationshipId =
       resolvePreferredDrawingRelationshipId(activeRunXml) ??
       activeRunXml.match(/<v:imagedata\b[^>]*r:id="([^"]+)"/i)?.[1] ??
       chartRelationshipId;
 
-    extentMatch = activeRunXml.match(/<wp:extent\b[^>]*cx="(\d+)"[^>]*cy="(\d+)"/i);
+    extentMatch = activeRunXml.match(
+      /<wp:extent\b[^>]*cx="(\d+)"[^>]*cy="(\d+)"/i
+    );
     vmlSize = parseVmlSize(activeRunXml);
     widthPx = extentMatch?.[1] ? emuToPixels(extentMatch[1]) : vmlSize.widthPx;
-    heightPx = extentMatch?.[2] ? emuToPixels(extentMatch[2]) : vmlSize.heightPx;
+    heightPx = extentMatch?.[2]
+      ? emuToPixels(extentMatch[2])
+      : vmlSize.heightPx;
     floating =
       parseFloatingAnchorFromRunXml(activeRunXml) ??
       parseVmlFloatingAnchorFromRunXml(activeRunXml);
   }
 
-  const partName = relationshipId ? context.relationships.get(relationshipId) : undefined;
+  const partName = relationshipId
+    ? context.relationships.get(relationshipId)
+    : undefined;
   if (relationshipId && !partName) {
     context.warnings.push(`Missing relationship target for ${relationshipId}`);
   }
 
-  const contentType = partName ? contentTypeForPart(partName, context.contentTypes) : undefined;
+  const contentType = partName
+    ? contentTypeForPart(partName, context.contentTypes)
+    : undefined;
   const binary = partName ? context.binaryAssets.get(partName) : undefined;
   const crop = parseDrawingImageCrop(activeRunXml);
   const cssFilter = parseDrawingImageCssFilter(activeRunXml);
@@ -4638,12 +5444,23 @@ function parseRunImageBlock(runXml: string, context: ParseContext): ImageRunNode
   const likelyChartPart =
     Boolean(chartRelationshipId) ||
     partName?.includes("/charts/") ||
-    contentType === "application/vnd.openxmlformats-officedocument.drawingml.chart+xml";
+    contentType ===
+      "application/vnd.openxmlformats-officedocument.drawingml.chart+xml";
 
-  const standaloneShapeSvg = renderStandaloneWordShapeSvg(activeRunXml, widthPx, heightPx, context);
-  const containsGroupedOrStandaloneShape = /<wpg:wgp\b|<wps:wsp\b/i.test(activeRunXml);
+  const standaloneShapeSvg = renderStandaloneWordShapeSvg(
+    activeRunXml,
+    widthPx,
+    heightPx,
+    context
+  );
+  const containsGroupedOrStandaloneShape = /<wpg:wgp\b|<wps:wsp\b/i.test(
+    activeRunXml
+  );
   const containsTextBoxContent = /<w:txbxContent\b/i.test(activeRunXml);
-  if (standaloneShapeSvg && (containsGroupedOrStandaloneShape || !relationshipId)) {
+  if (
+    standaloneShapeSvg &&
+    (containsGroupedOrStandaloneShape || !relationshipId)
+  ) {
     return {
       type: "image",
       src: svgDataUri(standaloneShapeSvg),
@@ -4656,17 +5473,21 @@ function parseRunImageBlock(runXml: string, context: ParseContext): ImageRunNode
       cssFilter,
       cssOpacity,
       floating,
-      syntheticTextBox: containsTextBoxContent || undefined
+      syntheticTextBox: containsTextBoxContent || undefined,
     };
   }
 
   if (likelyChartPart) {
-    const chartXml = partName ? context.parts.get(partName)?.content : undefined;
+    const chartXml = partName
+      ? context.parts.get(partName)?.content
+      : undefined;
     if (!chartXml && partName) {
       context.warnings.push(`Missing chart part ${partName}`);
     }
 
-    const chartSrc = chartXml ? chartXmlToSvgDataUri(chartXml, widthPx, heightPx) : undefined;
+    const chartSrc = chartXml
+      ? chartXmlToSvgDataUri(chartXml, widthPx, heightPx)
+      : undefined;
     if (chartSrc) {
       return {
         type: "image",
@@ -4679,7 +5500,7 @@ function parseRunImageBlock(runXml: string, context: ParseContext): ImageRunNode
         crop,
         cssFilter,
         cssOpacity,
-        floating
+        floating,
       };
     }
   }
@@ -4710,7 +5531,7 @@ function parseRunImageBlock(runXml: string, context: ParseContext): ImageRunNode
       cssFilter,
       cssOpacity,
       floating,
-      syntheticTextBox: true
+      syntheticTextBox: true,
     };
   }
 
@@ -4718,7 +5539,10 @@ function parseRunImageBlock(runXml: string, context: ParseContext): ImageRunNode
   let resolvedContentType = contentType;
   let resolvedCssOpacity = cssOpacity;
   if (binary) {
-    const mimeType = contentTypeForPart(partName ?? "", context.contentTypes) ?? contentType ?? "application/octet-stream";
+    const mimeType =
+      contentTypeForPart(partName ?? "", context.contentTypes) ??
+      contentType ??
+      "application/octet-stream";
     if (isWindowsMetafileContentType(mimeType, partName)) {
       src = rasterizeWindowsMetafileToPngDataUri(binary, partName);
       if (src) {
@@ -4748,7 +5572,7 @@ function parseRunImageBlock(runXml: string, context: ParseContext): ImageRunNode
     crop,
     cssFilter,
     cssOpacity: resolvedCssOpacity,
-    floating
+    floating,
   };
 }
 
@@ -4757,7 +5581,7 @@ function parseRunImages(runXml: string, context: ParseContext): ImageRunNode[] {
     "mc:AlternateContent",
     "w:drawing",
     "w:pict",
-    "w:object"
+    "w:object",
   ]);
   const candidateXmlBlocks =
     candidateRanges.length > 0
@@ -4778,7 +5602,7 @@ function parseRunImages(runXml: string, context: ParseContext): ImageRunNode[] {
       widthPx: image.widthPx,
       heightPx: image.heightPx,
       floating: image.floating,
-      syntheticTextBox: image.syntheticTextBox
+      syntheticTextBox: image.syntheticTextBox,
     });
     if (seenKeys.has(dedupeKey)) {
       continue;
@@ -4902,17 +5726,26 @@ interface ParagraphRunToken {
   link?: string;
 }
 
-function hyperlinkHrefFromTag(hyperlinkTag: string, context: ParseContext): string | undefined {
+function hyperlinkHrefFromTag(
+  hyperlinkTag: string,
+  context: ParseContext
+): string | undefined {
   const relationshipId = getAttribute(hyperlinkTag, "r:id");
   const anchor = getAttribute(hyperlinkTag, "w:anchor");
 
-  const relationshipTarget = relationshipId ? context.relationships.get(relationshipId) : undefined;
+  const relationshipTarget = relationshipId
+    ? context.relationships.get(relationshipId)
+    : undefined;
   if (relationshipId && !relationshipTarget) {
-    context.warnings.push(`Missing hyperlink relationship target for ${relationshipId}`);
+    context.warnings.push(
+      `Missing hyperlink relationship target for ${relationshipId}`
+    );
   }
 
   if (anchor && relationshipTarget) {
-    return relationshipTarget.includes("#") ? relationshipTarget : `${relationshipTarget}#${anchor}`;
+    return relationshipTarget.includes("#")
+      ? relationshipTarget
+      : `${relationshipTarget}#${anchor}`;
   }
   if (relationshipTarget) {
     return relationshipTarget;
@@ -4924,18 +5757,24 @@ function hyperlinkHrefFromTag(hyperlinkTag: string, context: ParseContext): stri
   return undefined;
 }
 
-function hyperlinkHrefFromFieldInstruction(rawInstruction: string): string | undefined {
+function hyperlinkHrefFromFieldInstruction(
+  rawInstruction: string
+): string | undefined {
   if (!rawInstruction) {
     return undefined;
   }
 
-  const instruction = decodeXmlEntities(rawInstruction).replace(/\s+/g, " ").trim();
+  const instruction = decodeXmlEntities(rawInstruction)
+    .replace(/\s+/g, " ")
+    .trim();
   if (!/\bHYPERLINK\b/i.test(instruction)) {
     return undefined;
   }
 
   const anchorMatch = instruction.match(/\\l\s+"([^"]+)"/i);
-  const explicitTargetMatch = instruction.match(/\bHYPERLINK\b\s+(?:"([^"]+)"|([^\s\\]+))/i);
+  const explicitTargetMatch = instruction.match(
+    /\bHYPERLINK\b\s+(?:"([^"]+)"|([^\s\\]+))/i
+  );
 
   const target = explicitTargetMatch?.[1] ?? explicitTargetMatch?.[2];
   if (target) {
@@ -4952,19 +5791,25 @@ function hyperlinkHrefFromFieldInstruction(rawInstruction: string): string | und
   return undefined;
 }
 
-function parseParagraphRuns(paragraphXml: string, context: ParseContext): ParagraphRunToken[] {
+function parseParagraphRuns(
+  paragraphXml: string,
+  context: ParseContext
+): ParagraphRunToken[] {
   const runRanges = extractBalancedTagRanges(paragraphXml, "w:r");
   if (runRanges.length === 0) {
     return [];
   }
 
-  const hyperlinkRanges = extractBalancedTagRanges(paragraphXml, "w:hyperlink").map((range) => {
+  const hyperlinkRanges = extractBalancedTagRanges(
+    paragraphXml,
+    "w:hyperlink"
+  ).map((range) => {
     const hyperlinkXml = paragraphXml.slice(range.start, range.end);
     const hyperlinkTag = hyperlinkXml.match(/<w:hyperlink\b[^>]*>/i)?.[0] ?? "";
 
     return {
       ...range,
-      href: hyperlinkHrefFromTag(hyperlinkTag, context)
+      href: hyperlinkHrefFromTag(hyperlinkTag, context),
     };
   });
 
@@ -4976,9 +5821,17 @@ function parseParagraphRuns(paragraphXml: string, context: ParseContext): Paragr
   runRanges.forEach((range, runIndex) => {
     const runXml = paragraphXml.slice(range.start, range.end);
 
-    const beginCount = [...runXml.matchAll(/<w:fldChar\b[^>]*w:fldCharType="begin"[^>]*\/?>/gi)].length;
-    const separateCount = [...runXml.matchAll(/<w:fldChar\b[^>]*w:fldCharType="separate"[^>]*\/?>/gi)].length;
-    const endCount = [...runXml.matchAll(/<w:fldChar\b[^>]*w:fldCharType="end"[^>]*\/?>/gi)].length;
+    const beginCount = [
+      ...runXml.matchAll(/<w:fldChar\b[^>]*w:fldCharType="begin"[^>]*\/?>/gi),
+    ].length;
+    const separateCount = [
+      ...runXml.matchAll(
+        /<w:fldChar\b[^>]*w:fldCharType="separate"[^>]*\/?>/gi
+      ),
+    ].length;
+    const endCount = [
+      ...runXml.matchAll(/<w:fldChar\b[^>]*w:fldCharType="end"[^>]*\/?>/gi),
+    ].length;
 
     if (beginCount > 0 && fieldDepth === 0) {
       instructionParts = [];
@@ -4987,17 +5840,24 @@ function parseParagraphRuns(paragraphXml: string, context: ParseContext): Paragr
     fieldDepth += beginCount;
 
     if (fieldDepth > 0 && activeFieldLink === undefined) {
-      for (const instructionMatch of runXml.matchAll(/<w:instrText\b[^>]*>([\s\S]*?)<\/w:instrText>/gi)) {
+      for (const instructionMatch of runXml.matchAll(
+        /<w:instrText\b[^>]*>([\s\S]*?)<\/w:instrText>/gi
+      )) {
         instructionParts.push(instructionMatch[1] ?? "");
       }
     }
 
     if (fieldDepth > 0 && separateCount > 0 && activeFieldLink === undefined) {
-      activeFieldLink = hyperlinkHrefFromFieldInstruction(instructionParts.join(" "));
+      activeFieldLink = hyperlinkHrefFromFieldInstruction(
+        instructionParts.join(" ")
+      );
     }
 
     if (fieldDepth > 0 && activeFieldLink) {
-      if (/<(?:w:t|a:t)\b/i.test(runXml) || /<w:(?:drawing|pict)\b/i.test(runXml)) {
+      if (
+        /<(?:w:t|a:t)\b/i.test(runXml) ||
+        /<w:(?:drawing|pict)\b/i.test(runXml)
+      ) {
         fieldLinksByRun.set(runIndex, activeFieldLink);
       }
     }
@@ -5012,18 +5872,19 @@ function parseParagraphRuns(paragraphXml: string, context: ParseContext): Paragr
   });
 
   return runRanges.map((range, runIndex) => {
-    const link = hyperlinkRanges.find(
-      (hyperlinkRange) =>
-        range.start >= hyperlinkRange.start &&
-        range.end <= hyperlinkRange.end &&
-        hyperlinkRange.href
-    )?.href ?? fieldLinksByRun.get(runIndex);
+    const link =
+      hyperlinkRanges.find(
+        (hyperlinkRange) =>
+          range.start >= hyperlinkRange.start &&
+          range.end <= hyperlinkRange.end &&
+          hyperlinkRange.href
+      )?.href ?? fieldLinksByRun.get(runIndex);
 
     return {
       xml: paragraphXml.slice(range.start, range.end),
       start: range.start,
       end: range.end,
-      link
+      link,
     };
   });
 }
@@ -5098,7 +5959,9 @@ function parseOnOffTagValue(
   return true;
 }
 
-function normalizeLegacyFormDisplayValue(value: string | undefined): string | undefined {
+function normalizeLegacyFormDisplayValue(
+  value: string | undefined
+): string | undefined {
   if (value === undefined) {
     return undefined;
   }
@@ -5121,24 +5984,32 @@ function parseLegacyFormFieldFromRange(
   rawInstruction: string,
   ffDataXml: string | undefined
 ): FormFieldRunNode | undefined {
-  const instruction = decodeXmlEntities(rawInstruction).replace(/\s+/g, " ").trim();
+  const instruction = decodeXmlEntities(rawInstruction)
+    .replace(/\s+/g, " ")
+    .trim();
   const normalizedInstruction = instruction.toUpperCase();
-  const fieldType: FormFieldType | undefined = normalizedInstruction.includes("FORMCHECKBOX")
+  const fieldType: FormFieldType | undefined = normalizedInstruction.includes(
+    "FORMCHECKBOX"
+  )
     ? "checkbox"
     : normalizedInstruction.includes("FORMDROPDOWN")
-      ? "dropdown"
-      : normalizedInstruction.includes("FORMTEXT")
-        ? "text"
-        : undefined;
+    ? "dropdown"
+    : normalizedInstruction.includes("FORMTEXT")
+    ? "text"
+    : undefined;
 
   if (!fieldType) {
     return undefined;
   }
 
   const resultStartRunIndex =
-    separateRunIndex !== undefined ? separateRunIndex + 1 : Math.min(endRunIndex, startRunIndex + 1);
+    separateRunIndex !== undefined
+      ? separateRunIndex + 1
+      : Math.min(endRunIndex, startRunIndex + 1);
   const resultRuns =
-    resultStartRunIndex < endRunIndex ? runs.slice(resultStartRunIndex, endRunIndex) : [];
+    resultStartRunIndex < endRunIndex
+      ? runs.slice(resultStartRunIndex, endRunIndex)
+      : [];
   const fallbackResultText = normalizeLegacyFormDisplayValue(
     resultRuns.map((run) => parseRunText(run.xml)).join("")
   );
@@ -5147,7 +6018,9 @@ function parseLegacyFormFieldFromRange(
       const text = parseRunText(run.xml);
       return text.trim().length > 0 || /<w:sym\b/i.test(run.xml);
     })?.xml ?? runs[startRunIndex]?.xml;
-  const style = styleRunXml ? parseRunStyle(styleRunXml, context, paragraphStyleId) : undefined;
+  const style = styleRunXml
+    ? parseRunStyle(styleRunXml, context, paragraphStyleId)
+    : undefined;
   const link = runs
     .slice(startRunIndex, Math.min(runs.length, endRunIndex + 1))
     .map((run) => run.link)
@@ -5158,12 +6031,18 @@ function parseLegacyFormFieldFromRange(
       : undefined;
 
   const nameTag = ffDataXml?.match(/<w:name\b[^>]*\/?>/i)?.[0];
-  const enabled = ffDataXml ? parseOnOffAttribute(ffDataXml, "enabled") : undefined;
-  const calcOnExit = ffDataXml ? parseOnOffAttribute(ffDataXml, "calcOnExit") : undefined;
+  const enabled = ffDataXml
+    ? parseOnOffAttribute(ffDataXml, "enabled")
+    : undefined;
+  const calcOnExit = ffDataXml
+    ? parseOnOffAttribute(ffDataXml, "calcOnExit")
+    : undefined;
   const widgetSettings: FormFieldWidgetSettings = {
-    name: decodeXmlAttribute(nameTag ? getAttribute(nameTag, "w:val") : undefined),
+    name: decodeXmlAttribute(
+      nameTag ? getAttribute(nameTag, "w:val") : undefined
+    ),
     enabled,
-    calcOnExit
+    calcOnExit,
   };
 
   if (fieldType === "checkbox") {
@@ -5176,18 +6055,24 @@ function parseLegacyFormFieldFromRange(
     const sizeTag = checkboxXml?.match(/<w:size\b[^>]*\/?>/i)?.[0];
     const defaultChecked = parseOnOffTagValue(defaultTag);
     const checked = parseOnOffTagValue(checkedTag) ?? defaultChecked;
-    const sizeValue = sizeTag ? parseIntegerAttribute(sizeTag, "w:val") : undefined;
+    const sizeValue = sizeTag
+      ? parseIntegerAttribute(sizeTag, "w:val")
+      : undefined;
     const sizePt =
       Number.isFinite(sizeValue) && (sizeValue as number) > 0
         ? Number(((sizeValue as number) / 2).toFixed(2))
         : undefined;
     const sizeMode = sizeAutoTag ? "auto" : sizePt ? "exact" : undefined;
 
-    if (defaultChecked !== undefined || sizeMode !== undefined || sizePt !== undefined) {
+    if (
+      defaultChecked !== undefined ||
+      sizeMode !== undefined ||
+      sizePt !== undefined
+    ) {
       widgetSettings.checkbox = {
         defaultChecked,
         sizeMode,
-        sizePt
+        sizePt,
       };
     }
 
@@ -5201,7 +6086,7 @@ function parseLegacyFormFieldFromRange(
       widget: widgetSettings,
       style,
       link,
-      sourceXml: fieldXml
+      sourceXml: fieldXml,
     };
   }
 
@@ -5211,18 +6096,22 @@ function parseLegacyFormFieldFromRange(
       ffDataXml?.match(/<w:ddList\b[^>]*\/?>/i)?.[0];
     const options = dropdownXml
       ? [...dropdownXml.matchAll(/<w:listEntry\b[^>]*\/?>/gi)]
-          .map((match) => decodeXmlAttribute(getAttribute(match[0], "w:val"))?.trim())
+          .map((match) =>
+            decodeXmlAttribute(getAttribute(match[0], "w:val"))?.trim()
+          )
           .filter((entry): entry is string => Boolean(entry))
           .map((entry) => ({
             displayText: entry,
-            value: entry
+            value: entry,
           }))
       : [];
     const defaultTag = dropdownXml?.match(/<w:default\b[^>]*\/?>/i)?.[0];
-    const defaultValue = decodeXmlAttribute(defaultTag ? getAttribute(defaultTag, "w:val") : undefined)?.trim();
+    const defaultValue = decodeXmlAttribute(
+      defaultTag ? getAttribute(defaultTag, "w:val") : undefined
+    )?.trim();
     if (defaultValue) {
       widgetSettings.dropdown = {
-        defaultValue
+        defaultValue,
       };
     }
     const value = fallbackResultText ?? defaultValue ?? options[0]?.displayText;
@@ -5236,7 +6125,7 @@ function parseLegacyFormFieldFromRange(
       widget: widgetSettings,
       style,
       link,
-      sourceXml: fieldXml
+      sourceXml: fieldXml,
     };
   }
 
@@ -5247,13 +6136,21 @@ function parseLegacyFormFieldFromRange(
   const defaultTag = textInputXml?.match(/<w:default\b[^>]*\/?>/i)?.[0];
   const maxLengthTag = textInputXml?.match(/<w:maxLength\b[^>]*\/?>/i)?.[0];
   const formatTag = textInputXml?.match(/<w:format\b[^>]*\/?>/i)?.[0];
-  const inputTypeRaw = decodeXmlAttribute(typeTag ? getAttribute(typeTag, "w:val") : undefined)?.trim();
+  const inputTypeRaw = decodeXmlAttribute(
+    typeTag ? getAttribute(typeTag, "w:val") : undefined
+  )?.trim();
   const inputType = inputTypeRaw
     ? (inputTypeRaw as FormFieldTextWidgetSettings["inputType"])
     : undefined;
-  const defaultText = decodeXmlAttribute(defaultTag ? getAttribute(defaultTag, "w:val") : undefined);
-  const maxLength = maxLengthTag ? parseIntegerAttribute(maxLengthTag, "w:val") : undefined;
-  const textFormat = decodeXmlAttribute(formatTag ? getAttribute(formatTag, "w:val") : undefined);
+  const defaultText = decodeXmlAttribute(
+    defaultTag ? getAttribute(defaultTag, "w:val") : undefined
+  );
+  const maxLength = maxLengthTag
+    ? parseIntegerAttribute(maxLengthTag, "w:val")
+    : undefined;
+  const textFormat = decodeXmlAttribute(
+    formatTag ? getAttribute(formatTag, "w:val") : undefined
+  );
   if (
     inputType !== undefined ||
     defaultText !== undefined ||
@@ -5264,7 +6161,7 @@ function parseLegacyFormFieldFromRange(
       inputType,
       defaultText,
       maxLength,
-      textFormat
+      textFormat,
     };
   }
   const value = fallbackResultText ?? defaultText;
@@ -5277,7 +6174,7 @@ function parseLegacyFormFieldFromRange(
     widget: widgetSettings,
     style,
     link,
-    sourceXml: fieldXml
+    sourceXml: fieldXml,
   };
 }
 
@@ -5323,7 +6220,7 @@ function parseLegacyParagraphFormFieldTokens(
         stack.push({
           startRunIndex: runIndex,
           instructionParts: [],
-          ffDataXml
+          ffDataXml,
         });
         continue;
       }
@@ -5366,7 +6263,7 @@ function parseLegacyParagraphFormFieldTokens(
         tokens.push({
           start,
           end,
-          field
+          field,
         });
       }
     }
@@ -5382,8 +6279,11 @@ function parseFormFieldFromSdtXml(
   link?: string
 ): FormFieldRunNode | undefined {
   const sdtPropertiesXml =
-    extractBalancedTagBlocks(sdtXml, "w:sdtPr")[0] ?? sdtXml.match(/<w:sdtPr\b[^>]*\/>/i)?.[0] ?? "";
-  const sdtContentXml = extractBalancedTagBlocks(sdtXml, "w:sdtContent")[0] ?? "";
+    extractBalancedTagBlocks(sdtXml, "w:sdtPr")[0] ??
+    sdtXml.match(/<w:sdtPr\b[^>]*\/>/i)?.[0] ??
+    "";
+  const sdtContentXml =
+    extractBalancedTagBlocks(sdtXml, "w:sdtContent")[0] ?? "";
   if (!sdtPropertiesXml) {
     return undefined;
   }
@@ -5391,16 +6291,28 @@ function parseFormFieldFromSdtXml(
   const aliasTag = sdtPropertiesXml.match(/<w:alias\b[^>]*\/?>/i)?.[0];
   const tagTag = sdtPropertiesXml.match(/<w:tag\b[^>]*\/?>/i)?.[0];
   const idTag = sdtPropertiesXml.match(/<w:id\b[^>]*\/?>/i)?.[0];
-  const placeholderTag = sdtPropertiesXml.match(/<w:placeholder\b[\s\S]*?<\/w:placeholder>/i)?.[0];
-  const placeholderDocPartTag = placeholderTag?.match(/<w:docPart\b[^>]*\/?>/i)?.[0];
-  const title = decodeXmlAttribute(aliasTag ? getAttribute(aliasTag, "w:val") : undefined);
-  const tag = decodeXmlAttribute(tagTag ? getAttribute(tagTag, "w:val") : undefined);
+  const placeholderTag = sdtPropertiesXml.match(
+    /<w:placeholder\b[\s\S]*?<\/w:placeholder>/i
+  )?.[0];
+  const placeholderDocPartTag = placeholderTag?.match(
+    /<w:docPart\b[^>]*\/?>/i
+  )?.[0];
+  const title = decodeXmlAttribute(
+    aliasTag ? getAttribute(aliasTag, "w:val") : undefined
+  );
+  const tag = decodeXmlAttribute(
+    tagTag ? getAttribute(tagTag, "w:val") : undefined
+  );
   const idValue = idTag ? parseIntegerAttribute(idTag, "w:val") : undefined;
   const placeholder = decodeXmlAttribute(
-    placeholderDocPartTag ? getAttribute(placeholderDocPartTag, "w:val") : undefined
+    placeholderDocPartTag
+      ? getAttribute(placeholderDocPartTag, "w:val")
+      : undefined
   );
   const firstRunXml = extractBalancedTagBlocks(sdtContentXml, "w:r")[0];
-  const style = firstRunXml ? parseRunStyle(firstRunXml, context, paragraphStyleId) : undefined;
+  const style = firstRunXml
+    ? parseRunStyle(firstRunXml, context, paragraphStyleId)
+    : undefined;
   const contentText = parseRunText(sdtContentXml);
   const trimmedContentText = contentText.trim();
 
@@ -5409,21 +6321,31 @@ function parseFormFieldFromSdtXml(
     const checkedValue = checkedTag
       ? getAttribute(checkedTag, "w14:val") ?? getAttribute(checkedTag, "w:val")
       : undefined;
-    const checkedStateTag = sdtPropertiesXml.match(/<w14:checkedState\b[^>]*\/?>/i)?.[0];
-    const uncheckedStateTag = sdtPropertiesXml.match(/<w14:uncheckedState\b[^>]*\/?>/i)?.[0];
-    const checkedSymbol = decodeHexCodePoint(
-      checkedStateTag
-        ? getAttribute(checkedStateTag, "w14:val") ?? getAttribute(checkedStateTag, "w:val")
-        : undefined
-    ) ?? "☒";
-    const uncheckedSymbol = decodeHexCodePoint(
-      uncheckedStateTag
-        ? getAttribute(uncheckedStateTag, "w14:val") ?? getAttribute(uncheckedStateTag, "w:val")
-        : undefined
-    ) ?? "☐";
+    const checkedStateTag = sdtPropertiesXml.match(
+      /<w14:checkedState\b[^>]*\/?>/i
+    )?.[0];
+    const uncheckedStateTag = sdtPropertiesXml.match(
+      /<w14:uncheckedState\b[^>]*\/?>/i
+    )?.[0];
+    const checkedSymbol =
+      decodeHexCodePoint(
+        checkedStateTag
+          ? getAttribute(checkedStateTag, "w14:val") ??
+              getAttribute(checkedStateTag, "w:val")
+          : undefined
+      ) ?? "☒";
+    const uncheckedSymbol =
+      decodeHexCodePoint(
+        uncheckedStateTag
+          ? getAttribute(uncheckedStateTag, "w14:val") ??
+              getAttribute(uncheckedStateTag, "w:val")
+          : undefined
+      ) ?? "☐";
     const checked =
       onOffValueToBoolean(checkedValue) ??
-      (trimmedContentText ? trimmedContentText.includes(checkedSymbol) : undefined);
+      (trimmedContentText
+        ? trimmedContentText.includes(checkedSymbol)
+        : undefined);
 
     return {
       type: "form-field",
@@ -5438,7 +6360,7 @@ function parseFormFieldFromSdtXml(
       uncheckedSymbol,
       style,
       link,
-      sourceXml: sdtXml
+      sourceXml: sdtXml,
     };
   }
 
@@ -5446,7 +6368,9 @@ function parseFormFieldFromSdtXml(
     const options: FormFieldOption[] = [];
     for (const match of sdtPropertiesXml.matchAll(/<w:listItem\b[^>]*\/?>/gi)) {
       const listItemTag = match[0];
-      const displayText = decodeXmlAttribute(getAttribute(listItemTag, "w:displayText"));
+      const displayText = decodeXmlAttribute(
+        getAttribute(listItemTag, "w:displayText")
+      );
       const value = decodeXmlAttribute(getAttribute(listItemTag, "w:value"));
       const fallbackText = (displayText ?? value ?? "").trim();
       if (!fallbackText) {
@@ -5455,11 +6379,15 @@ function parseFormFieldFromSdtXml(
 
       options.push({
         displayText: (displayText ?? value ?? "").trim(),
-        value: value?.trim() || undefined
+        value: value?.trim() || undefined,
       });
     }
-    const lastValueTag = sdtPropertiesXml.match(/<w:lastValue\b[^>]*\/?>/i)?.[0];
-    const lastValue = decodeXmlAttribute(lastValueTag ? getAttribute(lastValueTag, "w:val") : undefined)?.trim();
+    const lastValueTag = sdtPropertiesXml.match(
+      /<w:lastValue\b[^>]*\/?>/i
+    )?.[0];
+    const lastValue = decodeXmlAttribute(
+      lastValueTag ? getAttribute(lastValueTag, "w:val") : undefined
+    )?.trim();
     const selectedValue = trimmedContentText || lastValue;
 
     return {
@@ -5474,13 +6402,15 @@ function parseFormFieldFromSdtXml(
       options: options.length > 0 ? options : undefined,
       style,
       link,
-      sourceXml: sdtXml
+      sourceXml: sdtXml,
     };
   }
 
   if (/<w:date\b/i.test(sdtPropertiesXml)) {
     const fullDateTag = sdtPropertiesXml.match(/<w:fullDate\b[^>]*\/?>/i)?.[0];
-    const fullDate = decodeXmlAttribute(fullDateTag ? getAttribute(fullDateTag, "w:val") : undefined)?.trim();
+    const fullDate = decodeXmlAttribute(
+      fullDateTag ? getAttribute(fullDateTag, "w:val") : undefined
+    )?.trim();
     const value = trimmedContentText || fullDate;
 
     return {
@@ -5494,7 +6424,7 @@ function parseFormFieldFromSdtXml(
       value: value || undefined,
       style,
       link,
-      sourceXml: sdtXml
+      sourceXml: sdtXml,
     };
   }
 
@@ -5510,7 +6440,7 @@ function parseFormFieldFromSdtXml(
       value: contentText,
       style,
       link,
-      sourceXml: sdtXml
+      sourceXml: sdtXml,
     };
   }
 
@@ -5537,12 +6467,15 @@ function parseParagraphFormFieldTokens(
     return legacyTokens;
   }
 
-  const hyperlinkRanges = extractBalancedTagRanges(paragraphXml, "w:hyperlink").map((range) => {
+  const hyperlinkRanges = extractBalancedTagRanges(
+    paragraphXml,
+    "w:hyperlink"
+  ).map((range) => {
     const hyperlinkXml = paragraphXml.slice(range.start, range.end);
     const hyperlinkTag = hyperlinkXml.match(/<w:hyperlink\b[^>]*>/i)?.[0] ?? "";
     return {
       ...range,
-      href: hyperlinkHrefFromTag(hyperlinkTag, context)
+      href: hyperlinkHrefFromTag(hyperlinkTag, context),
     };
   });
 
@@ -5555,7 +6488,12 @@ function parseParagraphFormFieldTokens(
           range.end <= hyperlinkRange.end &&
           hyperlinkRange.href
       )?.href;
-      const field = parseFormFieldFromSdtXml(sdtXml, context, paragraphStyleId, link);
+      const field = parseFormFieldFromSdtXml(
+        sdtXml,
+        context,
+        paragraphStyleId,
+        link
+      );
       if (!field) {
         return undefined;
       }
@@ -5563,7 +6501,7 @@ function parseParagraphFormFieldTokens(
       return {
         start: range.start,
         end: range.end,
-        field
+        field,
       };
     })
     .filter((token): token is ParagraphFormFieldToken => token !== undefined)
@@ -5571,31 +6509,63 @@ function parseParagraphFormFieldTokens(
       sdtTokens.push(token);
     });
 
-  return [...legacyTokens, ...sdtTokens].sort((left, right) => left.start - right.start);
+  return [...legacyTokens, ...sdtTokens].sort(
+    (left, right) => left.start - right.start
+  );
 }
 
-function parseParagraphStyle(paragraphXml: string, context: ParseContext): ParagraphStyle | undefined {
+function parseParagraphStyle(
+  paragraphXml: string,
+  context: ParseContext
+): ParagraphStyle | undefined {
   const paragraphPropertiesXml =
-    extractBalancedTagBlocks(paragraphXml, "w:pPr")[0] ?? paragraphXml.match(/<w:pPr\b[^>]*\/>/i)?.[0] ?? "";
-  const alignmentMatch = paragraphPropertiesXml.match(/<w:jc\b[^>]*w:val="([^"]+)"/i);
-  const pStyleMatch = paragraphPropertiesXml.match(/<w:pStyle\b[^>]*w:val="([^"]+)"/i);
+    extractBalancedTagBlocks(paragraphXml, "w:pPr")[0] ??
+    paragraphXml.match(/<w:pPr\b[^>]*\/>/i)?.[0] ??
+    "";
+  const alignmentMatch = paragraphPropertiesXml.match(
+    /<w:jc\b[^>]*w:val="([^"]+)"/i
+  );
+  const pStyleMatch = paragraphPropertiesXml.match(
+    /<w:pStyle\b[^>]*w:val="([^"]+)"/i
+  );
   const directSpacing = parseParagraphSpacingFromXml(paragraphPropertiesXml);
   const directIndent = parseParagraphIndentFromXml(paragraphPropertiesXml);
-  const directBackgroundColor = parseParagraphShadingFromXml(paragraphPropertiesXml);
+  const directBackgroundColor = parseParagraphShadingFromXml(
+    paragraphPropertiesXml
+  );
   const directBorders = parseParagraphBorderSetFromXml(paragraphPropertiesXml);
-  const directNumbering = parseParagraphNumberingFromXml(paragraphPropertiesXml);
+  const directNumbering = parseParagraphNumberingFromXml(
+    paragraphPropertiesXml
+  );
   const directTabStops = parseParagraphTabStopsFromXml(paragraphPropertiesXml);
   const directDropCap = parseParagraphDropCapFromXml(paragraphPropertiesXml);
-  const directContextualSpacing = parseOnOffAttribute(paragraphPropertiesXml, "contextualSpacing");
-  const directKeepNext = parseOnOffAttribute(paragraphPropertiesXml, "keepNext");
-  const directKeepLines = parseOnOffAttribute(paragraphPropertiesXml, "keepLines");
-  const directWidowControl = parseOnOffAttribute(paragraphPropertiesXml, "widowControl");
-  const directPageBreakBefore = parseOnOffAttribute(paragraphPropertiesXml, "pageBreakBefore");
+  const directContextualSpacing = parseOnOffAttribute(
+    paragraphPropertiesXml,
+    "contextualSpacing"
+  );
+  const directKeepNext = parseOnOffAttribute(
+    paragraphPropertiesXml,
+    "keepNext"
+  );
+  const directKeepLines = parseOnOffAttribute(
+    paragraphPropertiesXml,
+    "keepLines"
+  );
+  const directWidowControl = parseOnOffAttribute(
+    paragraphPropertiesXml,
+    "widowControl"
+  );
+  const directPageBreakBefore = parseOnOffAttribute(
+    paragraphPropertiesXml,
+    "pageBreakBefore"
+  );
   const hasDirectNumPr = /<w:numPr\b/i.test(paragraphPropertiesXml);
 
   const explicitStyleId = pStyleMatch?.[1];
   const styleId = explicitStyleId ?? context.styleSheet.defaultParagraphStyleId;
-  const inherited = styleId ? context.styleSheet.paragraphStyleById.get(styleId) : undefined;
+  const inherited = styleId
+    ? context.styleSheet.paragraphStyleById.get(styleId)
+    : undefined;
   const defaultParagraphStyle = context.styleSheet.defaultParagraphStyle;
 
   const align =
@@ -5608,7 +6578,9 @@ function parseParagraphStyle(paragraphXml: string, context: ParseContext): Parag
     defaultParagraphStyle?.headingLevel;
   const numbering = hasDirectNumPr
     ? directNumbering
-    : directNumbering ?? inherited?.numbering ?? defaultParagraphStyle?.numbering;
+    : directNumbering ??
+      inherited?.numbering ??
+      defaultParagraphStyle?.numbering;
   const spacing = mergeParagraphSpacing(
     mergeParagraphSpacing(defaultParagraphStyle?.spacing, inherited?.spacing),
     directSpacing
@@ -5618,19 +6590,31 @@ function parseParagraphStyle(paragraphXml: string, context: ParseContext): Parag
     directIndent
   );
   const backgroundColor = mergeParagraphBackgroundColor(
-    mergeParagraphBackgroundColor(defaultParagraphStyle?.backgroundColor, inherited?.backgroundColor),
+    mergeParagraphBackgroundColor(
+      defaultParagraphStyle?.backgroundColor,
+      inherited?.backgroundColor
+    ),
     directBackgroundColor
   );
   const borders = mergeParagraphBorderSets(
-    mergeParagraphBorderSets(defaultParagraphStyle?.borders, inherited?.borders),
+    mergeParagraphBorderSets(
+      defaultParagraphStyle?.borders,
+      inherited?.borders
+    ),
     directBorders
   );
   const tabStops = mergeParagraphTabStops(
-    mergeParagraphTabStops(defaultParagraphStyle?.tabStops, inherited?.tabStops),
+    mergeParagraphTabStops(
+      defaultParagraphStyle?.tabStops,
+      inherited?.tabStops
+    ),
     directTabStops
   );
   const contextualSpacing = mergeParagraphBoolean(
-    mergeParagraphBoolean(defaultParagraphStyle?.contextualSpacing, inherited?.contextualSpacing),
+    mergeParagraphBoolean(
+      defaultParagraphStyle?.contextualSpacing,
+      inherited?.contextualSpacing
+    ),
     directContextualSpacing
   );
   const keepNext = mergeParagraphBoolean(
@@ -5638,36 +6622,45 @@ function parseParagraphStyle(paragraphXml: string, context: ParseContext): Parag
     directKeepNext
   );
   const keepLines = mergeParagraphBoolean(
-    mergeParagraphBoolean(defaultParagraphStyle?.keepLines, inherited?.keepLines),
+    mergeParagraphBoolean(
+      defaultParagraphStyle?.keepLines,
+      inherited?.keepLines
+    ),
     directKeepLines
   );
   const widowControl = mergeParagraphBoolean(
-    mergeParagraphBoolean(defaultParagraphStyle?.widowControl, inherited?.widowControl),
+    mergeParagraphBoolean(
+      defaultParagraphStyle?.widowControl,
+      inherited?.widowControl
+    ),
     directWidowControl
   );
   const pageBreakBefore = mergeParagraphBoolean(
-    mergeParagraphBoolean(defaultParagraphStyle?.pageBreakBefore, inherited?.pageBreakBefore),
+    mergeParagraphBoolean(
+      defaultParagraphStyle?.pageBreakBefore,
+      inherited?.pageBreakBefore
+    ),
     directPageBreakBefore
   );
   const styleName = inherited?.name;
 
-    if (
-      !align &&
-      !headingLevel &&
-      !styleId &&
-      !styleName &&
-      !numbering &&
-      !spacing &&
-      !indent &&
-      !backgroundColor &&
-      !borders &&
-      (!tabStops || tabStops.length === 0) &&
-      !directDropCap &&
-      contextualSpacing === undefined &&
-      keepNext === undefined &&
-      keepLines === undefined &&
-      widowControl === undefined &&
-      pageBreakBefore === undefined
+  if (
+    !align &&
+    !headingLevel &&
+    !styleId &&
+    !styleName &&
+    !numbering &&
+    !spacing &&
+    !indent &&
+    !backgroundColor &&
+    !borders &&
+    (!tabStops || tabStops.length === 0) &&
+    !directDropCap &&
+    contextualSpacing === undefined &&
+    keepNext === undefined &&
+    keepLines === undefined &&
+    widowControl === undefined &&
+    pageBreakBefore === undefined
   ) {
     return undefined;
   }
@@ -5688,14 +6681,19 @@ function parseParagraphStyle(paragraphXml: string, context: ParseContext): Parag
     keepNext,
     keepLines,
     widowControl,
-    pageBreakBefore
+    pageBreakBefore,
   };
 }
 
-function parseParagraph(paragraphXml: string, context: ParseContext): ParagraphNode {
+function parseParagraph(
+  paragraphXml: string,
+  context: ParseContext
+): ParagraphNode {
   const children: ParagraphChildNode[] = [];
   const paragraphStyle = parseParagraphStyle(paragraphXml, context);
-  const paragraphMarkDeleted = /<w:pPr\b[\s\S]*?<w:rPr\b[\s\S]*?<w:del\b/i.test(paragraphXml);
+  const paragraphMarkDeleted = /<w:pPr\b[\s\S]*?<w:rPr\b[\s\S]*?<w:del\b/i.test(
+    paragraphXml
+  );
   const runs = parseParagraphRuns(paragraphXml, context);
   const formFieldTokens = parseParagraphFormFieldTokens(
     paragraphXml,
@@ -5718,7 +6716,8 @@ function parseParagraph(paragraphXml: string, context: ParseContext): ParagraphN
 
   for (const run of runs) {
     const insideFormField = formFieldTokens.some(
-      (formFieldToken) => run.start >= formFieldToken.start && run.end <= formFieldToken.end
+      (formFieldToken) =>
+        run.start >= formFieldToken.start && run.end <= formFieldToken.end
     );
     if (insideFormField) {
       continue;
@@ -5727,7 +6726,7 @@ function parseParagraph(paragraphXml: string, context: ParseContext): ParagraphN
     contentTokens.push({
       kind: "run",
       start: run.start,
-      token: run
+      token: run,
     });
   }
 
@@ -5735,7 +6734,7 @@ function parseParagraph(paragraphXml: string, context: ParseContext): ParagraphN
     contentTokens.push({
       kind: "form-field",
       start: formFieldToken.start,
-      token: formFieldToken
+      token: formFieldToken,
     });
   }
 
@@ -5767,7 +6766,7 @@ function parseParagraph(paragraphXml: string, context: ParseContext): ParagraphN
         : run.xml
     );
 
-  for (const token of parsedTokens) {
+    for (const token of parsedTokens) {
       if (token.text.length === 0 && !token.noteReference) {
         continue;
       }
@@ -5777,7 +6776,7 @@ function parseParagraph(paragraphXml: string, context: ParseContext): ParagraphN
         text: token.text,
         style,
         link: run.link,
-        noteReference: token.noteReference
+        noteReference: token.noteReference,
       });
     }
 
@@ -5795,7 +6794,7 @@ function parseParagraph(paragraphXml: string, context: ParseContext): ParagraphN
     style: paragraphStyle,
     paragraphMarkDeleted: paragraphMarkDeleted || undefined,
     children,
-    sourceXml: paragraphXml
+    sourceXml: paragraphXml,
   };
 }
 
@@ -5808,7 +6807,10 @@ function parseTableCellContent(
   cellXml: string,
   context: ParseContext
 ): TableCellContentNode[] {
-  const blockRanges = extractBalancedTagBlocksInOrder(cellXml, ["w:p", "w:tbl"]);
+  const blockRanges = extractBalancedTagBlocksInOrder(cellXml, [
+    "w:p",
+    "w:tbl",
+  ]);
 
   const parsed = blockRanges
     .map((block) => {
@@ -5830,36 +6832,64 @@ function parseTableCellContent(
   return [parseParagraph("<w:p><w:r><w:t/></w:r></w:p>", context)];
 }
 
-function parseTableCell(cellXml: string, context: ParseContext): ParsedTableCellResult {
+function parseTableCell(
+  cellXml: string,
+  context: ParseContext
+): ParsedTableCellResult {
   const nodes = parseTableCellContent(cellXml, context);
 
   const cellPropertiesXml =
-    extractBalancedTagBlocks(cellXml, "w:tcPr")[0] ?? cellXml.match(/<w:tcPr\b[^>]*\/?>/i)?.[0];
+    extractBalancedTagBlocks(cellXml, "w:tcPr")[0] ??
+    cellXml.match(/<w:tcPr\b[^>]*\/?>/i)?.[0];
   const fillMatch = cellPropertiesXml?.match(/<w:shd\b[^>]*w:fill="([^"]+)"/i);
   const backgroundColor = normalizeHexColor(fillMatch?.[1]);
-  const gridSpanMatch = cellPropertiesXml?.match(/<w:gridSpan\b[^>]*w:val="(\d+)"/i);
+  const gridSpanMatch = cellPropertiesXml?.match(
+    /<w:gridSpan\b[^>]*w:val="(\d+)"/i
+  );
   const gridSpan = gridSpanMatch?.[1] ? Number(gridSpanMatch[1]) : undefined;
   const cellWidthTag = cellPropertiesXml?.match(/<w:tcW\b[^>]*>/i)?.[0];
-  const cellWidthType = cellWidthTag ? getAttribute(cellWidthTag, "w:type")?.toLowerCase() : undefined;
-  const widthTwipsRaw = cellWidthTag ? parseIntegerAttribute(cellWidthTag, "w:w") : undefined;
+  const cellWidthType = cellWidthTag
+    ? getAttribute(cellWidthTag, "w:type")?.toLowerCase()
+    : undefined;
+  const widthTwipsRaw = cellWidthTag
+    ? parseIntegerAttribute(cellWidthTag, "w:w")
+    : undefined;
   const widthTwips =
-    cellWidthType === "dxa" && widthTwipsRaw !== undefined && widthTwipsRaw > 0 ? widthTwipsRaw : undefined;
-  const cellMarginXml = cellPropertiesXml?.match(/<w:tcMar\b[\s\S]*?<\/w:tcMar>/i)?.[0];
-  const marginTwips = cellMarginXml ? parseTableBoxSpacing(cellMarginXml) : undefined;
+    cellWidthType === "dxa" && widthTwipsRaw !== undefined && widthTwipsRaw > 0
+      ? widthTwipsRaw
+      : undefined;
+  const cellMarginXml = cellPropertiesXml?.match(
+    /<w:tcMar\b[\s\S]*?<\/w:tcMar>/i
+  )?.[0];
+  const marginTwips = cellMarginXml
+    ? parseTableBoxSpacing(cellMarginXml)
+    : undefined;
   const cellBordersXml = cellPropertiesXml?.match(
     /<w:tcBorders\b[\s\S]*?<\/w:tcBorders>|<w:tcBorders\b[^>]*\/>/i
   )?.[0];
-  const borders = cellBordersXml ? parseTableBorderSet(cellBordersXml) : undefined;
+  const borders = cellBordersXml
+    ? parseTableBorderSet(cellBordersXml)
+    : undefined;
   const verticalAlignTag = cellPropertiesXml?.match(/<w:vAlign\b[^>]*>/i)?.[0];
-  const verticalAlignRaw = verticalAlignTag ? getAttribute(verticalAlignTag, "w:val")?.toLowerCase() : undefined;
+  const verticalAlignRaw = verticalAlignTag
+    ? getAttribute(verticalAlignTag, "w:val")?.toLowerCase()
+    : undefined;
   const verticalAlign =
-    verticalAlignRaw === "top" || verticalAlignRaw === "center" || verticalAlignRaw === "bottom"
+    verticalAlignRaw === "top" ||
+    verticalAlignRaw === "center" ||
+    verticalAlignRaw === "bottom"
       ? verticalAlignRaw
       : undefined;
   const vMergeTag = cellPropertiesXml?.match(/<w:vMerge\b[^>]*\/?>/i)?.[0];
-  const vMergeRaw = vMergeTag ? getAttribute(vMergeTag, "w:val")?.toLowerCase() : undefined;
+  const vMergeRaw = vMergeTag
+    ? getAttribute(vMergeTag, "w:val")?.toLowerCase()
+    : undefined;
   const vMerge =
-    vMergeTag !== undefined ? (vMergeRaw === "restart" ? "restart" : "continue") : undefined;
+    vMergeTag !== undefined
+      ? vMergeRaw === "restart"
+        ? "restart"
+        : "continue"
+      : undefined;
   const hasCellStyle =
     backgroundColor !== undefined ||
     (gridSpan !== undefined && gridSpan > 1) ||
@@ -5870,25 +6900,27 @@ function parseTableCell(cellXml: string, context: ParseContext): ParsedTableCell
   return {
     cell: {
       type: "table-cell",
-      style:
-        hasCellStyle
-          ? {
-              backgroundColor,
-              gridSpan: gridSpan && gridSpan > 1 ? gridSpan : undefined,
-              widthTwips,
-              marginTwips,
-              verticalAlign,
-              borders
-            }
-          : undefined,
-      nodes
+      style: hasCellStyle
+        ? {
+            backgroundColor,
+            gridSpan: gridSpan && gridSpan > 1 ? gridSpan : undefined,
+            widthTwips,
+            marginTwips,
+            verticalAlign,
+            borders,
+          }
+        : undefined,
+      nodes,
     },
-    vMerge
+    vMerge,
   };
 }
 
-function parseTableLook(tablePropertiesXml: string | undefined): ParsedTableLook | undefined {
-  const tableLookTag = tablePropertiesXml?.match(/<w:tblLook\b[^>]*\/?>/i)?.[0] ?? "";
+function parseTableLook(
+  tablePropertiesXml: string | undefined
+): ParsedTableLook | undefined {
+  const tableLookTag =
+    tablePropertiesXml?.match(/<w:tblLook\b[^>]*\/?>/i)?.[0] ?? "";
   if (!tableLookTag) {
     return undefined;
   }
@@ -5896,18 +6928,20 @@ function parseTableLook(tablePropertiesXml: string | undefined): ParsedTableLook
   const lookMask = lookMaskRaw ? Number.parseInt(lookMaskRaw, 16) : undefined;
   const rowBandSizeTag =
     tablePropertiesXml?.match(/<w:tblStyleRowBandSize\b[^>]*\/?>/i)?.[0] ??
-    extractBalancedTagBlocks(tablePropertiesXml ?? "", "w:tblStyleRowBandSize")[0];
+    extractBalancedTagBlocks(
+      tablePropertiesXml ?? "",
+      "w:tblStyleRowBandSize"
+    )[0];
   const colBandSizeTag =
     tablePropertiesXml?.match(/<w:tblStyleColBandSize\b[^>]*\/?>/i)?.[0] ??
-    extractBalancedTagBlocks(tablePropertiesXml ?? "", "w:tblStyleColBandSize")[0];
-  const rowBandSizeRaw = parseIntegerAttribute(
-    rowBandSizeTag ?? "",
-    "w:val"
-  ) ?? 1;
-  const colBandSizeRaw = parseIntegerAttribute(
-    colBandSizeTag ?? "",
-    "w:val"
-  ) ?? 1;
+    extractBalancedTagBlocks(
+      tablePropertiesXml ?? "",
+      "w:tblStyleColBandSize"
+    )[0];
+  const rowBandSizeRaw =
+    parseIntegerAttribute(rowBandSizeTag ?? "", "w:val") ?? 1;
+  const colBandSizeRaw =
+    parseIntegerAttribute(colBandSizeTag ?? "", "w:val") ?? 1;
   const rowBandSize = Math.max(1, rowBandSizeRaw);
   const colBandSize = Math.max(1, colBandSizeRaw);
 
@@ -5929,14 +6963,17 @@ function parseTableLook(tablePropertiesXml: string | undefined): ParsedTableLook
   const maskValue = hasLookMask ? (lookMask as number) : 0;
 
   return {
-    firstRow: resolveOnOffAttribute("w:firstRow") ?? Boolean(maskValue & 0x0020),
+    firstRow:
+      resolveOnOffAttribute("w:firstRow") ?? Boolean(maskValue & 0x0020),
     lastRow: resolveOnOffAttribute("w:lastRow") ?? Boolean(maskValue & 0x0040),
-    firstCol: resolveOnOffAttribute("w:firstColumn") ?? Boolean(maskValue & 0x0080),
-    lastCol: resolveOnOffAttribute("w:lastColumn") ?? Boolean(maskValue & 0x0100),
+    firstCol:
+      resolveOnOffAttribute("w:firstColumn") ?? Boolean(maskValue & 0x0080),
+    lastCol:
+      resolveOnOffAttribute("w:lastColumn") ?? Boolean(maskValue & 0x0100),
     noHBand: resolveOnOffAttribute("w:noHBand") ?? Boolean(maskValue & 0x0200),
     noVBand: resolveOnOffAttribute("w:noVBand") ?? Boolean(maskValue & 0x0400),
     rowBandSize,
-    colBandSize
+    colBandSize,
   };
 }
 
@@ -5950,14 +6987,27 @@ function parseFloatingTableStyle(
 
   const xTwips = parseIntegerAttribute(floatingTag, "w:tblpX");
   const yTwips = parseIntegerAttribute(floatingTag, "w:tblpY");
-  const leftFromTextTwips = parseIntegerAttribute(floatingTag, "w:leftFromText");
-  const rightFromTextTwips = parseIntegerAttribute(floatingTag, "w:rightFromText");
+  const leftFromTextTwips = parseIntegerAttribute(
+    floatingTag,
+    "w:leftFromText"
+  );
+  const rightFromTextTwips = parseIntegerAttribute(
+    floatingTag,
+    "w:rightFromText"
+  );
   const topFromTextTwips = parseIntegerAttribute(floatingTag, "w:topFromText");
-  const bottomFromTextTwips = parseIntegerAttribute(floatingTag, "w:bottomFromText");
+  const bottomFromTextTwips = parseIntegerAttribute(
+    floatingTag,
+    "w:bottomFromText"
+  );
   const horizontalAnchor = getAttribute(floatingTag, "w:horzAnchor");
   const verticalAnchor = getAttribute(floatingTag, "w:vertAnchor");
-  const horizontalAlignRaw = getAttribute(floatingTag, "w:tblpXSpec")?.trim().toLowerCase();
-  const verticalAlignRaw = getAttribute(floatingTag, "w:tblpYSpec")?.trim().toLowerCase();
+  const horizontalAlignRaw = getAttribute(floatingTag, "w:tblpXSpec")
+    ?.trim()
+    .toLowerCase();
+  const verticalAlignRaw = getAttribute(floatingTag, "w:tblpYSpec")
+    ?.trim()
+    .toLowerCase();
   const horizontalAlign =
     horizontalAlignRaw === "left" ||
     horizontalAlignRaw === "center" ||
@@ -6000,23 +7050,26 @@ function parseFloatingTableStyle(
     horizontalAnchor,
     verticalAnchor,
     horizontalAlign,
-    verticalAlign
+    verticalAlign,
   };
 }
 
-function applyRunStyleToParagraph(paragraph: ParagraphNode, runStyle: TextStyle): void {
+function applyRunStyleToParagraph(
+  paragraph: ParagraphNode,
+  runStyle: TextStyle
+): void {
   paragraph.children = paragraph.children.map((child) => {
     if (child.type === "text") {
       return {
         ...child,
-        style: mergeTextStyles(child.style, runStyle)
+        style: mergeTextStyles(child.style, runStyle),
       };
     }
 
     if (child.type === "form-field") {
       return {
         ...child,
-        style: mergeTextStyles(child.style, runStyle)
+        style: mergeTextStyles(child.style, runStyle),
       };
     }
 
@@ -6052,7 +7105,7 @@ function applyParagraphAlignmentToTableCellContent(
 
       node.style = {
         ...(node.style ?? {}),
-        align: paragraphAlign
+        align: paragraphAlign,
       };
       continue;
     }
@@ -6096,7 +7149,9 @@ function resolveTableConditionForCell(
     const bandColumnIndex = startColumnIndex - (tableLook.firstCol ? 1 : 0);
     if (bandColumnIndex >= 0) {
       const bandColumnGroup = Math.floor(bandColumnIndex / colBandSize);
-      conditionTypes.push(bandColumnGroup % 2 === 0 ? "band1Vert" : "band2Vert");
+      conditionTypes.push(
+        bandColumnGroup % 2 === 0 ? "band1Vert" : "band2Vert"
+      );
     }
   }
 
@@ -6138,14 +7193,24 @@ function resolveTableConditionForCell(
 
 function parseTable(tableXml: string, context: ParseContext): TableNode {
   const tablePropertiesXml =
-    extractBalancedTagBlocks(tableXml, "w:tblPr")[0] ?? tableXml.match(/<w:tblPr\b[^>]*\/?>/i)?.[0];
-  const tableStyleId = tablePropertiesXml?.match(/<w:tblStyle\b[^>]*w:val="([^"]+)"/i)?.[1];
-  const tableStyle = tableStyleId ? context.styleSheet.tableStyleById.get(tableStyleId) : undefined;
-  const styleTableProperties = tableStyle?.conditions.wholeTable?.tableProperties;
+    extractBalancedTagBlocks(tableXml, "w:tblPr")[0] ??
+    tableXml.match(/<w:tblPr\b[^>]*\/?>/i)?.[0];
+  const tableStyleId = tablePropertiesXml?.match(
+    /<w:tblStyle\b[^>]*w:val="([^"]+)"/i
+  )?.[1];
+  const tableStyle = tableStyleId
+    ? context.styleSheet.tableStyleById.get(tableStyleId)
+    : undefined;
+  const styleTableProperties =
+    tableStyle?.conditions.wholeTable?.tableProperties;
   const styleTableLook = tableStyle?.conditions.wholeTable?.tableLook;
 
-  const explicitProperties = parseTableStylePropertiesFromXml(tablePropertiesXml);
-  const mergedProperties = mergeTableStyleProperties(styleTableProperties, explicitProperties);
+  const explicitProperties =
+    parseTableStylePropertiesFromXml(tablePropertiesXml);
+  const mergedProperties = mergeTableStyleProperties(
+    styleTableProperties,
+    explicitProperties
+  );
 
   const widthTwips = mergedProperties?.widthTwips;
   const indentTwips = mergedProperties?.indentTwips;
@@ -6157,35 +7222,56 @@ function parseTable(tableXml: string, context: ParseContext): TableNode {
   const tableBordersXml = tablePropertiesXml?.match(
     /<w:tblBorders\b[\s\S]*?<\/w:tblBorders>|<w:tblBorders\b[^>]*\/>/i
   )?.[0];
-  const explicitBorders = tableBordersXml ? parseTableBorderSet(tableBordersXml) : undefined;
-  const tableGridXml = tableXml.match(/<w:tblGrid\b[\s\S]*?<\/w:tblGrid>/i)?.[0];
+  const explicitBorders = tableBordersXml
+    ? parseTableBorderSet(tableBordersXml)
+    : undefined;
+  const tableGridXml = tableXml.match(
+    /<w:tblGrid\b[\s\S]*?<\/w:tblGrid>/i
+  )?.[0];
   const columnWidthsTwips = tableGridXml
     ? [...tableGridXml.matchAll(/<w:gridCol\b[^>]*>/gi)]
         .map((columnMatch) => parseIntegerAttribute(columnMatch[0], "w:w"))
         .filter((width): width is number => width !== undefined && width > 0)
     : [];
 
-  const tableLook = mergeTableLook(parseTableLook(tablePropertiesXml), styleTableLook);
+  const tableLook = mergeTableLook(
+    parseTableLook(tablePropertiesXml),
+    styleTableLook
+  );
   const rows: TableRowNode[] = [];
   const activeVerticalMergeByColumn = new Map<number, TableCellNode>();
 
   for (const rowXml of extractBalancedTagBlocks(tableXml, "w:tr")) {
     const rowPropertiesXml =
-      extractBalancedTagBlocks(rowXml, "w:trPr")[0] ?? rowXml.match(/<w:trPr\b[^>]*\/?>/i)?.[0];
-    const rowFillMatch = rowPropertiesXml?.match(/<w:shd\b[^>]*w:fill="([^"]+)"/i);
+      extractBalancedTagBlocks(rowXml, "w:trPr")[0] ??
+      rowXml.match(/<w:trPr\b[^>]*\/?>/i)?.[0];
+    const rowFillMatch = rowPropertiesXml?.match(
+      /<w:shd\b[^>]*w:fill="([^"]+)"/i
+    );
     const rowBackgroundColor = normalizeHexColor(rowFillMatch?.[1]);
     const rowHeightTag = rowPropertiesXml?.match(/<w:trHeight\b[^>]*>/i)?.[0];
-    const rowHeightRaw = rowHeightTag ? parseIntegerAttribute(rowHeightTag, "w:val") : undefined;
-    const rowHeightTwips = rowHeightRaw !== undefined && rowHeightRaw > 0 ? rowHeightRaw : undefined;
-    const rowHeightRuleRaw = rowHeightTag ? getAttribute(rowHeightTag, "w:hRule")?.toLowerCase() : undefined;
+    const rowHeightRaw = rowHeightTag
+      ? parseIntegerAttribute(rowHeightTag, "w:val")
+      : undefined;
+    const rowHeightTwips =
+      rowHeightRaw !== undefined && rowHeightRaw > 0 ? rowHeightRaw : undefined;
+    const rowHeightRuleRaw = rowHeightTag
+      ? getAttribute(rowHeightTag, "w:hRule")?.toLowerCase()
+      : undefined;
     const rowHeightRule =
-      rowHeightRuleRaw === "atleast" || rowHeightRuleRaw === "exact" || rowHeightRuleRaw === "auto"
-        ? (rowHeightRuleRaw === "atleast" ? "atLeast" : rowHeightRuleRaw)
+      rowHeightRuleRaw === "atleast" ||
+      rowHeightRuleRaw === "exact" ||
+      rowHeightRuleRaw === "auto"
+        ? rowHeightRuleRaw === "atleast"
+          ? "atLeast"
+          : rowHeightRuleRaw
         : undefined;
-    const rowCantSplit = rowPropertiesXml ? parseOnOffAttribute(rowPropertiesXml, "cantSplit") : undefined;
+    const rowCantSplit = rowPropertiesXml
+      ? parseOnOffAttribute(rowPropertiesXml, "cantSplit")
+      : undefined;
 
-    const parsedCells = extractBalancedTagBlocks(rowXml, "w:tc").map((cellXml) =>
-      parseTableCell(cellXml, context)
+    const parsedCells = extractBalancedTagBlocks(rowXml, "w:tc").map(
+      (cellXml) => parseTableCell(cellXml, context)
     );
     if (parsedCells.length === 0) {
       continue;
@@ -6202,7 +7288,11 @@ function parseTable(tableXml: string, context: ParseContext): TableNode {
 
       if (parsedCell.vMerge === "continue") {
         const continuationAnchors = new Set<TableCellNode>();
-        for (let columnIndex = startColumn; columnIndex <= endColumn; columnIndex += 1) {
+        for (
+          let columnIndex = startColumn;
+          columnIndex <= endColumn;
+          columnIndex += 1
+        ) {
           const anchor = activeVerticalMergeByColumn.get(columnIndex);
           if (anchor) {
             continuationAnchors.add(anchor);
@@ -6214,13 +7304,13 @@ function parseTable(tableXml: string, context: ParseContext): TableNode {
             const anchorStyle = anchorCell.style ?? {};
             anchorCell.style = {
               ...anchorStyle,
-              rowSpan: Math.max(1, anchorStyle.rowSpan ?? 1) + 1
+              rowSpan: Math.max(1, anchorStyle.rowSpan ?? 1) + 1,
             };
           });
 
           cell.style = {
             ...(cell.style ?? {}),
-            vMergeContinuation: true
+            vMergeContinuation: true,
           };
           cells.push(cell);
           continue;
@@ -6230,13 +7320,21 @@ function parseTable(tableXml: string, context: ParseContext): TableNode {
       if (parsedCell.vMerge === "restart") {
         cell.style = {
           ...(cell.style ?? {}),
-          rowSpan: 1
+          rowSpan: 1,
         };
-        for (let columnIndex = startColumn; columnIndex <= endColumn; columnIndex += 1) {
+        for (
+          let columnIndex = startColumn;
+          columnIndex <= endColumn;
+          columnIndex += 1
+        ) {
           activeVerticalMergeByColumn.set(columnIndex, cell);
         }
       } else {
-        for (let columnIndex = startColumn; columnIndex <= endColumn; columnIndex += 1) {
+        for (
+          let columnIndex = startColumn;
+          columnIndex <= endColumn;
+          columnIndex += 1
+        ) {
           activeVerticalMergeByColumn.delete(columnIndex);
         }
       }
@@ -6255,10 +7353,14 @@ function parseTable(tableXml: string, context: ParseContext): TableNode {
           ? {
               backgroundColor: rowBackgroundColor,
               heightTwips: rowHeightTwips,
-              ...(rowHeightRule !== undefined ? { heightRule: rowHeightRule } : undefined),
-              ...(rowCantSplit !== undefined ? { cantSplit: rowCantSplit } : undefined)
+              ...(rowHeightRule !== undefined
+                ? { heightRule: rowHeightRule }
+                : undefined),
+              ...(rowCantSplit !== undefined
+                ? { cantSplit: rowCantSplit }
+                : undefined),
             }
-          : undefined
+          : undefined,
     });
   }
 
@@ -6266,7 +7368,11 @@ function parseTable(tableXml: string, context: ParseContext): TableNode {
     columnWidthsTwips.length,
     ...rows.map((row) =>
       row.cells.reduce(
-        (total, cell) => total + (cell.style?.gridSpan && cell.style.gridSpan > 1 ? cell.style.gridSpan : 1),
+        (total, cell) =>
+          total +
+          (cell.style?.gridSpan && cell.style.gridSpan > 1
+            ? cell.style.gridSpan
+            : 1),
         0
       )
     ),
@@ -6299,10 +7405,13 @@ function parseTable(tableXml: string, context: ParseContext): TableNode {
           return;
         }
 
-        if (condition.rowBackgroundColor && row.style?.backgroundColor === undefined) {
+        if (
+          condition.rowBackgroundColor &&
+          row.style?.backgroundColor === undefined
+        ) {
           row.style = {
             ...(row.style ?? {}),
-            backgroundColor: condition.rowBackgroundColor
+            backgroundColor: condition.rowBackgroundColor,
           };
         }
 
@@ -6313,23 +7422,32 @@ function parseTable(tableXml: string, context: ParseContext): TableNode {
         ) {
           cell.style = {
             ...(cell.style ?? {}),
-            backgroundColor: condition.cellBackgroundColor
+            backgroundColor: condition.cellBackgroundColor,
           };
         }
 
         if (condition.cellBorders) {
           cell.style = {
             ...(cell.style ?? {}),
-            borders: mergeTableBorderSets(condition.cellBorders, cell.style?.borders)
+            borders: mergeTableBorderSets(
+              condition.cellBorders,
+              cell.style?.borders
+            ),
           };
         }
 
         if (condition.paragraphAlign) {
-          applyParagraphAlignmentToTableCellContent(cell.nodes, condition.paragraphAlign);
+          applyParagraphAlignmentToTableCellContent(
+            cell.nodes,
+            condition.paragraphAlign
+          );
         }
 
         if (condition.runStyle) {
-          applyRunStyleToTableCellContent(cell.nodes, condition.runStyle as TextStyle);
+          applyRunStyleToTableCellContent(
+            cell.nodes,
+            condition.runStyle as TextStyle
+          );
         }
       });
     });
@@ -6361,11 +7479,12 @@ function parseTable(tableXml: string, context: ParseContext): TableNode {
           cellSpacingTwips,
           floating,
           cellMarginTwips,
-          columnWidthsTwips: columnWidthsTwips.length > 0 ? columnWidthsTwips : undefined,
-          borders: resolvedTableBorders
+          columnWidthsTwips:
+            columnWidthsTwips.length > 0 ? columnWidthsTwips : undefined,
+          borders: resolvedTableBorders,
         }
       : undefined,
-    sourceXml: tableXml
+    sourceXml: tableXml,
   };
 }
 
@@ -6399,7 +7518,11 @@ function parseReferencedSections(
   missingPartPrefix: string,
   warnings: string[]
 ): Array<{ partName: string; referenceType?: string; nodes: DocNode[] }> {
-  const sections: Array<{ partName: string; referenceType?: string; nodes: DocNode[] }> = [];
+  const sections: Array<{
+    partName: string;
+    referenceType?: string;
+    nodes: DocNode[];
+  }> = [];
   const seenPartNames = new Set<string>();
 
   const tokenPattern = new RegExp(`<w:${relationshipTagName}\\b[^>]*>`, "gi");
@@ -6433,13 +7556,13 @@ function parseReferencedSections(
       parts: pkg.parts,
       binaryAssets: pkg.binaryAssets,
       styleSheet,
-      warnings
+      warnings,
     };
 
     sections.push({
       partName: targetPartName,
       referenceType: getAttribute(tag, "w:type"),
-      nodes: parseDocumentXml(headerXml, headerContext)
+      nodes: parseDocumentXml(headerXml, headerContext),
     });
   }
 
@@ -6502,9 +7625,16 @@ function parseSectionReferencesFromProperties(
     return [];
   }
 
-  const references: Array<{ partName: string; referenceType?: string; nodes: DocNode[] }> = [];
+  const references: Array<{
+    partName: string;
+    referenceType?: string;
+    nodes: DocNode[];
+  }> = [];
   const seenReferences = new Set<string>();
-  const tokenPattern = new RegExp(`<w:${relationshipTagName}\\b[^>]*\\/?>`, "gi");
+  const tokenPattern = new RegExp(
+    `<w:${relationshipTagName}\\b[^>]*\\/?>`,
+    "gi"
+  );
   for (const reference of sectionPropertiesXml.matchAll(tokenPattern)) {
     const tag = reference[0];
     const relationshipId = getAttribute(tag, "r:id");
@@ -6515,7 +7645,11 @@ function parseSectionReferencesFromProperties(
     const targetPartName = documentRelationships.get(relationshipId);
     if (!targetPartName) {
       warnings.push(
-        `${relationshipTagName === "headerReference" ? "Missing header relationship target for" : "Missing footer relationship target for"} ${relationshipId}`
+        `${
+          relationshipTagName === "headerReference"
+            ? "Missing header relationship target for"
+            : "Missing footer relationship target for"
+        } ${relationshipId}`
       );
       continue;
     }
@@ -6535,7 +7669,7 @@ function parseSectionReferencesFromProperties(
     references.push({
       partName: targetPartName,
       referenceType,
-      nodes
+      nodes,
     });
   }
 
@@ -6569,7 +7703,11 @@ function parseDocumentSections(
     const partXml = pkg.parts.get(partName)?.content;
     if (!partXml) {
       warnings.push(
-        `${relationshipTagName === "headerReference" ? "Missing header part" : "Missing footer part"} ${partName}`
+        `${
+          relationshipTagName === "headerReference"
+            ? "Missing header part"
+            : "Missing footer part"
+        } ${partName}`
       );
       return undefined;
     }
@@ -6580,7 +7718,7 @@ function parseDocumentSections(
       parts: pkg.parts,
       binaryAssets: pkg.binaryAssets,
       styleSheet,
-      warnings
+      warnings,
     };
 
     const nodes = parseDocumentXml(partXml, partContext);
@@ -6590,9 +7728,12 @@ function parseDocumentSections(
 
   for (const token of tokenRanges) {
     const tokenXml = bodyXml.slice(token.start, token.end);
-    const producedNode = token.kind === "table" || !isGoBackBookmarkParagraph(tokenXml);
+    const producedNode =
+      token.kind === "table" || !isGoBackBookmarkParagraph(tokenXml);
     if (token.kind === "paragraph") {
-      const sectionPropertiesXml = tokenXml.match(/<w:sectPr\b[\s\S]*?<\/w:sectPr>/i)?.[0];
+      const sectionPropertiesXml = tokenXml.match(
+        /<w:sectPr\b[\s\S]*?<\/w:sectPr>/i
+      )?.[0];
       if (sectionPropertiesXml) {
         sections.push({
           startNodeIndex: sectionStartNodeIndex,
@@ -6610,7 +7751,7 @@ function parseDocumentSections(
             documentRelationships,
             resolvePartNodes,
             warnings
-          )
+          ),
         });
         sectionStartNodeIndex = nodeCount + (producedNode ? 1 : 0);
       }
@@ -6639,7 +7780,7 @@ function parseDocumentSections(
         documentRelationships,
         resolvePartNodes,
         warnings
-      )
+      ),
     });
   }
 
@@ -6665,11 +7806,13 @@ function parseDocumentSections(
       startNodeIndex: 0,
       sectionPropertiesXml: finalSectionPropertiesXml,
       headerSections: [],
-      footerSections: []
+      footerSections: [],
     });
   }
 
-  normalizedSections.sort((left, right) => left.startNodeIndex - right.startNodeIndex);
+  normalizedSections.sort(
+    (left, right) => left.startNodeIndex - right.startNodeIndex
+  );
   return normalizedSections;
 }
 
@@ -6682,8 +7825,11 @@ function paragraphPlainText(paragraph: ParagraphNode): string {
 
       if (child.type === "form-field") {
         if (child.fieldType === "checkbox") {
-          const isChecked = child.checked ?? child.widget?.checkbox?.defaultChecked ?? false;
-          return isChecked ? child.checkedSymbol ?? "☒" : child.uncheckedSymbol ?? "☐";
+          const isChecked =
+            child.checked ?? child.widget?.checkbox?.defaultChecked ?? false;
+          return isChecked
+            ? child.checkedSymbol ?? "☒"
+            : child.uncheckedSymbol ?? "☐";
         }
         if (child.fieldType === "text") {
           return child.value ?? child.widget?.text?.defaultText ?? "";
@@ -6748,12 +7894,15 @@ function parseDocumentNotesFromPart(
     parts: pkg.parts,
     binaryAssets: pkg.binaryAssets,
     styleSheet,
-    warnings
+    warnings,
   };
 
   const notes: DocumentNoteDefinition[] = [];
   for (const noteXml of extractBalancedTagBlocks(notesXml, tagName)) {
-    const noteTag = noteXml.match(new RegExp(`<${escapeRegExp(tagName)}\\b[^>]*>`, "i"))?.[0] ?? "";
+    const noteTag =
+      noteXml.match(
+        new RegExp(`<${escapeRegExp(tagName)}\\b[^>]*>`, "i")
+      )?.[0] ?? "";
     if (getAttribute(noteTag, "w:type")) {
       continue;
     }
@@ -6772,7 +7921,7 @@ function parseDocumentNotesFromPart(
     notes.push({
       id: noteId,
       text,
-      nodes: parsedNodes
+      nodes: parsedNodes,
     });
   }
 
@@ -6783,13 +7932,18 @@ function pointsToPixels(points: number): number {
   return Math.max(1, Math.round((points * 96) / 72));
 }
 
-function parseCssPointValue(styleValue: string | undefined, cssProperty: string): number | undefined {
+function parseCssPointValue(
+  styleValue: string | undefined,
+  cssProperty: string
+): number | undefined {
   if (!styleValue) {
     return undefined;
   }
 
   const escapedProperty = escapeRegExp(cssProperty);
-  const match = styleValue.match(new RegExp(`${escapedProperty}\\s*:\\s*([0-9]+(?:\\.[0-9]+)?)pt`, "i"));
+  const match = styleValue.match(
+    new RegExp(`${escapedProperty}\\s*:\\s*([0-9]+(?:\\.[0-9]+)?)pt`, "i")
+  );
   if (!match?.[1]) {
     return undefined;
   }
@@ -6808,12 +7962,21 @@ function parseNumberingPictureBulletDefinitions(
   contentTypes: ContentTypeLookup
 ): Map<number, NumberingPictureBulletDefinition> {
   const pictureBullets = new Map<number, NumberingPictureBulletDefinition>();
-  const numberingRelationships = parsePartRelationships(pkg, "word/numbering.xml");
+  const numberingRelationships = parsePartRelationships(
+    pkg,
+    "word/numbering.xml"
+  );
 
-  for (const numPicBulletXml of extractBalancedTagBlocks(numberingXml, "w:numPicBullet")) {
-    const numPicBulletTag = numPicBulletXml.match(/<w:numPicBullet\b[^>]*>/i)?.[0] ?? "";
+  for (const numPicBulletXml of extractBalancedTagBlocks(
+    numberingXml,
+    "w:numPicBullet"
+  )) {
+    const numPicBulletTag =
+      numPicBulletXml.match(/<w:numPicBullet\b[^>]*>/i)?.[0] ?? "";
     const numPicBulletIdRaw = getAttribute(numPicBulletTag, "w:numPicBulletId");
-    const numPicBulletId = numPicBulletIdRaw ? Number(numPicBulletIdRaw) : Number.NaN;
+    const numPicBulletId = numPicBulletIdRaw
+      ? Number(numPicBulletIdRaw)
+      : Number.NaN;
     if (!Number.isFinite(numPicBulletId)) {
       continue;
     }
@@ -6824,11 +7987,18 @@ function parseNumberingPictureBulletDefinitions(
     const heightPx = parseCssPointValue(shapeStyle, "height");
 
     const imageTag = numPicBulletXml.match(/<v:imagedata\b[^>]*\/?>/i)?.[0];
-    const relationshipId = imageTag ? getAttribute(imageTag, "r:id") : undefined;
-    const imagePartName = relationshipId ? numberingRelationships.get(relationshipId) : undefined;
-    const imageBytes = imagePartName ? pkg.binaryAssets.get(imagePartName) : undefined;
-    const imageContentType =
-      imagePartName ? contentTypeForPart(imagePartName, contentTypes) : undefined;
+    const relationshipId = imageTag
+      ? getAttribute(imageTag, "r:id")
+      : undefined;
+    const imagePartName = relationshipId
+      ? numberingRelationships.get(relationshipId)
+      : undefined;
+    const imageBytes = imagePartName
+      ? pkg.binaryAssets.get(imagePartName)
+      : undefined;
+    const imageContentType = imagePartName
+      ? contentTypeForPart(imagePartName, contentTypes)
+      : undefined;
     const src =
       imagePartName && imageBytes && imageContentType
         ? `data:${imageContentType};base64,${bytesToBase64(imageBytes)}`
@@ -6840,7 +8010,7 @@ function parseNumberingPictureBulletDefinitions(
       widthPx,
       heightPx,
       partName: imagePartName,
-      contentType: imageContentType
+      contentType: imageContentType,
     });
   }
 
@@ -6867,22 +8037,34 @@ function parseNumberingLevelDefinition(
   const lvlTextTag = levelXml.match(/<w:lvlText\b[^>]*\/?>/i)?.[0];
   const suffixTag = levelXml.match(/<w:suff\b[^>]*\/?>/i)?.[0];
   const levelRunPropertiesXml =
-    extractBalancedTagBlocks(levelXml, "w:rPr")[0] ?? levelXml.match(/<w:rPr\b[^>]*\/>/i)?.[0] ?? "";
+    extractBalancedTagBlocks(levelXml, "w:rPr")[0] ??
+    levelXml.match(/<w:rPr\b[^>]*\/>/i)?.[0] ??
+    "";
   const levelParagraphPropertiesXml =
-    extractBalancedTagBlocks(levelXml, "w:pPr")[0] ?? levelXml.match(/<w:pPr\b[^>]*\/?>/i)?.[0] ?? "";
-  const levelFontsTag = levelRunPropertiesXml.match(/<w:rFonts\b[^>]*\/?>/i)?.[0];
-  const levelColorTag = levelRunPropertiesXml.match(/<w:color\b[^>]*\/?>/i)?.[0];
+    extractBalancedTagBlocks(levelXml, "w:pPr")[0] ??
+    levelXml.match(/<w:pPr\b[^>]*\/?>/i)?.[0] ??
+    "";
+  const levelFontsTag =
+    levelRunPropertiesXml.match(/<w:rFonts\b[^>]*\/?>/i)?.[0];
+  const levelColorTag =
+    levelRunPropertiesXml.match(/<w:color\b[^>]*\/?>/i)?.[0];
   const levelRunStyle = parseTextStyleFromXml(levelRunPropertiesXml);
   const pictureBulletTag = levelXml.match(/<w:lvlPicBulletId\b[^>]*\/?>/i)?.[0];
-  const suffixRaw = suffixTag ? getAttribute(suffixTag, "w:val")?.toLowerCase() : undefined;
-  const pictureBulletIdRaw = pictureBulletTag ? getAttribute(pictureBulletTag, "w:val") : undefined;
-  const pictureBulletId = pictureBulletIdRaw ? Number(pictureBulletIdRaw) : Number.NaN;
+  const suffixRaw = suffixTag
+    ? getAttribute(suffixTag, "w:val")?.toLowerCase()
+    : undefined;
+  const pictureBulletIdRaw = pictureBulletTag
+    ? getAttribute(pictureBulletTag, "w:val")
+    : undefined;
+  const pictureBulletId = pictureBulletIdRaw
+    ? Number(pictureBulletIdRaw)
+    : Number.NaN;
   const bulletFontFamily = decodeXmlAttribute(
     levelFontsTag
       ? getAttribute(levelFontsTag, "w:ascii") ??
-        getAttribute(levelFontsTag, "w:hAnsi") ??
-        getAttribute(levelFontsTag, "w:eastAsia") ??
-        getAttribute(levelFontsTag, "w:cs")
+          getAttribute(levelFontsTag, "w:hAnsi") ??
+          getAttribute(levelFontsTag, "w:eastAsia") ??
+          getAttribute(levelFontsTag, "w:cs")
       : undefined
   )?.trim();
   const bulletColor = normalizeHexColor(
@@ -6907,10 +8089,12 @@ function parseNumberingLevelDefinition(
     runStyle: levelRunStyle,
     bulletFontFamily,
     bulletColor,
-    pictureBulletId: Number.isFinite(pictureBulletId) ? Math.round(pictureBulletId) : undefined,
+    pictureBulletId: Number.isFinite(pictureBulletId)
+      ? Math.round(pictureBulletId)
+      : undefined,
     pictureBullet: Number.isFinite(pictureBulletId)
       ? pictureBulletsById.get(Math.round(pictureBulletId))
-      : undefined
+      : undefined,
   };
 }
 
@@ -6922,29 +8106,47 @@ function parseNumberingDefinitions(
   if (!numberingXml) {
     return undefined;
   }
-  const pictureBulletsById = parseNumberingPictureBulletDefinitions(pkg, numberingXml, contentTypes);
+  const pictureBulletsById = parseNumberingPictureBulletDefinitions(
+    pkg,
+    numberingXml,
+    contentTypes
+  );
 
-  const parsedAbstracts = extractBalancedTagBlocks(numberingXml, "w:abstractNum")
+  const parsedAbstracts = extractBalancedTagBlocks(
+    numberingXml,
+    "w:abstractNum"
+  )
     .map((abstractXml) => {
-      const abstractTag = abstractXml.match(/<w:abstractNum\b[^>]*>/i)?.[0] ?? "";
+      const abstractTag =
+        abstractXml.match(/<w:abstractNum\b[^>]*>/i)?.[0] ?? "";
       const abstractNumIdRaw = getAttribute(abstractTag, "w:abstractNumId");
-      const abstractNumId = abstractNumIdRaw ? Number(abstractNumIdRaw) : Number.NaN;
+      const abstractNumId = abstractNumIdRaw
+        ? Number(abstractNumIdRaw)
+        : Number.NaN;
       if (!Number.isFinite(abstractNumId)) {
         return undefined;
       }
 
       const styleLinkTag = abstractXml.match(/<w:styleLink\b[^>]*\/?>/i)?.[0];
-      const numStyleLinkTag = abstractXml.match(/<w:numStyleLink\b[^>]*\/?>/i)?.[0];
+      const numStyleLinkTag = abstractXml.match(
+        /<w:numStyleLink\b[^>]*\/?>/i
+      )?.[0];
       const levels = extractBalancedTagBlocks(abstractXml, "w:lvl")
-        .map((levelXml) => parseNumberingLevelDefinition(levelXml, pictureBulletsById))
+        .map((levelXml) =>
+          parseNumberingLevelDefinition(levelXml, pictureBulletsById)
+        )
         .filter((level): level is NumberingLevelDefinition => Boolean(level))
         .sort((left, right) => left.ilvl - right.ilvl);
 
       return {
         abstractNumId: Math.round(abstractNumId),
-        styleLink: styleLinkTag ? getAttribute(styleLinkTag, "w:val") : undefined,
-        numStyleLink: numStyleLinkTag ? getAttribute(numStyleLinkTag, "w:val") : undefined,
-        levels
+        styleLink: styleLinkTag
+          ? getAttribute(styleLinkTag, "w:val")
+          : undefined,
+        numStyleLink: numStyleLinkTag
+          ? getAttribute(numStyleLinkTag, "w:val")
+          : undefined,
+        levels,
       };
     })
     .filter(
@@ -6960,25 +8162,33 @@ function parseNumberingDefinitions(
 
   const styleLinkedLevels = new Map<string, NumberingLevelDefinition[]>();
   for (const abstractDefinition of parsedAbstracts) {
-    if (!abstractDefinition.styleLink || abstractDefinition.levels.length === 0) {
+    if (
+      !abstractDefinition.styleLink ||
+      abstractDefinition.levels.length === 0
+    ) {
       continue;
     }
-    styleLinkedLevels.set(abstractDefinition.styleLink, abstractDefinition.levels);
+    styleLinkedLevels.set(
+      abstractDefinition.styleLink,
+      abstractDefinition.levels
+    );
   }
 
-  const abstracts: NumberingAbstractDefinition[] = parsedAbstracts.map((abstractDefinition) => {
-    const linkedLevels =
-      abstractDefinition.levels.length > 0
-        ? abstractDefinition.levels
-        : abstractDefinition.numStyleLink
+  const abstracts: NumberingAbstractDefinition[] = parsedAbstracts.map(
+    (abstractDefinition) => {
+      const linkedLevels =
+        abstractDefinition.levels.length > 0
+          ? abstractDefinition.levels
+          : abstractDefinition.numStyleLink
           ? styleLinkedLevels.get(abstractDefinition.numStyleLink) ?? []
           : [];
 
-    return {
-      abstractNumId: abstractDefinition.abstractNumId,
-      levels: linkedLevels.map((level) => ({ ...level }))
-    };
-  });
+      return {
+        abstractNumId: abstractDefinition.abstractNumId,
+        levels: linkedLevels.map((level) => ({ ...level })),
+      };
+    }
+  );
 
   const instances = extractBalancedTagBlocks(numberingXml, "w:num")
     .map((numXml): NumberingInstanceDefinition | undefined => {
@@ -6989,29 +8199,44 @@ function parseNumberingDefinitions(
         return undefined;
       }
 
-      const abstractNumIdTag = numXml.match(/<w:abstractNumId\b[^>]*\/?>/i)?.[0];
-      const abstractNumIdRaw = abstractNumIdTag ? getAttribute(abstractNumIdTag, "w:val") : undefined;
-      const abstractNumId = abstractNumIdRaw ? Number(abstractNumIdRaw) : Number.NaN;
+      const abstractNumIdTag = numXml.match(
+        /<w:abstractNumId\b[^>]*\/?>/i
+      )?.[0];
+      const abstractNumIdRaw = abstractNumIdTag
+        ? getAttribute(abstractNumIdTag, "w:val")
+        : undefined;
+      const abstractNumId = abstractNumIdRaw
+        ? Number(abstractNumIdRaw)
+        : Number.NaN;
       if (!Number.isFinite(abstractNumId)) {
         return undefined;
       }
 
       const levelStartOverrides: Record<string, number> = {};
       const levelOverrides: NumberingLevelDefinition[] = [];
-      for (const overrideXml of extractBalancedTagBlocks(numXml, "w:lvlOverride")) {
-        const overrideTag = overrideXml.match(/<w:lvlOverride\b[^>]*>/i)?.[0] ?? "";
+      for (const overrideXml of extractBalancedTagBlocks(
+        numXml,
+        "w:lvlOverride"
+      )) {
+        const overrideTag =
+          overrideXml.match(/<w:lvlOverride\b[^>]*>/i)?.[0] ?? "";
         const overrideLevelRaw = getAttribute(overrideTag, "w:ilvl");
-        const overrideLevel = overrideLevelRaw ? Number(overrideLevelRaw) : Number.NaN;
+        const overrideLevel = overrideLevelRaw
+          ? Number(overrideLevelRaw)
+          : Number.NaN;
         if (!Number.isFinite(overrideLevel)) {
           continue;
         }
 
-        const startOverrideTag = overrideXml.match(/<w:startOverride\b[^>]*\/?>/i)?.[0];
+        const startOverrideTag = overrideXml.match(
+          /<w:startOverride\b[^>]*\/?>/i
+        )?.[0];
         const startOverride = startOverrideTag
           ? parseIntegerAttribute(startOverrideTag, "w:val")
           : undefined;
         if (startOverride !== undefined && startOverride > 0) {
-          levelStartOverrides[String(Math.max(0, Math.round(overrideLevel)))] = startOverride;
+          levelStartOverrides[String(Math.max(0, Math.round(overrideLevel)))] =
+            startOverride;
         }
 
         const levelXml = extractBalancedTagBlocks(overrideXml, "w:lvl")[0];
@@ -7026,11 +8251,16 @@ function parseNumberingDefinitions(
       return {
         numId: Math.round(numId),
         abstractNumId: Math.round(abstractNumId),
-        levelStartOverrides: Object.keys(levelStartOverrides).length > 0 ? levelStartOverrides : undefined,
-        levelOverrides: levelOverrides.length > 0 ? levelOverrides : undefined
+        levelStartOverrides:
+          Object.keys(levelStartOverrides).length > 0
+            ? levelStartOverrides
+            : undefined,
+        levelOverrides: levelOverrides.length > 0 ? levelOverrides : undefined,
       };
     })
-    .filter((instance): instance is NumberingInstanceDefinition => Boolean(instance));
+    .filter((instance): instance is NumberingInstanceDefinition =>
+      Boolean(instance)
+    );
 
   if (abstracts.length === 0 && instances.length === 0) {
     return undefined;
@@ -7038,7 +8268,7 @@ function parseNumberingDefinitions(
 
   return {
     abstracts,
-    instances
+    instances,
   };
 }
 
@@ -7061,21 +8291,27 @@ function extractBodyTokenRanges(bodyXml: string): BodyTokenRange[] {
     (range) => ({
       start: range.start,
       end: range.end,
-      kind: range.tagName === "w:tbl" ? ("table" as const) : ("paragraph" as const),
+      kind:
+        range.tagName === "w:tbl" ? ("table" as const) : ("paragraph" as const),
     })
   );
 }
 
-export function parseDocumentXml(documentXml: string, context?: ParseContext): DocNode[] {
-  const parseContext: ParseContext =
-    context ?? {
-      relationships: new Map(),
-      contentTypes: { defaultByExtension: new Map(), overrideByPartName: new Map() },
-      parts: new Map(),
-      binaryAssets: new Map(),
-      styleSheet: EMPTY_STYLE_SHEET,
-      warnings: []
-    };
+export function parseDocumentXml(
+  documentXml: string,
+  context?: ParseContext
+): DocNode[] {
+  const parseContext: ParseContext = context ?? {
+    relationships: new Map(),
+    contentTypes: {
+      defaultByExtension: new Map(),
+      overrideByPartName: new Map(),
+    },
+    parts: new Map(),
+    binaryAssets: new Map(),
+    styleSheet: EMPTY_STYLE_SHEET,
+    warnings: [],
+  };
 
   const nodes: DocNode[] = [];
   const bodyXml = extractBodyXml(documentXml);
@@ -7096,14 +8332,16 @@ export function parseDocumentXml(documentXml: string, context?: ParseContext): D
   if (nodes.length === 0) {
     nodes.push({
       type: "paragraph",
-      children: [{ type: "text", text: "" }]
+      children: [{ type: "text", text: "" }],
     });
   }
 
   return nodes;
 }
 
-function parseDocumentPageCountFromAppProperties(pkg: OoxmlPackage): number | undefined {
+function parseDocumentPageCountFromAppProperties(
+  pkg: OoxmlPackage
+): number | undefined {
   const appXml = pkg.parts.get("docProps/app.xml")?.content ?? "";
   if (!appXml) {
     return undefined;
@@ -7147,22 +8385,27 @@ function parseDocumentCompatibilitySettings(
     return undefined;
   }
 
-  const suppressSpacingBeforeAfterPageBreak = parseFirstOnOffSetting(compatXml, [
-    "suppressSpBfAfterPgBrk"
+  const suppressSpacingBeforeAfterPageBreak = parseFirstOnOffSetting(
+    compatXml,
+    ["suppressSpBfAfterPgBrk"]
+  );
+  const usePrinterMetrics = parseFirstOnOffSetting(compatXml, [
+    "usePrinterMetrics",
   ]);
-  const usePrinterMetrics = parseFirstOnOffSetting(compatXml, ["usePrinterMetrics"]);
   const useFixedHtmlParagraphSpacing = parseFirstOnOffSetting(compatXml, [
-    "doNotUseHTMLParagraphAutoSpacing"
+    "doNotUseHTMLParagraphAutoSpacing",
   ]);
   const doNotBreakWrappedTables = parseFirstOnOffSetting(compatXml, [
     "doNotBreakWrappedTables",
-    "dontBreakWrappedTables"
+    "dontBreakWrappedTables",
   ]);
   const doNotBreakConstrainedForcedTable = parseFirstOnOffSetting(compatXml, [
     "doNotBreakConstrainedForcedTable",
-    "dontBreakConstrainedForcedTable"
+    "dontBreakConstrainedForcedTable",
   ]);
-  const evenAndOddHeaders = parseFirstOnOffSetting(settingsXml, ["evenAndOddHeaders"]);
+  const evenAndOddHeaders = parseFirstOnOffSetting(settingsXml, [
+    "evenAndOddHeaders",
+  ]);
 
   if (
     suppressSpacingBeforeAfterPageBreak === undefined &&
@@ -7181,7 +8424,7 @@ function parseDocumentCompatibilitySettings(
     useFixedHtmlParagraphSpacing,
     doNotBreakWrappedTables,
     doNotBreakConstrainedForcedTable,
-    evenAndOddHeaders
+    evenAndOddHeaders,
   };
 }
 
@@ -7202,7 +8445,10 @@ export function buildDocModel(pkg: OoxmlPackage): DocModel {
   const contentTypes = parseContentTypes(pkg);
   const styleSheet = parseStyleSheet(pkg);
   const numberingDefinitions = parseNumberingDefinitions(pkg, contentTypes);
-  const documentRelationships = parsePartRelationships(pkg, "word/document.xml");
+  const documentRelationships = parsePartRelationships(
+    pkg,
+    "word/document.xml"
+  );
 
   const context: ParseContext = {
     relationships: documentRelationships,
@@ -7210,7 +8456,7 @@ export function buildDocModel(pkg: OoxmlPackage): DocModel {
     parts: pkg.parts,
     binaryAssets: pkg.binaryAssets,
     styleSheet,
-    warnings
+    warnings,
   };
   const headerSections = parseHeaderSections(
     pkg,
@@ -7274,37 +8520,51 @@ export function buildDocModel(pkg: OoxmlPackage): DocModel {
         borders: style.borders
           ? {
               top: style.borders.top ? { ...style.borders.top } : undefined,
-              right: style.borders.right ? { ...style.borders.right } : undefined,
-              bottom: style.borders.bottom ? { ...style.borders.bottom } : undefined,
+              right: style.borders.right
+                ? { ...style.borders.right }
+                : undefined,
+              bottom: style.borders.bottom
+                ? { ...style.borders.bottom }
+                : undefined,
               left: style.borders.left ? { ...style.borders.left } : undefined,
-              between: style.borders.between ? { ...style.borders.between } : undefined,
-              bar: style.borders.bar ? { ...style.borders.bar } : undefined
+              between: style.borders.between
+                ? { ...style.borders.between }
+                : undefined,
+              bar: style.borders.bar ? { ...style.borders.bar } : undefined,
             }
-          : undefined
+          : undefined,
       })),
       defaultParagraphStyleId: styleSheet.defaultParagraphStyleId,
       numberingDefinitions: numberingDefinitions
         ? {
-            abstracts: numberingDefinitions.abstracts.map((abstractDefinition) => ({
-              abstractNumId: abstractDefinition.abstractNumId,
-              levels: abstractDefinition.levels.map((level) => ({
-                ...level,
-                pictureBullet: level.pictureBullet ? { ...level.pictureBullet } : undefined
-              }))
-            })),
-            instances: numberingDefinitions.instances.map((instanceDefinition) => ({
-              numId: instanceDefinition.numId,
-              abstractNumId: instanceDefinition.abstractNumId,
-              levelStartOverrides: instanceDefinition.levelStartOverrides
-                ? { ...instanceDefinition.levelStartOverrides }
-                : undefined,
-              levelOverrides: instanceDefinition.levelOverrides
-                ? instanceDefinition.levelOverrides.map((level) => ({
-                    ...level,
-                    pictureBullet: level.pictureBullet ? { ...level.pictureBullet } : undefined
-                  }))
-                : undefined
-            }))
+            abstracts: numberingDefinitions.abstracts.map(
+              (abstractDefinition) => ({
+                abstractNumId: abstractDefinition.abstractNumId,
+                levels: abstractDefinition.levels.map((level) => ({
+                  ...level,
+                  pictureBullet: level.pictureBullet
+                    ? { ...level.pictureBullet }
+                    : undefined,
+                })),
+              })
+            ),
+            instances: numberingDefinitions.instances.map(
+              (instanceDefinition) => ({
+                numId: instanceDefinition.numId,
+                abstractNumId: instanceDefinition.abstractNumId,
+                levelStartOverrides: instanceDefinition.levelStartOverrides
+                  ? { ...instanceDefinition.levelStartOverrides }
+                  : undefined,
+                levelOverrides: instanceDefinition.levelOverrides
+                  ? instanceDefinition.levelOverrides.map((level) => ({
+                      ...level,
+                      pictureBullet: level.pictureBullet
+                        ? { ...level.pictureBullet }
+                        : undefined,
+                    }))
+                  : undefined,
+              })
+            ),
           }
         : undefined,
       compatibility: compatibility ? { ...compatibility } : undefined,
@@ -7312,17 +8572,17 @@ export function buildDocModel(pkg: OoxmlPackage): DocModel {
         footnotes.length > 0
           ? footnotes.map((note) => ({
               ...note,
-              nodes: note.nodes?.map(cloneDocNode)
+              nodes: note.nodes?.map(cloneDocNode),
             }))
           : undefined,
       endnotes:
         endnotes.length > 0
           ? endnotes.map((note) => ({
               ...note,
-              nodes: note.nodes?.map(cloneDocNode)
+              nodes: note.nodes?.map(cloneDocNode),
             }))
-          : undefined
-    }
+          : undefined,
+    },
   };
 }
 
@@ -7363,7 +8623,7 @@ function cloneParagraphBorderSet(
     bottom: cloneParagraphBorderStyle(borders.bottom),
     left: cloneParagraphBorderStyle(borders.left),
     between: cloneParagraphBorderStyle(borders.between),
-    bar: cloneParagraphBorderStyle(borders.bar)
+    bar: cloneParagraphBorderStyle(borders.bar),
   };
 }
 
@@ -7382,9 +8642,9 @@ function cloneParagraphStyle(
     borders: cloneParagraphBorderSet(style.borders),
     dropCap: style.dropCap
       ? {
-          ...style.dropCap
+          ...style.dropCap,
         }
-      : undefined
+      : undefined,
   };
 }
 
@@ -7400,7 +8660,7 @@ function cloneParagraph(paragraph: ParagraphNode): ParagraphNode {
           type: "text" as const,
           text: child.text,
           style: child.style ? { ...child.style } : undefined,
-          link: child.link
+          link: child.link,
         };
       }
 
@@ -7417,7 +8677,7 @@ function cloneParagraph(paragraph: ParagraphNode): ParagraphNode {
           value: child.value,
           options: child.options?.map((option) => ({
             displayText: option.displayText,
-            value: option.value
+            value: option.value,
           })),
           widget: child.widget
             ? {
@@ -7429,28 +8689,28 @@ function cloneParagraph(paragraph: ParagraphNode): ParagraphNode {
                       inputType: child.widget.text.inputType,
                       defaultText: child.widget.text.defaultText,
                       maxLength: child.widget.text.maxLength,
-                      textFormat: child.widget.text.textFormat
+                      textFormat: child.widget.text.textFormat,
                     }
                   : undefined,
                 checkbox: child.widget.checkbox
                   ? {
                       defaultChecked: child.widget.checkbox.defaultChecked,
                       sizeMode: child.widget.checkbox.sizeMode,
-                      sizePt: child.widget.checkbox.sizePt
+                      sizePt: child.widget.checkbox.sizePt,
                     }
                   : undefined,
                 dropdown: child.widget.dropdown
                   ? {
-                      defaultValue: child.widget.dropdown.defaultValue
+                      defaultValue: child.widget.dropdown.defaultValue,
                     }
-                  : undefined
+                  : undefined,
               }
             : undefined,
           checkedSymbol: child.checkedSymbol,
           uncheckedSymbol: child.uncheckedSymbol,
           style: child.style ? { ...child.style } : undefined,
           link: child.link,
-          sourceXml: child.sourceXml
+          sourceXml: child.sourceXml,
         };
       }
 
@@ -7469,13 +8729,15 @@ function cloneParagraph(paragraph: ParagraphNode): ParagraphNode {
         cssOpacity: child.cssOpacity,
         floating: child.floating ? { ...child.floating } : undefined,
         syntheticTextBox: child.syntheticTextBox,
-        textBoxText: child.textBoxText
+        textBoxText: child.textBoxText,
       };
-    })
+    }),
   };
 }
 
-function cloneTableBoxSpacing(spacing?: TableBoxSpacing): TableBoxSpacing | undefined {
+function cloneTableBoxSpacing(
+  spacing?: TableBoxSpacing
+): TableBoxSpacing | undefined {
   if (!spacing) {
     return undefined;
   }
@@ -7484,11 +8746,13 @@ function cloneTableBoxSpacing(spacing?: TableBoxSpacing): TableBoxSpacing | unde
     topTwips: spacing.topTwips,
     rightTwips: spacing.rightTwips,
     bottomTwips: spacing.bottomTwips,
-    leftTwips: spacing.leftTwips
+    leftTwips: spacing.leftTwips,
   };
 }
 
-function cloneTableBorderStyle(border?: TableBorderStyle): TableBorderStyle | undefined {
+function cloneTableBorderStyle(
+  border?: TableBorderStyle
+): TableBorderStyle | undefined {
   if (!border) {
     return undefined;
   }
@@ -7496,11 +8760,13 @@ function cloneTableBorderStyle(border?: TableBorderStyle): TableBorderStyle | un
   return {
     type: border.type,
     color: border.color,
-    sizeEighthPt: border.sizeEighthPt
+    sizeEighthPt: border.sizeEighthPt,
   };
 }
 
-function cloneTableBorderSet(borders?: TableBorderSet): TableBorderSet | undefined {
+function cloneTableBorderSet(
+  borders?: TableBorderSet
+): TableBorderSet | undefined {
   if (!borders) {
     return undefined;
   }
@@ -7513,7 +8779,7 @@ function cloneTableBorderSet(borders?: TableBorderSet): TableBorderSet | undefin
     insideH: cloneTableBorderStyle(borders.insideH),
     insideV: cloneTableBorderStyle(borders.insideV),
     tl2br: cloneTableBorderStyle(borders.tl2br),
-    tr2bl: cloneTableBorderStyle(borders.tr2bl)
+    tr2bl: cloneTableBorderStyle(borders.tr2bl),
   };
 }
 
@@ -7534,7 +8800,7 @@ function cloneTableFloatingStyle(
     horizontalAnchor: floating.horizontalAnchor,
     verticalAnchor: floating.verticalAnchor,
     horizontalAlign: floating.horizontalAlign,
-    verticalAlign: floating.verticalAlign
+    verticalAlign: floating.verticalAlign,
   };
 }
 
@@ -7553,7 +8819,7 @@ function cloneTable(table: TableNode): TableNode {
           columnWidthsTwips: table.style.columnWidthsTwips
             ? [...table.style.columnWidthsTwips]
             : undefined,
-          borders: cloneTableBorderSet(table.style.borders)
+          borders: cloneTableBorderSet(table.style.borders),
         }
       : undefined,
     rows: table.rows.map((row) => ({
@@ -7565,12 +8831,12 @@ function cloneTable(table: TableNode): TableNode {
           ? {
               ...cell.style,
               marginTwips: cloneTableBoxSpacing(cell.style.marginTwips),
-              borders: cloneTableBorderSet(cell.style.borders)
+              borders: cloneTableBorderSet(cell.style.borders),
             }
           : undefined,
-        nodes: cloneTableCellContent(cell.nodes)
-      }))
-    }))
+        nodes: cloneTableCellContent(cell.nodes),
+      })),
+    })),
   };
 }
 
@@ -7591,8 +8857,10 @@ function cloneNumberingDefinitions(
       levels: abstractDefinition.levels.map((level) => ({
         ...level,
         runStyle: level.runStyle ? { ...level.runStyle } : undefined,
-        pictureBullet: level.pictureBullet ? { ...level.pictureBullet } : undefined
-      }))
+        pictureBullet: level.pictureBullet
+          ? { ...level.pictureBullet }
+          : undefined,
+      })),
     })),
     instances: numberingDefinitions.instances.map((instanceDefinition) => ({
       numId: instanceDefinition.numId,
@@ -7604,10 +8872,12 @@ function cloneNumberingDefinitions(
         ? instanceDefinition.levelOverrides.map((level) => ({
             ...level,
             runStyle: level.runStyle ? { ...level.runStyle } : undefined,
-            pictureBullet: level.pictureBullet ? { ...level.pictureBullet } : undefined
+            pictureBullet: level.pictureBullet
+              ? { ...level.pictureBullet }
+              : undefined,
           }))
-        : undefined
-    }))
+        : undefined,
+    })),
   };
 }
 
@@ -7627,23 +8897,23 @@ export function cloneDocModel(model: DocModel): DocModel {
         headerSections: (section.headerSections ?? []).map((headerSection) => ({
           partName: headerSection.partName,
           referenceType: headerSection.referenceType,
-          nodes: headerSection.nodes.map(cloneDocNode)
+          nodes: headerSection.nodes.map(cloneDocNode),
         })),
         footerSections: (section.footerSections ?? []).map((footerSection) => ({
           partName: footerSection.partName,
           referenceType: footerSection.referenceType,
-          nodes: footerSection.nodes.map(cloneDocNode)
-        }))
+          nodes: footerSection.nodes.map(cloneDocNode),
+        })),
       })),
       headerSections: (model.metadata.headerSections ?? []).map((section) => ({
         partName: section.partName,
         referenceType: section.referenceType,
-        nodes: section.nodes.map(cloneDocNode)
+        nodes: section.nodes.map(cloneDocNode),
       })),
       footerSections: (model.metadata.footerSections ?? []).map((section) => ({
         partName: section.partName,
         referenceType: section.referenceType,
-        nodes: section.nodes.map(cloneDocNode)
+        nodes: section.nodes.map(cloneDocNode),
       })),
       paragraphStyles: (model.metadata.paragraphStyles ?? []).map((style) => ({
         ...style,
@@ -7651,19 +8921,23 @@ export function cloneDocModel(model: DocModel): DocModel {
         numbering: cloneParagraphNumbering(style.numbering),
         spacing: cloneParagraphSpacing(style.spacing),
         indent: cloneParagraphIndent(style.indent),
-        borders: cloneParagraphBorderSet(style.borders)
+        borders: cloneParagraphBorderSet(style.borders),
       })),
       defaultParagraphStyleId: model.metadata.defaultParagraphStyleId,
-      numberingDefinitions: cloneNumberingDefinitions(model.metadata.numberingDefinitions),
-      compatibility: model.metadata.compatibility ? { ...model.metadata.compatibility } : undefined,
+      numberingDefinitions: cloneNumberingDefinitions(
+        model.metadata.numberingDefinitions
+      ),
+      compatibility: model.metadata.compatibility
+        ? { ...model.metadata.compatibility }
+        : undefined,
       footnotes: model.metadata.footnotes?.map((note) => ({
         ...note,
-        nodes: note.nodes?.map(cloneDocNode)
+        nodes: note.nodes?.map(cloneDocNode),
       })),
       endnotes: model.metadata.endnotes?.map((note) => ({
         ...note,
-        nodes: note.nodes?.map(cloneDocNode)
-      }))
-    }
+        nodes: note.nodes?.map(cloneDocNode),
+      })),
+    },
   };
 }
