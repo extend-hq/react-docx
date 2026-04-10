@@ -50,6 +50,8 @@ function nightReaderModel(): DocModel {
 
 describe("viewer night reader mode", () => {
   it("inverts read-only dark document content and cancels the inversion on images", () => {
+    const nightReaderFilter =
+      "invert(0.95) hue-rotate(180deg) saturate(0.9) brightness(0.9) contrast(0.94)";
     const html = renderToStaticMarkup(
       React.createElement(NightReaderViewer, {
         model: nightReaderModel(),
@@ -58,14 +60,14 @@ describe("viewer night reader mode", () => {
       })
     );
 
-    expect(html).toContain("filter:invert(1) hue-rotate(180deg)");
-    expect(html).toContain(
-      "filter:grayscale(1) invert(1) hue-rotate(180deg)"
-    );
+    expect(html).toContain(`filter:${nightReaderFilter}`);
+    expect(html).toContain(`filter:grayscale(1) ${nightReaderFilter}`);
     expect(html).toContain("background-color:#0a0a0a");
   });
 
   it("does not apply the inversion path while the dark document is editable", () => {
+    const nightReaderFilter =
+      "invert(0.95) hue-rotate(180deg) saturate(0.9) brightness(0.9) contrast(0.94)";
     const html = renderToStaticMarkup(
       React.createElement(NightReaderViewer, {
         model: nightReaderModel(),
@@ -74,7 +76,7 @@ describe("viewer night reader mode", () => {
       })
     );
 
-    expect(html).not.toContain("filter:invert(1) hue-rotate(180deg)");
+    expect(html).not.toContain(`filter:${nightReaderFilter}`);
     expect(html).toContain("color:#f3f4f6");
   });
 });

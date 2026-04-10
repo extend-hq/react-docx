@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  resolveFallbackParagraphSegmentClipBleedPx,
   resolveParagraphSegmentClipBleedPx,
   resolveParagraphSegmentNonFlowReservePx,
 } from "../../packages/react-viewer/src/editor";
@@ -42,5 +43,33 @@ describe("paragraph segment clip bleed", () => {
         lineHeightPx: 24,
       })
     ).toBe(52);
+  });
+
+  it("caps fallback continued-segment bleed so clipped rendering does not re-show adjacent lines", () => {
+    expect(
+      resolveFallbackParagraphSegmentClipBleedPx(
+        {
+          type: "paragraph",
+          children: [
+            {
+              type: "text",
+              text: "Oversized fallback paragraph text",
+              style: {
+                fontSizePt: 24,
+              },
+            },
+          ],
+        },
+        {
+          startLineIndex: 3,
+          endLineIndex: 5,
+          totalLineCount: 8,
+          lineHeightPx: 20,
+        }
+      )
+    ).toEqual({
+      topPx: 4,
+      bottomPx: 0,
+    });
   });
 });

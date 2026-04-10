@@ -802,7 +802,8 @@ const DOC_SURFACE_STYLE_BY_THEME: Record<
   },
 };
 
-const NIGHT_READER_INVERSION_FILTER = "invert(1) hue-rotate(180deg)";
+const NIGHT_READER_INVERSION_FILTER =
+  "invert(0.95) hue-rotate(180deg) saturate(0.9) brightness(0.9) contrast(0.94)";
 
 function appendCssFilters(
   ...filters: Array<string | undefined | null>

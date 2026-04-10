@@ -26,7 +26,6 @@
   "dependencies": {
     "@chenglou/pretext": "^0.0.5",
     "@tanstack/react-virtual": "^3.13.12",
-    "emf-converter": "^1.0.10",
     "fast-png": "^8.0.0",
     "utif": "^3.1.0"
   },
