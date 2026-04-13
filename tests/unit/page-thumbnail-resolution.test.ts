@@ -50,4 +50,20 @@ describe("page thumbnail resolution", () => {
       scale: 150 / 900,
     });
   });
+
+  it("supports an xlsx-style numeric resolution bound", () => {
+    expect(
+      resolveDocxPageThumbnailResolution({
+        sourceWidthPx: 900,
+        sourceHeightPx: 1200,
+        resolution: 200,
+      })
+    ).toEqual({
+      widthPx: 150,
+      heightPx: 200,
+      pixelWidthPx: 150,
+      pixelHeightPx: 200,
+      scale: 200 / 1200,
+    });
+  });
 });

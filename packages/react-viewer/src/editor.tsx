@@ -3758,10 +3758,18 @@ export interface UseDocxPaginationResult {
 export interface DocxPageThumbnailResolutionOptions {
   sourceWidthPx: number;
   sourceHeightPx: number;
+  resolution?: DocxPageThumbnailBounds;
   maxWidthPx?: number;
   maxHeightPx?: number;
   pixelRatio?: number;
 }
+
+export type DocxPageThumbnailBounds =
+  | number
+  | {
+      maxHeight?: number;
+      maxWidth?: number;
+    };
 
 export interface DocxPageThumbnailResolution {
   widthPx: number;
@@ -3772,6 +3780,7 @@ export interface DocxPageThumbnailResolution {
 }
 
 export interface UseDocxPageThumbnailsOptions {
+  resolution?: DocxPageThumbnailBounds;
   maxWidthPx?: number;
   maxHeightPx?: number;
   pixelRatio?: number;
@@ -3786,6 +3795,10 @@ export type DocxPageThumbnailStatus =
   | "error";
 
 export interface DocxPageThumbnailItem extends DocxPageThumbnailResolution {
+  aspectRatio: number;
+  contentHeight: number;
+  contentWidth: number;
+  height: number;
   pageIndex: number;
   pageNumber: number;
   sourceWidthPx: number;
@@ -3793,14 +3806,20 @@ export interface DocxPageThumbnailItem extends DocxPageThumbnailResolution {
   isMounted: boolean;
   status: DocxPageThumbnailStatus;
   error?: Error;
+  paint: (canvas: HTMLCanvasElement | null) => boolean;
   canvasRef: (canvas: HTMLCanvasElement | null) => void;
   renderToCanvas: (canvas: HTMLCanvasElement) => Promise<void>;
+  width: number;
 }
 
 export interface UseDocxPageThumbnailsResult {
+  paintThumbnail: (pageIndex: number, canvas: HTMLCanvasElement | null) => boolean;
   thumbnails: DocxPageThumbnailItem[];
   rerenderAttachedThumbnails: () => Promise<void>;
 }
+
+export type UseDocxViewerThumbnailsOptions = UseDocxPageThumbnailsOptions;
+export type DocxViewerThumbnails = UseDocxPageThumbnailsResult;
 
 export const defaultStarterModel: DocModel = {
   nodes: [
@@ -25727,12 +25746,38 @@ export function resolveDocxPageThumbnailResolution(
 ): DocxPageThumbnailResolution {
   const safeSourceWidthPx = Math.max(1, Math.round(options.sourceWidthPx));
   const safeSourceHeightPx = Math.max(1, Math.round(options.sourceHeightPx));
+  const resolutionBounds =
+    typeof options.resolution === "number" &&
+    Number.isFinite(options.resolution) &&
+    options.resolution > 0
+      ? {
+          maxWidthPx: Number(options.resolution),
+          maxHeightPx: Number(options.resolution),
+        }
+      : typeof options.resolution === "object" && options.resolution
+        ? {
+            maxWidthPx:
+              Number.isFinite(options.resolution.maxWidth) &&
+              Number(options.resolution.maxWidth) > 0
+                ? Number(options.resolution.maxWidth)
+                : undefined,
+            maxHeightPx:
+              Number.isFinite(options.resolution.maxHeight) &&
+              Number(options.resolution.maxHeight) > 0
+                ? Number(options.resolution.maxHeight)
+                : undefined,
+          }
+        : undefined;
   const widthBoundPx = Number.isFinite(options.maxWidthPx)
     ? Math.max(1, Math.round(options.maxWidthPx as number))
-    : 180;
+    : Number.isFinite(resolutionBounds?.maxWidthPx)
+      ? Math.max(1, Math.round(resolutionBounds?.maxWidthPx as number))
+      : 180;
   const heightBoundPx = Number.isFinite(options.maxHeightPx)
     ? Math.max(1, Math.round(options.maxHeightPx as number))
-    : Number.POSITIVE_INFINITY;
+    : Number.isFinite(resolutionBounds?.maxHeightPx)
+      ? Math.max(1, Math.round(resolutionBounds?.maxHeightPx as number))
+      : Number.POSITIVE_INFINITY;
   const scale = Math.min(
     1,
     widthBoundPx / safeSourceWidthPx,
@@ -25850,6 +25895,7 @@ export function useDocxPageThumbnails(
       const resolution = resolveDocxPageThumbnailResolution({
         sourceWidthPx: sourceSize.widthPx,
         sourceHeightPx: sourceSize.heightPx,
+        resolution: options.resolution,
         maxWidthPx: options.maxWidthPx,
         maxHeightPx: options.maxHeightPx,
         pixelRatio: options.pixelRatio,
@@ -25884,6 +25930,7 @@ export function useDocxPageThumbnails(
       fallbackLayout.pageWidthPx,
       mountedPageElements,
       options.disabled,
+      options.resolution,
       options.maxHeightPx,
       options.maxWidthPx,
       options.pixelRatio,
@@ -25914,6 +25961,7 @@ export function useDocxPageThumbnails(
     editor.model,
     mountedPageElements,
     options.disabled,
+    options.resolution,
     options.maxHeightPx,
     options.maxWidthPx,
     options.pixelRatio,
@@ -25932,6 +25980,7 @@ export function useDocxPageThumbnails(
       const resolution = resolveDocxPageThumbnailResolution({
         sourceWidthPx: sourceSize.widthPx,
         sourceHeightPx: sourceSize.heightPx,
+        resolution: options.resolution,
         maxWidthPx: options.maxWidthPx,
         maxHeightPx: options.maxHeightPx,
         pixelRatio: options.pixelRatio,
@@ -25946,6 +25995,13 @@ export function useDocxPageThumbnails(
         isMounted: Boolean(pageElement && pageElement.isConnected),
         status: state?.status ?? (pageElement ? "idle" : "unavailable"),
         error: state?.error,
+        paint: (canvas: HTMLCanvasElement | null): boolean => {
+          if (!canvas || options.disabled) {
+            return false;
+          }
+          void renderPageThumbnailToCanvasRef.current(pageIndex, canvas);
+          return true;
+        },
         canvasRef:
           canvasRefCallbacksRef.current.get(pageIndex) ??
           (() => {
@@ -25976,6 +26032,11 @@ export function useDocxPageThumbnails(
             );
             return nextRenderToCanvas;
           })(),
+        aspectRatio: sourceSize.widthPx / Math.max(1, sourceSize.heightPx),
+        contentWidth: sourceSize.widthPx,
+        contentHeight: sourceSize.heightPx,
+        width: resolution.widthPx,
+        height: resolution.heightPx,
         ...resolution,
       };
     });
@@ -25984,20 +26045,39 @@ export function useDocxPageThumbnails(
     fallbackLayout.pageHeightPx,
     fallbackLayout.pageWidthPx,
     mountedPageElements,
+    options.disabled,
+    options.resolution,
     options.maxHeightPx,
     options.maxWidthPx,
     options.pixelRatio,
     pageThumbnailStates,
   ]);
 
+  const paintThumbnail = React.useCallback(
+    (pageIndex: number, canvas: HTMLCanvasElement | null): boolean => {
+      if (!canvas || options.disabled) {
+        return false;
+      }
+      const thumbnail = thumbnails[pageIndex];
+      if (!thumbnail) {
+        return false;
+      }
+      return thumbnail.paint(canvas);
+    },
+    [options.disabled, thumbnails]
+  );
+
   return React.useMemo(
     () => ({
+      paintThumbnail,
       thumbnails,
       rerenderAttachedThumbnails,
     }),
-    [rerenderAttachedThumbnails, thumbnails]
+    [paintThumbnail, rerenderAttachedThumbnails, thumbnails]
   );
 }
+
+export const useDocxViewerThumbnails = useDocxPageThumbnails;
 
 export function useDocxDocumentTheme(
   editor: Pick<DocxEditorController, "documentTheme" | "setDocumentTheme">
