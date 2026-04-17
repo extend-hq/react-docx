@@ -16,7 +16,7 @@ describe("paragraph segment clip bleed", () => {
       })
     ).toEqual({
       topPx: 22,
-      bottomPx: 6
+      bottomPx: 0
     });
   });
 
@@ -42,7 +42,21 @@ describe("paragraph segment clip bleed", () => {
         totalLineCount: 9,
         lineHeightPx: 24,
       })
-    ).toBe(52);
+    ).toBe(46);
+  });
+
+  it("keeps descender bleed for non-final paragraph slices", () => {
+    expect(
+      resolveParagraphSegmentClipBleedPx({
+        startLineIndex: 3,
+        endLineIndex: 6,
+        totalLineCount: 9,
+        lineHeightPx: 24,
+      })
+    ).toEqual({
+      topPx: 22,
+      bottomPx: 6,
+    });
   });
 
   it("caps fallback continued-segment bleed so clipped rendering does not re-show adjacent lines", () => {

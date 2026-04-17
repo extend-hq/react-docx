@@ -1,4 +1,4 @@
-interface PageCountCandidate<TPage> {
+export interface PageCountCandidate<TPage> {
   pageCount: number;
   pages: TPage[];
   scale: number;
@@ -67,6 +67,50 @@ export function shouldLatchMeasuredBodyFooterOverlap(options: {
   return pageCount <= targetPageCount;
 }
 
+export function resolveMeasuredBodyFooterOverlapLatchState(options: {
+  pageCount: number;
+  targetPageCount?: number;
+  overlappingPageIndexes: number[];
+  previousSignature?: string;
+  previousConsecutivePasses?: number;
+  stabilityThreshold?: number;
+}): {
+  signature?: string;
+  consecutivePasses: number;
+  shouldLatch: boolean;
+} {
+  const shouldConsiderMeasuredBodyFooterOverlap =
+    shouldLatchMeasuredBodyFooterOverlap({
+      pageCount: options.pageCount,
+      targetPageCount: options.targetPageCount,
+      measuredBodyFooterOverlap: options.overlappingPageIndexes.length > 0,
+    });
+  if (!shouldConsiderMeasuredBodyFooterOverlap) {
+    return {
+      signature: undefined,
+      consecutivePasses: 0,
+      shouldLatch: false,
+    };
+  }
+
+  const signature = options.overlappingPageIndexes
+    .map((pageIndex) => `${pageIndex}`)
+    .join("|");
+  const consecutivePasses =
+    signature === options.previousSignature
+      ? Math.max(0, Math.round(options.previousConsecutivePasses ?? 0)) + 1
+      : 1;
+  const stabilityThreshold = Math.max(
+    1,
+    Math.round(options.stabilityThreshold ?? 1)
+  );
+  return {
+    signature,
+    consecutivePasses,
+    shouldLatch: consecutivePasses >= stabilityThreshold,
+  };
+}
+
 function isBetterCandidate<TPage>(
   candidate: PageCountCandidate<TPage>,
   incumbent: PageCountCandidate<TPage>,
@@ -93,6 +137,12 @@ function isBetterCandidate<TPage>(
 export function reconcilePagesToTargetCountByScalingHeight<TPage>(
   options: PageCountReconciliationOptions<TPage>
 ): TPage[] {
+  return reconcilePageCountCandidateToTargetCountByScalingHeight(options).pages;
+}
+
+export function reconcilePageCountCandidateToTargetCountByScalingHeight<TPage>(
+  options: PageCountReconciliationOptions<TPage>
+): PageCountCandidate<TPage> {
   const {
     initialPages,
     targetPageCount,
@@ -104,7 +154,11 @@ export function reconcilePagesToTargetCountByScalingHeight<TPage>(
   const initialPageCount = initialPages.length;
   const initialDifference = Math.abs(initialPageCount - safeTargetPageCount);
   if (initialDifference === 0 || initialDifference > maxDifference) {
-    return initialPages;
+    return {
+      pageCount: initialPageCount,
+      pages: initialPages,
+      scale: 1,
+    };
   }
 
   const bestCandidate: PageCountCandidate<TPage> = {
@@ -140,9 +194,9 @@ export function reconcilePagesToTargetCountByScalingHeight<TPage>(
       selectedCandidate = candidate;
     }
     if (candidate.pageCount === safeTargetPageCount) {
-      return candidate.pages;
+      return candidate;
     }
   }
 
-  return selectedCandidate.pages;
+  return selectedCandidate;
 }

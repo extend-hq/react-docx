@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  reconcilePageCountCandidateToTargetCountByScalingHeight,
   reconcilePagesToTargetCountByScalingHeight,
+  resolveMeasuredBodyFooterOverlapLatchState,
   shouldLatchMeasuredBodyFooterOverlap,
   shouldAllowStoredPageCountReduction,
 } from "../../packages/react-viewer/src/page-count-reconciliation";
@@ -72,6 +74,25 @@ describe("page-count-reconciliation", () => {
     expect(reconciled).toEqual([["page-1"], ["page-2"]]);
   });
 
+  it("returns the selected scale so render math can stay aligned with reconciliation", () => {
+    const initialPages = [["page-1"], ["page-2"], ["page-3"]];
+    const reconciledCandidate =
+      reconcilePageCountCandidateToTargetCountByScalingHeight({
+        initialPages,
+        targetPageCount: 2,
+        scales: [1.02, 1.04, 1.06],
+        buildPagesAtScale: (scale) => {
+          if (scale >= 1.04) {
+            return [["page-1"], ["page-2"]];
+          }
+          return initialPages;
+        },
+      });
+
+    expect(reconciledCandidate.pages).toEqual([["page-1"], ["page-2"]]);
+    expect(reconciledCandidate.scale).toBe(1.04);
+  });
+
   it("does not reduce to a stale stored page count when last-rendered break hints are present", () => {
     expect(
       shouldAllowStoredPageCountReduction({
@@ -130,5 +151,79 @@ describe("page-count-reconciliation", () => {
         measuredBodyFooterOverlap: true,
       })
     ).toBe(true);
+  });
+
+  it("requires a stable repeated overlap signature before latching", () => {
+    const firstPass = resolveMeasuredBodyFooterOverlapLatchState({
+      pageCount: 5,
+      targetPageCount: 5,
+      overlappingPageIndexes: [1],
+      stabilityThreshold: 3,
+    });
+    expect(firstPass).toEqual({
+      signature: "1",
+      consecutivePasses: 1,
+      shouldLatch: false,
+    });
+
+    const secondPass = resolveMeasuredBodyFooterOverlapLatchState({
+      pageCount: 5,
+      targetPageCount: 5,
+      overlappingPageIndexes: [1],
+      previousSignature: firstPass.signature,
+      previousConsecutivePasses: firstPass.consecutivePasses,
+      stabilityThreshold: 3,
+    });
+    expect(secondPass).toEqual({
+      signature: "1",
+      consecutivePasses: 2,
+      shouldLatch: false,
+    });
+
+    const thirdPass = resolveMeasuredBodyFooterOverlapLatchState({
+      pageCount: 5,
+      targetPageCount: 5,
+      overlappingPageIndexes: [1],
+      previousSignature: secondPass.signature,
+      previousConsecutivePasses: secondPass.consecutivePasses,
+      stabilityThreshold: 3,
+    });
+    expect(thirdPass).toEqual({
+      signature: "1",
+      consecutivePasses: 3,
+      shouldLatch: true,
+    });
+  });
+
+  it("resets the overlap latch candidate when the overlap signature changes or is no longer eligible", () => {
+    expect(
+      resolveMeasuredBodyFooterOverlapLatchState({
+        pageCount: 5,
+        targetPageCount: 5,
+        overlappingPageIndexes: [2],
+        previousSignature: "1",
+        previousConsecutivePasses: 2,
+        stabilityThreshold: 3,
+      })
+    ).toEqual({
+      signature: "2",
+      consecutivePasses: 1,
+      shouldLatch: false,
+    });
+
+    expect(
+      resolveMeasuredBodyFooterOverlapLatchState({
+        pageCount: 7,
+        targetPageCount: 5,
+        overlappingPageIndexes: [2],
+        previousSignature: "2",
+        previousConsecutivePasses: 2,
+        stabilityThreshold: 3,
+      })
+    ).toEqual({
+      signature: undefined,
+      consecutivePasses: 0,
+      shouldLatch: false,
+    });
   });
 });
