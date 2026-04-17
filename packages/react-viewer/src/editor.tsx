@@ -2380,6 +2380,32 @@ export function resolveMeasuredPageContentHeightPx(params: {
   return resolveMeasuredPageContentHeightDiagnostics(params).heightPx;
 }
 
+function verticallyClipsOverflow(style: CSSStyleDeclaration): boolean {
+  return (
+    style.overflow === "hidden" ||
+    style.overflow === "clip" ||
+    style.overflowY === "hidden" ||
+    style.overflowY === "clip"
+  );
+}
+
+function resolveVisibleElementBottomPx(element: HTMLElement): number {
+  const rect = element.getBoundingClientRect();
+  let visibleBottomPx = rect.bottom;
+  let currentAncestor = element.parentElement;
+
+  while (currentAncestor) {
+    const style = window.getComputedStyle(currentAncestor);
+    if (verticallyClipsOverflow(style)) {
+      const ancestorRect = currentAncestor.getBoundingClientRect();
+      visibleBottomPx = Math.min(visibleBottomPx, ancestorRect.bottom);
+    }
+    currentAncestor = currentAncestor.parentElement;
+  }
+
+  return visibleBottomPx;
+}
+
 export function resolveMeasuredBodyRenderedBottomPx(
   descendants: Array<{
     bottomPx: number;
@@ -31108,12 +31134,16 @@ export function DocxEditorViewer({
                 Array.from(bodyElement.querySelectorAll<HTMLElement>("*")).map(
                   (element) => {
                     const rect = element.getBoundingClientRect();
+                    const visibleBottomPx = resolveVisibleElementBottomPx(
+                      element
+                    );
                     return {
-                      bottomPx: rect.bottom,
+                      bottomPx: visibleBottomPx,
                       widthPx: rect.width,
-                      heightPx: rect.height,
+                      heightPx: Math.max(0, visibleBottomPx - rect.top),
                       ignore:
                         !element.isConnected ||
+                        visibleBottomPx <= rect.top + 0.5 ||
                         Boolean(
                           element.closest("[data-docx-image-location]")
                         ) ||
