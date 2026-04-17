@@ -20,7 +20,6 @@ import {
   useDocxLineSpacing,
   useDocxPageLayout,
   useDocxPageThumbnails,
-  useDocxPagination,
   useDocxParagraphStyles,
   useDocxTrackChanges
 } from "@extend-ai/react-docx";
@@ -1387,7 +1386,6 @@ export function App(): React.JSX.Element {
   const editor = useDocxEditor();
   const { documentTheme, setDocumentTheme } = useDocxDocumentTheme(editor);
   const { layout: pageLayout } = useDocxPageLayout(editor);
-  const { pagination } = useDocxPagination(editor);
   const { thumbnails } = useDocxPageThumbnails(editor, {
     maxWidthPx: 148,
     pixelRatio: 2,
@@ -1441,6 +1439,7 @@ export function App(): React.JSX.Element {
   const fileInputRef = React.useRef<HTMLInputElement | null>(null);
   const imageInputRef = React.useRef<HTMLInputElement | null>(null);
   const viewerScrollRef = React.useRef<HTMLDivElement | null>(null);
+  const fileDragDepthRef = React.useRef(0);
   const [linkEditorOpen, setLinkEditorOpen] = React.useState(false);
   const [linkEditorValue, setLinkEditorValue] = React.useState("");
   const [linkEditorPosition, setLinkEditorPosition] = React.useState<{
@@ -1456,6 +1455,7 @@ export function App(): React.JSX.Element {
     () => pageLayout.viewportDefaults.zoomPercent
   );
   const [isReadOnly, setIsReadOnly] = React.useState(false);
+  const [isImportDragOver, setIsImportDragOver] = React.useState(false);
   const [thumbnailsSheetOpen, setThumbnailsSheetOpen] = React.useState(false);
   const [isParagraphStyleMenuOpen, setIsParagraphStyleMenuOpen] =
     React.useState(false);
@@ -1498,6 +1498,19 @@ export function App(): React.JSX.Element {
     setThemeReady(true);
   }, []);
 
+  const hasFilePayload = React.useCallback((dataTransfer: DataTransfer | null) => {
+    return Array.from(dataTransfer?.types ?? []).includes("Files");
+  }, []);
+
+  const extractDroppedDocxFile = React.useCallback(
+    (dataTransfer: DataTransfer | null): File | undefined => {
+      return Array.from(dataTransfer?.files ?? []).find((candidate) =>
+        /\.docx$/i.test(candidate.name)
+      );
+    },
+    []
+  );
+
   const scrollToPage = React.useCallback((pageIndex: number): void => {
     const viewerScrollElement = viewerScrollRef.current;
     if (!viewerScrollElement) {
@@ -1517,6 +1530,83 @@ export function App(): React.JSX.Element {
       inline: "nearest",
     });
   }, []);
+
+  React.useEffect(() => {
+    if (!isReadOnly || typeof window === "undefined") {
+      fileDragDepthRef.current = 0;
+      setIsImportDragOver(false);
+      return;
+    }
+
+    const onWindowDragEnter = (event: DragEvent): void => {
+      if (!hasFilePayload(event.dataTransfer)) {
+        return;
+      }
+
+      fileDragDepthRef.current += 1;
+      setIsImportDragOver(true);
+    };
+
+    const onWindowDragOver = (event: DragEvent): void => {
+      if (!hasFilePayload(event.dataTransfer)) {
+        return;
+      }
+
+      event.preventDefault();
+      if (event.dataTransfer) {
+        event.dataTransfer.dropEffect = "copy";
+      }
+      setIsImportDragOver(true);
+    };
+
+    const onWindowDragLeave = (event: DragEvent): void => {
+      if (event.relatedTarget === null) {
+        fileDragDepthRef.current = 0;
+        setIsImportDragOver(false);
+        return;
+      }
+
+      if (!hasFilePayload(event.dataTransfer)) {
+        return;
+      }
+
+      fileDragDepthRef.current = Math.max(0, fileDragDepthRef.current - 1);
+      if (fileDragDepthRef.current === 0) {
+        setIsImportDragOver(false);
+      }
+    };
+
+    const onWindowDrop = (event: DragEvent): void => {
+      fileDragDepthRef.current = 0;
+      setIsImportDragOver(false);
+
+      if (event.defaultPrevented || !hasFilePayload(event.dataTransfer)) {
+        return;
+      }
+
+      const file = extractDroppedDocxFile(event.dataTransfer);
+      if (!file) {
+        return;
+      }
+
+      event.preventDefault();
+      void editor.importDocxFile(file);
+    };
+
+    window.addEventListener("dragenter", onWindowDragEnter);
+    window.addEventListener("dragover", onWindowDragOver);
+    window.addEventListener("dragleave", onWindowDragLeave);
+    window.addEventListener("drop", onWindowDrop);
+
+    return () => {
+      window.removeEventListener("dragenter", onWindowDragEnter);
+      window.removeEventListener("dragover", onWindowDragOver);
+      window.removeEventListener("dragleave", onWindowDragLeave);
+      window.removeEventListener("drop", onWindowDrop);
+      fileDragDepthRef.current = 0;
+      setIsImportDragOver(false);
+    };
+  }, [editor, extractDroppedDocxFile, hasFilePayload, isReadOnly]);
 
   React.useEffect(() => {
     if (!import.meta.env.DEV || typeof window === "undefined") {
@@ -2628,11 +2718,6 @@ export function App(): React.JSX.Element {
               </ButtonGroup>
 
               <ButtonGroup>
-                <div className="border-input bg-input/20 dark:bg-input/30 h-8 rounded-md border px-2 py-1.5 text-xs/relaxed text-muted-foreground flex items-center gap-2">
-                  <span>
-                    Page {pagination.currentPage} / {pagination.totalPages}
-                  </span>
-                </div>
                 <Button
                   variant="outline"
                   onClick={() => setThumbnailsSheetOpen(true)}
@@ -2804,14 +2889,30 @@ export function App(): React.JSX.Element {
 
         <div
           ref={viewerScrollRef}
-          className="min-h-0 flex-1 overflow-auto rounded-lg border bg-muted/40 p-4"
+          className="relative min-h-0 flex-1 overflow-auto rounded-lg border bg-muted/40 p-4"
         >
+          {isReadOnly && isImportDragOver ? (
+            <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-lg border-2 border-dashed border-primary/50 bg-background/75 p-6 backdrop-blur-[1px]">
+              <div className="flex max-w-sm items-center gap-3 rounded-xl border bg-card/95 px-4 py-3 shadow-sm">
+                <Upload className="size-5 text-primary" />
+                <div className="space-y-1">
+                  <p className="text-sm font-medium text-foreground">
+                    Drop a DOCX file to import
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    Read-only mode blocks editing, but import is still allowed
+                    in the playground.
+                  </p>
+                </div>
+              </div>
+            </div>
+          ) : null}
           <div className="mx-auto flex min-h-full justify-center">
             <div style={{ zoom: zoomScale }}>
               <DocxEditorViewer
                 editor={editor}
                 pageGapBackgroundColor={pageGapBackgroundColor}
-                pageVirtualization={{ enabled: false }}
+                deferInitialPaginationPaint={false}
                 mode={isReadOnly ? "read-only" : "edit"}
                 showTrackedChanges={showTrackedChanges}
                 renderTrackedChangeCard={renderTrackedChangeCard}

@@ -29,6 +29,26 @@ function createTable(rowCount: number): TableNode {
   };
 }
 
+function createCantSplitTable(): TableNode {
+  return {
+    type: "table",
+    rows: [
+      {
+        type: "table-row",
+        style: {
+          cantSplit: true
+        },
+        cells: [
+          {
+            type: "table-cell",
+            nodes: [createParagraph("short row")]
+          }
+        ]
+      }
+    ]
+  };
+}
+
 describe("table pagination draft stability", () => {
   it("uses stable measured heights for imported tables when there is no active draft", () => {
     const nodes: DocModel["nodes"] = [createTable(2)];
@@ -44,11 +64,11 @@ describe("table pagination draft stability", () => {
         }
       )
     ).toEqual({
-      0: [24, 28]
+      0: [24, 32]
     });
   });
 
-  it("clamps untouched import measurements to the DOCX row estimate band", () => {
+  it("preserves untouched import measurements for rows that can split", () => {
     const nodes: DocModel["nodes"] = [
       {
         type: "table",
@@ -87,7 +107,47 @@ describe("table pagination draft stability", () => {
         }
       )
     ).toEqual({
-      0: [28, 28]
+      0: [120, 96]
+    });
+  });
+
+  it("keeps clamping cantSplit rows that still fit on a fresh page", () => {
+    const nodes: DocModel["nodes"] = [createCantSplitTable()];
+
+    expect(
+      resolveTableMeasuredRowHeightsForPagination(
+        nodes,
+        {
+          0: [96]
+        },
+        {
+          allowMeasuredImportPagination: true,
+          pageContentWidthPxByNodeIndex: new Map([[0, 400]]),
+          pageContentHeightPxByNodeIndex: new Map([[0, 240]])
+        }
+      )
+    ).toEqual({
+      0: [28]
+    });
+  });
+
+  it("preserves oversize cantSplit row measurements for pagination", () => {
+    const nodes: DocModel["nodes"] = [createCantSplitTable()];
+
+    expect(
+      resolveTableMeasuredRowHeightsForPagination(
+        nodes,
+        {
+          0: [260]
+        },
+        {
+          allowMeasuredImportPagination: true,
+          pageContentWidthPxByNodeIndex: new Map([[0, 400]]),
+          pageContentHeightPxByNodeIndex: new Map([[0, 120]])
+        }
+      )
+    ).toEqual({
+      0: [260]
     });
   });
 

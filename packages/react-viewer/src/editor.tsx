@@ -240,7 +240,7 @@ const INITIAL_PAGINATION_PAGE_COUNT_OSCILLATION_DISTINCT_THRESHOLD = 2;
 const INITIAL_PAGINATION_PAGE_COUNT_OSCILLATION_CHANGE_THRESHOLD = 4;
 const DEFAULT_PAGE_VIRTUALIZATION_OVERSCAN = 2;
 const DEFAULT_PAGE_VIRTUALIZATION_SETTLE_DELAY_MS = 350;
-const ENABLE_TABLE_ROW_SLICING = false;
+const ENABLE_TABLE_ROW_SLICING = true;
 const TOP_AND_BOTTOM_VERTICAL_DRAG_SNAP_PX = 10;
 const HEADER_FOOTER_INACTIVE_OPACITY = 0.5;
 const LETTERHEAD_INDENT_MIN_TWIPS = 900;
@@ -893,6 +893,7 @@ function reconcileMeasuredTableRowHeightsForImportPagination(
   table: TableNode,
   measuredRowHeights: number[],
   maxAvailableWidthPx?: number,
+  pageContentHeightPx?: number,
   numberingDefinitions?: NumberingDefinitionSet,
   docGridLinePitchPx?: number
 ): number[] | undefined {
@@ -914,6 +915,10 @@ function reconcileMeasuredTableRowHeightsForImportPagination(
     const row = table.rows[rowIndex];
     const normalizedMeasuredHeightPx =
       normalizeMeasuredTableRowHeightPx(heightPx);
+    const normalizedPageContentHeightPx =
+      Number.isFinite(pageContentHeightPx) && (pageContentHeightPx as number) > 0
+        ? Math.max(120, Math.round(pageContentHeightPx as number))
+        : undefined;
     const estimatedHeightPx = Math.max(
       MIN_PARAGRAPH_LINE_HEIGHT_PX,
       Math.round(estimatedRowHeights[rowIndex] ?? MIN_PARAGRAPH_LINE_HEIGHT_PX)
@@ -935,6 +940,14 @@ function reconcileMeasuredTableRowHeightsForImportPagination(
     const explicitMinimumHeightPx =
       normalizedExplicitHeightPx ?? MIN_PARAGRAPH_LINE_HEIGHT_PX;
     if (rowAllowsPageSplit(row) && row.style?.heightRule !== "exact") {
+      return Math.max(explicitMinimumHeightPx, normalizedMeasuredHeightPx);
+    }
+
+    if (
+      Number.isFinite(normalizedPageContentHeightPx) &&
+      normalizedMeasuredHeightPx >
+        (normalizedPageContentHeightPx as number) + PAGE_OVERFLOW_TOLERANCE_PX
+    ) {
       return Math.max(explicitMinimumHeightPx, normalizedMeasuredHeightPx);
     }
 
@@ -962,6 +975,7 @@ export function resolveTableMeasuredRowHeightsForPagination(
     activeDraftKeys?: string[];
     numberingDefinitions?: NumberingDefinitionSet;
     pageContentWidthPxByNodeIndex?: Map<number, number | undefined>;
+    pageContentHeightPxByNodeIndex?: Map<number, number | undefined>;
     docGridLinePitchPxByNodeIndex?: Map<number, number | undefined>;
   }
 ): Record<number, number[]> | undefined {
@@ -1010,6 +1024,7 @@ export function resolveTableMeasuredRowHeightsForPagination(
             tableNode,
             measuredRowHeights,
             options?.pageContentWidthPxByNodeIndex?.get(tableIndex),
+            options?.pageContentHeightPxByNodeIndex?.get(tableIndex),
             options?.numberingDefinitions,
             options?.docGridLinePitchPxByNodeIndex?.get(tableIndex)
           ) ??
@@ -5577,6 +5592,201 @@ function buildParagraphPretextLayoutSource(
   };
 }
 
+function splitParagraphAtExplicitColumnBreaks(
+  paragraph: ParagraphNode
+): ParagraphNode[] | undefined {
+  if (!paragraphHasExplicitColumnBreak(paragraph)) {
+    return undefined;
+  }
+
+  const paragraphChildren: ParagraphNode["children"][] = [];
+  let currentChildren: ParagraphNode["children"] = [];
+  let sawExplicitColumnBreak = false;
+  const appendCurrentSegment = (): void => {
+    paragraphChildren.push(currentChildren);
+    currentChildren = [];
+  };
+
+  for (
+    let childIndex = 0;
+    childIndex < paragraph.children.length;
+    childIndex += 1
+  ) {
+    const child = paragraph.children[childIndex];
+    if (!child) {
+      continue;
+    }
+
+    if (child.type === "text") {
+      if (/^[\r\n]+$/.test(child.text)) {
+        const explicitBreakCount = child.text.replace(/[^\n]/g, "").length;
+        if (explicitBreakCount > 0) {
+          for (
+            let breakIndex = 0;
+            breakIndex < explicitBreakCount;
+            breakIndex += 1
+          ) {
+            sawExplicitColumnBreak = true;
+            appendCurrentSegment();
+          }
+          continue;
+        }
+      }
+
+      currentChildren.push(cloneTextRunWithMetadata(child));
+      continue;
+    }
+
+    if (child.type === "form-field") {
+      currentChildren.push(cloneFormFieldRun(child));
+      continue;
+    }
+
+    return undefined;
+  }
+
+  if (!sawExplicitColumnBreak) {
+    return undefined;
+  }
+
+  appendCurrentSegment();
+
+  return paragraphChildren.map((children, segmentIndex) => {
+    const nextStyle = cloneParagraphStyle(paragraph.style);
+    if (segmentIndex > 0 && nextStyle?.numbering) {
+      nextStyle.numbering = undefined;
+    }
+
+    return {
+      ...paragraph,
+      style: nextStyle,
+      sourceXml: undefined,
+      children:
+        children.length > 0
+          ? children
+          : [
+              {
+                type: "text",
+                text: "",
+              },
+            ],
+    };
+  });
+}
+
+function estimateParagraphContentHeightPx(
+  paragraph: ParagraphNode,
+  availableWidthPx: number,
+  numberingDefinitions?: NumberingDefinitionSet,
+  docGridLinePitchPx?: number
+): number {
+  return Math.max(
+    1,
+    estimateParagraphHeightPx(
+      paragraph,
+      availableWidthPx,
+      numberingDefinitions,
+      docGridLinePitchPx
+    ) -
+      paragraphBeforeSpacingPx(paragraph) -
+      paragraphAfterSpacingPx(paragraph)
+  );
+}
+
+function projectParagraphConsumedHeightWithExplicitColumnBreaks(
+  paragraphSegments: ParagraphNode[],
+  pageConsumedHeightPx: number,
+  pageContentHeightPx: number,
+  sectionFlowOriginPx: number,
+  columnCount: number,
+  availableWidthPx: number,
+  beforeSpacingPx: number,
+  afterSpacingPx: number,
+  collapsedMarginPx: number,
+  numberingDefinitions?: NumberingDefinitionSet,
+  docGridLinePitchPx?: number
+): number | undefined {
+  if (paragraphSegments.length <= 1 || columnCount <= 1) {
+    return undefined;
+  }
+
+  const safeSectionFlowOriginPx = Math.max(
+    0,
+    Math.min(sectionFlowOriginPx, pageContentHeightPx)
+  );
+  const singleColumnHeightPx = Math.max(
+    MIN_PARAGRAPH_LINE_HEIGHT_PX,
+    Math.round(
+      Math.max(
+        MIN_PARAGRAPH_LINE_HEIGHT_PX,
+        pageContentHeightPx - safeSectionFlowOriginPx
+      ) / columnCount
+    )
+  );
+  let projectedConsumedHeightPx = Math.max(0, pageConsumedHeightPx);
+  const firstSegmentTopSpacingPx =
+    pageConsumedHeightPx > 0
+      ? Math.max(0, beforeSpacingPx - collapsedMarginPx)
+      : beforeSpacingPx;
+
+  for (
+    let segmentIndex = 0;
+    segmentIndex < paragraphSegments.length;
+    segmentIndex += 1
+  ) {
+    const segment = paragraphSegments[segmentIndex];
+    const sectionRelativeConsumedHeightPx = Math.max(
+      0,
+      projectedConsumedHeightPx - safeSectionFlowOriginPx
+    );
+    const currentColumnIndex = Math.floor(
+      sectionRelativeConsumedHeightPx / singleColumnHeightPx
+    );
+    if (currentColumnIndex >= columnCount) {
+      return undefined;
+    }
+
+    const offsetWithinColumnPx =
+      sectionRelativeConsumedHeightPx -
+      currentColumnIndex * singleColumnHeightPx;
+    const remainingColumnHeightPx = Math.max(
+      0,
+      singleColumnHeightPx - offsetWithinColumnPx
+    );
+    const topSpacingPx = segmentIndex === 0 ? firstSegmentTopSpacingPx : 0;
+    const bottomSpacingPx =
+      segmentIndex === paragraphSegments.length - 1 ? afterSpacingPx : 0;
+    const segmentHeightPx = estimateParagraphContentHeightPx(
+      segment,
+      availableWidthPx,
+      numberingDefinitions,
+      docGridLinePitchPx
+    );
+    const requiredHeightPx =
+      topSpacingPx + segmentHeightPx + bottomSpacingPx;
+    if (
+      requiredHeightPx >
+      remainingColumnHeightPx + PAGE_OVERFLOW_TOLERANCE_PX
+    ) {
+      return undefined;
+    }
+
+    projectedConsumedHeightPx += requiredHeightPx;
+    if (segmentIndex >= paragraphSegments.length - 1) {
+      continue;
+    }
+
+    const nextColumnIndex = currentColumnIndex + 1;
+    if (nextColumnIndex >= columnCount) {
+      return undefined;
+    }
+    projectedConsumedHeightPx =
+      safeSectionFlowOriginPx + nextColumnIndex * singleColumnHeightPx;
+  }
+
+  return projectedConsumedHeightPx;
+}
+
 function buildSyntheticPretextLayoutSource(
   text: string,
   style?: TextRunNode["style"]
@@ -10043,6 +10253,7 @@ export function buildDocumentPageNodeSegments(
   let pageConsumedHeightPx = 0;
   let previousParagraphAfterPx = 0;
   let currentMetricsIndex = 0;
+  let currentSectionPageFlowOriginPx = 0;
   let currentPageContentHeightPx = resolveMetricsPageContentHeightPx(
     0,
     metricsBySection[0]
@@ -10092,6 +10303,7 @@ export function buildDocumentPageNodeSegments(
         currentPageIndex,
         nodeMetrics
       );
+      currentSectionPageFlowOriginPx = pageConsumedHeightPx;
     }
 
     if (
@@ -10101,6 +10313,7 @@ export function buildDocumentPageNodeSegments(
       startNextPage();
       pageConsumedHeightPx = 0;
       previousParagraphAfterPx = 0;
+      currentSectionPageFlowOriginPx = 0;
       currentPageContentHeightPx = resolveMetricsPageContentHeightPx(
         currentPageIndex,
         nodeMetrics
@@ -10178,6 +10391,7 @@ export function buildDocumentPageNodeSegments(
         startNextPage();
         pageConsumedHeightPx = 0;
         previousParagraphAfterPx = 0;
+        currentSectionPageFlowOriginPx = 0;
         currentPageContentHeightPx = resolveMetricsPageContentHeightPx(
           currentPageIndex,
           nodeMetrics
@@ -10188,6 +10402,7 @@ export function buildDocumentPageNodeSegments(
         startNextPage();
         pageConsumedHeightPx = 0;
         previousParagraphAfterPx = 0;
+        currentSectionPageFlowOriginPx = 0;
         currentPageContentHeightPx = resolveMetricsPageContentHeightPx(
           currentPageIndex,
           nodeMetrics
@@ -10203,6 +10418,7 @@ export function buildDocumentPageNodeSegments(
         startNextPage();
         pageConsumedHeightPx = 0;
         previousParagraphAfterPx = 0;
+        currentSectionPageFlowOriginPx = 0;
         currentPageContentHeightPx = resolveMetricsPageContentHeightPx(
           currentPageIndex,
           nodeMetrics
@@ -10262,6 +10478,7 @@ export function buildDocumentPageNodeSegments(
         startNextPage();
         pageConsumedHeightPx = 0;
         previousParagraphAfterPx = 0;
+        currentSectionPageFlowOriginPx = 0;
         currentPageContentHeightPx = resolveMetricsPageContentHeightPx(
           currentPageIndex,
           nodeMetrics
@@ -10323,6 +10540,68 @@ export function buildDocumentPageNodeSegments(
         (paragraphPretextLineCount as number) > 0
           ? Math.max(1, Math.round(paragraphPretextLineCount as number))
           : paragraphLineCount;
+      const explicitColumnBreakParagraphSegments =
+        (nodeMetrics.pageContentHeightMultiplier ?? 1) > 1
+          ? splitParagraphAtExplicitColumnBreaks(node)
+          : undefined;
+      const tryConsumeExplicitColumnBreakParagraph = (): boolean => {
+        if (
+          !explicitColumnBreakParagraphSegments ||
+          explicitColumnBreakParagraphSegments.length <= 1
+        ) {
+          return false;
+        }
+
+        const projectedConsumedHeightPx =
+          projectParagraphConsumedHeightWithExplicitColumnBreaks(
+            explicitColumnBreakParagraphSegments,
+            pageConsumedHeightPx,
+            currentPageContentHeightPx,
+            currentSectionPageFlowOriginPx,
+            Math.max(
+              1,
+              Math.round(nodeMetrics.pageContentHeightMultiplier ?? 1)
+            ),
+            nodeMetrics.pageContentWidthPx,
+            beforeSpacingPx,
+            afterSpacingPx,
+            collapsedMarginPx,
+            numberingDefinitions,
+            nodeMetrics.docGridLinePitchPx
+          );
+        if (!Number.isFinite(projectedConsumedHeightPx)) {
+          return false;
+        }
+
+        currentPageSegments.push({ nodeIndex });
+        pageConsumedHeightPx = Math.max(
+          pageConsumedHeightPx,
+          Math.round(projectedConsumedHeightPx as number)
+        );
+        previousParagraphAfterPx = afterSpacingPx;
+        return true;
+      };
+      if (tryConsumeExplicitColumnBreakParagraph()) {
+        continue;
+      }
+      if (
+        explicitColumnBreakParagraphSegments &&
+        explicitColumnBreakParagraphSegments.length > 1 &&
+        pageConsumedHeightPx > 0 &&
+        currentPageSegments.length > 0
+      ) {
+        startNextPage();
+        pageConsumedHeightPx = 0;
+        previousParagraphAfterPx = 0;
+        currentSectionPageFlowOriginPx = 0;
+        currentPageContentHeightPx = resolveMetricsPageContentHeightPx(
+          currentPageIndex,
+          nodeMetrics
+        );
+        if (tryConsumeExplicitColumnBreakParagraph()) {
+          continue;
+        }
+      }
       const widowControlEnabled = paragraphWidowControlEnabled(node);
       const minLinesPerSegment = widowControlEnabled ? 2 : 1;
       const canSplitParagraphAcrossPages =
@@ -10416,6 +10695,7 @@ export function buildDocumentPageNodeSegments(
               startNextPage();
               pageConsumedHeightPx = 0;
               previousParagraphAfterPx = 0;
+              currentSectionPageFlowOriginPx = 0;
               currentPageContentHeightPx = resolveMetricsPageContentHeightPx(
                 currentPageIndex,
                 nodeMetrics
@@ -10486,6 +10766,7 @@ export function buildDocumentPageNodeSegments(
             startNextPage();
             pageConsumedHeightPx = 0;
             previousParagraphAfterPx = 0;
+            currentSectionPageFlowOriginPx = 0;
             currentPageContentHeightPx = resolveMetricsPageContentHeightPx(
               currentPageIndex,
               nodeMetrics
@@ -10609,6 +10890,7 @@ export function buildDocumentPageNodeSegments(
         startNextPage();
         pageConsumedHeightPx = 0;
         previousParagraphAfterPx = 0;
+        currentSectionPageFlowOriginPx = 0;
         currentPageContentHeightPx = resolveMetricsPageContentHeightPx(
           currentPageIndex,
           nodeMetrics
@@ -10667,6 +10949,7 @@ export function buildDocumentPageNodeSegments(
       startNextPage();
       pageConsumedHeightPx = 0;
       previousParagraphAfterPx = 0;
+      currentSectionPageFlowOriginPx = 0;
       currentPageContentHeightPx = resolveMetricsPageContentHeightPx(
         currentPageIndex,
         nodeMetrics
@@ -10714,6 +10997,7 @@ export function buildDocumentPageNodeSegments(
         startNextPage();
         pageConsumedHeightPx = 0;
         previousParagraphAfterPx = 0;
+        currentSectionPageFlowOriginPx = 0;
         currentPageContentHeightPx = resolveMetricsPageContentHeightPx(
           currentPageIndex,
           nodeMetrics
@@ -10729,6 +11013,7 @@ export function buildDocumentPageNodeSegments(
           startNextPage();
           pageConsumedHeightPx = 0;
           previousParagraphAfterPx = 0;
+          currentSectionPageFlowOriginPx = 0;
           currentPageContentHeightPx = resolveMetricsPageContentHeightPx(
             currentPageIndex,
             nodeMetrics
@@ -10778,6 +11063,7 @@ export function buildDocumentPageNodeSegments(
           startNextPage();
           pageConsumedHeightPx = 0;
           previousParagraphAfterPx = 0;
+          currentSectionPageFlowOriginPx = 0;
           currentPageContentHeightPx = resolveMetricsPageContentHeightPx(
             currentPageIndex,
             nodeMetrics
@@ -10787,8 +11073,37 @@ export function buildDocumentPageNodeSegments(
       }
 
       if (rowSliceOffsetPx > 0) {
+        currentPageSegments.push({
+          nodeIndex,
+          tableRowRange: {
+            startRowIndex: rowStartIndex,
+            endRowIndex: Math.min(
+              estimatedRowHeightsPx.length,
+              rowStartIndex + 1
+            ),
+          },
+          tableRowSlice: {
+            rowIndex: rowStartIndex,
+            startOffsetPx: rowSliceOffsetPx,
+            sliceHeightPx: currentRowRemainingHeightPx,
+            totalRowHeightPx: currentRowTotalHeightPx,
+          },
+        });
+        pageConsumedHeightPx += currentRowRemainingHeightPx;
+        previousParagraphAfterPx = 0;
         rowStartIndex += 1;
         rowSliceOffsetPx = 0;
+
+        if (rowStartIndex < estimatedRowHeightsPx.length) {
+          startNextPage();
+          pageConsumedHeightPx = 0;
+          previousParagraphAfterPx = 0;
+          currentSectionPageFlowOriginPx = 0;
+          currentPageContentHeightPx = resolveMetricsPageContentHeightPx(
+            currentPageIndex,
+            nodeMetrics
+          );
+        }
         continue;
       }
 
@@ -10811,6 +11126,7 @@ export function buildDocumentPageNodeSegments(
           startNextPage();
           pageConsumedHeightPx = 0;
           previousParagraphAfterPx = 0;
+          currentSectionPageFlowOriginPx = 0;
           currentPageContentHeightPx = resolveMetricsPageContentHeightPx(
             currentPageIndex,
             nodeMetrics
@@ -10843,6 +11159,7 @@ export function buildDocumentPageNodeSegments(
           startNextPage();
           pageConsumedHeightPx = 0;
           previousParagraphAfterPx = 0;
+          currentSectionPageFlowOriginPx = 0;
           currentPageContentHeightPx = resolveMetricsPageContentHeightPx(
             currentPageIndex,
             nodeMetrics
@@ -10876,6 +11193,7 @@ export function buildDocumentPageNodeSegments(
         startNextPage();
         pageConsumedHeightPx = 0;
         previousParagraphAfterPx = 0;
+        currentSectionPageFlowOriginPx = 0;
         currentPageContentHeightPx = resolveMetricsPageContentHeightPx(
           currentPageIndex,
           nodeMetrics
@@ -16532,30 +16850,10 @@ export function buildParagraphNumberingLabels(
     ])
   );
   const countersByNumId = new Map<number, Array<number | undefined>>();
-  const headingCountersByAbstractNumId = new Map<
+  const abstractCountersByAbstractNumId = new Map<
     number,
     Array<number | undefined>
   >();
-
-  const isHeadingLikeParagraph = (paragraph: ParagraphNode): boolean => {
-    if (Number.isFinite(paragraph.style?.headingLevel)) {
-      return true;
-    }
-
-    if (isTableOfContentsParagraph(paragraph)) {
-      return true;
-    }
-
-    const styleId = paragraph.style?.styleId?.trim().toLowerCase();
-    if (!styleId) {
-      return false;
-    }
-
-    return (
-      /(?:^|[\s_-])heading(?:[\s_-]?\d+)?$/.test(styleId) ||
-      /^heading\d*$/.test(styleId)
-    );
-  };
 
   const registerParagraph = (paragraph: ParagraphNode, key: string): void => {
     const paragraphNumbering = paragraph.style?.numbering;
@@ -16570,7 +16868,6 @@ export function buildParagraphNumberingLabels(
     const level = findNumberingLevelDefinition(numbering, numId, ilvl);
     const numberingInstance = numberingInstanceByNumId.get(numId);
     const abstractNumId = numberingInstance?.abstractNumId;
-    const isSharedCounterParagraph = isHeadingLikeParagraph(paragraph);
     const template = level?.text ?? `%${ilvl + 1}.`;
     if (!template || template.trim().length === 0) {
       return;
@@ -16578,8 +16875,8 @@ export function buildParagraphNumberingLabels(
 
     const counters = countersByNumId.get(numId) ?? [];
     const sharedAbstractCounters =
-      isSharedCounterParagraph && Number.isFinite(abstractNumId)
-        ? headingCountersByAbstractNumId.get(abstractNumId as number) ?? []
+      Number.isFinite(abstractNumId)
+        ? abstractCountersByAbstractNumId.get(abstractNumId as number) ?? []
         : undefined;
     let parentCountersChanged = false;
     for (let index = 0; index < ilvl; index += 1) {
@@ -16623,7 +16920,7 @@ export function buildParagraphNumberingLabels(
       ) {
         sharedAbstractCounters[index] = undefined;
       }
-      headingCountersByAbstractNumId.set(
+      abstractCountersByAbstractNumId.set(
         abstractNumId as number,
         sharedAbstractCounters
       );
@@ -28498,6 +28795,41 @@ export function DocxEditorViewer({
 
     return widthByNodeIndex;
   }, [editor.model.nodes, paginationSectionMetrics]);
+  const pageContentHeightPxByNodeIndex = React.useMemo(() => {
+    const heightByNodeIndex = new Map<number, number | undefined>();
+    if (
+      editor.model.nodes.length === 0 ||
+      paginationSectionMetrics.length === 0
+    ) {
+      return heightByNodeIndex;
+    }
+
+    let currentMetricsIndex = 0;
+    for (
+      let nodeIndex = 0;
+      nodeIndex < editor.model.nodes.length;
+      nodeIndex += 1
+    ) {
+      currentMetricsIndex = resolvePaginationSectionMetricsIndexForNodeIndex(
+        paginationSectionMetrics,
+        nodeIndex,
+        currentMetricsIndex
+      );
+      const pageContentHeightPx =
+        paginationSectionMetrics[currentMetricsIndex]?.pageContentHeightPx;
+      if (
+        Number.isFinite(pageContentHeightPx) &&
+        (pageContentHeightPx as number) > 0
+      ) {
+        heightByNodeIndex.set(
+          nodeIndex,
+          Math.round(pageContentHeightPx as number)
+        );
+      }
+    }
+
+    return heightByNodeIndex;
+  }, [editor.model.nodes, paginationSectionMetrics]);
   const sectionColumnsBySectionIndex = React.useMemo(
     () =>
       documentSections.map((section) =>
@@ -28551,6 +28883,7 @@ export function DocxEditorViewer({
         activeDraftKeys,
         numberingDefinitions: editor.model.metadata.numberingDefinitions,
         pageContentWidthPxByNodeIndex,
+        pageContentHeightPxByNodeIndex,
         docGridLinePitchPxByNodeIndex,
       }
     );
@@ -28560,6 +28893,7 @@ export function DocxEditorViewer({
     editor.canUndo,
     editor.model.metadata.numberingDefinitions,
     editor.model.nodes,
+    pageContentHeightPxByNodeIndex,
     pageContentWidthPxByNodeIndex,
     disableMeasuredImportPagination,
     tableDraftLayoutEpoch,
@@ -29305,6 +29639,14 @@ export function DocxEditorViewer({
     React.useState(false);
   const [internalVirtualScrollElement, setInternalVirtualScrollElement] =
     React.useState<HTMLElement | null>(null);
+  const [observedVisiblePageRange, setObservedVisiblePageRange] =
+    React.useState<
+      | {
+          startPageIndex: number;
+          endPageIndex: number;
+        }
+      | undefined
+    >(undefined);
   const pageVirtualizationSettleDelayMs = Math.max(
     0,
     Math.round(
@@ -29413,8 +29755,139 @@ export function DocxEditorViewer({
       endPageIndex,
     };
   }, [internalPageVirtualizationEnabled, internalVirtualItems, pageCount]);
+  React.useLayoutEffect(() => {
+    if (
+      !internalPageVirtualizationEnabled ||
+      !internalVirtualScrollElement ||
+      typeof window === "undefined"
+    ) {
+      setObservedVisiblePageRange((current) =>
+        current === undefined ? current : undefined
+      );
+      return;
+    }
+
+    const rootElement = viewerRootRef.current;
+    if (!rootElement) {
+      setObservedVisiblePageRange((current) =>
+        current === undefined ? current : undefined
+      );
+      return;
+    }
+
+    let frameId: number | null = null;
+    const syncVisiblePageRange = (): void => {
+      frameId = null;
+
+      const viewportRect = internalVirtualScrollElement.getBoundingClientRect();
+      const pageWrappers = rootElement.querySelectorAll<HTMLElement>(
+        '[data-docx-page-wrapper="true"][data-index]'
+      );
+
+      let firstVisiblePageIndex: number | undefined;
+      let lastVisiblePageIndex: number | undefined;
+      for (const pageWrapper of pageWrappers) {
+        const rawPageIndex = pageWrapper.getAttribute("data-index");
+        const pageIndex = Number.parseInt(rawPageIndex ?? "", 10);
+        if (!Number.isFinite(pageIndex)) {
+          continue;
+        }
+
+        const pageRect = pageWrapper.getBoundingClientRect();
+        if (pageRect.bottom <= viewportRect.top) {
+          continue;
+        }
+        if (pageRect.top >= viewportRect.bottom) {
+          if (firstVisiblePageIndex !== undefined) {
+            break;
+          }
+          continue;
+        }
+
+        if (firstVisiblePageIndex === undefined) {
+          firstVisiblePageIndex = pageIndex;
+        }
+        lastVisiblePageIndex = pageIndex;
+      }
+
+      if (
+        firstVisiblePageIndex === undefined ||
+        lastVisiblePageIndex === undefined
+      ) {
+        setObservedVisiblePageRange((current) =>
+          current === undefined ? current : undefined
+        );
+        return;
+      }
+
+      const startPageIndex = clampNumber(
+        firstVisiblePageIndex - pageVirtualizationOverscan,
+        0,
+        pageCount - 1
+      );
+      const endPageIndex = clampNumber(
+        lastVisiblePageIndex + pageVirtualizationOverscan,
+        startPageIndex,
+        pageCount - 1
+      );
+
+      setObservedVisiblePageRange((current) => {
+        if (
+          current?.startPageIndex === startPageIndex &&
+          current?.endPageIndex === endPageIndex
+        ) {
+          return current;
+        }
+        return {
+          startPageIndex,
+          endPageIndex,
+        };
+      });
+    };
+
+    const scheduleVisiblePageRangeSync = (): void => {
+      if (frameId !== null) {
+        return;
+      }
+      frameId = window.requestAnimationFrame(syncVisiblePageRange);
+    };
+
+    const resizeObserver =
+      typeof ResizeObserver === "function"
+        ? new ResizeObserver(() => {
+            scheduleVisiblePageRangeSync();
+          })
+        : undefined;
+
+    resizeObserver?.observe(internalVirtualScrollElement);
+    resizeObserver?.observe(rootElement);
+    internalVirtualScrollElement.addEventListener(
+      "scroll",
+      scheduleVisiblePageRangeSync,
+      { passive: true }
+    );
+    window.addEventListener("resize", scheduleVisiblePageRangeSync);
+    scheduleVisiblePageRangeSync();
+
+    return () => {
+      internalVirtualScrollElement.removeEventListener(
+        "scroll",
+        scheduleVisiblePageRangeSync
+      );
+      window.removeEventListener("resize", scheduleVisiblePageRangeSync);
+      resizeObserver?.disconnect();
+      if (frameId !== null) {
+        window.cancelAnimationFrame(frameId);
+      }
+    };
+  }, [
+    internalPageVirtualizationEnabled,
+    internalVirtualScrollElement,
+    pageCount,
+    pageVirtualizationOverscan,
+  ]);
   const effectiveVisiblePageRange =
-    visiblePageRange ?? internalVisiblePageRange;
+    visiblePageRange ?? observedVisiblePageRange ?? internalVisiblePageRange;
   const normalizedVisiblePageRange = React.useMemo(() => {
     if (pageCount <= 0) {
       return {
@@ -41600,6 +42073,11 @@ export function DocxEditorViewer({
     pageLayout?: DocumentLayoutMetrics;
     pageFlowTopPx?: number;
     suppressLikelyFullPageCoverImageKeys?: Set<string>;
+    forceReadOnly?: boolean;
+    suppressParagraphElementTracking?: boolean;
+    syntheticKeySuffix?: string;
+    overrideBeforeSpacingPx?: number;
+    overrideAfterSpacingPx?: number;
   }
 
   const renderDocumentNode = (
@@ -41661,9 +42139,12 @@ export function DocxEditorViewer({
       const paragraphHasActiveEditableSegment =
         activeEditableParagraphSegment?.nodeIndex === nodeIndex;
       const shouldTrackParagraphElement =
-        !hasPartialLineRange ||
-        paragraphSegmentIsActiveEditable ||
-        (!paragraphHasActiveEditableSegment && paragraphSegmentStartLine === 0);
+        options?.suppressParagraphElementTracking === true
+          ? false
+          : !hasPartialLineRange ||
+            paragraphSegmentIsActiveEditable ||
+            (!paragraphHasActiveEditableSegment &&
+              paragraphSegmentStartLine === 0);
       const isManualPageBreakParagraph = paragraphIsOnlyExplicitPageBreak(node);
       const paragraphContentWidthPx = nodeContentWidthPx;
       const paragraphRenderTextWidthPx = paragraphAvailableTextWidthPx(
@@ -41814,9 +42295,20 @@ export function DocxEditorViewer({
             )}
           </span>
         ) : undefined;
+      const resolvedBeforeSpacingPx = Number.isFinite(
+        options?.overrideBeforeSpacingPx
+      )
+        ? Math.max(0, Math.round(options?.overrideBeforeSpacingPx as number))
+        : undefined;
+      const resolvedAfterSpacingPx = Number.isFinite(
+        options?.overrideAfterSpacingPx
+      )
+        ? Math.max(0, Math.round(options?.overrideAfterSpacingPx as number))
+        : undefined;
       const editable =
         !hasImage &&
         !isReadOnly &&
+        options?.forceReadOnly !== true &&
         (!hasPartialLineRange || paragraphSegmentIsActiveEditable) &&
         !isManualPageBreakParagraph;
       const resolvedPageLayout = options?.pageLayout ?? documentLayout;
@@ -41907,11 +42399,24 @@ export function DocxEditorViewer({
         ...baseParagraphStyle,
         ...(hasPartialLineRange
           ? {
-              marginTop: paragraphSegmentStartLine === 0 ? beforeSpacingPx : 0,
+              marginTop:
+                paragraphSegmentStartLine === 0
+                  ? (resolvedBeforeSpacingPx ?? beforeSpacingPx)
+                  : 0,
               marginBottom:
                 paragraphSegmentEndLine >= paragraphSegmentTotalLines
-                  ? afterSpacingPx
+                  ? (resolvedAfterSpacingPx ?? afterSpacingPx)
                   : 0,
+            }
+          : resolvedBeforeSpacingPx !== undefined ||
+            resolvedAfterSpacingPx !== undefined
+          ? {
+              ...(resolvedBeforeSpacingPx !== undefined
+                ? { marginTop: resolvedBeforeSpacingPx }
+                : undefined),
+              ...(resolvedAfterSpacingPx !== undefined
+                ? { marginBottom: resolvedAfterSpacingPx }
+                : undefined),
             }
           : undefined),
         ...(letterheadStyleAdjustments ?? undefined),
@@ -42042,8 +42547,16 @@ export function DocxEditorViewer({
         <div
           key={
             paragraphLineRange
-              ? `epoch-${paragraphStructureEpoch}-node-${nodeIndex}-lines-${paragraphSegmentStartLine}-${paragraphSegmentEndLine}`
-              : `epoch-${paragraphStructureEpoch}-node-${nodeIndex}`
+              ? `epoch-${paragraphStructureEpoch}-node-${nodeIndex}-lines-${paragraphSegmentStartLine}-${paragraphSegmentEndLine}${
+                  options?.syntheticKeySuffix
+                    ? `-${options.syntheticKeySuffix}`
+                    : ""
+                }`
+              : `epoch-${paragraphStructureEpoch}-node-${nodeIndex}${
+                  options?.syntheticKeySuffix
+                    ? `-${options.syntheticKeySuffix}`
+                    : ""
+                }`
           }
           data-docx-paragraph-host="true"
           data-docx-paragraph-kind="paragraph"
@@ -46859,6 +47372,66 @@ export function DocxEditorViewer({
                           editor.model.nodes[columnSegment.nodeIndex];
                         if (!columnNode) {
                           return null;
+                        }
+
+                        const explicitColumnBreakParagraphSegments =
+                          columnNode.type === "paragraph" &&
+                          !columnSegment.tableRowRange &&
+                          !columnSegment.tableRowSlice &&
+                          !columnSegment.paragraphLineRange &&
+                          !explicitColumnWidthsPx &&
+                          sectionColumns.count > 1
+                            ? splitParagraphAtExplicitColumnBreaks(columnNode)
+                            : undefined;
+                        if (
+                          explicitColumnBreakParagraphSegments &&
+                          explicitColumnBreakParagraphSegments.length > 1
+                        ) {
+                          return (
+                            <React.Fragment>
+                              {explicitColumnBreakParagraphSegments.map(
+                                (segmentParagraph, segmentIndex) => {
+                                  const isLastSegment =
+                                    segmentIndex >=
+                                    explicitColumnBreakParagraphSegments.length -
+                                      1;
+                                  return (
+                                    <div
+                                      key={`column-layout-node-${pageIndex}-${columnSegment.nodeIndex}-column-break-${segmentIndex}`}
+                                      style={
+                                        segmentIndex > 0
+                                          ? { breakBefore: "column" }
+                                          : undefined
+                                      }
+                                    >
+                                      {renderDocumentNode(
+                                        segmentParagraph,
+                                        columnSegment.nodeIndex,
+                                        undefined,
+                                        undefined,
+                                        undefined,
+                                        {
+                                          pageLayout,
+                                          contentWidthPxOverride:
+                                            columnContentWidthPx,
+                                          suppressLikelyFullPageCoverImageKeys:
+                                            suppressedLikelyFullPageCoverImageKeys,
+                                          forceReadOnly: true,
+                                          suppressParagraphElementTracking:
+                                            segmentIndex > 0,
+                                          syntheticKeySuffix: `column-break-${segmentIndex}`,
+                                          overrideBeforeSpacingPx:
+                                            segmentIndex === 0 ? undefined : 0,
+                                          overrideAfterSpacingPx:
+                                            isLastSegment ? undefined : 0,
+                                        }
+                                      )}
+                                    </div>
+                                  );
+                                }
+                              )}
+                            </React.Fragment>
+                          );
                         }
 
                         const renderedNode = renderDocumentNode(

@@ -201,6 +201,106 @@ describe("paragraph indent wrapping", () => {
     ).toBe(3);
   });
 
+  it("inherits parent numbering counters across numIds that share an abstract list", () => {
+    const numberingDefinitions: NumberingDefinitionSet = {
+      abstracts: [
+        {
+          abstractNumId: 31,
+          levels: [
+            {
+              ilvl: 0,
+              format: "decimal",
+              text: "%1.",
+            },
+            {
+              ilvl: 1,
+              format: "decimal",
+              text: "%1.%2.",
+            },
+            {
+              ilvl: 2,
+              format: "decimal",
+              text: "%1.%2.%3.",
+            },
+          ],
+        },
+      ],
+      instances: [
+        {
+          numId: 1,
+          abstractNumId: 31,
+          levelStartOverrides: {
+            "0": 2,
+            "1": 3,
+          },
+        },
+        {
+          numId: 45,
+          abstractNumId: 31,
+        },
+      ],
+    };
+    const model: DocModel = {
+      nodes: [
+        {
+          type: "paragraph",
+          style: {
+            numbering: {
+              numId: 1,
+              ilvl: 0,
+            },
+          },
+          children: [{ type: "text", text: "Section" }],
+        },
+        {
+          type: "paragraph",
+          style: {
+            numbering: {
+              numId: 1,
+              ilvl: 1,
+            },
+          },
+          children: [{ type: "text", text: "Subsection" }],
+        },
+        {
+          type: "paragraph",
+          style: {
+            numbering: {
+              numId: 45,
+              ilvl: 2,
+            },
+          },
+          children: [{ type: "text", text: "Formula A" }],
+        },
+        {
+          type: "paragraph",
+          style: {
+            numbering: {
+              numId: 45,
+              ilvl: 2,
+            },
+          },
+          children: [{ type: "text", text: "Formula B" }],
+        },
+      ],
+      metadata: {
+        sourceParts: 1,
+        warnings: [],
+        headerSections: [],
+        footerSections: [],
+        paragraphStyles: [],
+        numberingDefinitions,
+      },
+    };
+
+    const labels = buildParagraphNumberingLabels(model);
+
+    expect(labels.get("p:0")?.text).toBe("2.");
+    expect(labels.get("p:1")?.text).toBe("2.3.");
+    expect(labels.get("p:2")?.text).toBe("2.3.1.");
+    expect(labels.get("p:3")?.text).toBe("2.3.2.");
+  });
+
   it("uses numbering label width when segmenting pages for numbered paragraphs", () => {
     const createModel = (start: number): DocModel => ({
       nodes: [
