@@ -232,6 +232,7 @@ const LEADING_COVER_SPACER_EXTRA_HEIGHT_PX = 2;
 const PARAGRAPH_SEGMENT_TOP_BLEED_PX = 22;
 const PARAGRAPH_SEGMENT_DESCENDER_BLEED_PX = 6;
 const PARAGRAPH_SEGMENT_VISUAL_SAFETY_PX = 24;
+const EXPLICIT_COLUMN_BREAK_PAGINATION_FUZZ_PX = 32;
 const PARAGRAPH_SEGMENT_FALLBACK_TOP_BLEED_MAX_PX = 4;
 const PARAGRAPH_SEGMENT_FALLBACK_BOTTOM_BLEED_MAX_PX = 0;
 const PARAGRAPH_SEGMENT_FALLBACK_VISUAL_SAFETY_PX = 4;
@@ -916,7 +917,8 @@ function reconcileMeasuredTableRowHeightsForImportPagination(
     const normalizedMeasuredHeightPx =
       normalizeMeasuredTableRowHeightPx(heightPx);
     const normalizedPageContentHeightPx =
-      Number.isFinite(pageContentHeightPx) && (pageContentHeightPx as number) > 0
+      Number.isFinite(pageContentHeightPx) &&
+      (pageContentHeightPx as number) > 0
         ? Math.max(120, Math.round(pageContentHeightPx as number))
         : undefined;
     const estimatedHeightPx = Math.max(
@@ -2414,7 +2416,8 @@ export function stabilizeMeasuredPageContentHeights(
   return next.map((heightPx, pageIndex) => {
     const roundedNextHeightPx = Math.round(heightPx);
     const currentHeightPx = current[pageIndex];
-    const currentPageIdentityKey = options?.currentPageIdentityKeys?.[pageIndex];
+    const currentPageIdentityKey =
+      options?.currentPageIdentityKeys?.[pageIndex];
     const nextPageIdentityKey = options?.nextPageIdentityKeys?.[pageIndex];
     const canPreserveConservativeHeight =
       currentPageIdentityKey === undefined ||
@@ -3828,7 +3831,10 @@ export interface DocxPageThumbnailItem extends DocxPageThumbnailResolution {
 }
 
 export interface UseDocxPageThumbnailsResult {
-  paintThumbnail: (pageIndex: number, canvas: HTMLCanvasElement | null) => boolean;
+  paintThumbnail: (
+    pageIndex: number,
+    canvas: HTMLCanvasElement | null
+  ) => boolean;
   thumbnails: DocxPageThumbnailItem[];
   rerenderAttachedThumbnails: () => Promise<void>;
 }
@@ -5680,6 +5686,19 @@ function estimateParagraphContentHeightPx(
   numberingDefinitions?: NumberingDefinitionSet,
   docGridLinePitchPx?: number
 ): number {
+  if (!paragraphHasImage(paragraph) && !paragraphHasFormField(paragraph)) {
+    const lineHeightPx = estimateParagraphLineHeightPx(
+      paragraph,
+      docGridLinePitchPx
+    );
+    const lineCount = paragraphLineCountWithinWidth(
+      paragraph,
+      availableWidthPx,
+      numberingDefinitions
+    );
+    return Math.max(1, lineHeightPx * Math.max(1, lineCount));
+  }
+
   return Math.max(
     1,
     estimateParagraphHeightPx(
@@ -5710,78 +5729,55 @@ function projectParagraphConsumedHeightWithExplicitColumnBreaks(
     return undefined;
   }
 
-  const safeSectionFlowOriginPx = Math.max(
+  const normalizedParagraphStartPx = Math.max(
     0,
-    Math.min(sectionFlowOriginPx, pageContentHeightPx)
+    Math.max(pageConsumedHeightPx, sectionFlowOriginPx)
   );
-  const singleColumnHeightPx = Math.max(
-    MIN_PARAGRAPH_LINE_HEIGHT_PX,
-    Math.round(
-      Math.max(
-        MIN_PARAGRAPH_LINE_HEIGHT_PX,
-        pageContentHeightPx - safeSectionFlowOriginPx
-      ) / columnCount
-    )
-  );
-  let projectedConsumedHeightPx = Math.max(0, pageConsumedHeightPx);
   const firstSegmentTopSpacingPx =
     pageConsumedHeightPx > 0
       ? Math.max(0, beforeSpacingPx - collapsedMarginPx)
       : beforeSpacingPx;
+  const tallestSegmentHeightPx = paragraphSegments.reduce(
+    (tallest, segment) => {
+      return Math.max(
+        tallest,
+        estimateParagraphContentHeightPx(
+          segment,
+          availableWidthPx,
+          numberingDefinitions,
+          docGridLinePitchPx
+        )
+      );
+    },
+    0
+  );
+  const projectedConsumedHeightPx =
+    normalizedParagraphStartPx +
+    firstSegmentTopSpacingPx +
+    tallestSegmentHeightPx +
+    afterSpacingPx;
+  const sectionFlowCapacityPx = Math.max(
+    0,
+    pageContentHeightPx - sectionFlowOriginPx
+  );
+  const sectionConsumedPx = Math.max(
+    0,
+    pageConsumedHeightPx - sectionFlowOriginPx
+  );
+  const remainingColumnHeightPx = Math.max(
+    0,
+    sectionFlowCapacityPx / columnCount - sectionConsumedPx
+  );
 
-  for (
-    let segmentIndex = 0;
-    segmentIndex < paragraphSegments.length;
-    segmentIndex += 1
+  if (
+    projectedConsumedHeightPx - pageConsumedHeightPx >
+    remainingColumnHeightPx +
+      Math.max(
+        PAGE_OVERFLOW_TOLERANCE_PX,
+        EXPLICIT_COLUMN_BREAK_PAGINATION_FUZZ_PX
+      )
   ) {
-    const segment = paragraphSegments[segmentIndex];
-    const sectionRelativeConsumedHeightPx = Math.max(
-      0,
-      projectedConsumedHeightPx - safeSectionFlowOriginPx
-    );
-    const currentColumnIndex = Math.floor(
-      sectionRelativeConsumedHeightPx / singleColumnHeightPx
-    );
-    if (currentColumnIndex >= columnCount) {
-      return undefined;
-    }
-
-    const offsetWithinColumnPx =
-      sectionRelativeConsumedHeightPx -
-      currentColumnIndex * singleColumnHeightPx;
-    const remainingColumnHeightPx = Math.max(
-      0,
-      singleColumnHeightPx - offsetWithinColumnPx
-    );
-    const topSpacingPx = segmentIndex === 0 ? firstSegmentTopSpacingPx : 0;
-    const bottomSpacingPx =
-      segmentIndex === paragraphSegments.length - 1 ? afterSpacingPx : 0;
-    const segmentHeightPx = estimateParagraphContentHeightPx(
-      segment,
-      availableWidthPx,
-      numberingDefinitions,
-      docGridLinePitchPx
-    );
-    const requiredHeightPx =
-      topSpacingPx + segmentHeightPx + bottomSpacingPx;
-    if (
-      requiredHeightPx >
-      remainingColumnHeightPx + PAGE_OVERFLOW_TOLERANCE_PX
-    ) {
-      return undefined;
-    }
-
-    projectedConsumedHeightPx += requiredHeightPx;
-    if (segmentIndex >= paragraphSegments.length - 1) {
-      continue;
-    }
-
-    const nextColumnIndex = currentColumnIndex + 1;
-    if (nextColumnIndex >= columnCount) {
-      return undefined;
-    }
-    projectedConsumedHeightPx =
-      safeSectionFlowOriginPx + nextColumnIndex * singleColumnHeightPx;
+    return undefined;
   }
 
   return projectedConsumedHeightPx;
@@ -10412,6 +10408,7 @@ export function buildDocumentPageNodeSegments(
       if (
         preferLastRenderedParagraphStartBreaks &&
         paragraphStartsWithLastRenderedPageBreak(node) &&
+        (nodeMetrics.pageContentHeightMultiplier ?? 1) <= 1 &&
         !nodeAlreadyEndsAtExplicitPageBoundary(model.nodes[nodeIndex - 1]) &&
         currentPageSegments.length > 0
       ) {
@@ -15846,7 +15843,10 @@ function renderParagraphRuns(
         (() => {
           const cropLayout = imageCropLayout(child, widthPx, heightPx);
           const imageVisualStyle: React.CSSProperties = {
-            filter: appendCssFilters(child.cssFilter, options?.imageFilterSuffix),
+            filter: appendCssFilters(
+              child.cssFilter,
+              options?.imageFilterSuffix
+            ),
             opacity: child.cssOpacity,
           };
           const imageTransformStyle = resolveImageRenderTransformStyle(child, {
@@ -16874,10 +16874,9 @@ export function buildParagraphNumberingLabels(
     }
 
     const counters = countersByNumId.get(numId) ?? [];
-    const sharedAbstractCounters =
-      Number.isFinite(abstractNumId)
-        ? abstractCountersByAbstractNumId.get(abstractNumId as number) ?? []
-        : undefined;
+    const sharedAbstractCounters = Number.isFinite(abstractNumId)
+      ? abstractCountersByAbstractNumId.get(abstractNumId as number) ?? []
+      : undefined;
     let parentCountersChanged = false;
     for (let index = 0; index < ilvl; index += 1) {
       const abstractCounterValue =
@@ -26052,29 +26051,29 @@ export function resolveDocxPageThumbnailResolution(
           maxHeightPx: Number(options.resolution),
         }
       : typeof options.resolution === "object" && options.resolution
-        ? {
-            maxWidthPx:
-              Number.isFinite(options.resolution.maxWidth) &&
-              Number(options.resolution.maxWidth) > 0
-                ? Number(options.resolution.maxWidth)
-                : undefined,
-            maxHeightPx:
-              Number.isFinite(options.resolution.maxHeight) &&
-              Number(options.resolution.maxHeight) > 0
-                ? Number(options.resolution.maxHeight)
-                : undefined,
-          }
-        : undefined;
+      ? {
+          maxWidthPx:
+            Number.isFinite(options.resolution.maxWidth) &&
+            Number(options.resolution.maxWidth) > 0
+              ? Number(options.resolution.maxWidth)
+              : undefined,
+          maxHeightPx:
+            Number.isFinite(options.resolution.maxHeight) &&
+            Number(options.resolution.maxHeight) > 0
+              ? Number(options.resolution.maxHeight)
+              : undefined,
+        }
+      : undefined;
   const widthBoundPx = Number.isFinite(options.maxWidthPx)
     ? Math.max(1, Math.round(options.maxWidthPx as number))
     : Number.isFinite(resolutionBounds?.maxWidthPx)
-      ? Math.max(1, Math.round(resolutionBounds?.maxWidthPx as number))
-      : 180;
+    ? Math.max(1, Math.round(resolutionBounds?.maxWidthPx as number))
+    : 180;
   const heightBoundPx = Number.isFinite(options.maxHeightPx)
     ? Math.max(1, Math.round(options.maxHeightPx as number))
     : Number.isFinite(resolutionBounds?.maxHeightPx)
-      ? Math.max(1, Math.round(resolutionBounds?.maxHeightPx as number))
-      : Number.POSITIVE_INFINITY;
+    ? Math.max(1, Math.round(resolutionBounds?.maxHeightPx as number))
+    : Number.POSITIVE_INFINITY;
   const scale = Math.min(
     1,
     widthBoundPx / safeSourceWidthPx,
@@ -26128,12 +26127,9 @@ export function useDocxPageThumbnails(
 
   React.useEffect(
     () =>
-      subscribeDocxViewerPageSurfaces(
-        pageSurfaceRegistryEditor,
-        () => {
-          setPageSurfaceEpoch((current) => current + 1);
-        }
-      ),
+      subscribeDocxViewerPageSurfaces(pageSurfaceRegistryEditor, () => {
+        setPageSurfaceEpoch((current) => current + 1);
+      }),
     [pageSurfaceRegistryEditor]
   );
 
@@ -26165,15 +26161,13 @@ export function useDocxPageThumbnails(
   );
 
   const renderPageThumbnailToCanvas = React.useCallback(
-    async (
-      pageIndex: number,
-      canvas?: HTMLCanvasElement
-    ): Promise<void> => {
+    async (pageIndex: number, canvas?: HTMLCanvasElement): Promise<void> => {
       if (options.disabled) {
         return;
       }
 
-      const targetCanvas = canvas ?? attachedCanvasByPageRef.current.get(pageIndex);
+      const targetCanvas =
+        canvas ?? attachedCanvasByPageRef.current.get(pageIndex);
       if (!targetCanvas) {
         return;
       }
@@ -26235,13 +26229,16 @@ export function useDocxPageThumbnails(
     ]
   );
 
-  const rerenderAttachedThumbnails = React.useCallback(async (): Promise<void> => {
-    const tasks = [...attachedCanvasByPageRef.current.keys()].map((pageIndex) =>
-      renderPageThumbnailToCanvas(pageIndex)
-    );
-    await Promise.all(tasks);
-  }, [renderPageThumbnailToCanvas]);
-  const renderPageThumbnailToCanvasRef = React.useRef(renderPageThumbnailToCanvas);
+  const rerenderAttachedThumbnails =
+    React.useCallback(async (): Promise<void> => {
+      const tasks = [...attachedCanvasByPageRef.current.keys()].map(
+        (pageIndex) => renderPageThumbnailToCanvas(pageIndex)
+      );
+      await Promise.all(tasks);
+    }, [renderPageThumbnailToCanvas]);
+  const renderPageThumbnailToCanvasRef = React.useRef(
+    renderPageThumbnailToCanvas
+  );
   React.useEffect(() => {
     renderPageThumbnailToCanvasRef.current = renderPageThumbnailToCanvas;
   }, [renderPageThumbnailToCanvas]);
@@ -29006,7 +29003,9 @@ export function DocxEditorViewer({
       tableMeasuredRowHeightsForPagination,
       null
     );
-    let estimatedPages = buildEstimatedPages(tableMeasuredRowHeightsForPagination);
+    let estimatedPages = buildEstimatedPages(
+      tableMeasuredRowHeightsForPagination
+    );
     let estimatedPagesUseMeasuredPageContentHeightsForRender =
       canUseMeasuredPageContentHeights;
     if (
@@ -29084,22 +29083,22 @@ export function DocxEditorViewer({
       !floatingMovePreview &&
       !dropCapMovePreview &&
       estimatedPages.some((segments, pageIndex) => {
-          const measuredHeightPx = measuredPageContentHeightByIndex?.[pageIndex];
-          if (!Number.isFinite(measuredHeightPx)) {
-            return false;
-          }
+        const measuredHeightPx = measuredPageContentHeightByIndex?.[pageIndex];
+        if (!Number.isFinite(measuredHeightPx)) {
+          return false;
+        }
 
-          const firstNodeIndex = segments[0]?.nodeIndex ?? 0;
-          const metricsIndex = resolvePaginationSectionMetricsIndexForNodeIndex(
-            paginationSectionMetrics,
-            firstNodeIndex,
-            0
-          );
-          const sectionHeightPx =
-            paginationSectionMetrics[metricsIndex]?.pageContentHeightPx ??
-            pageContentHeightPx;
-          return (measuredHeightPx as number) < sectionHeightPx - 4;
-        });
+        const firstNodeIndex = segments[0]?.nodeIndex ?? 0;
+        const metricsIndex = resolvePaginationSectionMetricsIndexForNodeIndex(
+          paginationSectionMetrics,
+          firstNodeIndex,
+          0
+        );
+        const sectionHeightPx =
+          paginationSectionMetrics[metricsIndex]?.pageContentHeightPx ??
+          pageContentHeightPx;
+        return (measuredHeightPx as number) < sectionHeightPx - 4;
+      });
     const hasPageAnchoredFloatingFooterContent = documentSections.some(
       (section) =>
         (section.footerSections ?? []).some((footerSection) =>
@@ -30730,148 +30729,157 @@ export function DocxEditorViewer({
     const nextMeasuredPageIdentityKeys = pageNodeSegmentIdentityKeysByPage;
     const nextMeasuredPageDiagnostics = pageNodeSegmentsByPage.map(
       (_, pageIndex) => {
-      const pageLayout =
-        pageSectionInfoByIndex[pageIndex]?.layout ?? documentLayout;
-      const pageElement = pageElementsRef.current.get(pageIndex);
-      const fallbackHeightPx = Math.max(
-        120,
-        pageLayout.pageHeightPx -
-          pageLayout.marginsPx.top -
-          pageLayout.marginsPx.bottom
-      );
-      if (!pageElement) {
-        return {
-          heightPx: fallbackHeightPx,
-          bodyOverrunsFooter: false,
-        };
-      }
-
-      const headerElement = pageHeaderElementsRef.current.get(pageIndex);
-      const bodyElement = pageBodyElementsRef.current.get(pageIndex);
-      const footerElement = pageFooterElementsRef.current.get(pageIndex);
-      const headerHeightPx = headerElement
-        ? Math.max(
-            0,
-            Math.round(headerElement.getBoundingClientRect().height / zoomScale)
-          )
-        : 0;
-
-      const docxFooterTopPx = resolveFooterNodesFloatingBoundaryTopPx(
-        pageHeaderAndFooterNodes[pageIndex]?.footerNodes ?? [],
-        pageLayout
-      );
-      let footerTopPx = Number.isFinite(docxFooterTopPx)
-        ? Math.round(docxFooterTopPx as number)
-        : undefined;
-      if (footerElement) {
-        const pageRect = pageElement.getBoundingClientRect();
-        const maxOverflowCapPx = Math.max(
-          16,
-          Math.min(
-            Math.round(pageLayout.pageHeightPx * 0.12),
-            Math.round(
-              pageLayout.marginsPx.bottom + pageLayout.footerDistancePx + 24
-            )
-          )
+        const pageLayout =
+          pageSectionInfoByIndex[pageIndex]?.layout ?? documentLayout;
+        const pageElement = pageElementsRef.current.get(pageIndex);
+        const fallbackHeightPx = Math.max(
+          120,
+          pageLayout.pageHeightPx -
+            pageLayout.marginsPx.top -
+            pageLayout.marginsPx.bottom
         );
-        const footerFlowBoundaryTopPx = Math.max(
-          0,
-          pageLayout.pageHeightPx - Math.max(0, pageLayout.footerDistancePx)
-        );
-        const minimumRelevantFooterTopPx = Number.isFinite(docxFooterTopPx)
-          ? Math.max(
-              0,
-              Math.min(
-                Math.max(0, footerFlowBoundaryTopPx - maxOverflowCapPx),
-                Math.round((docxFooterTopPx as number) - maxOverflowCapPx)
-              )
-            )
-          : Math.max(0, footerFlowBoundaryTopPx - maxOverflowCapPx);
-        let visualTop = Number.POSITIVE_INFINITY;
-        footerElement.querySelectorAll<HTMLElement>("*").forEach((element) => {
-          if (!element.isConnected) {
-            return;
-          }
-
-          const rect = element.getBoundingClientRect();
-          if (rect.width <= 0 && rect.height <= 0) {
-            return;
-          }
-
-          const relativeTopPx = (rect.top - pageRect.top) / zoomScale;
-          if (relativeTopPx < minimumRelevantFooterTopPx - 1) {
-            return;
-          }
-
-          visualTop = Math.min(visualTop, rect.top);
-        });
-
-        if (Number.isFinite(visualTop)) {
-          const measuredFooterTopPx = (visualTop - pageRect.top) / zoomScale;
-          footerTopPx = Number.isFinite(footerTopPx)
-            ? Math.min(
-                Math.round(footerTopPx as number),
-                Math.round(measuredFooterTopPx)
-              )
-            : Math.round(measuredFooterTopPx);
+        if (!pageElement) {
+          return {
+            heightPx: fallbackHeightPx,
+            bodyOverrunsFooter: false,
+          };
         }
-      }
 
-      const pageRect = pageElement.getBoundingClientRect();
-      const bodyRect = bodyElement?.getBoundingClientRect();
-      const bodyTopPx = bodyRect
-        ? Math.max(0, Math.round((bodyRect.top - pageRect.top) / zoomScale))
-        : undefined;
-      const bodyImageCount =
-        bodyElement?.querySelectorAll("[data-docx-image-location]").length ?? 0;
-      const bodyTextTrimmedLength =
-        bodyElement?.textContent?.replace(/\s+/g, "").length ?? 0;
-      const skipBodyBottomAdjustment =
-        bodyImageCount > 0 && bodyTextTrimmedLength === 0;
-      const visualBodyBottom =
-        bodyElement && bodyRect
-          ? resolveMeasuredBodyRenderedBottomPx(
-              Array.from(bodyElement.querySelectorAll<HTMLElement>("*")).map(
-                (element) => {
-                  const rect = element.getBoundingClientRect();
-                  return {
-                    bottomPx: rect.bottom,
-                    widthPx: rect.width,
-                    heightPx: rect.height,
-                    ignore:
-                      !element.isConnected ||
-                      Boolean(element.closest("[data-docx-image-location]")) ||
-                      Boolean(
-                        element.closest(
-                          `[${PAGE_CONTENT_MEASUREMENT_IGNORE_ATTRIBUTE}="true"]`
-                        )
-                      ),
-                  };
-                }
-              )
-            )
-          : undefined;
-      const bodyRenderedBottomPx =
-        bodyRect && Number.isFinite(visualBodyBottom)
+        const headerElement = pageHeaderElementsRef.current.get(pageIndex);
+        const bodyElement = pageBodyElementsRef.current.get(pageIndex);
+        const footerElement = pageFooterElementsRef.current.get(pageIndex);
+        const headerHeightPx = headerElement
           ? Math.max(
               0,
               Math.round(
-                ((visualBodyBottom as number) - pageRect.top) / zoomScale
+                headerElement.getBoundingClientRect().height / zoomScale
               )
             )
-          : undefined;
+          : 0;
 
-      return resolveMeasuredPageContentHeightDiagnostics({
-        pageLayout,
-        fallbackHeightPx,
-        headerHeightPx,
-        currentMeasuredHeightPx: measuredPageContentHeightByIndex?.[pageIndex],
-        bodyTopPx,
-        bodyRenderedBottomPx,
-        footerTopPx,
-        skipBodyBottomAdjustment,
-      });
-    });
+        const docxFooterTopPx = resolveFooterNodesFloatingBoundaryTopPx(
+          pageHeaderAndFooterNodes[pageIndex]?.footerNodes ?? [],
+          pageLayout
+        );
+        let footerTopPx = Number.isFinite(docxFooterTopPx)
+          ? Math.round(docxFooterTopPx as number)
+          : undefined;
+        if (footerElement) {
+          const pageRect = pageElement.getBoundingClientRect();
+          const maxOverflowCapPx = Math.max(
+            16,
+            Math.min(
+              Math.round(pageLayout.pageHeightPx * 0.12),
+              Math.round(
+                pageLayout.marginsPx.bottom + pageLayout.footerDistancePx + 24
+              )
+            )
+          );
+          const footerFlowBoundaryTopPx = Math.max(
+            0,
+            pageLayout.pageHeightPx - Math.max(0, pageLayout.footerDistancePx)
+          );
+          const minimumRelevantFooterTopPx = Number.isFinite(docxFooterTopPx)
+            ? Math.max(
+                0,
+                Math.min(
+                  Math.max(0, footerFlowBoundaryTopPx - maxOverflowCapPx),
+                  Math.round((docxFooterTopPx as number) - maxOverflowCapPx)
+                )
+              )
+            : Math.max(0, footerFlowBoundaryTopPx - maxOverflowCapPx);
+          let visualTop = Number.POSITIVE_INFINITY;
+          footerElement
+            .querySelectorAll<HTMLElement>("*")
+            .forEach((element) => {
+              if (!element.isConnected) {
+                return;
+              }
+
+              const rect = element.getBoundingClientRect();
+              if (rect.width <= 0 && rect.height <= 0) {
+                return;
+              }
+
+              const relativeTopPx = (rect.top - pageRect.top) / zoomScale;
+              if (relativeTopPx < minimumRelevantFooterTopPx - 1) {
+                return;
+              }
+
+              visualTop = Math.min(visualTop, rect.top);
+            });
+
+          if (Number.isFinite(visualTop)) {
+            const measuredFooterTopPx = (visualTop - pageRect.top) / zoomScale;
+            footerTopPx = Number.isFinite(footerTopPx)
+              ? Math.min(
+                  Math.round(footerTopPx as number),
+                  Math.round(measuredFooterTopPx)
+                )
+              : Math.round(measuredFooterTopPx);
+          }
+        }
+
+        const pageRect = pageElement.getBoundingClientRect();
+        const bodyRect = bodyElement?.getBoundingClientRect();
+        const bodyTopPx = bodyRect
+          ? Math.max(0, Math.round((bodyRect.top - pageRect.top) / zoomScale))
+          : undefined;
+        const bodyImageCount =
+          bodyElement?.querySelectorAll("[data-docx-image-location]").length ??
+          0;
+        const bodyTextTrimmedLength =
+          bodyElement?.textContent?.replace(/\s+/g, "").length ?? 0;
+        const skipBodyBottomAdjustment =
+          bodyImageCount > 0 && bodyTextTrimmedLength === 0;
+        const visualBodyBottom =
+          bodyElement && bodyRect
+            ? resolveMeasuredBodyRenderedBottomPx(
+                Array.from(bodyElement.querySelectorAll<HTMLElement>("*")).map(
+                  (element) => {
+                    const rect = element.getBoundingClientRect();
+                    return {
+                      bottomPx: rect.bottom,
+                      widthPx: rect.width,
+                      heightPx: rect.height,
+                      ignore:
+                        !element.isConnected ||
+                        Boolean(
+                          element.closest("[data-docx-image-location]")
+                        ) ||
+                        Boolean(
+                          element.closest(
+                            `[${PAGE_CONTENT_MEASUREMENT_IGNORE_ATTRIBUTE}="true"]`
+                          )
+                        ),
+                    };
+                  }
+                )
+              )
+            : undefined;
+        const bodyRenderedBottomPx =
+          bodyRect && Number.isFinite(visualBodyBottom)
+            ? Math.max(
+                0,
+                Math.round(
+                  ((visualBodyBottom as number) - pageRect.top) / zoomScale
+                )
+              )
+            : undefined;
+
+        return resolveMeasuredPageContentHeightDiagnostics({
+          pageLayout,
+          fallbackHeightPx,
+          headerHeightPx,
+          currentMeasuredHeightPx:
+            measuredPageContentHeightByIndex?.[pageIndex],
+          bodyTopPx,
+          bodyRenderedBottomPx,
+          footerTopPx,
+          skipBodyBottomAdjustment,
+        });
+      }
+    );
     const nextMeasuredHeights = nextMeasuredPageDiagnostics.map(
       (diagnostics) => diagnostics.heightPx
     );
@@ -30915,7 +30923,9 @@ export function DocxEditorViewer({
             pageIndex < nextMeasuredPageIdentityKeys.length;
             pageIndex += 1
           ) {
-            if (current[pageIndex] !== nextMeasuredPageIdentityKeys[pageIndex]) {
+            if (
+              current[pageIndex] !== nextMeasuredPageIdentityKeys[pageIndex]
+            ) {
               equal = false;
               break;
             }
@@ -42401,11 +42411,11 @@ export function DocxEditorViewer({
           ? {
               marginTop:
                 paragraphSegmentStartLine === 0
-                  ? (resolvedBeforeSpacingPx ?? beforeSpacingPx)
+                  ? resolvedBeforeSpacingPx ?? beforeSpacingPx
                   : 0,
               marginBottom:
                 paragraphSegmentEndLine >= paragraphSegmentTotalLines
-                  ? (resolvedAfterSpacingPx ?? afterSpacingPx)
+                  ? resolvedAfterSpacingPx ?? afterSpacingPx
                   : 0,
             }
           : resolvedBeforeSpacingPx !== undefined ||
@@ -47380,7 +47390,7 @@ export function DocxEditorViewer({
                           !columnSegment.tableRowSlice &&
                           !columnSegment.paragraphLineRange &&
                           !explicitColumnWidthsPx &&
-                          sectionColumns.count > 1
+                          (sectionColumns?.count ?? 0) > 1
                             ? splitParagraphAtExplicitColumnBreaks(columnNode)
                             : undefined;
                         if (
@@ -47388,7 +47398,9 @@ export function DocxEditorViewer({
                           explicitColumnBreakParagraphSegments.length > 1
                         ) {
                           return (
-                            <React.Fragment>
+                            <React.Fragment
+                              key={`column-layout-node-${pageIndex}-${columnSegment.nodeIndex}-column-break-group`}
+                            >
                               {explicitColumnBreakParagraphSegments.map(
                                 (segmentParagraph, segmentIndex) => {
                                   const isLastSegment =
@@ -47422,8 +47434,9 @@ export function DocxEditorViewer({
                                           syntheticKeySuffix: `column-break-${segmentIndex}`,
                                           overrideBeforeSpacingPx:
                                             segmentIndex === 0 ? undefined : 0,
-                                          overrideAfterSpacingPx:
-                                            isLastSegment ? undefined : 0,
+                                          overrideAfterSpacingPx: isLastSegment
+                                            ? undefined
+                                            : 0,
                                         }
                                       )}
                                     </div>
@@ -47949,9 +47962,7 @@ export function DocxEditorViewer({
                       marginTop: 8,
                       paddingTop: 8,
                       borderTop: `1px solid ${
-                        documentContentTheme === "dark"
-                          ? "#4b5563"
-                          : "#9ca3af"
+                        documentContentTheme === "dark" ? "#4b5563" : "#9ca3af"
                       }`,
                       display: "grid",
                       gap: 6,
@@ -47987,9 +47998,7 @@ export function DocxEditorViewer({
                       marginTop: "auto",
                       paddingTop: 8,
                       borderTop: `1px solid ${
-                        documentContentTheme === "dark"
-                          ? "#4b5563"
-                          : "#9ca3af"
+                        documentContentTheme === "dark" ? "#4b5563" : "#9ca3af"
                       }`,
                       display: "grid",
                       gap: 6,
