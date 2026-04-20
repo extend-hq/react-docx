@@ -3,7 +3,6 @@ import { flushSync } from "react-dom";
 import { renderToStaticMarkup } from "react-dom/server";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import {
-  buildDocModel,
   cloneDocModel,
   type DocModel,
   type DocumentNoteDefinition,
@@ -35,7 +34,8 @@ import {
   updateTableCellParagraphText,
   updateTableCellText,
 } from "@extend-ai/react-docx-editor-ops";
-import { type OoxmlPackage, parseDocx } from "@extend-ai/react-docx-ooxml-core";
+import { type OoxmlPackage } from "@extend-ai/react-docx-ooxml-core";
+import { importDocxViaWorker } from "./docx-import-worker-client";
 import { serializeDocx } from "@extend-ai/react-docx-serializer";
 import {
   collectTableExplicitPageBreakInfo,
@@ -67,6 +67,7 @@ import {
 import {
   layoutItemsWithPretextAroundExclusions,
   layoutTextWithPretextAroundExclusions,
+  measurePretextPlainTextLineCount,
   type PretextLayoutItem,
   type PretextExclusionRect,
   type PretextLineFragment,
@@ -194,11 +195,13 @@ const MEASURED_PAGE_FOOTER_CLEARANCE_BUFFER_PX = 24;
 const UNOVERLAPPED_FOOTER_MIN_CLEARANCE_PX = 16;
 const FLOATING_FOOTER_BASELINE_CLEARANCE_RESERVE_PX = 16;
 const PAGINATION_MEASUREMENT_INTERACTION_DEBOUNCE_MS = 180;
-const MEASURED_BODY_FOOTER_OVERLAP_STABILITY_THRESHOLD = 1;
+const MEASURED_BODY_FOOTER_OVERLAP_STABILITY_THRESHOLD = 3;
 const WORD_TABLE_CELL_PARAGRAPH_AUTO_LINE_TWIPS = 240;
 const WORD_TABLE_CELL_PARAGRAPH_BEFORE_TWIPS = 0;
 const WORD_TABLE_CELL_PARAGRAPH_AFTER_TWIPS = 0;
 const TABLE_ROW_SLICE_VISUAL_BLEED_PX = 1;
+const TABLE_CELL_SLICE_LINE_FIT_SAFETY_PX = 4;
+const TABLE_CELL_SLICE_FULLY_VISIBLE_BOTTOM_BUFFER_PX = 4;
 const DEFAULT_SPLIT_PARAGRAPH_LINE_TWIPS = 259;
 const DEFAULT_SPLIT_PARAGRAPH_AFTER_TWIPS = 160;
 const PAGE_CONTENT_MEASUREMENT_IGNORE_ATTRIBUTE = "data-docx-pagination-ignore";
@@ -2195,9 +2198,9 @@ export function resolveFooterPaginationReservePx(
 
   const footerBodyOverlapPx =
     estimatedFooterHeightPx + layout.footerDistancePx - layout.marginsPx.bottom;
-  const explicitFooterOverlapReservePx = Math.max(
+  const explicitFooterBoundaryReservePx = Math.max(
     0,
-    Math.round(footerBodyOverlapPx)
+    Math.round(footerBodyOverlapPx + UNOVERLAPPED_FOOTER_MIN_CLEARANCE_PX)
   );
   const floatingFooterBoundaryReservePx = Number.isFinite(
     floatingFooterBoundaryTopPx
@@ -2214,14 +2217,14 @@ export function resolveFooterPaginationReservePx(
 
   if (hasFloatingFooterBodyIntrusionRisk) {
     return Math.max(
-      explicitFooterOverlapReservePx,
+      explicitFooterBoundaryReservePx,
       floatingFooterBoundaryReservePx,
       FLOATING_FOOTER_BASELINE_CLEARANCE_RESERVE_PX
     );
   }
 
   return Math.max(
-    explicitFooterOverlapReservePx,
+    explicitFooterBoundaryReservePx,
     floatingFooterBoundaryReservePx
   );
 }
@@ -2304,13 +2307,26 @@ function resolveMeasuredPageContentHeightDiagnostics(params: {
     0,
     guardedAllowedBodyBottomPx - measuredFooterClearanceBufferPx
   );
+  // When the body still overruns the footer after a pass, pull the page's
+  // content budget down by the observed overrun so the next pagination
+  // pass packs less and spills the excess to the next page. Without this
+  // the geometric answer (allowedBodyBottom − bodyTop) stabilizes at a
+  // value that the per-paragraph estimator keeps missing by a few px per
+  // paragraph, and the same pages render with text under the footer
+  // every pass. `stabilizeMeasuredPageContentHeights` enforces monotonic
+  // non-increase, so subsequent passes without an overrun won't inflate
+  // the budget back up. A 50 % floor on the fallback height prevents
+  // pathological docs from driving the budget toward zero.
+  const minIterativeHeightPx = Math.max(
+    120,
+    Math.round(fallbackHeightPx * 0.5)
+  );
   const iterativeMeasuredHeightPx =
     renderedBodyOverrunPx > 0 &&
-    !Number.isFinite(bodyTopPx) &&
     Number.isFinite(effectiveCurrentMeasuredHeightPx) &&
-    (effectiveCurrentMeasuredHeightPx as number) > 0
+    (effectiveCurrentMeasuredHeightPx as number) > minIterativeHeightPx
       ? Math.max(
-          120,
+          minIterativeHeightPx,
           Math.round(
             (effectiveCurrentMeasuredHeightPx as number) -
               renderedBodyOverrunPx -
@@ -2636,8 +2652,9 @@ export function resolveRenderPageContentHeightPxForPageSegments(params: {
   measuredPageContentIdentityKeysByPageIndex?: string[];
   pageIdentityKey?: string;
   useMeasuredPageContentHeights?: boolean;
+  pageContentHeightScale?: number;
 }): number {
-  return resolvePageContentHeightPxForPageSegments(
+  const resolvedHeightPx = resolvePageContentHeightPxForPageSegments(
     params.pageSegments,
     params.pageIndex,
     params.defaultPageContentHeightPx,
@@ -2650,6 +2667,18 @@ export function resolveRenderPageContentHeightPxForPageSegments(params: {
       : params.measuredPageContentIdentityKeysByPageIndex,
     params.pageIdentityKey
   );
+  if (
+    params.useMeasuredPageContentHeights === false &&
+    Number.isFinite(params.pageContentHeightScale) &&
+    Math.abs((params.pageContentHeightScale as number) - 1) >= 0.001
+  ) {
+    return Math.max(
+      120,
+      Math.round(resolvedHeightPx * (params.pageContentHeightScale as number))
+    );
+  }
+
+  return resolvedHeightPx;
 }
 
 export function documentPageContainsOnlySplitParagraphSegments(
@@ -3369,6 +3398,7 @@ export interface DocxEditorController {
   documentLoadNonce: number;
   fileName: string;
   status: string;
+  isImporting: boolean;
   documentTheme: DocxDocumentTheme;
   selection: DocxEditorSelection;
   activeTextRange?: DocxTextRange;
@@ -5328,7 +5358,7 @@ function paragraphLooksLikeCheckboxChoiceRow(
 }
 
 interface ParagraphPretextLayoutRun {
-  kind: "text" | "image";
+  kind: "text" | "image" | "tab";
   key: string;
   text: string;
   startOffset: number;
@@ -5336,6 +5366,7 @@ interface ParagraphPretextLayoutRun {
   style?: TextRunNode["style"];
   link?: string;
   image?: ImageRunNode;
+  tabWidthPx?: number;
 }
 
 interface ParagraphPretextLayoutSource {
@@ -5582,10 +5613,56 @@ function resolveFloatingForImageWrapMode(
   }
 }
 
-function buildParagraphPretextLayoutSource(
+function buildParagraphPretextTabSpacerText(
+  widthPx: number,
+  style: TextRunNode["style"] | undefined,
+  paragraphBaseFontPx: number
+): string {
+  const safeWidthPx = Math.max(8, Math.round(widthPx));
+  const spacerCharacter = "\u00a0";
+  const spacerAdvancePx = Math.max(
+    1,
+    measureTextWidthPx(spacerCharacter, style, paragraphBaseFontPx)
+  );
+  let spacerCount = Math.max(1, Math.round(safeWidthPx / spacerAdvancePx));
+  let spacerText = spacerCharacter.repeat(spacerCount);
+  let measuredWidthPx = measureTextWidthPx(
+    spacerText,
+    style,
+    paragraphBaseFontPx
+  );
+
+  while (
+    measuredWidthPx + spacerAdvancePx * 0.5 < safeWidthPx &&
+    spacerCount < 64
+  ) {
+    spacerCount += 1;
+    spacerText = spacerCharacter.repeat(spacerCount);
+    measuredWidthPx = measureTextWidthPx(spacerText, style, paragraphBaseFontPx);
+  }
+
+  while (spacerCount > 1) {
+    const nextText = spacerCharacter.repeat(spacerCount - 1);
+    const nextWidthPx = measureTextWidthPx(nextText, style, paragraphBaseFontPx);
+    if (
+      Math.abs(nextWidthPx - safeWidthPx) >=
+      Math.abs(measuredWidthPx - safeWidthPx)
+    ) {
+      break;
+    }
+    spacerCount -= 1;
+    spacerText = nextText;
+    measuredWidthPx = nextWidthPx;
+  }
+
+  return spacerText;
+}
+
+export function buildParagraphPretextLayoutSource(
   paragraph: ParagraphNode,
   options?: {
     allowExplicitLineBreakText?: boolean;
+    expandTabsForLayout?: boolean;
   }
 ): ParagraphPretextLayoutSource | undefined {
   if (paragraphHasFormField(paragraph)) {
@@ -5601,6 +5678,13 @@ function buildParagraphPretextLayoutSource(
   const runs: ParagraphPretextLayoutRun[] = [];
   let combinedText = "";
   const paragraphBaseFontPx = paragraphBaseFontSizePx(paragraph);
+  const tabStopPositionsPx = options?.expandTabsForLayout
+    ? resolveParagraphTabStopsPx(paragraph)
+    : [];
+  const fallbackTabWidthPx = paragraphLooksLikeCheckboxChoiceRow(paragraph)
+    ? checkboxChoiceRowTabWidthPx(paragraph)
+    : DEFAULT_TAB_STOP_PX;
+  let approximateLineWidthPx = 0;
   let lastTextStyle: TextRunNode["style"] | undefined =
     firstRunStyle(paragraph);
 
@@ -5639,8 +5723,64 @@ function buildParagraphPretextLayoutSource(
     if (child.type !== "text") {
       return undefined;
     }
-    if (child.noteReference || child.text.includes("\t")) {
+    if (child.noteReference) {
       return undefined;
+    }
+    if (child.text.includes("\t")) {
+      if (!options?.expandTabsForLayout) {
+        return undefined;
+      }
+
+      const tabSegments = child.text.split("\t");
+      tabSegments.forEach((segmentText, segmentIndex) => {
+        if (segmentText.length > 0) {
+          const startOffset = combinedText.length;
+          combinedText += segmentText;
+          runs.push({
+            kind: "text",
+            key: `run-${childIndex}-${segmentIndex}`,
+            text: segmentText,
+            startOffset,
+            endOffset: combinedText.length,
+            style: child.style,
+            link: child.link,
+          });
+          approximateLineWidthPx = updateEstimatedLineWidthPxForText(
+            approximateLineWidthPx,
+            segmentText,
+            child.style
+          );
+        }
+
+        if (segmentIndex >= tabSegments.length - 1) {
+          return;
+        }
+
+        const tabWidthPx = resolveTabSpacerWidthPx(
+          tabStopPositionsPx,
+          approximateLineWidthPx,
+          fallbackTabWidthPx
+        );
+        const spacerText = buildParagraphPretextTabSpacerText(
+          tabWidthPx,
+          child.style,
+          paragraphBaseFontPx
+        );
+        const startOffset = combinedText.length;
+        combinedText += spacerText;
+        runs.push({
+          kind: "tab",
+          key: `run-${childIndex}-${segmentIndex}-tab`,
+          text: spacerText,
+          startOffset,
+          endOffset: combinedText.length,
+          style: child.style,
+          tabWidthPx,
+        });
+        approximateLineWidthPx += tabWidthPx;
+      });
+      lastTextStyle = child.style ?? lastTextStyle;
+      continue;
     }
 
     const startOffset = combinedText.length;
@@ -5654,6 +5794,11 @@ function buildParagraphPretextLayoutSource(
       style: child.style,
       link: child.link,
     });
+    approximateLineWidthPx = updateEstimatedLineWidthPxForText(
+      approximateLineWidthPx,
+      child.text,
+      child.style
+    );
     lastTextStyle = child.style ?? lastTextStyle;
   }
 
@@ -5899,9 +6044,43 @@ function buildParagraphPretextLayoutItems(
       font: resolveMeasureFont(run.style, paragraphBaseFontPx),
       startOffset: run.startOffset,
       endOffset: run.endOffset,
-      break: run.kind === "image" ? "never" : "normal",
+      break: run.kind === "image" || run.kind === "tab" ? "never" : "normal",
       wordBreak,
     }));
+}
+
+/**
+ * Returns the single measurement font shared by every non-empty run of this
+ * pretext source, or `undefined` if there are atomic items (images, tabs)
+ * or the runs vary in font. Callers can use this to take a fast
+ * `measureLineStats`-based line count path when it returns a value.
+ */
+function resolveUniformPretextSourceFont(
+  paragraph: ParagraphNode,
+  source: ParagraphPretextLayoutSource
+): string | undefined {
+  const paragraphBaseFontPx = paragraphBaseFontSizePx(paragraph);
+  let uniformFont: string | undefined;
+
+  for (const run of source.runs) {
+    if (run.endOffset <= run.startOffset) {
+      continue;
+    }
+    if (run.kind !== "text") {
+      return undefined;
+    }
+
+    const runFont = resolveMeasureFont(run.style, paragraphBaseFontPx);
+    if (uniformFont === undefined) {
+      uniformFont = runFont;
+      continue;
+    }
+    if (runFont !== uniformFont) {
+      return undefined;
+    }
+  }
+
+  return uniformFont;
 }
 
 function buildMeasureSegmentsPretextLayoutItems(
@@ -7410,10 +7589,16 @@ function sectionBreakAfterParagraphStartsNewPage(
     return cached.sectionBreakStartsNewPage;
   }
 
-  return paragraphHasExplicitPageBreak(paragraph)
-    ? paragraphBreakFlagsBySourceXml.get(xml)?.sectionBreakStartsNewPage ??
-        false
-    : false;
+  // `paragraphHasExplicitPageBreak` populates the shared cache with every
+  // break-related flag, including `sectionBreakStartsNewPage`. The cache
+  // read below has to happen unconditionally — a section break paragraph
+  // is allowed to start a new page (per ECMA-376 §2.6.22) even when it
+  // carries no explicit `<w:br w:type="page"/>` run, and an earlier
+  // version of this helper returned `false` in exactly that case.
+  paragraphHasExplicitPageBreak(paragraph);
+  return (
+    paragraphBreakFlagsBySourceXml.get(xml)?.sectionBreakStartsNewPage ?? false
+  );
 }
 
 function nodeAlreadyEndsAtExplicitPageBoundary(
@@ -8326,6 +8511,28 @@ function estimateWrappedLineCountForParagraph(
       const pretextSource = buildParagraphPretextLayoutSource(paragraph);
       if (!pretextSource) {
         return undefined;
+      }
+
+      // Fast path (pretext 0.0.5+): when the paragraph's measurement runs all
+      // share a single font and there are no atomic items (images, tabs),
+      // `measureLineStats` wraps the text and returns the line count using
+      // pure arithmetic over cached segment widths — no per-line string
+      // allocations, no fragment objects. This is the hot path during
+      // pagination of large documents.
+      const uniformFont = resolveUniformPretextSourceFont(
+        paragraph,
+        pretextSource
+      );
+      if (uniformFont !== undefined) {
+        const fastLineCount = measurePretextPlainTextLineCount(
+          pretextSource.text,
+          uniformFont,
+          maxLineWidthPx,
+          { wordBreak: pretextWordBreakModeForText(pretextSource.text) }
+        );
+        if (fastLineCount !== undefined) {
+          return fastLineCount;
+        }
       }
 
       const lineHeightPx = estimateParagraphLineHeightPx(paragraph);
@@ -10031,13 +10238,21 @@ export function resolveLineRangeWithinVerticalSlice(
 
   const safeSliceTopPx = Math.max(0, sliceTopPx);
   const safeSliceBottomPx = Math.max(safeSliceTopPx, sliceBottomPx);
+  const safeLineFitTopPx = safeSliceTopPx + TABLE_CELL_SLICE_LINE_FIT_SAFETY_PX;
+  const safeLineFitBottomPx = Math.max(
+    safeLineFitTopPx,
+    safeSliceBottomPx - TABLE_CELL_SLICE_LINE_FIT_SAFETY_PX
+  );
   let startLineIndex: number | undefined;
   let endLineIndex: number | undefined;
 
   for (let lineIndex = 0; lineIndex < lineTopOffsetsPx.length; lineIndex += 1) {
     const lineTopPx = lineTopOffsetsPx[lineIndex] ?? lineIndex * lineHeightPx;
     const lineBottomPx = lineTopPx + lineHeightPx;
-    if (lineTopPx >= safeSliceTopPx && lineBottomPx <= safeSliceBottomPx) {
+    if (
+      lineTopPx >= safeLineFitTopPx &&
+      lineBottomPx <= safeLineFitBottomPx
+    ) {
       if (startLineIndex === undefined) {
         startLineIndex = lineIndex;
       }
@@ -10059,6 +10274,33 @@ export function resolveLineRangeWithinVerticalSlice(
     totalLineCount: lineTopOffsetsPx.length,
     lineHeightPx,
   };
+}
+
+export function resolveTableCellParagraphVisualBottomPx(params: {
+  paragraphTopPx: number;
+  paragraphHeightPx: number;
+  textBottomPx: number;
+}): number {
+  return Math.max(
+    Math.round(params.paragraphTopPx + params.paragraphHeightPx),
+    Math.round(params.textBottomPx)
+  );
+}
+
+export function tableCellParagraphFitsFullyWithinSlice(params: {
+  sliceStartPx: number;
+  sliceBottomPx: number;
+  paragraphTopPx: number;
+  paragraphBottomPx: number;
+}): boolean {
+  return (
+    params.sliceStartPx <=
+      params.paragraphTopPx + PAGE_OVERFLOW_TOLERANCE_PX &&
+    params.sliceBottomPx >=
+      params.paragraphBottomPx +
+        TABLE_CELL_SLICE_FULLY_VISIBLE_BOTTOM_BUFFER_PX -
+        PAGE_OVERFLOW_TOLERANCE_PX
+  );
 }
 
 export function resolveParagraphSegmentClipBleedPx(
@@ -11139,9 +11381,52 @@ export function buildDocumentPageNodeSegments(
       );
     }
 
+    let headerRunLength = 0;
+    for (const row of node.rows) {
+      if (row.style?.isHeader === true) {
+        headerRunLength += 1;
+      } else {
+        break;
+      }
+    }
+    const headerRunHeightPx = headerRunLength > 0
+      ? sumEstimatedTableRowHeightsPx(
+          estimatedRowHeightsPx,
+          0,
+          headerRunLength
+        )
+      : 0;
+    const canRepeatHeader =
+      headerRunLength > 0 &&
+      headerRunHeightPx > 0 &&
+      headerRunHeightPx + MIN_PARAGRAPH_LINE_HEIGHT_PX * 2 <
+        currentPageContentHeightPx;
+
     let rowStartIndex = 0;
     let rowSliceOffsetPx = 0;
+    let repeatedHeaderHeightPxOnThisPage = 0;
     while (rowStartIndex < estimatedRowHeightsPx.length) {
+      if (currentPageSegments.length === 0) {
+        repeatedHeaderHeightPxOnThisPage = 0;
+      }
+
+      if (
+        canRepeatHeader &&
+        rowStartIndex >= headerRunLength &&
+        currentPageSegments.length === 0
+      ) {
+        currentPageSegments.push({
+          nodeIndex,
+          tableRowRange: {
+            startRowIndex: 0,
+            endRowIndex: headerRunLength,
+          },
+        });
+        pageConsumedHeightPx += headerRunHeightPx;
+        previousParagraphAfterPx = 0;
+        repeatedHeaderHeightPxOnThisPage = headerRunHeightPx;
+      }
+
       const remainingHeightPx = Math.max(
         0,
         currentPageContentHeightPx - pageConsumedHeightPx
@@ -11155,9 +11440,13 @@ export function buildDocumentPageNodeSegments(
         0,
         currentRowTotalHeightPx - rowSliceOffsetPx
       );
+      const freshPageAvailableHeightPx = Math.max(
+        MIN_PARAGRAPH_LINE_HEIGHT_PX,
+        currentPageContentHeightPx - repeatedHeaderHeightPxOnThisPage
+      );
       const rowExceedsFreshPageHeightPx =
         currentRowTotalHeightPx >
-        currentPageContentHeightPx + PAGE_OVERFLOW_TOLERANCE_PX;
+        freshPageAvailableHeightPx + PAGE_OVERFLOW_TOLERANCE_PX;
       const canSplitCurrentRow =
         rowSliceOffsetPx > 0 ||
         rowAllowsPageSplit(currentRow) ||
@@ -21562,6 +21851,7 @@ export function useDocxEditor(
   const [status, setStatus] = React.useState<string>(
     options.initialStatus ?? "Ready"
   );
+  const [isImporting, setIsImporting] = React.useState<boolean>(false);
   const [documentTheme, setDocumentThemeState] =
     React.useState<DocxDocumentTheme>(options.initialDocumentTheme ?? "light");
   const [showTrackedChanges, setShowTrackedChangesState] =
@@ -22269,22 +22559,45 @@ export function useDocxEditor(
         return;
       }
 
+      setIsImporting(true);
+      setStatus(`Loading ${file.name}…`);
+
+      // Yield twice so the loading UI paints before we start the heavy
+      // synchronous parse + buildDocModel work. Without this the browser
+      // never gets a chance to render "Loading…" before the freeze begins.
+      await new Promise<void>((resolve) => {
+        if (typeof requestAnimationFrame === "function") {
+          requestAnimationFrame(() => {
+            requestAnimationFrame(() => resolve());
+          });
+        } else {
+          setTimeout(resolve, 0);
+        }
+      });
+
       try {
         const buffer = await file.arrayBuffer();
-        const pkg = await parseDocx(buffer);
+        // parseDocx + buildDocModel run inside a Web Worker (with a silent
+        // fallback to the main thread if the host can't construct one) so
+        // the UI can paint and respond to clicks during the CPU-heavy
+        // import phase.
+        const { pkg, model: nextModel } = await importDocxViaWorker(buffer);
         await loadEmbeddedFontsFromPackage(pkg);
-        const nextModel = buildDocModel(pkg);
 
-        setModel(nextModel);
-        setDocumentLoadNonce((current) => current + 1);
-        setHistory({ past: [], future: [] });
-        setHistoryRestoreRequest(undefined);
-        setBasePackage(pkg);
-        setFileName(file.name);
-        setSelection({ kind: "paragraph", nodeIndex: 0 });
-        setActiveTextRangeState(undefined);
-        setPendingRunStyle(undefined);
-        setSelectedFormFieldLocation(undefined);
+        // Mark the model swap as a transition so React can yield to user
+        // input (clicks, keystrokes) while re-rendering a large document.
+        React.startTransition(() => {
+          setModel(nextModel);
+          setDocumentLoadNonce((current) => current + 1);
+          setHistory({ past: [], future: [] });
+          setHistoryRestoreRequest(undefined);
+          setBasePackage(pkg);
+          setFileName(file.name);
+          setSelection({ kind: "paragraph", nodeIndex: 0 });
+          setActiveTextRangeState(undefined);
+          setPendingRunStyle(undefined);
+          setSelectedFormFieldLocation(undefined);
+        });
         setStatus(`Loaded ${file.name}`);
       } catch (error) {
         setStatus(
@@ -22292,6 +22605,8 @@ export function useDocxEditor(
             error instanceof Error ? error.message : "Unknown error"
           }`
         );
+      } finally {
+        setIsImporting(false);
       }
     },
     [loadEmbeddedFontsFromPackage]
@@ -25955,6 +26270,7 @@ export function useDocxEditor(
     documentLoadNonce,
     fileName,
     status,
+    isImporting,
     documentTheme,
     trackedChanges,
     showTrackedChanges,
@@ -29132,6 +29448,7 @@ export function DocxEditorViewer({
     pages: DocumentPageNodeSegment[][];
     useMeasuredPageContentHeightsForRender: boolean;
     renderMeasuredPageContentHeightsPxByPageIndex?: number[];
+    renderPageContentHeightScale?: number;
   }>(() => {
     const pageContentHeightPx = Math.max(
       120,
@@ -29245,6 +29562,7 @@ export function DocxEditorViewer({
       canUseMeasuredPageContentHeights
         ? measuredPageContentHeightByIndex
         : undefined;
+    let estimatedRenderPageContentHeightScale: number | undefined = undefined;
     if (
       measuredPageContentHeightByIndex &&
       measuredPageContentHeightByIndex.length > 0
@@ -29267,6 +29585,7 @@ export function DocxEditorViewer({
         estimatedPages = pureEstimatedPages;
         estimatedPagesUseMeasuredPageContentHeightsForRender = false;
         estimatedRenderMeasuredPageContentHeightsPxByPageIndex = undefined;
+        estimatedRenderPageContentHeightScale = undefined;
       }
     }
     if (
@@ -29282,6 +29601,7 @@ export function DocxEditorViewer({
             estimatedPagesUseMeasuredPageContentHeightsForRender,
           renderMeasuredPageContentHeightsPxByPageIndex:
             estimatedRenderMeasuredPageContentHeightsPxByPageIndex,
+          renderPageContentHeightScale: estimatedRenderPageContentHeightScale,
         },
         {
           pages: buildEstimatedPages(undefined),
@@ -29291,11 +29611,13 @@ export function DocxEditorViewer({
             canUseMeasuredPageContentHeights
               ? measuredPageContentHeightByIndex
               : undefined,
+          renderPageContentHeightScale: undefined,
         },
         {
           pages: buildEstimatedPages(undefined, null),
           useMeasuredPageContentHeightsForRender: false,
           renderMeasuredPageContentHeightsPxByPageIndex: undefined,
+          renderPageContentHeightScale: undefined,
         },
       ];
       const bestCandidate = candidatePages.reduce((best, candidate) => {
@@ -29310,6 +29632,8 @@ export function DocxEditorViewer({
         bestCandidate.useMeasuredPageContentHeightsForRender;
       estimatedRenderMeasuredPageContentHeightsPxByPageIndex =
         bestCandidate.renderMeasuredPageContentHeightsPxByPageIndex;
+      estimatedRenderPageContentHeightScale =
+        bestCandidate.renderPageContentHeightScale;
     } else if (
       !editor.canUndo &&
       !editor.canRedo &&
@@ -29323,6 +29647,7 @@ export function DocxEditorViewer({
         estimatedPages = pureEstimatedPages;
         estimatedPagesUseMeasuredPageContentHeightsForRender = false;
         estimatedRenderMeasuredPageContentHeightsPxByPageIndex = undefined;
+        estimatedRenderPageContentHeightScale = undefined;
       }
     }
     const measuredPageHeightOverridesReduceContent =
@@ -29367,6 +29692,7 @@ export function DocxEditorViewer({
           estimatedPagesUseMeasuredPageContentHeightsForRender,
         renderMeasuredPageContentHeightsPxByPageIndex:
           estimatedRenderMeasuredPageContentHeightsPxByPageIndex,
+        renderPageContentHeightScale: estimatedRenderPageContentHeightScale,
       };
     }
     const resolvedTargetPageCount = targetPageCount ?? minimumPageCount;
@@ -29401,6 +29727,7 @@ export function DocxEditorViewer({
           estimatedPagesUseMeasuredPageContentHeightsForRender,
         renderMeasuredPageContentHeightsPxByPageIndex:
           estimatedRenderMeasuredPageContentHeightsPxByPageIndex,
+        renderPageContentHeightScale: estimatedRenderPageContentHeightScale,
       };
     }
 
@@ -29475,6 +29802,10 @@ export function DocxEditorViewer({
             reconciledCandidate.scale
           )
         : undefined;
+    let reconciledRenderPageContentHeightScale =
+      reconciledPagesUseMeasuredPageContentHeightsForRender
+        ? undefined
+        : reconciledCandidate.scale;
     if (!editor.canUndo && !editor.canRedo) {
       const pureEstimatedPages = buildEstimatedPages(undefined, null);
       const pureReconciledCandidate = reconcileCandidatePages(
@@ -29490,6 +29821,7 @@ export function DocxEditorViewer({
         reconciledPages = pureReconciledPages;
         reconciledPagesUseMeasuredPageContentHeightsForRender = false;
         reconciledRenderMeasuredPageContentHeightsPxByPageIndex = undefined;
+        reconciledRenderPageContentHeightScale = pureReconciledCandidate.scale;
       }
     }
 
@@ -29499,6 +29831,7 @@ export function DocxEditorViewer({
         reconciledPagesUseMeasuredPageContentHeightsForRender,
       renderMeasuredPageContentHeightsPxByPageIndex:
         reconciledRenderMeasuredPageContentHeightsPxByPageIndex,
+      renderPageContentHeightScale: reconciledRenderPageContentHeightScale,
     };
   }, [
     editor.canRedo,
@@ -29527,6 +29860,8 @@ export function DocxEditorViewer({
     pageSegmentationPlan.useMeasuredPageContentHeightsForRender;
   const renderMeasuredPageContentHeightsPxByPageIndex =
     pageSegmentationPlan.renderMeasuredPageContentHeightsPxByPageIndex;
+  const renderPageContentHeightScale =
+    pageSegmentationPlan.renderPageContentHeightScale;
   const pageNodeSegmentIdentityKeysByPage = React.useMemo(
     () =>
       pageNodeSegmentsByPage.map((pageSegments) =>
@@ -38873,6 +39208,34 @@ export function DocxEditorViewer({
             );
           }
 
+          if (run.kind === "tab" && Number.isFinite(run.tabWidthPx)) {
+            const overlapRatio =
+              run.endOffset > run.startOffset
+                ? (overlapEnd - overlapStart) /
+                  (run.endOffset - run.startOffset)
+                : 1;
+            const tabWidthPx = Math.max(
+              1,
+              Math.round((run.tabWidthPx as number) * overlapRatio)
+            );
+            return (
+              <span
+                key={`${keyPrefix}-fragment-tab-${lineIndex}-${run.key}-${overlapStart}`}
+                data-docx-tab-char="true"
+                style={{
+                  ...runStyleToCss(run.style, documentContentTheme),
+                  display: "inline-block",
+                  width: tabWidthPx,
+                  minWidth: tabWidthPx,
+                  whiteSpace: "pre",
+                  lineHeight: "1em",
+                }}
+              >
+                {"\u00a0"}
+              </span>
+            );
+          }
+
           const slice = run.text.slice(
             overlapStart - run.startOffset,
             overlapEnd - run.startOffset
@@ -42490,15 +42853,19 @@ export function DocxEditorViewer({
         const topBorderInsetPx = paragraphBorderInsetPx(
           paragraphForLayout.style?.borders?.top
         );
-        const lineHeightPx = estimateParagraphLineHeightPx(
-          paragraphForLayout,
-          docGridLinePitchPx,
-          disableDocGridSnap
+        const lineHeightPx = Math.max(
+          MIN_PARAGRAPH_LINE_HEIGHT_PX,
+          estimateParagraphLineHeightPx(
+            paragraphForLayout,
+            docGridLinePitchPx,
+            disableDocGridSnap
+          )
         );
         const pretextSource = buildParagraphPretextLayoutSource(
           paragraphForLayout,
           {
             allowExplicitLineBreakText: true,
+            expandTabsForLayout: true,
           }
         );
         const paragraphTextWidthPx = paragraphAvailableTextWidthPx(
@@ -42543,13 +42910,17 @@ export function DocxEditorViewer({
         );
       }
       const paragraphHeightPx = layoutEntry.paragraphHeightPx;
-      const paragraphBottomPx = paragraphTopPx + paragraphHeightPx;
       const textTopPx = paragraphTopPx + layoutEntry.textTopOffsetPx;
       const textBottomPx =
         textTopPx +
         (layoutEntry.pretextLayout
           ? wrappedPretextParagraphBlockHeightPx(layoutEntry.pretextLayout)
           : layoutEntry.lineHeightPx * layoutEntry.lineTopOffsetsPx.length);
+      const paragraphBottomPx = resolveTableCellParagraphVisualBottomPx({
+        paragraphTopPx,
+        paragraphHeightPx,
+        textBottomPx,
+      });
       const intersectsParagraph =
         sliceBottomPx > paragraphTopPx + PAGE_OVERFLOW_TOLERANCE_PX &&
         sliceStartPx < paragraphBottomPx - PAGE_OVERFLOW_TOLERANCE_PX;
@@ -42558,9 +42929,12 @@ export function DocxEditorViewer({
         continue;
       }
 
-      const fullyVisible =
-        sliceStartPx <= paragraphTopPx + PAGE_OVERFLOW_TOLERANCE_PX &&
-        sliceBottomPx >= paragraphBottomPx - PAGE_OVERFLOW_TOLERANCE_PX;
+      const fullyVisible = tableCellParagraphFitsFullyWithinSlice({
+        sliceStartPx,
+        sliceBottomPx,
+        paragraphTopPx,
+        paragraphBottomPx,
+      });
       if (fullyVisible) {
         plans.push({
           paragraph,
@@ -42579,7 +42953,8 @@ export function DocxEditorViewer({
         sliceBottomPx - textTopPx
       );
       if (!paragraphLineRange) {
-        return undefined;
+        paragraphTopPx = paragraphBottomPx;
+        continue;
       }
 
       const lineRangeTopPx =
@@ -44480,13 +44855,6 @@ export function DocxEditorViewer({
                   ...tableElementBorderStyle(node, tableBorderSpacingPx),
                   tableLayout:
                     node.style?.layout === "autofit" ? "auto" : "fixed",
-                  ...(hasTableRowSlice && tableRowSliceOffsetPx > 0
-                    ? {
-                        transform: `translateY(-${
-                          tableRowSliceOffsetPx - tableRowSliceTopBleedPx
-                        }px)`,
-                      }
-                    : undefined),
                 }}
               >
                 <colgroup>
@@ -45995,10 +46363,6 @@ export function DocxEditorViewer({
                                       position: "relative",
                                       height: slicedCellViewportHeightPx,
                                       overflow: "hidden",
-                                      transform: `translateY(${
-                                        tableRowSliceOffsetPx -
-                                        tableRowSliceTopBleedPx
-                                      }px)`,
                                     }}
                                   >
                                     {slicedParagraphPlans.map((plan) => {
@@ -47820,6 +48184,7 @@ export function DocxEditorViewer({
             pageIdentityKey: pageNodeSegmentIdentityKeysByPage[pageIndex],
             useMeasuredPageContentHeights:
               useMeasuredPageContentHeightsForRender,
+            pageContentHeightScale: renderPageContentHeightScale,
           });
         const headerFooterBodyDimmed = pageHeaderFooterEditActive;
         const documentPageBackgroundColor =
@@ -48167,6 +48532,20 @@ export function DocxEditorViewer({
                   display: "flex",
                   flexDirection: "column",
                   minHeight: pageBodyAvailableHeightPx,
+                  // Cap the body box at the available content area so any
+                  // pagination miss (paragraph estimate < actual rendered
+                  // height, form-field reflow, etc.) is clipped at the body
+                  // boundary instead of drawing on top of the footer.
+                  //
+                  // `overflow: hidden` is paint-only — children keep their
+                  // natural `getBoundingClientRect`, so the post-render
+                  // measurement loop still sees the true body bottom and
+                  // can feed the overrun back into
+                  // `measuredPageContentHeightByIndex` so the next
+                  // pagination pass reserves less room on the offending
+                  // page and spills the extra content to the next page.
+                  maxHeight: pageBodyAvailableHeightPx,
+                  overflow: "hidden",
                   ...(documentContentFilter
                     ? { filter: documentContentFilter }
                     : undefined),

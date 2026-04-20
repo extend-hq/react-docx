@@ -93,6 +93,43 @@ describe("page-count-reconciliation", () => {
     expect(reconciledCandidate.scale).toBe(1.04);
   });
 
+  it("refines the first exact page-count match to the smallest working scale", () => {
+    const initialPages = [
+      ["page-1"],
+      ["page-2"],
+      ["page-3"],
+      ["page-4"],
+      ["page-5"],
+      ["page-6"],
+      ["page-7"],
+    ];
+    const reconciledCandidate =
+      reconcilePageCountCandidateToTargetCountByScalingHeight({
+        initialPages,
+        targetPageCount: 5,
+        scales: [1.18, 1.2],
+        buildPagesAtScale: (scale) => {
+          if (scale >= 1.182) {
+            return [["page-1"], ["page-2"], ["page-3"], ["page-4"], ["page-5"]];
+          }
+          if (scale >= 1.12) {
+            return [
+              ["page-1"],
+              ["page-2"],
+              ["page-3"],
+              ["page-4"],
+              ["page-5"],
+              ["page-6"],
+            ];
+          }
+          return initialPages;
+        },
+      });
+
+    expect(reconciledCandidate.pages).toHaveLength(5);
+    expect(reconciledCandidate.scale).toBeCloseTo(1.182, 6);
+  });
+
   it("does not reduce to a stale stored page count when last-rendered break hints are present", () => {
     expect(
       shouldAllowStoredPageCountReduction({

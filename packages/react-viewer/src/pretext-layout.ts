@@ -1,5 +1,6 @@
 import {
   layoutNextLine,
+  measureLineStats,
   prepareWithSegments,
   type LayoutCursor,
   type LayoutLine,
@@ -392,6 +393,43 @@ function prepareCached(
       preparedTextByKey.delete(firstKey);
     }
     return prepared;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Fast line-count-only path for plain single-font paragraphs with no
+ * exclusions. Uses pretext's `measureLineStats` (added in 0.0.5) so we can
+ * wrap text and count lines in pure arithmetic without allocating any line
+ * text strings. Intended for hot pagination loops that only read
+ * `lineCount` from the result and discard the rest.
+ *
+ * Returns `undefined` when pretext is not available in the host environment
+ * (e.g. SSR without Canvas); callers should fall back to the general layout
+ * path in that case.
+ */
+export function measurePretextPlainTextLineCount(
+  text: string,
+  font: string,
+  containerWidthPx: number,
+  options?: {
+    wordBreak?: PretextWordBreak;
+  }
+): number | undefined {
+  if (!text) {
+    return 0;
+  }
+
+  const wordBreak = options?.wordBreak ?? "normal";
+  const prepared = prepareCached(text, font, wordBreak);
+  if (!prepared) {
+    return undefined;
+  }
+
+  try {
+    const safeWidth = Math.max(1, Math.round(containerWidthPx));
+    return measureLineStats(prepared, safeWidth).lineCount;
   } catch {
     return undefined;
   }

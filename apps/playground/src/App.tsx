@@ -53,6 +53,7 @@ import {
   Sun,
   Table2,
   Underline,
+  Loader2,
   Undo2,
   Upload,
   ZoomIn,
@@ -2851,11 +2852,19 @@ export function App(): React.JSX.Element {
                 <Button
                   variant="outline"
                   onClick={() => fileInputRef.current?.click()}
+                  disabled={editor.isImporting}
                 >
-                  <Upload />
-                  Import
+                  {editor.isImporting ? (
+                    <Loader2 className="animate-spin" />
+                  ) : (
+                    <Upload />
+                  )}
+                  {editor.isImporting ? "Loading…" : "Import"}
                 </Button>
-                <Button onClick={editor.exportDocx}>
+                <Button
+                  onClick={editor.exportDocx}
+                  disabled={editor.isImporting}
+                >
                   <Download />
                   Download
                 </Button>

@@ -216,6 +216,32 @@ describe("footer pagination reserve", () => {
     expect(reserveWithRaisedFooter).toBe(reserveWithMatchingMargin + 24);
   });
 
+  it("keeps a clearance reserve when footer flow content sits flush with the body margin", () => {
+    const footerSections: FooterSection[] = [
+      {
+        type: "default",
+        partName: "footer1.xml",
+        nodes: [
+          footerParagraph("Page 1 of 3"),
+          footerParagraph("Prepared by Seller"),
+        ],
+      },
+    ];
+
+    expect(
+      resolveFooterPaginationReservePx(footerSections, {
+        pageWidthPx: 816,
+        pageHeightPx: 1056,
+        marginsPx: {
+          left: 96,
+          right: 96,
+          bottom: 96,
+        },
+        footerDistancePx: 48,
+      })
+    ).toBeGreaterThan(0);
+  });
+
   it("uses page-relative footer anchor geometry from the footer part as reserve context", () => {
     const footerSections: FooterSection[] = [
       {
@@ -442,6 +468,30 @@ describe("footer pagination reserve", () => {
         useMeasuredPageContentHeights: false
       })
     ).toBe(880);
+  });
+
+  it("applies stored-page reconciliation scale during render when measured heights are disabled", () => {
+    expect(
+      resolveRenderPageContentHeightPxForPageSegments({
+        pageSegments: [
+          {
+            nodeIndex: 12,
+          },
+        ],
+        pageIndex: 0,
+        defaultPageContentHeightPx: 880,
+        metricsBySection: [
+          {
+            startNodeIndex: 0,
+            pageContentWidthPx: 640,
+            pageContentHeightPx: 880,
+            pageContentHeightMultiplier: 1,
+          },
+        ],
+        useMeasuredPageContentHeights: false,
+        pageContentHeightScale: 1.2,
+      })
+    ).toBe(1056);
   });
 
 });

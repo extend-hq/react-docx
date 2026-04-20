@@ -339,6 +339,7 @@ export interface TableRowStyle {
   heightTwips?: number;
   heightRule?: "auto" | "atLeast" | "exact";
   cantSplit?: boolean;
+  isHeader?: boolean;
 }
 
 export interface TableRowNode {
@@ -7269,6 +7270,9 @@ function parseTable(tableXml: string, context: ParseContext): TableNode {
     const rowCantSplit = rowPropertiesXml
       ? parseOnOffAttribute(rowPropertiesXml, "cantSplit")
       : undefined;
+    const rowIsHeader = rowPropertiesXml
+      ? parseOnOffAttribute(rowPropertiesXml, "tblHeader")
+      : undefined;
 
     const parsedCells = extractBalancedTagBlocks(rowXml, "w:tc").map(
       (cellXml) => parseTableCell(cellXml, context)
@@ -7349,7 +7353,8 @@ function parseTable(tableXml: string, context: ParseContext): TableNode {
         rowBackgroundColor !== undefined ||
         rowHeightTwips !== undefined ||
         rowHeightRule !== undefined ||
-        rowCantSplit !== undefined
+        rowCantSplit !== undefined ||
+        rowIsHeader !== undefined
           ? {
               backgroundColor: rowBackgroundColor,
               heightTwips: rowHeightTwips,
@@ -7358,6 +7363,9 @@ function parseTable(tableXml: string, context: ParseContext): TableNode {
                 : undefined),
               ...(rowCantSplit !== undefined
                 ? { cantSplit: rowCantSplit }
+                : undefined),
+              ...(rowIsHeader !== undefined
+                ? { isHeader: rowIsHeader }
                 : undefined),
             }
           : undefined,

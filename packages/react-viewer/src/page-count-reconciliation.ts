@@ -12,6 +12,8 @@ export interface PageCountReconciliationOptions<TPage> {
   scales?: number[];
 }
 
+const PAGE_COUNT_RECONCILIATION_REFINEMENT_STEPS = 10;
+
 export function shouldAllowStoredPageCountReduction(options: {
   estimatedPageCount: number;
   targetPageCount: number;
@@ -178,24 +180,77 @@ export function reconcilePageCountCandidateToTargetCountByScalingHeight<TPage>(
           0.5, 0.48, 0.46, 0.44, 0.42, 0.4, 0.38, 0.36, 0.34, 0.32, 0.3, 0.28,
           0.26, 0.24, 0.22, 0.2,
         ]
-      : [
+        : [
           1.02, 1.04, 1.06, 1.08, 1.1, 1.12, 1.14, 1.16, 1.18, 1.2, 1.22, 1.24,
           1.26, 1.28, 1.3,
         ];
-
-  for (const scale of scales) {
+  const buildCandidateAtScale = (scale: number): PageCountCandidate<TPage> => {
     const pages = buildPagesAtScale(scale);
-    const candidate: PageCountCandidate<TPage> = {
+    return {
       pageCount: pages.length,
       pages,
       scale,
     };
+  };
+
+  const refineExactTargetCandidate = (
+    lowerScale: number,
+    upperScale: number
+  ): PageCountCandidate<TPage> => {
+    let bestExactCandidate: PageCountCandidate<TPage> | undefined;
+    const interval = upperScale - lowerScale;
+    if (!Number.isFinite(interval) || Math.abs(interval) < 0.0001) {
+      return selectedCandidate;
+    }
+
+    for (
+      let step = 1;
+      step <= PAGE_COUNT_RECONCILIATION_REFINEMENT_STEPS;
+      step += 1
+    ) {
+      const scale =
+        lowerScale +
+        (interval * step) / PAGE_COUNT_RECONCILIATION_REFINEMENT_STEPS;
+      const candidate = buildCandidateAtScale(scale);
+      if (isBetterCandidate(candidate, selectedCandidate, safeTargetPageCount)) {
+        selectedCandidate = candidate;
+      }
+      if (
+        candidate.pageCount === safeTargetPageCount &&
+        (bestExactCandidate === undefined ||
+          isBetterCandidate(
+            candidate,
+            bestExactCandidate,
+            safeTargetPageCount
+          ))
+      ) {
+        bestExactCandidate = candidate;
+      }
+    }
+
+    return bestExactCandidate ?? selectedCandidate;
+  };
+
+  let previousScale = 1;
+  let previousPageCount = initialPageCount;
+
+  for (const scale of scales) {
+    const candidate = buildCandidateAtScale(scale);
     if (isBetterCandidate(candidate, selectedCandidate, safeTargetPageCount)) {
       selectedCandidate = candidate;
     }
     if (candidate.pageCount === safeTargetPageCount) {
+      const crossedIntoExactTarget =
+        needMorePages
+          ? previousPageCount < safeTargetPageCount
+          : previousPageCount > safeTargetPageCount;
+      if (crossedIntoExactTarget) {
+        return refineExactTargetCandidate(previousScale, scale);
+      }
       return candidate;
     }
+    previousScale = scale;
+    previousPageCount = candidate.pageCount;
   }
 
   return selectedCandidate;
