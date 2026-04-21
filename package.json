@@ -4,6 +4,14 @@
   "version": "0.0.0",
   "packageManager": "pnpm@9.15.0",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/extend-hq/react-docx.git"
+  },
+  "bugs": {
+    "url": "https://github.com/extend-hq/react-docx/issues"
+  },
+  "homepage": "https://github.com/extend-hq/react-docx#readme",
   "scripts": {
     "prepare": "git config core.hooksPath .githooks || true",
     "build": "pnpm -r --filter './packages/*' run build",
@@ -18,7 +26,7 @@
     "test:docx-regression": "pnpm run test:docx-regression:visual",
     "test:docx-regression:visual": "playwright test tests/visual/docx-regression.spec.ts --pass-with-no-tests",
     "test:docx-regression:update": "pnpm run test:docx-regression:visual --update-snapshots",
-    "test:docx-vs-libreoffice": "node scripts/compare-docx-to-libreoffice.mjs",
+    "test:docx-vs-libreoffice": "node scripts/verify-docx-fidelity-corpus.mjs",
     "changeset": "changeset",
     "version-packages": "changeset version",
     "publish-packages": "changeset publish"
@@ -33,5 +41,12 @@
     "typescript": "^5.8.3",
     "vite-tsconfig-paths": "^5.1.4",
     "vitest": "^2.1.9"
+  },
+  "pnpm": {
+    "overrides": {
+      "lodash": "4.18.1",
+      "picomatch@>=4.0.0 <4.0.4": "4.0.4",
+      "vite": "6.4.2"
+    }
   }
 }

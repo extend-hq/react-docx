@@ -3,6 +3,22 @@
   "version": "0.5.0",
   "description": "React components/hooks for DOCX viewing",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/extend-hq/react-docx.git",
+    "directory": "packages/react-viewer"
+  },
+  "bugs": {
+    "url": "https://github.com/extend-hq/react-docx/issues"
+  },
+  "homepage": "https://github.com/extend-hq/react-docx#readme",
+  "keywords": [
+    "docx",
+    "react",
+    "viewer",
+    "editor",
+    "ooxml"
+  ],
   "main": "dist/index.cjs",
   "module": "dist/index.js",
   "types": "dist/index.d.ts",

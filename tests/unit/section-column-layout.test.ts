@@ -120,4 +120,82 @@ describe("section column layout xml", () => {
     expect(pages).toHaveLength(1);
     expect(pages[0]).toEqual([{ nodeIndex: 0 }, { nodeIndex: 1 }]);
   });
+
+  it("honors paragraph-start rendered page breaks in multi-column sections", () => {
+    const model: DocModel = {
+      nodes: [
+        {
+          type: "table",
+          rows: [
+            {
+              type: "table-row",
+              cells: [
+                {
+                  type: "table-cell",
+                  nodes: [
+                    {
+                      type: "paragraph",
+                      children: [{ type: "text", text: "Previous content" }],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+        {
+          type: "paragraph",
+          children: [
+            {
+              type: "text",
+              text: "This is an example of columns. With columns, the page is split into two or more horizontal sections.",
+            },
+            { type: "text", text: "\n" },
+            {
+              type: "text",
+              text: "When columns are not created correctly, screen readers may run lines together.",
+            },
+          ],
+          sourceXml:
+            '<w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:r><w:lastRenderedPageBreak/></w:r><w:r><w:t>This is an example of columns. With columns, the page is split into two or more horizontal sections.</w:t></w:r><w:r><w:br w:type="column"/></w:r><w:r><w:t>When columns are not created correctly, screen readers may run lines together.</w:t></w:r></w:p>',
+        },
+      ],
+      metadata: {
+        sourceParts: 1,
+        warnings: [],
+        headerSections: [],
+        footerSections: [],
+        paragraphStyles: [],
+      },
+    };
+
+    const pages = buildDocumentPageNodeSegments(
+      model,
+      864,
+      624,
+      undefined,
+      [
+        {
+          startNodeIndex: 0,
+          pageContentWidthPx: 624,
+          pageContentHeightPx: 864,
+          pageContentHeightMultiplier: 1,
+        },
+        {
+          startNodeIndex: 1,
+          pageContentWidthPx: 288,
+          pageContentHeightPx: 1728,
+          pageContentHeightMultiplier: 2,
+        },
+      ],
+      {
+        measuredTableRowHeightsByNodeIndex: {
+          0: [820],
+        },
+        preferLastRenderedParagraphStartBreaks: true,
+      }
+    );
+
+    expect(pages).toEqual([[{ nodeIndex: 0 }], [{ nodeIndex: 1 }]]);
+  });
 });

@@ -1,6 +1,21 @@
 import { describe, expect, it } from "vitest";
+import * as React from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import type { DocModel } from "@extend-ai/react-docx-doc-model";
-import { paragraphLineCountWithinWidth } from "../../packages/react-viewer/src/editor";
+import {
+  defaultStarterModel,
+  DocxEditorViewer,
+  paragraphLineCountWithinWidth,
+  useDocxEditor
+} from "../../packages/react-viewer/src/editor";
+
+function TocViewer({ model }: { model: DocModel }): React.JSX.Element {
+  const editor = useDocxEditor({ starterModel: model });
+  return React.createElement(DocxEditorViewer, {
+    editor,
+    mode: "read-only"
+  });
+}
 
 describe("toc tab leader pagination", () => {
   it("reserves the trailing page-number zone before wrapping long TOC entries", () => {
@@ -44,5 +59,57 @@ describe("toc tab leader pagination", () => {
     };
 
     expect(paragraphLineCountWithinWidth(paragraph, 260)).toBe(4);
+  });
+
+  it("renders TOC entry tabs as measured spacers before the page-number zone", () => {
+    const model: DocModel = {
+      ...defaultStarterModel,
+      nodes: [
+        {
+          type: "paragraph",
+          style: {
+            styleId: "TOC8",
+            styleName: "toc 8",
+            indent: {
+              leftTwips: 1418,
+              rightTwips: 1134,
+              hangingTwips: 851
+            },
+            tabStops: [
+              {
+                alignment: "left",
+                leader: "none",
+                positionTwips: 1418
+              },
+              {
+                alignment: "right",
+                leader: "dot",
+                positionTwips: 6804
+              }
+            ]
+          },
+          children: [
+            {
+              type: "text",
+              text: "1.\tCitation\t1",
+              style: {
+                fontFamily: "Times New Roman",
+                fontSizePt: 12
+              }
+            }
+          ]
+        }
+      ]
+    };
+
+    const html = renderToStaticMarkup(React.createElement(TocViewer, { model }));
+
+    expect(html).toContain('data-docx-tab-layout="leader"');
+    expect(html).toContain('data-docx-tab-zone="left"');
+    expect(html).toContain('data-docx-tab-zone="right"');
+    expect(html).toContain("display:block;flex:0 1 auto");
+    expect(html).toContain("display:inline-block;white-space:pre;width:");
+    expect(html).toContain("flex:0 0 max-content");
+    expect(html).toContain("white-space:nowrap;text-indent:0");
   });
 });

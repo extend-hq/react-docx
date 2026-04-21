@@ -1,6 +1,6 @@
 .codex/
-.githooks/
 .mcp.json
+.claude/
 node_modules
 .pnpm-store
 dist
@@ -12,6 +12,9 @@ tmp-image2.wmf
 *.tsbuildinfo
 .DS_Store
 tmp/
+output/
+autoresearch-results/
+plugins/
 .tmp-*
 *.tmp
 scripts/compare-docx-to-libreoffice.mjs

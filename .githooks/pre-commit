@@ -1,0 +1,20 @@
+#!/bin/sh
+set -eu
+
+staged_paths="$(git diff --cached --name-only --diff-filter=ACMR)"
+
+if [ -z "$staged_paths" ]; then
+  exit 0
+fi
+
+blocked_paths="$(
+  printf '%s\n' "$staged_paths" |
+    grep -E '(^tests/visual/|\.docx$|\.avif$|\.bmp$|\.gif$|\.ico$|\.jpe?g$|\.png$|\.svg$|\.tiff?$|\.webp$)' ||
+    true
+)"
+
+if [ -n "$blocked_paths" ]; then
+  printf '%s\n' 'Commit blocked: visual regression tests, DOCX files, and image files must not be committed.'
+  printf '%s\n' "$blocked_paths"
+  exit 1
+fi

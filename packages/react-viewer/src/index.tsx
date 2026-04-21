@@ -18,16 +18,65 @@ import {
 } from "./image-render";
 
 export interface ReactDocxViewerProps {
+  /**
+   * Raw `.docx` file contents to parse and render.
+   *
+   * Pass either `file` or `model`. When both are provided, `model` wins and
+   * the file buffer is ignored.
+   *
+   * @example
+   * ```tsx
+   * const buffer = await file.arrayBuffer();
+   * <ReactDocxViewer file={buffer} />
+   * ```
+   */
   file?: ArrayBuffer;
+  /**
+   * Prebuilt document model to render without parsing a `.docx` buffer.
+   *
+   * Useful when you already parsed the document with `parseDocx` and
+   * `buildDocModel`, or when you are rendering a model produced by your own
+   * pipeline.
+   */
   model?: DocModel;
+  /**
+   * CSS class applied to the outer viewer container.
+   *
+   * @example
+   * ```tsx
+   * <ReactDocxViewer file={buffer} className="docx-preview" />
+   * ```
+   */
   className?: string;
+  /**
+   * Layout overrides for the simple read-only renderer.
+   *
+   * If omitted, page width and height are derived from the document section
+   * properties when available.
+   *
+   * @example
+   * ```tsx
+   * <ReactDocxViewer
+   *   file={buffer}
+   *   layoutOptions={{ pageWidth: 816, pageHeight: 1056, margin: 72 }}
+   * />
+   * ```
+   */
   layoutOptions?: LayoutOptions;
+  /**
+   * Content shown when neither `file` nor `model` is provided.
+   *
+   * @defaultValue `"No DOCX loaded."`
+   */
   emptyState?: React.ReactNode;
 }
 
 export interface UseDocxModelState {
+  /** Parsed document model, available once loading succeeds. */
   model?: DocModel;
+  /** True while the hook is parsing the current file buffer. */
   isLoading: boolean;
+  /** Parse or model-build failure for the current file buffer. */
   error?: Error;
 }
 
@@ -457,6 +506,8 @@ export {
   type DocxEditorSelection,
   type DocxEditorViewerProps,
   type DocxEditorViewerMode,
+  type DocxPageVirtualizationOptions,
+  type DocxVisiblePageRange,
   type DocxContextMenuAction,
   type DocxContextMenuActionId,
   type DocxContextMenuContext,
