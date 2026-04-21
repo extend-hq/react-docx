@@ -18,10 +18,27 @@ describe("table cell line slice", () => {
     });
   });
 
-  it("returns undefined when no full line fits in the slice", () => {
+  it("assigns boundary-crossing lines to a slice instead of dropping them", () => {
     expect(
       resolveLineRangeWithinVerticalSlice([0, 20, 40], 20, 5, 15)
+    ).toEqual({
+      startLineIndex: 0,
+      endLineIndex: 1,
+      totalLineCount: 3,
+      lineHeightPx: 20,
+    });
+  });
+
+  it("hands a page-boundary line to the following slice once", () => {
+    expect(
+      resolveLineRangeWithinVerticalSlice([100], 20, 0, 110)
     ).toBeUndefined();
+    expect(resolveLineRangeWithinVerticalSlice([100], 20, 110, 220)).toEqual({
+      startLineIndex: 0,
+      endLineIndex: 1,
+      totalLineCount: 1,
+      lineHeightPx: 20,
+    });
   });
 
   it("uses the visual text bottom when wrapped text exceeds the estimated paragraph height", () => {

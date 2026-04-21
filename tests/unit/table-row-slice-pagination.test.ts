@@ -106,6 +106,46 @@ function createTwoRowModel(): DocModel {
   };
 }
 
+function createExplicitTallSplitRowModel(): DocModel {
+  return {
+    nodes: [
+      {
+        type: "table",
+        rows: [
+          {
+            type: "table-row",
+            style: {
+              heightTwips: 240,
+              heightRule: "atLeast"
+            },
+            cells: [
+              {
+                type: "table-cell",
+                nodes: Array.from({ length: 30 }, (_, index) => ({
+                  type: "paragraph" as const,
+                  children: [
+                    {
+                      type: "text" as const,
+                      text: `Tall explicit row paragraph ${index + 1}`
+                    }
+                  ]
+                }))
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    metadata: {
+      sourceParts: 1,
+      warnings: [],
+      headerSections: [],
+      footerSections: [],
+      paragraphStyles: []
+    }
+  };
+}
+
 describe("table row slice pagination", () => {
   it("slices oversize cantSplit rows instead of rendering one overflowing row", () => {
     const model = createModel();
@@ -262,5 +302,21 @@ describe("table row slice pagination", () => {
         }
       ]
     ]);
+  });
+
+  it("does not cap explicit split-row estimates below multipage cell content", () => {
+    const pages = buildDocumentPageNodeSegments(
+      createExplicitTallSplitRowModel(),
+      120,
+      400
+    );
+    const slices = pages
+      .flat()
+      .map((segment) => segment.tableRowSlice)
+      .filter((slice): slice is NonNullable<typeof slice> => Boolean(slice));
+
+    expect(slices.length).toBeGreaterThan(1);
+    expect(slices[0]?.totalRowHeightPx).toBeGreaterThan(120);
+    expect(slices.at(-1)?.startOffsetPx ?? 0).toBeGreaterThanOrEqual(120);
   });
 });
