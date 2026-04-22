@@ -7,11 +7,13 @@ import {
   type PreparedTextWithSegments,
 } from "@chenglou/pretext";
 
-const PREPARED_TEXT_CACHE_MAX_ENTRIES = 512;
-const LAYOUT_CACHE_MAX_ENTRIES = 256;
+const PREPARED_TEXT_CACHE_MAX_ENTRIES = 8192;
+const LAYOUT_CACHE_MAX_ENTRIES = 4096;
+const LINE_COUNT_CACHE_MAX_ENTRIES = 16384;
 
 const preparedTextByKey = new Map<string, PreparedTextWithSegments>();
 const layoutByKey = new Map<string, PretextVariableWidthLayout>();
+const lineCountByKey = new Map<string, number>();
 const fragmentOffsetAdvancesByFragment = new WeakMap<
   PretextLineFragment,
   number[]
@@ -102,6 +104,27 @@ function canUsePretext(): boolean {
   return (
     typeof OffscreenCanvas !== "undefined" || typeof document !== "undefined"
   );
+}
+
+function getCachedValue<K, V>(cache: Map<K, V>, key: K): V | undefined {
+  const cached = cache.get(key);
+  if (cached === undefined) {
+    return undefined;
+  }
+
+  cache.delete(key);
+  cache.set(key, cached);
+  return cached;
+}
+
+function trimCache<K, V>(cache: Map<K, V>, maxEntries: number): void {
+  while (cache.size > maxEntries) {
+    const firstKey = cache.keys().next().value as K | undefined;
+    if (firstKey === undefined) {
+      break;
+    }
+    cache.delete(firstKey);
+  }
 }
 
 function getMeasureContext():
@@ -372,7 +395,7 @@ function prepareCached(
   }
 
   const cacheKey = `${font}\u0000${wordBreak}\u0000${text}`;
-  const cached = preparedTextByKey.get(cacheKey);
+  const cached = getCachedValue(preparedTextByKey, cacheKey);
   if (cached) {
     return cached;
   }
@@ -383,15 +406,7 @@ function prepareCached(
       wordBreak,
     });
     preparedTextByKey.set(cacheKey, prepared);
-    while (preparedTextByKey.size > PREPARED_TEXT_CACHE_MAX_ENTRIES) {
-      const firstKey = preparedTextByKey.keys().next().value as
-        | string
-        | undefined;
-      if (!firstKey) {
-        break;
-      }
-      preparedTextByKey.delete(firstKey);
-    }
+    trimCache(preparedTextByKey, PREPARED_TEXT_CACHE_MAX_ENTRIES);
     return prepared;
   } catch {
     return undefined;
@@ -422,14 +437,25 @@ export function measurePretextPlainTextLineCount(
   }
 
   const wordBreak = options?.wordBreak ?? "normal";
+  const safeWidth = Math.max(1, Math.round(containerWidthPx));
+  const cacheKey =
+    `line-count\u0000${font}\u0000${wordBreak}` +
+    `\u0000${safeWidth}\u0000${text}`;
+  const cached = getCachedValue(lineCountByKey, cacheKey);
+  if (cached !== undefined) {
+    return cached;
+  }
+
   const prepared = prepareCached(text, font, wordBreak);
   if (!prepared) {
     return undefined;
   }
 
   try {
-    const safeWidth = Math.max(1, Math.round(containerWidthPx));
-    return measureLineStats(prepared, safeWidth).lineCount;
+    const lineCount = measureLineStats(prepared, safeWidth).lineCount;
+    lineCountByKey.set(cacheKey, lineCount);
+    trimCache(lineCountByKey, LINE_COUNT_CACHE_MAX_ENTRIES);
+    return lineCount;
   } catch {
     return undefined;
   }
@@ -824,7 +850,7 @@ export function layoutTextWithPretextAroundExclusions(
     safeLineHeightPx,
     normalizedExclusions
   );
-  const cachedLayout = layoutByKey.get(cacheKey);
+  const cachedLayout = getCachedValue(layoutByKey, cacheKey);
   if (cachedLayout) {
     return cachedLayout;
   }
@@ -920,13 +946,7 @@ export function layoutTextWithPretextAroundExclusions(
     exclusions: normalizedExclusions,
   };
   layoutByKey.set(cacheKey, nextLayout);
-  while (layoutByKey.size > LAYOUT_CACHE_MAX_ENTRIES) {
-    const firstKey = layoutByKey.keys().next().value as string | undefined;
-    if (!firstKey) {
-      break;
-    }
-    layoutByKey.delete(firstKey);
-  }
+  trimCache(layoutByKey, LAYOUT_CACHE_MAX_ENTRIES);
   return nextLayout;
 }
 
@@ -996,7 +1016,7 @@ export function layoutItemsWithPretextAroundExclusions(
     safeLineHeightPx,
     normalizedExclusions
   );
-  const cachedLayout = layoutByKey.get(cacheKey);
+  const cachedLayout = getCachedValue(layoutByKey, cacheKey);
   if (cachedLayout) {
     return cachedLayout;
   }
@@ -1137,13 +1157,7 @@ export function layoutItemsWithPretextAroundExclusions(
     exclusions: normalizedExclusions,
   };
   layoutByKey.set(cacheKey, nextLayout);
-  while (layoutByKey.size > LAYOUT_CACHE_MAX_ENTRIES) {
-    const firstKey = layoutByKey.keys().next().value as string | undefined;
-    if (!firstKey) {
-      break;
-    }
-    layoutByKey.delete(firstKey);
-  }
+  trimCache(layoutByKey, LAYOUT_CACHE_MAX_ENTRIES);
   return nextLayout;
 }
 

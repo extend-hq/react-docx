@@ -248,6 +248,8 @@ const INITIAL_PAGINATION_PAGE_COUNT_OSCILLATION_DISTINCT_THRESHOLD = 2;
 const INITIAL_PAGINATION_PAGE_COUNT_OSCILLATION_CHANGE_THRESHOLD = 4;
 const INITIAL_PAGINATION_BACKGROUND_REFINEMENT_DELAY_MS = 96;
 const DEFAULT_PAGE_VIRTUALIZATION_OVERSCAN = 2;
+const LARGE_TABLE_PAGE_VIRTUALIZATION_OVERSCAN = 0;
+const LARGE_TABLE_PAGE_ADJACENT_RENDER_COUNT = 1;
 const DEFAULT_PAGE_VIRTUALIZATION_SETTLE_DELAY_MS = 350;
 const ENABLE_TABLE_ROW_SLICING = true;
 const TOP_AND_BOTTOM_VERTICAL_DRAG_SNAP_PX = 10;
@@ -8881,6 +8883,32 @@ function estimateTabLeaderWrappedLineCountForParagraph(
   );
 }
 
+const wrappedLineCountByParagraph = new WeakMap<
+  ParagraphNode,
+  Map<number, number>
+>();
+
+function cachedWrappedLineCountForParagraph(
+  paragraph: ParagraphNode,
+  widthPx: number
+): number | undefined {
+  return wrappedLineCountByParagraph.get(paragraph)?.get(widthPx);
+}
+
+function rememberWrappedLineCountForParagraph(
+  paragraph: ParagraphNode,
+  widthPx: number,
+  lineCount: number
+): number {
+  let countsByWidth = wrappedLineCountByParagraph.get(paragraph);
+  if (!countsByWidth) {
+    countsByWidth = new Map<number, number>();
+    wrappedLineCountByParagraph.set(paragraph, countsByWidth);
+  }
+  countsByWidth.set(widthPx, lineCount);
+  return lineCount;
+}
+
 function estimateWrappedLineCountForParagraph(
   paragraph: ParagraphNode,
   availableWidthPx: number
@@ -8890,6 +8918,20 @@ function estimateWrappedLineCountForParagraph(
     paragraphBaseFontPx * 2,
     Math.round(availableWidthPx)
   );
+  const cachedLineCount = cachedWrappedLineCountForParagraph(
+    paragraph,
+    maxLineWidthPx
+  );
+  if (cachedLineCount !== undefined) {
+    return cachedLineCount;
+  }
+
+  const rememberLineCount = (lineCount: number): number =>
+    rememberWrappedLineCountForParagraph(
+      paragraph,
+      maxLineWidthPx,
+      Math.max(1, Math.round(lineCount))
+    );
   const tabStopsPx = resolveParagraphTabStopsPx(paragraph);
   const useTabLeaderLayout = paragraphUsesTabLeaders(paragraph);
   const anchoredTabLayout = paragraphAnchoredTabLayout(paragraph);
@@ -8949,7 +8991,7 @@ function estimateWrappedLineCountForParagraph(
       return layout?.lineCount;
     })();
     if (pretextPlainLineCount) {
-      return Math.max(1, pretextPlainLineCount);
+      return rememberLineCount(pretextPlainLineCount);
     }
   }
 
@@ -8960,7 +9002,7 @@ function estimateWrappedLineCountForParagraph(
       paragraphBaseFontPx
     );
     if (tabLeaderLineCount !== undefined) {
-      return tabLeaderLineCount;
+      return rememberLineCount(tabLeaderLineCount);
     }
   }
   let lineCount = 1;
@@ -9123,7 +9165,7 @@ function estimateWrappedLineCountForParagraph(
     }
   }
 
-  return hasVisibleContent ? Math.max(1, lineCount) : 1;
+  return rememberLineCount(hasVisibleContent ? lineCount : 1);
 }
 
 function paragraphAvailableTextWidthPx(
@@ -31174,7 +31216,7 @@ export function DocxEditorViewer({
   );
   const pageVirtualizationOverscan =
     hasLargeTableLayoutSurface && !Number.isFinite(pageVirtualization?.overscan)
-      ? 0
+      ? LARGE_TABLE_PAGE_VIRTUALIZATION_OVERSCAN
       : rawPageVirtualizationOverscan;
   const webdriverActive =
     typeof navigator !== "undefined" && navigator.webdriver === true;
@@ -31307,10 +31349,50 @@ export function DocxEditorViewer({
       endPageIndex,
     };
   }, [internalPageVirtualizationEnabled, internalVirtualItems, pageCount]);
+  const internalRenderVisiblePageRange = React.useMemo(() => {
+    if (!internalVisiblePageRange) {
+      return undefined;
+    }
+
+    if (
+      !hasLargeTableLayoutSurface ||
+      Number.isFinite(pageVirtualization?.overscan)
+    ) {
+      return internalVisiblePageRange;
+    }
+
+    const scrollDirection = internalPageVirtualizer.scrollDirection;
+    const renderPreviousPage = scrollDirection !== "backward";
+    const renderNextPage = scrollDirection === "backward";
+    const startPageIndex = clampNumber(
+      internalVisiblePageRange.startPageIndex -
+        (renderPreviousPage ? LARGE_TABLE_PAGE_ADJACENT_RENDER_COUNT : 0),
+      0,
+      pageCount - 1
+    );
+    const endPageIndex = clampNumber(
+      internalVisiblePageRange.endPageIndex +
+        (renderNextPage ? LARGE_TABLE_PAGE_ADJACENT_RENDER_COUNT : 0),
+      startPageIndex,
+      pageCount - 1
+    );
+
+    return {
+      startPageIndex,
+      endPageIndex,
+    };
+  }, [
+    hasLargeTableLayoutSurface,
+    internalPageVirtualizer.scrollDirection,
+    internalVisiblePageRange,
+    pageCount,
+    pageVirtualization?.overscan,
+  ]);
   React.useLayoutEffect(() => {
     if (
       !internalPageVirtualizationEnabled ||
       !internalVirtualScrollElement ||
+      internalVirtualItems.length > 0 ||
       typeof window === "undefined"
     ) {
       setObservedVisiblePageRange((current) =>
@@ -31451,6 +31533,7 @@ export function DocxEditorViewer({
     };
   }, [
     internalPageVirtualizationEnabled,
+    internalVirtualItems.length,
     internalVirtualScrollElement,
     internalVirtualScrollUsesWindow,
     pageCount,
@@ -31458,8 +31541,8 @@ export function DocxEditorViewer({
   ]);
   const effectiveVisiblePageRange =
     visiblePageRange ??
+    internalRenderVisiblePageRange ??
     observedVisiblePageRange ??
-    internalVisiblePageRange ??
     (internalPageVirtualizationPending
       ? {
           startPageIndex: 0,
@@ -31724,7 +31807,17 @@ export function DocxEditorViewer({
         rootElement.querySelectorAll<HTMLElement>(
           '[data-docx-page-wrapper="true"][data-index]'
         )
-      );
+      ).filter((element) => {
+        const pageIndex = Number.parseInt(
+          element.getAttribute("data-index") ?? "",
+          10
+        );
+        return (
+          Number.isFinite(pageIndex) &&
+          pageIndex >= visiblePageStartIndex &&
+          pageIndex <= visiblePageEndIndex
+        );
+      });
       const nextElements = new Set(pageWrappers);
 
       observedElements.forEach((element) => {
@@ -31769,6 +31862,8 @@ export function DocxEditorViewer({
     internalPageVirtualizer,
     internalVirtualScrollElement,
     pageCount,
+    visiblePageEndIndex,
+    visiblePageStartIndex,
   ]);
   React.useEffect(() => {
     if (!internalPageVirtualizationEnabled) {
@@ -32381,13 +32476,24 @@ export function DocxEditorViewer({
       (_, pageIndex) => {
         const pageLayout =
           pageSectionInfoByIndex[pageIndex]?.layout ?? documentLayout;
-        const pageElement = pageElementsRef.current.get(pageIndex);
         const fallbackHeightPx = Math.max(
           120,
           pageLayout.pageHeightPx -
             pageLayout.marginsPx.top -
             pageLayout.marginsPx.bottom
         );
+        const pageIsVisible =
+          pageIndex >= visiblePageStartIndex && pageIndex <= visiblePageEndIndex;
+        if (!pageIsVisible) {
+          return {
+            heightPx:
+              measuredPageContentHeightByIndex?.[pageIndex] ??
+              fallbackHeightPx,
+            bodyOverrunsFooter: false,
+          };
+        }
+
+        const pageElement = pageElementsRef.current.get(pageIndex);
         if (!pageElement) {
           return {
             heightPx: fallbackHeightPx,
@@ -32632,6 +32738,8 @@ export function DocxEditorViewer({
     pageNodeSegmentIdentityKeysByPage,
     pageSectionInfoByIndex,
     pageHeaderAndFooterNodes,
+    visiblePageEndIndex,
+    visiblePageStartIndex,
   ]);
   React.useEffect(() => {
     if (

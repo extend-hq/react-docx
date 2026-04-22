@@ -27,13 +27,16 @@ let cachedWorker: Worker | undefined;
 let cachedWorkerUnavailable = false;
 let nextRequestId = 1;
 
-function resolveWorker(): Worker | undefined {
-  if (cachedWorkerUnavailable) {
-    return undefined;
+class DocxImportWorkerTransportError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "DocxImportWorkerTransportError";
   }
+}
 
-  if (cachedWorker) {
-    return cachedWorker;
+function canUseWorker(): boolean {
+  if (cachedWorkerUnavailable) {
+    return false;
   }
 
   if (
@@ -42,27 +45,43 @@ function resolveWorker(): Worker | undefined {
     typeof URL === "undefined"
   ) {
     cachedWorkerUnavailable = true;
+    return false;
+  }
+
+  return true;
+}
+
+function createWorker(): Worker | undefined {
+  if (!canUseWorker()) {
     return undefined;
   }
 
   try {
-    // `new URL(..., import.meta.url)` is the portable way to reference a
-    // worker source. Vite, webpack 5, Rollup, and esbuild all detect this
-    // pattern at bundle time and ship the worker as a separate chunk.
-    const workerUrl = new URL(
-      "./docx-import-worker.ts",
-      import.meta.url
-    );
-    cachedWorker = new Worker(workerUrl, {
+    // Keep this exact static shape so Vite/Rollup recognize and bundle the
+    // worker source. The package build emits the same path into `dist/`, so
+    // downstream apps can load the worker from npm without source TS.
+    return new Worker(new URL("./docx-import-worker.js", import.meta.url), {
       type: "module",
       name: "docx-import",
     });
-    return cachedWorker;
   } catch {
-    cachedWorkerUnavailable = true;
     cachedWorker = undefined;
     return undefined;
   }
+}
+
+function resolveWorker(): Worker | undefined {
+  if (cachedWorker) {
+    return cachedWorker;
+  }
+
+  const worker = createWorker();
+  if (!worker) {
+    return undefined;
+  }
+
+  cachedWorker = worker;
+  return cachedWorker;
 }
 
 async function importDocxOnMainThread(
@@ -73,37 +92,49 @@ async function importDocxOnMainThread(
   return { pkg, model };
 }
 
-/**
- * Parse a `.docx` buffer and build its `DocModel` off the main thread.
- *
- * Falls back to running `parseDocx` + `buildDocModel` synchronously on the
- * main thread when a worker cannot be constructed (e.g. server-side
- * rendering). The return shape is identical either way.
- *
- * `buffer` is transferred into the worker — do not reuse it after calling
- * this function.
- */
-export async function importDocxViaWorker(
-  buffer: ArrayBuffer
-): Promise<DocxImportResult> {
-  const worker = resolveWorker();
-  if (!worker) {
-    return importDocxOnMainThread(buffer);
+function invalidateWorker(worker: Worker): void {
+  try {
+    worker.terminate();
+  } catch {
+    // Best-effort termination.
+  }
+  if (cachedWorker === worker) {
+    cachedWorker = undefined;
+  }
+}
+
+function warnWorkerFallback(reason: unknown): void {
+  if (typeof console === "undefined") {
+    return;
   }
 
+  console.warn(
+    "DOCX import worker failed; falling back to main thread parsing.",
+    reason
+  );
+}
+
+function importDocxWithWorker(
+  worker: Worker,
+  buffer: ArrayBuffer
+): Promise<DocxImportResult> {
   const requestId = nextRequestId;
   nextRequestId += 1;
 
   return new Promise<DocxImportResult>((resolve, reject) => {
+    const cleanup = (): void => {
+      worker.removeEventListener("message", handleMessage);
+      worker.removeEventListener("error", handleError);
+      worker.removeEventListener("messageerror", handleMessageError);
+    };
+
     const handleMessage = (event: MessageEvent): void => {
       const data = event.data as DocxImportWorkerResponseMessage | undefined;
       if (!data || data.requestId !== requestId) {
         return;
       }
 
-      worker.removeEventListener("message", handleMessage);
-      worker.removeEventListener("error", handleError);
-      worker.removeEventListener("messageerror", handleMessageError);
+      cleanup();
 
       if (data.type === "imported") {
         resolve({ pkg: data.pkg, model: data.model });
@@ -113,23 +144,13 @@ export async function importDocxViaWorker(
     };
 
     const handleError = (event: ErrorEvent | Event): void => {
-      worker.removeEventListener("message", handleMessage);
-      worker.removeEventListener("error", handleError);
-      worker.removeEventListener("messageerror", handleMessageError);
+      cleanup();
       const message =
         event instanceof ErrorEvent && event.message
           ? event.message
           : "DOCX import worker crashed";
-      // Invalidate the cached worker so the next import starts fresh.
-      try {
-        worker.terminate();
-      } catch {
-        // Best-effort termination.
-      }
-      if (cachedWorker === worker) {
-        cachedWorker = undefined;
-      }
-      reject(new Error(message));
+      invalidateWorker(worker);
+      reject(new DocxImportWorkerTransportError(message));
     };
 
     const handleMessageError = (): void => {
@@ -147,20 +168,50 @@ export async function importDocxViaWorker(
     };
 
     try {
-      worker.postMessage(request, [buffer]);
+      // Do not transfer/detach the buffer here. Keeping the main-thread copy
+      // lets us retry a packaged worker URL or fall back to main-thread parsing
+      // if a production host fails to load the worker chunk.
+      worker.postMessage(request);
     } catch (error) {
-      worker.removeEventListener("message", handleMessage);
-      worker.removeEventListener("error", handleError);
-      worker.removeEventListener("messageerror", handleMessageError);
-      // Most likely: the buffer couldn't be transferred. Fall back to
-      // main thread but warn in the console to aid debugging.
-      if (typeof console !== "undefined") {
-        console.warn(
-          "DOCX import worker postMessage failed; falling back to main thread.",
-          error
-        );
-      }
-      importDocxOnMainThread(buffer).then(resolve, reject);
+      cleanup();
+      invalidateWorker(worker);
+      reject(
+        new DocxImportWorkerTransportError(
+          error instanceof Error ? error.message : "DOCX import worker failed"
+        )
+      );
     }
   });
+}
+
+/**
+ * Parse a `.docx` buffer and build its `DocModel` off the main thread.
+ *
+ * Falls back to running `parseDocx` + `buildDocModel` synchronously on the
+ * main thread when a worker cannot be constructed (e.g. server-side
+ * rendering). The return shape is identical either way.
+ *
+ * The worker message keeps a main-thread copy of `buffer` so production
+ * builds can recover if a host fails to load the worker chunk.
+ */
+export async function importDocxViaWorker(
+  buffer: ArrayBuffer
+): Promise<DocxImportResult> {
+  const worker = resolveWorker();
+  if (!worker) {
+    return importDocxOnMainThread(buffer);
+  }
+
+  try {
+    return await importDocxWithWorker(worker, buffer);
+  } catch (error) {
+    if (!(error instanceof DocxImportWorkerTransportError)) {
+      throw error;
+    }
+
+    warnWorkerFallback(error);
+    cachedWorkerUnavailable = true;
+    cachedWorker = undefined;
+    return importDocxOnMainThread(buffer);
+  }
 }
