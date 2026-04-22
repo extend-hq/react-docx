@@ -2921,6 +2921,7 @@ export function App(): React.JSX.Element {
               <DocxEditorViewer
                 editor={editor}
                 pageGapBackgroundColor={pageGapBackgroundColor}
+                deferInitialPaginationPaint={false}
                 mode={isReadOnly ? "read-only" : "edit"}
                 showTrackedChanges={showTrackedChanges}
                 renderTrackedChangeCard={renderTrackedChangeCard}

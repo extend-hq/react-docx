@@ -3,6 +3,7 @@ import { flushSync } from "react-dom";
 import { renderToStaticMarkup } from "react-dom/server";
 import { useVirtualizer, useWindowVirtualizer } from "@tanstack/react-virtual";
 import {
+  buildDocModel,
   cloneDocModel,
   type DocModel,
   type DocumentNoteDefinition,
@@ -34,8 +35,7 @@ import {
   updateTableCellParagraphText,
   updateTableCellText,
 } from "@extend-ai/react-docx-editor-ops";
-import { type OoxmlPackage } from "@extend-ai/react-docx-ooxml-core";
-import { importDocxViaWorker } from "./docx-import-worker-client";
+import { type OoxmlPackage, parseDocx } from "@extend-ai/react-docx-ooxml-core";
 import { serializeDocx } from "@extend-ai/react-docx-serializer";
 import {
   collectTableExplicitPageBreakInfo,
@@ -22713,7 +22713,7 @@ export function useDocxEditor(
   const [status, setStatus] = React.useState<string>(
     options.initialStatus ?? "Ready"
   );
-  const [isImporting, setIsImporting] = React.useState<boolean>(false);
+  const isImporting = false;
   const [documentTheme, setDocumentThemeState] =
     React.useState<DocxDocumentTheme>(options.initialDocumentTheme ?? "light");
   const [showTrackedChanges, setShowTrackedChangesState] =
@@ -23421,45 +23421,22 @@ export function useDocxEditor(
         return;
       }
 
-      setIsImporting(true);
-      setStatus(`Loading ${file.name}…`);
-
-      // Yield twice so the loading UI paints before we start the heavy
-      // synchronous parse + buildDocModel work. Without this the browser
-      // never gets a chance to render "Loading…" before the freeze begins.
-      await new Promise<void>((resolve) => {
-        if (typeof requestAnimationFrame === "function") {
-          requestAnimationFrame(() => {
-            requestAnimationFrame(() => resolve());
-          });
-        } else {
-          setTimeout(resolve, 0);
-        }
-      });
-
       try {
         const buffer = await file.arrayBuffer();
-        // parseDocx + buildDocModel run inside a Web Worker (with a silent
-        // fallback to the main thread if the host can't construct one) so
-        // the UI can paint and respond to clicks during the CPU-heavy
-        // import phase.
-        const { pkg, model: nextModel } = await importDocxViaWorker(buffer);
+        const pkg = await parseDocx(buffer);
         await loadEmbeddedFontsFromPackage(pkg);
+        const nextModel = buildDocModel(pkg);
 
-        // Mark the model swap as a transition so React can yield to user
-        // input (clicks, keystrokes) while re-rendering a large document.
-        React.startTransition(() => {
-          setModel(nextModel);
-          setDocumentLoadNonce((current) => current + 1);
-          setHistory({ past: [], future: [] });
-          setHistoryRestoreRequest(undefined);
-          setBasePackage(pkg);
-          setFileName(file.name);
-          setSelection({ kind: "paragraph", nodeIndex: 0 });
-          setActiveTextRangeState(undefined);
-          setPendingRunStyle(undefined);
-          setSelectedFormFieldLocation(undefined);
-        });
+        setModel(nextModel);
+        setDocumentLoadNonce((current) => current + 1);
+        setHistory({ past: [], future: [] });
+        setHistoryRestoreRequest(undefined);
+        setBasePackage(pkg);
+        setFileName(file.name);
+        setSelection({ kind: "paragraph", nodeIndex: 0 });
+        setActiveTextRangeState(undefined);
+        setPendingRunStyle(undefined);
+        setSelectedFormFieldLocation(undefined);
         setStatus(`Loaded ${file.name}`);
       } catch (error) {
         setStatus(
@@ -23467,8 +23444,6 @@ export function useDocxEditor(
             error instanceof Error ? error.message : "Unknown error"
           }`
         );
-      } finally {
-        setIsImporting(false);
       }
     },
     [loadEmbeddedFontsFromPackage]

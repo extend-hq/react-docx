@@ -10,14 +10,13 @@ const bundledWorkspacePackages = [
 ];
 
 export default defineConfig({
-  entry: ["src/index.tsx", "src/docx-import-worker.ts"],
+  entry: ["src/index.tsx"],
   format: ["esm", "cjs"],
   sourcemap: true,
   clean: true,
   external: ["react", "react-dom"],
   noExternal: bundledWorkspacePackages,
   dts: {
-    resolve: true,
-    entry: "src/index.tsx"
+    resolve: true
   }
 });
