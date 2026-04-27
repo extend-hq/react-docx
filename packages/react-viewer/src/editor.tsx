@@ -24262,23 +24262,32 @@ export function useDocxEditor(
     [dispatchEditorTransaction]
   );
 
+  const replaceDocumentWithImportError = React.useCallback(
+    (fileName: string, error: Error): void => {
+      unloadEmbeddedFonts();
+      setModel(createBlankDocumentModel());
+      setDocumentLoadNonce((current) => current + 1);
+      setHistory({ past: [], future: [] });
+      setHistoryRestoreRequest(undefined);
+      setBasePackage(undefined);
+      setFileName(fileName);
+      setSelection({ kind: "paragraph", nodeIndex: 0 });
+      setActiveTextRangeState(undefined);
+      setPendingRunStyle(undefined);
+      setSelectedFormFieldLocation(undefined);
+      setImportError(error);
+      setStatus(`Failed to load file: ${error.message}`);
+    },
+    [unloadEmbeddedFonts]
+  );
+
   const importDocxFile = React.useCallback(
     async (file: File): Promise<void> => {
       if (!/\.docx$/i.test(file.name)) {
-        const nextError = new Error("Only .docx files are supported");
-        unloadEmbeddedFonts();
-        setModel(createBlankDocumentModel());
-        setDocumentLoadNonce((current) => current + 1);
-        setHistory({ past: [], future: [] });
-        setHistoryRestoreRequest(undefined);
-        setBasePackage(undefined);
-        setFileName(file.name);
-        setSelection({ kind: "paragraph", nodeIndex: 0 });
-        setActiveTextRangeState(undefined);
-        setPendingRunStyle(undefined);
-        setSelectedFormFieldLocation(undefined);
-        setImportError(nextError);
-        setStatus(`Failed to load file: ${nextError.message}`);
+        replaceDocumentWithImportError(
+          file.name,
+          new Error("Only .docx files are supported")
+        );
         return;
       }
 
@@ -24306,26 +24315,12 @@ export function useDocxEditor(
       } catch (error) {
         const nextError =
           error instanceof Error ? error : new Error("Unknown error");
-        unloadEmbeddedFonts();
-        setModel(createBlankDocumentModel());
-        setDocumentLoadNonce((current) => current + 1);
-        setHistory({ past: [], future: [] });
-        setHistoryRestoreRequest(undefined);
-        setBasePackage(undefined);
-        setFileName(file.name);
-        setSelection({ kind: "paragraph", nodeIndex: 0 });
-        setActiveTextRangeState(undefined);
-        setPendingRunStyle(undefined);
-        setSelectedFormFieldLocation(undefined);
-        setImportError(nextError);
-        setStatus(
-          `Failed to load file: ${nextError.message}`
-        );
+        replaceDocumentWithImportError(file.name, nextError);
       } finally {
         setIsImporting(false);
       }
     },
-    [loadEmbeddedFontsFromPackage, unloadEmbeddedFonts]
+    [loadEmbeddedFontsFromPackage, replaceDocumentWithImportError]
   );
 
   const newDocument = React.useCallback((): void => {
