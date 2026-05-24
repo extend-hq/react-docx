@@ -33,6 +33,12 @@
   },
   "devDependencies": {
     "@changesets/cli": "^2.29.5",
+    "@extend-ai/react-docx-doc-model": "workspace:*",
+    "@extend-ai/react-docx-editor-ops": "workspace:*",
+    "@extend-ai/react-docx-layout-core": "workspace:*",
+    "@extend-ai/react-docx-layout-engine": "workspace:*",
+    "@extend-ai/react-docx-ooxml-core": "workspace:*",
+    "@extend-ai/react-docx-serializer": "workspace:*",
     "@playwright/test": "^1.52.0",
     "@types/node": "^22.15.3",
     "@types/react": "^19.1.6",
