@@ -1,5 +1,11 @@
 # @extend-ai/react-docx
 
+## 0.6.4
+
+### Patch Changes
+
+- 76f0ded: Remove bundled internal workspace packages from the published package manifest.
+
 ## 0.5.0
 
 ### Minor Changes
