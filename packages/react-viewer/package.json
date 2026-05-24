@@ -45,14 +45,6 @@
     "fast-png": "^8.0.0",
     "utif": "^3.1.0"
   },
-  "devDependencies": {
-    "@extend-ai/react-docx-doc-model": "workspace:*",
-    "@extend-ai/react-docx-editor-ops": "workspace:*",
-    "@extend-ai/react-docx-layout-core": "workspace:*",
-    "@extend-ai/react-docx-layout-engine": "workspace:*",
-    "@extend-ai/react-docx-ooxml-core": "workspace:*",
-    "@extend-ai/react-docx-serializer": "workspace:*"
-  },
   "scripts": {
     "build": "tsup --config tsup.config.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
