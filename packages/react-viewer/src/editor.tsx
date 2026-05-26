@@ -32012,6 +32012,8 @@ export function DocxEditorViewer({
     React.useState(false);
   const [internalVirtualScrollElement, setInternalVirtualScrollElement] =
     React.useState<HTMLElement | null>(null);
+  const [virtualizerMeasurementScale, setVirtualizerMeasurementScale] =
+    React.useState(1);
   const [observedVisiblePageRange, setObservedVisiblePageRange] =
     React.useState<
       | {
@@ -32087,6 +32089,21 @@ export function DocxEditorViewer({
       nearestScrollableAncestor(viewerRootRef.current)
     );
   }, [editor.documentLoadNonce, pageCount, trackedChangesEnabled]);
+  React.useLayoutEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const rootElement = viewerRootRef.current;
+    if (!rootElement) {
+      return;
+    }
+
+    const nextScale = resolveEffectiveZoomScale(rootElement);
+    setVirtualizerMeasurementScale((current) =>
+      Math.abs(current - nextScale) < 0.001 ? current : nextScale
+    );
+  });
   const internalPageVirtualizationEnabled =
     internalPageVirtualizationRequested &&
     internalVirtualScrollElement !== null;
@@ -32108,9 +32125,25 @@ export function DocxEditorViewer({
     (pageIndex: number): number => {
       const pageLayout =
         pageSectionInfoByIndex[pageIndex]?.layout ?? documentLayout;
-      return Math.max(1, pageLayout.pageHeightPx + DOC_PAGE_BREAK_GAP);
+      return Math.max(
+        1,
+        Math.round(
+          (pageLayout.pageHeightPx + DOC_PAGE_BREAK_GAP) *
+            virtualizerMeasurementScale
+        )
+      );
     },
-    [documentLayout, pageSectionInfoByIndex]
+    [documentLayout, pageSectionInfoByIndex, virtualizerMeasurementScale]
+  );
+  const measureVirtualPageElement = React.useCallback(
+    (element: HTMLElement): number => {
+      const rect = element.getBoundingClientRect();
+      return Math.max(
+        1,
+        Math.round(rect.height + DOC_PAGE_BREAK_GAP * virtualizerMeasurementScale)
+      );
+    },
+    [virtualizerMeasurementScale]
   );
   const internalElementPageVirtualizer = useVirtualizer({
     count: Math.max(1, pageCount),
@@ -32119,6 +32152,7 @@ export function DocxEditorViewer({
         ? internalVirtualScrollElement
         : null,
     estimateSize: estimateVirtualPageSize,
+    measureElement: measureVirtualPageElement,
     overscan: pageVirtualizationOverscan,
   });
   const internalWindowPageVirtualizer = useWindowVirtualizer({
@@ -32128,6 +32162,7 @@ export function DocxEditorViewer({
         ? window
         : null,
     estimateSize: estimateVirtualPageSize,
+    measureElement: measureVirtualPageElement,
     overscan: pageVirtualizationOverscan,
   });
   const internalPageVirtualizer = internalVirtualScrollUsesWindow
@@ -32807,6 +32842,7 @@ export function DocxEditorViewer({
     internalPageVirtualizer,
     pageCount,
     trackedChangesEnabled,
+    virtualizerMeasurementScale,
   ]);
   React.useEffect(() => {
     const nextCurrentPage = clampNumber(

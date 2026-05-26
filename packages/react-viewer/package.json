@@ -1,6 +1,6 @@
 {
   "name": "@extend-ai/react-docx",
-  "version": "0.6.4",
+  "version": "0.6.5",
   "description": "React components/hooks for DOCX viewing",
   "type": "module",
   "repository": {
