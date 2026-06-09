@@ -583,3 +583,111 @@ describe("editor-ops", () => {
     expect(split.afterChildren.some((child) => child.type === "text" && child.text.includes("to edit around this arrow."))).toBe(true);
   });
 });
+
+describe("editor-ops structural sharing (copy-on-write)", () => {
+  function multiParagraphModel(): DocModel {
+    return {
+      nodes: [
+        { type: "paragraph", children: [{ type: "text", text: "Alpha" }] },
+        { type: "paragraph", children: [{ type: "text", text: "Bravo" }] },
+        { type: "paragraph", children: [{ type: "text", text: "Charlie" }] }
+      ],
+      metadata: {
+        sourceParts: 1,
+        warnings: [],
+        headerSections: [],
+        footerSections: [],
+        paragraphStyles: [{ id: "Normal", name: "Normal" }],
+        defaultParagraphStyleId: "Normal"
+      }
+    };
+  }
+
+  it("shares untouched sibling nodes and metadata by reference across a single-paragraph edit", () => {
+    const model = multiParagraphModel();
+    const next = updateParagraphText(model, 1, "Bravo edited");
+
+    // The edited node is a fresh object with the new content...
+    expect(next).not.toBe(model);
+    expect(next.nodes[1]).not.toBe(model.nodes[1]);
+    expect(next.nodes[1].children[0]).toMatchObject({ text: "Bravo edited" });
+
+    // ...while untouched siblings and metadata keep their identity (structural sharing).
+    expect(next.nodes[0]).toBe(model.nodes[0]);
+    expect(next.nodes[2]).toBe(model.nodes[2]);
+    expect(next.metadata).toBe(model.metadata);
+  });
+
+  it("never mutates the input model (prior history snapshots stay intact)", () => {
+    const model = multiParagraphModel();
+    const before = model.nodes[1];
+
+    toggleRunStyleFlag(model, 1, 0, "bold");
+    setParagraphHeading(model, 1, 1);
+    updateParagraphText(model, 1, "totally different");
+
+    // The original node object is unchanged by any op.
+    expect(model.nodes[1]).toBe(before);
+    expect(model.nodes[1].children[0]).toMatchObject({ text: "Bravo" });
+    expect(model.nodes[1].children[0].style?.bold).toBeUndefined();
+    expect(model.nodes[1].style?.headingLevel).toBeUndefined();
+  });
+
+  it("shares siblings across structural splice ops (insert via paste / remove)", () => {
+    const model = multiParagraphModel();
+    const pasted = pasteParagraphs(model, 1, [
+      { type: "paragraph", children: [{ type: "text", text: "Inserted" }] }
+    ]);
+
+    // Existing nodes keep identity; only the array shape changes.
+    expect(pasted.nodes).toHaveLength(4);
+    expect(pasted.nodes[0]).toBe(model.nodes[0]);
+    expect(pasted.nodes[2]).toBe(model.nodes[1]);
+    expect(pasted.nodes[3]).toBe(model.nodes[2]);
+    expect(pasted.metadata).toBe(model.metadata);
+    // Input array is untouched.
+    expect(model.nodes).toHaveLength(3);
+  });
+
+  it("shares unedited body nodes when editing a table cell", () => {
+    const model: DocModel = {
+      nodes: [
+        { type: "paragraph", children: [{ type: "text", text: "Above table" }] },
+        {
+          type: "table",
+          rows: [
+            {
+              type: "table-row",
+              cells: [
+                { type: "table-cell", nodes: [{ type: "paragraph", children: [{ type: "text", text: "Cell" }] }] }
+              ]
+            }
+          ]
+        }
+      ],
+      metadata: {
+        sourceParts: 1,
+        warnings: [],
+        headerSections: [],
+        footerSections: [],
+        paragraphStyles: [],
+        defaultParagraphStyleId: "Normal"
+      }
+    };
+
+    const next = updateTableCellText(model, 1, 0, 0, "Edited cell");
+
+    // The sibling paragraph above the table and metadata are shared; the table is cloned.
+    expect(next.nodes[0]).toBe(model.nodes[0]);
+    expect(next.metadata).toBe(model.metadata);
+    expect(next.nodes[1]).not.toBe(model.nodes[1]);
+    const editedTable = next.nodes[1];
+    const originalTable = model.nodes[1];
+    if (editedTable.type !== "table" || originalTable.type !== "table") {
+      throw new Error("expected table nodes");
+    }
+    expect(editedTable.rows[0].cells[0].nodes[0].children[0]).toMatchObject({ text: "Edited cell" });
+    // Original table is unmutated.
+    expect(originalTable.rows[0].cells[0].nodes[0].children[0]).toMatchObject({ text: "Cell" });
+  });
+});

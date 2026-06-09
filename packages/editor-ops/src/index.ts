@@ -11,7 +11,46 @@ import type {
   TextRunNode,
   TextStyle
 } from "@extend-ai/react-docx-doc-model";
-import { cloneDocModel } from "@extend-ai/react-docx-doc-model";
+import {
+  cloneDocModel,
+  cloneDocModelNodes,
+  cloneDocModelWithNode
+} from "@extend-ai/react-docx-doc-model";
+
+// Copy-on-write for the common single-node edits: shares `metadata` and every
+// sibling node by reference and deep-clones only the edited paragraph, so a
+// keystroke costs O(edited paragraph) instead of O(whole document). The cloned
+// node is produced by doc-model's authoritative cloneDocNode, so the result is
+// identical in content to the previous full-clone path.
+function cloneModelWithParagraph(
+  model: DocModel,
+  index: number
+): { next: DocModel; paragraph: ParagraphNode } | undefined {
+  const node = model.nodes[index];
+  if (!node || node.type !== "paragraph") {
+    return undefined;
+  }
+  const cow = cloneDocModelWithNode(model, index);
+  if (!cow || cow.node.type !== "paragraph") {
+    return undefined;
+  }
+  return { next: cow.model, paragraph: cow.node };
+}
+
+function cloneModelWithTable(
+  model: DocModel,
+  index: number
+): { next: DocModel; table: TableNode } | undefined {
+  const node = model.nodes[index];
+  if (!node || node.type !== "table") {
+    return undefined;
+  }
+  const cow = cloneDocModelWithNode(model, index);
+  if (!cow || cow.node.type !== "table") {
+    return undefined;
+  }
+  return { next: cow.model, table: cow.node };
+}
 
 export interface InsertParagraphOptions {
   paragraphStyle?: ParagraphStyle;
@@ -766,19 +805,18 @@ export function insertParagraph(
   index = model.nodes.length,
   options?: InsertParagraphOptions
 ): DocModel {
-  const next = cloneDocModel(model);
+  const next = cloneDocModelNodes(model);
   const safeIndex = Math.max(0, Math.min(index, next.nodes.length));
   next.nodes.splice(safeIndex, 0, paragraphFromText(text, options));
   return next;
 }
 
 export function removeParagraph(model: DocModel, index: number): DocModel {
-  const next = cloneDocModel(model);
-  const node = getParagraph(next, index);
-  if (!node) {
-    return next;
+  if (!getParagraph(model, index)) {
+    return model;
   }
 
+  const next = cloneDocModelNodes(model);
   next.nodes.splice(index, 1);
 
   if (!next.nodes.some((candidate) => candidate.type === "paragraph")) {
@@ -789,12 +827,12 @@ export function removeParagraph(model: DocModel, index: number): DocModel {
 }
 
 export function duplicateParagraph(model: DocModel, index: number): DocModel {
-  const next = cloneDocModel(model);
-  const node = getParagraph(next, index);
+  const node = getParagraph(model, index);
   if (!node) {
-    return next;
+    return model;
   }
 
+  const next = cloneDocModelNodes(model);
   next.nodes.splice(index + 1, 0, cloneParagraph(node));
   return next;
 }
@@ -805,16 +843,15 @@ export function updateParagraphText(
   text: string,
   options?: UpdateTextOptions
 ): DocModel {
-  const next = cloneDocModel(model);
-  const paragraph = getParagraph(next, index);
-  if (!paragraph) {
-    return next;
+  const cow = cloneModelWithParagraph(model, index);
+  if (!cow) {
+    return model;
   }
 
-  paragraph.children = distributeTextAcrossParagraphChildren(paragraph, text, options);
-  paragraph.sourceXml = undefined;
+  cow.paragraph.children = distributeTextAcrossParagraphChildren(cow.paragraph, text, options);
+  cow.paragraph.sourceXml = undefined;
 
-  return next;
+  return cow.next;
 }
 
 export function updateTableCellText(
@@ -825,11 +862,12 @@ export function updateTableCellText(
   text: string,
   options?: UpdateTextOptions
 ): DocModel {
-  const next = cloneDocModel(model);
-  const tableNode = next.nodes[tableIndex];
-  if (!tableNode || tableNode.type !== "table") {
-    return next;
+  const cow = cloneModelWithTable(model, tableIndex);
+  if (!cow) {
+    return model;
   }
+  const next = cow.next;
+  const tableNode = cow.table;
 
   const row = tableNode.rows[rowIndex];
   const cell = row?.cells[cellIndex];
@@ -882,11 +920,12 @@ export function updateTableCellParagraphText(
   text: string,
   options?: UpdateTextOptions
 ): DocModel {
-  const next = cloneDocModel(model);
-  const tableNode = next.nodes[tableIndex];
-  if (!tableNode || tableNode.type !== "table") {
-    return next;
+  const cow = cloneModelWithTable(model, tableIndex);
+  if (!cow) {
+    return model;
   }
+  const next = cow.next;
+  const tableNode = cow.table;
 
   const row = tableNode.rows[rowIndex];
   const cell = row?.cells[cellIndex];
@@ -912,11 +951,12 @@ export function updateTableCellParagraphTextRecursive(
   text: string,
   options?: UpdateTextOptions
 ): DocModel {
-  const next = cloneDocModel(model);
-  const tableNode = next.nodes[tableIndex];
-  if (!tableNode || tableNode.type !== "table") {
-    return next;
+  const cow = cloneModelWithTable(model, tableIndex);
+  if (!cow) {
+    return model;
   }
+  const next = cow.next;
+  const tableNode = cow.table;
 
   const row = tableNode.rows[rowIndex];
   const cell = row?.cells[cellIndex];
@@ -1008,19 +1048,18 @@ export function setParagraphHeading(
   nodeIndex: number,
   headingLevel?: HeadingLevel
 ): DocModel {
-  const next = cloneDocModel(model);
-  const paragraph = getParagraph(next, nodeIndex);
-  if (!paragraph) {
-    return next;
+  const cow = cloneModelWithParagraph(model, nodeIndex);
+  if (!cow) {
+    return model;
   }
 
-  paragraph.style = {
-    ...(paragraph.style ?? {}),
+  cow.paragraph.style = {
+    ...(cow.paragraph.style ?? {}),
     headingLevel
   };
-  paragraph.sourceXml = undefined;
+  cow.paragraph.sourceXml = undefined;
 
-  return next;
+  return cow.next;
 }
 
 export function setParagraphAlignment(
@@ -1028,19 +1067,18 @@ export function setParagraphAlignment(
   nodeIndex: number,
   align?: ParagraphAlignment
 ): DocModel {
-  const next = cloneDocModel(model);
-  const paragraph = getParagraph(next, nodeIndex);
-  if (!paragraph) {
-    return next;
+  const cow = cloneModelWithParagraph(model, nodeIndex);
+  if (!cow) {
+    return model;
   }
 
-  paragraph.style = {
-    ...(paragraph.style ?? {}),
+  cow.paragraph.style = {
+    ...(cow.paragraph.style ?? {}),
     align
   };
-  paragraph.sourceXml = undefined;
+  cow.paragraph.sourceXml = undefined;
 
-  return next;
+  return cow.next;
 }
 
 export function applyRunStyle(
@@ -1049,20 +1087,19 @@ export function applyRunStyle(
   runIndex: number,
   style: Partial<TextStyle>
 ): DocModel {
-  const next = cloneDocModel(model);
-  const paragraph = getParagraph(next, nodeIndex);
-  if (!paragraph) {
-    return next;
+  const cow = cloneModelWithParagraph(model, nodeIndex);
+  if (!cow) {
+    return model;
   }
 
-  const textRun = ensureTextRun(paragraph, runIndex);
+  const textRun = ensureTextRun(cow.paragraph, runIndex);
   textRun.style = {
     ...(textRun.style ?? {}),
     ...style
   };
-  paragraph.sourceXml = undefined;
+  cow.paragraph.sourceXml = undefined;
 
-  return next;
+  return cow.next;
 }
 
 export function toggleRunStyleFlag(
@@ -1071,21 +1108,20 @@ export function toggleRunStyleFlag(
   runIndex: number,
   key: "bold" | "italic" | "underline" | "strike"
 ): DocModel {
-  const next = cloneDocModel(model);
-  const paragraph = getParagraph(next, nodeIndex);
-  if (!paragraph) {
-    return next;
+  const cow = cloneModelWithParagraph(model, nodeIndex);
+  if (!cow) {
+    return model;
   }
 
-  const textRun = ensureTextRun(paragraph, runIndex);
+  const textRun = ensureTextRun(cow.paragraph, runIndex);
   const current = Boolean(textRun.style?.[key]);
   textRun.style = {
     ...(textRun.style ?? {}),
     [key]: !current
   };
-  paragraph.sourceXml = undefined;
+  cow.paragraph.sourceXml = undefined;
 
-  return next;
+  return cow.next;
 }
 
 export function setRunHighlight(
@@ -1122,7 +1158,7 @@ export function copyParagraphs(model: DocModel, startIndex: number, endIndex = s
 }
 
 export function pasteParagraphs(model: DocModel, index: number, paragraphs: ParagraphNode[]): DocModel {
-  const next = cloneDocModel(model);
+  const next = cloneDocModelNodes(model);
   const safeIndex = Math.max(0, Math.min(index, next.nodes.length));
   const copies = paragraphs.map(cloneParagraph);
   next.nodes.splice(safeIndex, 0, ...copies);
