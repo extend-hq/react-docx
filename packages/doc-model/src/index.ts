@@ -8908,6 +8908,57 @@ function cloneNumberingDefinitions(
   };
 }
 
+/**
+ * Copy-on-write clone of a single top-level body node.
+ *
+ * Returns a new {@link DocModel} that shares `metadata` and every sibling node
+ * with `model` by reference, deep-cloning ONLY the node at `index` (which is
+ * therefore safe for the caller to mutate in place). The cloned node is produced
+ * by the same {@link cloneDocNode} that {@link cloneDocModel} uses, so the edited
+ * node is byte-for-byte identical to a full clone — the only difference is that
+ * untouched nodes and the entire metadata object keep their identity.
+ *
+ * This is the structural-sharing counterpart to {@link cloneDocModel} for the
+ * common editing case where an operation touches exactly one top-level node
+ * (typing, run-style toggles, single-cell table edits). It turns a per-edit
+ * O(document) deep copy into O(edited node).
+ *
+ * Returns `undefined` when there is no node at `index`, so callers can preserve
+ * their existing not-found behavior.
+ *
+ * Safety: because untouched nodes and `metadata` keep their object identity,
+ * prior model snapshots (e.g. undo history that stores models by reference) never
+ * observe a mutation — PROVIDED the caller mutates only the returned `node` and
+ * never mutates `metadata` (use {@link cloneDocModel} for edits that touch
+ * metadata such as headers/footers/styles).
+ */
+export function cloneDocModelWithNode(
+  model: DocModel,
+  index: number
+): { model: DocModel; node: DocNode } | undefined {
+  const original = model.nodes[index];
+  if (!original) {
+    return undefined;
+  }
+  const nodes = model.nodes.slice();
+  const node = cloneDocNode(original);
+  nodes[index] = node;
+  return { model: { ...model, nodes }, node };
+}
+
+/**
+ * Structural-sharing copy for edits that splice the top-level `nodes` array
+ * (insert/remove/move/paste) WITHOUT mutating any retained node. Returns a new
+ * {@link DocModel} with a shallow copy of `nodes` (so the caller may splice it)
+ * while `metadata` and every existing node are shared by reference.
+ *
+ * Safety: the caller must only splice the returned array and must not mutate any
+ * node carried over from `model` (newly inserted nodes the caller owns are fine).
+ */
+export function cloneDocModelNodes(model: DocModel): DocModel {
+  return { ...model, nodes: model.nodes.slice() };
+}
+
 export function cloneDocModel(model: DocModel): DocModel {
   return {
     nodes: model.nodes.map(cloneDocNode),
