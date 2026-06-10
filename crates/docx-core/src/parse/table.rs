@@ -355,6 +355,7 @@ pub fn parse_table(
             },
         });
     }
+    let column_widths_twips = normalize_conflicting_table_grid(column_widths_twips, &mut rows);
     let column_count = column_widths_twips
         .len()
         .max(
@@ -492,6 +493,187 @@ pub fn parse_table(
         },
         source_xml: Some(table_xml.to_string()),
     }
+}
+
+/// Some generators emit a placeholder tblGrid while each row's real geometry
+/// lives in per-cell tcW values (rows may even have differing boundaries).
+/// Word's fixed-layout algorithm trusts cell widths over the grid, so when the
+/// two disagree on most measured cells, rebuild the grid as the union of all
+/// row boundaries and remap every cell's gridSpan onto it.
+fn normalize_conflicting_table_grid(
+    grid: Vec<i64>,
+    rows: &mut [TableRowNode],
+) -> Vec<i64> {
+    const BOUNDARY_TOLERANCE_TWIPS: i64 = 80;
+    if grid.is_empty() || rows.is_empty() {
+        return grid;
+    }
+
+    let span_of = |cell: &TableCellNode| -> usize {
+        cell.style
+            .as_ref()
+            .and_then(|style| style.grid_span)
+            .unwrap_or(1)
+            .max(1) as usize
+    };
+    let width_of = |cell: &TableCellNode| -> Option<i64> {
+        cell.style
+            .as_ref()
+            .and_then(|style| style.width_twips)
+            .filter(|&width| width > 0)
+    };
+
+    // Only regrid when the declared grid is structurally consistent with the
+    // rows (cell spans actually address its columns) but width-wrong. When the
+    // grid is structurally bogus (e.g. one gridCol for a three-column table),
+    // the row-derived fallbacks downstream already model Word's behavior.
+    let max_span_sum = rows
+        .iter()
+        .map(|row| row.cells.iter().map(|cell| span_of(cell)).sum::<usize>())
+        .max()
+        .unwrap_or(0);
+    if max_span_sum != grid.len() {
+        return grid;
+    }
+
+    // Conflict detection: do explicit cell widths disagree with the grid?
+    let mut measured_rows = 0usize;
+    let mut conflict_rows = 0usize;
+    for row in rows.iter() {
+        let mut cursor = 0usize;
+        let mut measured = 0usize;
+        let mut conflicts = 0usize;
+        for cell in &row.cells {
+            let span = span_of(cell);
+            let expected: i64 = grid.iter().skip(cursor).take(span).sum();
+            cursor += span;
+            let Some(actual) = width_of(cell) else {
+                continue;
+            };
+            if expected <= 0 {
+                continue;
+            }
+            measured += 1;
+            if (actual - expected).abs() * 5 > expected {
+                conflicts += 1;
+            }
+        }
+        if measured > 0 {
+            measured_rows += 1;
+            if conflicts * 2 > measured {
+                conflict_rows += 1;
+            }
+        }
+    }
+    if measured_rows == 0 || conflict_rows * 2 <= measured_rows {
+        return grid;
+    }
+
+    // Union of every row's cumulative cell boundaries; cells without an
+    // explicit width fall back to the original grid width for their span.
+    // Vertically merged cells must share the anchor row's width: HTML rowspan
+    // cannot express per-row geometry, so continuation cells adopt the
+    // anchor's width and the difference is absorbed by the cells that follow
+    // (matching how LibreOffice resolves such tables).
+    let bucket_of = |position: i64| -> i64 {
+        (position + BOUNDARY_TOLERANCE_TWIPS / 2) / BOUNDARY_TOLERANCE_TWIPS
+    };
+    let is_continuation = |cell: &TableCellNode| -> bool {
+        cell.style
+            .as_ref()
+            .and_then(|style| style.v_merge_continuation)
+            .unwrap_or(false)
+    };
+    let mut anchor_width_by_bucket: HashMap<i64, i64> = HashMap::new();
+    let mut boundaries: Vec<i64> = vec![0];
+    for row in rows.iter() {
+        let mut cursor = 0usize;
+        let mut position = 0i64;
+        for cell in &row.cells {
+            let span = span_of(cell);
+            let fallback: i64 = grid.iter().skip(cursor).take(span).sum();
+            cursor += span;
+            let own_width = width_of(cell).unwrap_or(fallback.max(1));
+            let bucket = bucket_of(position);
+            let width = if is_continuation(cell) {
+                *anchor_width_by_bucket.get(&bucket).unwrap_or(&own_width)
+            } else {
+                anchor_width_by_bucket.insert(bucket, own_width);
+                own_width
+            };
+            position += width;
+            boundaries.push(position);
+        }
+    }
+    boundaries.sort_unstable();
+    let mut merged: Vec<i64> = Vec::new();
+    for boundary in boundaries {
+        match merged.last() {
+            Some(&last) if boundary - last <= BOUNDARY_TOLERANCE_TWIPS => {}
+            _ => merged.push(boundary),
+        }
+    }
+    if merged.len() < 2 {
+        return grid;
+    }
+
+    let snap = |value: i64| -> usize {
+        match merged.binary_search(&value) {
+            Ok(index) => index,
+            Err(index) => {
+                if index == 0 {
+                    0
+                } else if index >= merged.len() {
+                    merged.len() - 1
+                } else if value - merged[index - 1] <= merged[index] - value {
+                    index - 1
+                } else {
+                    index
+                }
+            }
+        }
+    };
+
+    // Remap each cell's span onto the union grid.
+    anchor_width_by_bucket.clear();
+    for row in rows.iter_mut() {
+        let mut cursor = 0usize;
+        let mut position = 0i64;
+        for cell in &mut row.cells {
+            let span = span_of(cell);
+            let fallback: i64 = grid.iter().skip(cursor).take(span).sum();
+            cursor += span;
+            let own_width = width_of(cell).unwrap_or(fallback.max(1));
+            let bucket = bucket_of(position);
+            let width = if is_continuation(cell) {
+                *anchor_width_by_bucket.get(&bucket).unwrap_or(&own_width)
+            } else {
+                anchor_width_by_bucket.insert(bucket, own_width);
+                own_width
+            };
+            let start_index = snap(position);
+            position += width;
+            let end_index = snap(position).max(start_index + 1);
+            let new_span = (end_index - start_index) as i64;
+            if new_span > 1 {
+                let style = cell.style.get_or_insert(TableCellStyle {
+                    background_color: None,
+                    grid_span: None,
+                    row_span: None,
+                    v_merge_continuation: None,
+                    width_twips: None,
+                    margin_twips: None,
+                    vertical_align: None,
+                    borders: None,
+                });
+                style.grid_span = Some(new_span);
+            } else if let Some(style) = cell.style.as_mut() {
+                style.grid_span = None;
+            }
+        }
+    }
+
+    merged.windows(2).map(|pair| pair[1] - pair[0]).collect()
 }
 
 fn parse_table_style_properties_from_xml(

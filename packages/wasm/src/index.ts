@@ -1,4 +1,4 @@
-import type { InitOutput } from "./generated/docx_wasm.js";
+import type { InitInput, InitOutput } from "./generated/docx_wasm.js";
 import wasmInit, {
   build_doc_model_from_bytes,
   build_doc_model_from_package,
@@ -8,22 +8,60 @@ import wasmInit, {
   serialize_docx_from_json_wasm,
   serialize_docx_wasm
 } from "./generated/docx_wasm.js";
-import { WASM_BYTES_BASE64 } from "./wasm-bytes.js";
+
+export type WasmSource = InitInput;
 
 let initPromise: Promise<InitOutput> | undefined;
+let overrideSource: WasmSource | undefined;
 
-function wasmModuleInput(): Uint8Array {
-  const binary = atob(WASM_BYTES_BASE64);
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index += 1) {
-    bytes[index] = binary.charCodeAt(index);
+/**
+ * Override where the `docx_wasm_bg.wasm` binary is loaded from (URL, Response,
+ * bytes, or a compiled module). Must be called before the first operation that
+ * touches WASM; by default the binary shipped alongside this package is used.
+ */
+export function setWasmSource(source: WasmSource): void {
+  if (initPromise) {
+    throw new Error(
+      "react-docx: setWasmSource must be called before the first parse/serialize call initializes WASM"
+    );
   }
-  return bytes;
+  overrideSource = source;
 }
 
-export async function initWasm(): Promise<InitOutput> {
+interface FsPromisesLike {
+  readFile(path: URL): Promise<Uint8Array>;
+}
+
+// Resolve node:fs/promises without a static or dynamic `import("node:...")`
+// in the module graph — browser bundlers must never see the specifier or
+// they fail the consumer's build.
+async function nodeFsPromises(): Promise<FsPromisesLike> {
+  const proc = (globalThis as { process?: { getBuiltinModule?: (id: string) => unknown } }).process;
+  if (typeof proc?.getBuiltinModule === "function") {
+    return proc.getBuiltinModule("node:fs/promises") as FsPromisesLike;
+  }
+  // Node < 22.3 fallback; never executed in browsers.
+  const dynamicImport = new Function("specifier", "return import(specifier)") as (
+    specifier: string
+  ) => Promise<FsPromisesLike>;
+  return dynamicImport("node:fs/promises");
+}
+
+async function defaultWasmSource(): Promise<WasmSource> {
+  const wasmUrl = new URL("./docx_wasm_bg.wasm", import.meta.url);
+  if (wasmUrl.protocol === "file:") {
+    const fs = await nodeFsPromises();
+    return fs.readFile(wasmUrl);
+  }
+  return wasmUrl;
+}
+
+export async function initWasm(source?: WasmSource): Promise<InitOutput> {
   if (!initPromise) {
-    initPromise = wasmInit({ module_or_path: wasmModuleInput() });
+    const chosen = source ?? overrideSource;
+    initPromise = (chosen !== undefined ? Promise.resolve(chosen) : defaultWasmSource()).then(
+      (module_or_path) => wasmInit({ module_or_path })
+    );
   }
   return initPromise;
 }

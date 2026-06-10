@@ -1,6 +1,6 @@
 use docx_core::{
-    build_doc_model, model_to_document_xml, package_to_bytes, parse_docx, serialize_doc_model,
-    DocModel, OoxmlPackage,
+    build_doc_model, model_to_document_xml, package_to_bytes, parse_document_bytes,
+    serialize_doc_model, DocModel, OoxmlPackage,
 };
 use js_sys::{Object, Reflect};
 use serde_json::Value;
@@ -81,7 +81,7 @@ fn package_to_js_simple(pkg: &OoxmlPackage) -> Result<JsValue, JsValue> {
 
 #[wasm_bindgen]
 pub fn parse_docx_wasm(bytes: &[u8]) -> Result<JsValue, JsValue> {
-    let pkg = parse_docx(bytes).map_err(|error| JsValue::from_str(&error))?;
+    let pkg = parse_document_bytes(bytes).map_err(|error| JsValue::from_str(&error))?;
     package_to_js_simple(&pkg)
 }
 
@@ -95,7 +95,7 @@ pub fn build_doc_model_from_package(package: &JsValue) -> Result<String, JsValue
 
 #[wasm_bindgen]
 pub fn build_doc_model_from_bytes(bytes: &[u8]) -> Result<String, JsValue> {
-    let pkg = parse_docx(bytes).map_err(|error| JsValue::from_str(&error))?;
+    let pkg = parse_document_bytes(bytes).map_err(|error| JsValue::from_str(&error))?;
     let model = build_doc_model(&pkg);
     let payload = serde_json::json!({
         "package": pkg,

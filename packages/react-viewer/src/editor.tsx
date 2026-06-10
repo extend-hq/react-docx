@@ -1621,29 +1621,67 @@ function parseSectionColumns(
     return undefined;
   }
 
-  const numberOfColumnsRaw = columnsTag.match(/w:num="(\d+)"/i)?.[1];
-  const numberOfColumns = numberOfColumnsRaw ? Number(numberOfColumnsRaw) : 1;
+  const numberOfColumnsRaw = columnsTag.match(/w:num="([\d.]+)"/i)?.[1];
+  const numberOfColumns = numberOfColumnsRaw
+    ? Math.round(Number(numberOfColumnsRaw))
+    : 1;
   if (!Number.isFinite(numberOfColumns) || numberOfColumns <= 1) {
     return undefined;
   }
+  const columnCount = Math.max(2, numberOfColumns);
 
-  const columnGapTwipsRaw = columnsTag.match(/w:space="(\d+)"/i)?.[1];
-  const columnGapTwips = columnGapTwipsRaw ? Number(columnGapTwipsRaw) : 720;
+  const columnTags = [...sectionPropertiesXml.matchAll(/<w:col\b[^>]*\/>/gi)];
+  const widthsTwips = columnTags
+    .map((match) => Number(match[0].match(/w:w="([\d.]+)"/i)?.[1]))
+    .filter((value) => Number.isFinite(value) && value > 0);
+  const widthsPx = widthsTwips.map((value) =>
+    Math.max(1, Math.round(twipsToPixels(value) ?? 0))
+  );
+
+  // Gap resolution: explicit space on the cols tag, then per-col space, then
+  // — when every column width is declared — derived from the section body
+  // width (Word keeps widths + gaps equal to the body), then Word's default.
+  const colsTagSpaceRaw = columnsTag.match(/w:space="([\d.]+)"/i)?.[1];
+  const firstColSpaceRaw = columnTags
+    .map((match) => match[0].match(/w:space="([\d.]+)"/i)?.[1])
+    .find((value) => value !== undefined);
+  let columnGapTwips =
+    colsTagSpaceRaw !== undefined
+      ? Number(colsTagSpaceRaw)
+      : firstColSpaceRaw !== undefined
+      ? Number(firstColSpaceRaw)
+      : undefined;
+  if (columnGapTwips === undefined && widthsTwips.length === columnCount) {
+    const pageWidthTwips = Number(
+      sectionPropertiesXml.match(/<w:pgSz\b[^>]*w:w="([\d.]+)"/i)?.[1]
+    );
+    const marginTag = sectionPropertiesXml.match(/<w:pgMar\b[^>]*\/?>/i)?.[0];
+    const marginLeftTwips = Number(marginTag?.match(/w:left="([\d.-]+)"/i)?.[1]);
+    const marginRightTwips = Number(
+      marginTag?.match(/w:right="([\d.-]+)"/i)?.[1]
+    );
+    if (
+      Number.isFinite(pageWidthTwips) &&
+      Number.isFinite(marginLeftTwips) &&
+      Number.isFinite(marginRightTwips)
+    ) {
+      const bodyTwips = pageWidthTwips - marginLeftTwips - marginRightTwips;
+      const totalWidthTwips = widthsTwips.reduce((sum, value) => sum + value, 0);
+      columnGapTwips = Math.max(
+        0,
+        (bodyTwips - totalWidthTwips) / Math.max(1, columnCount - 1)
+      );
+    }
+  }
+  if (columnGapTwips === undefined || !Number.isFinite(columnGapTwips)) {
+    columnGapTwips = 720;
+  }
   const columnGapPx = twipsToPixels(columnGapTwips) ?? 24;
-  const columnWidthTags = [
-    ...sectionPropertiesXml.matchAll(/<w:col\b[^>]*w:w="(\d+)"[^>]*\/>/gi),
-  ];
-  const widthsPx = columnWidthTags
-    .map((match) => Number(match[1]))
-    .filter((value) => Number.isFinite(value) && value > 0)
-    .map((value) => Math.max(1, Math.round(twipsToPixels(value) ?? 0)));
 
   return {
-    count: Math.max(2, Math.round(numberOfColumns)),
+    count: columnCount,
     gapPx: Math.max(0, columnGapPx),
-    ...(widthsPx.length === Math.max(2, Math.round(numberOfColumns))
-      ? { widthsPx }
-      : undefined),
+    ...(widthsPx.length === columnCount ? { widthsPx } : undefined),
   };
 }
 
@@ -12508,7 +12546,8 @@ export function buildRenderColumnSegmentsForPageSection(
   numberingDefinitions?: NumberingDefinitionSet,
   docGridLinePitchPxByNodeIndex?: Map<number, number | undefined>,
   measuredParagraphOuterHeightsPxByNodeIndex?: Map<number, number>,
-  balanceColumns = false
+  balanceColumns = false,
+  forceColumnBreakNodeIndexes?: Set<number>
 ): DocumentPageNodeSegment[][] {
   const columnCount = Math.max(1, columnWidthsPx.length);
   const columns = Array.from(
@@ -12589,6 +12628,19 @@ export function buildRenderColumnSegmentsForPageSection(
   };
 
   for (const flowSegment of flowSegments) {
+    // Explicit "nextColumn" section breaks force a column advance regardless
+    // of how much room is left in the current column.
+    const isNodeStartSegment =
+      (flowSegment.paragraphLineRange?.startLineIndex ?? 0) === 0 &&
+      (flowSegment.tableRowRange?.startRowIndex ?? 0) === 0 &&
+      !flowSegment.tableRowSlice;
+    if (
+      isNodeStartSegment &&
+      forceColumnBreakNodeIndexes?.has(flowSegment.nodeIndex) &&
+      consumedHeightPx > 0
+    ) {
+      moveToNextColumn();
+    }
     let pendingSegment: DocumentPageNodeSegment | undefined = flowSegment;
     let splitGuard = 0;
 
@@ -12790,6 +12842,7 @@ export function buildDocumentPageNodeSegments(
     suppressSpacingBeforeAfterPageBreak?: boolean;
     measuredTableRowHeightsByNodeIndex?: Record<number, number[]>;
     measuredPageContentHeightsPxByPageIndex?: number[];
+    measuredParagraphOuterHeightsPxByNodeIndex?: Map<number, number>;
     preferLastRenderedParagraphStartBreaks?: boolean;
     strictLastRenderedParagraphStartBreaks?: boolean;
   }
@@ -13112,16 +13165,30 @@ export function buildDocumentPageNodeSegments(
       const nodeNumberingLabel = paginationNumberingLabels.get(
         `p:${nodeIndex}`
       );
+      // Column-flow sections have no measured-page-height convergence, so
+      // estimate drift (custom fonts, dense wrapping) accumulates unchecked;
+      // prefer the actually rendered paragraph height there. Single-column
+      // pagination keeps its tuned estimate + reconciliation behavior.
+      const sectionUsesColumnFlow =
+        (nodeMetrics.pageContentHeightMultiplier ?? 1) > 1;
+      const measuredOuterHeightPx = sectionUsesColumnFlow
+        ? options?.measuredParagraphOuterHeightsPxByNodeIndex?.get(nodeIndex)
+        : undefined;
+      const estimatedOrMeasuredHeightPx =
+        Number.isFinite(measuredOuterHeightPx) &&
+        (measuredOuterHeightPx as number) > 0
+          ? (measuredOuterHeightPx as number)
+          : estimateParagraphHeightPx(
+              node,
+              nodeMetrics.pageContentWidthPx,
+              numberingDefinitions,
+              nodeMetrics.docGridLinePitchPx,
+              false,
+              nodeNumberingLabel
+            );
       let rawNodeHeightPx = Math.max(
         1,
-        estimateParagraphHeightPx(
-          node,
-          nodeMetrics.pageContentWidthPx,
-          numberingDefinitions,
-          nodeMetrics.docGridLinePitchPx,
-          false,
-          nodeNumberingLabel
-        ) -
+        estimatedOrMeasuredHeightPx -
           directBeforeSpacingPx -
           directAfterSpacingPx +
           beforeSpacingPx +
@@ -20552,6 +20619,18 @@ function columnWidthsFromTableDefinition(
   const rowDerivedWidths = deriveColumnWidthsFromTableRows(table, columnCount);
 
   if (gridWidths && gridWidths.length === columnCount) {
+    // Some generators emit a placeholder uniform grid while the real column
+    // geometry lives in per-cell tcW. Word's fixed-layout algorithm trusts
+    // cell widths over the grid, so when the two disagree on most measured
+    // cells, prefer the row-derived widths.
+    console.log("[colw]", columnCount, gridWidths.length, !!rowDerivedWidths, gridConflictsWithRowWidths(table, gridWidths));
+    if (
+      rowDerivedWidths &&
+      rowDerivedWidths.length > 0 &&
+      gridConflictsWithRowWidths(table, gridWidths)
+    ) {
+      return rowDerivedWidths;
+    }
     return normalizeColumnWidthsTwips(gridWidths, columnCount);
   }
 
@@ -20564,6 +20643,49 @@ function columnWidthsFromTableDefinition(
   }
 
   return undefined;
+}
+
+function gridConflictsWithRowWidths(
+  table: TableNode,
+  gridWidths: number[]
+): boolean {
+  let conflictRows = 0;
+  let measuredRows = 0;
+
+  for (const row of table.rows) {
+    let columnCursor = 0;
+    let measuredCells = 0;
+    let conflictCells = 0;
+
+    for (const cell of row.cells) {
+      const span =
+        cell.style?.gridSpan && cell.style.gridSpan > 1
+          ? cell.style.gridSpan
+          : 1;
+      const expected = gridWidths
+        .slice(columnCursor, columnCursor + span)
+        .reduce((sum, value) => sum + Math.max(0, value), 0);
+      columnCursor += span;
+
+      const actual = cell.style?.widthTwips;
+      if (!actual || actual <= 0 || expected <= 0) {
+        continue;
+      }
+      measuredCells += 1;
+      if (Math.abs(actual - expected) / expected > 0.2) {
+        conflictCells += 1;
+      }
+    }
+
+    if (measuredCells > 0) {
+      measuredRows += 1;
+      if (conflictCells * 2 > measuredCells) {
+        conflictRows += 1;
+      }
+    }
+  }
+
+  return measuredRows > 0 && conflictRows * 2 > measuredRows;
 }
 
 function deriveColumnWidthsFromTableRows(
@@ -25115,10 +25237,10 @@ export function useDocxEditor(
 
   const importDocxFile = React.useCallback(
     async (file: File): Promise<void> => {
-      if (!/\.docx$/i.test(file.name)) {
+      if (!/\.docx?$/i.test(file.name)) {
         replaceDocumentWithImportError(
           file.name,
-          new Error("Only .docx files are supported")
+          new Error("Only .docx and .doc files are supported")
         );
         return;
       }
@@ -25188,8 +25310,8 @@ export function useDocxEditor(
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;
-    anchor.download = fileName.endsWith(".docx")
-      ? fileName.replace(/\.docx$/i, "") + "-edited.docx"
+    anchor.download = /\.docx?$/i.test(fileName)
+      ? fileName.replace(/\.docx?$/i, "") + "-edited.docx"
       : "edited.docx";
     anchor.style.display = "none";
     document.body.append(anchor);
@@ -32056,6 +32178,7 @@ export function DocxEditorViewer({
               paginationOptions?.strictLastRenderedParagraphStartBreaks ?? false,
             measuredTableRowHeightsByNodeIndex,
             measuredPageContentHeightsPxByPageIndex: resolvedPageContentHeights,
+            measuredParagraphOuterHeightsPxByNodeIndex,
           }
         );
       const basePages = buildPagesWithHeights(baseMeasuredHeights);
@@ -32112,7 +32235,15 @@ export function DocxEditorViewer({
       }
     );
     const minimumPageCount = Math.max(1, hardBreakCount + 1);
+    // Stored page counts steer reconciliation only for ordinary page flows.
+    // Documents with multi-column sections pair our approximate virtual-column
+    // pagination with often-fabricated generator page counts; chasing the
+    // stored number there compresses content off the page bottom.
+    const hasColumnFlowSections = paginationSectionMetrics.some(
+      (metrics) => (metrics.pageContentHeightMultiplier ?? 1) > 1
+    );
     const targetPageCount =
+      !hasColumnFlowSections &&
       Number.isFinite(storedDocumentPageCount) &&
       (storedDocumentPageCount as number) > 0
         ? Math.max(
@@ -32473,6 +32604,7 @@ export function DocxEditorViewer({
                         measuredPageContentHeightByIndex,
                       heightScale
                     ),
+              measuredParagraphOuterHeightsPxByNodeIndex,
             }
           ),
       });
@@ -32568,6 +32700,7 @@ export function DocxEditorViewer({
     hasMeasuredBodyFooterOverlap,
     initialPaginationBackgroundRefinementUnlocked,
     measuredPageContentHeightByIndex,
+    measuredParagraphOuterHeightsPxByNodeIndex,
     tableMeasuredRowHeightsForPagination,
   ]);
   const pageNodeSegmentsByPage = pageSegmentationPlan.pages;
@@ -33563,6 +33696,15 @@ export function DocxEditorViewer({
       const next = new Map(current);
       let changed = false;
 
+      // Client rects scale with the CSS zoom applied above the viewer, but
+      // pagination operates in unzoomed page space — normalize, or every zoom
+      // change rewrites measurements and re-paginates (laggy zoom, blank
+      // virtualized pages).
+      const rootElement = viewerRootRef.current;
+      const zoomScale = rootElement
+        ? resolveEffectiveZoomScale(rootElement)
+        : 1;
+
       paragraphElementsRef.current.forEach((element, nodeIndex) => {
         if (
           !element.isConnected ||
@@ -33584,12 +33726,18 @@ export function DocxEditorViewer({
         const outerHeightPx = Math.max(
           1,
           Math.round(
-            rect.height +
+            rect.height / zoomScale +
               (Number.isFinite(marginTop) ? marginTop : 0) +
               (Number.isFinite(marginBottom) ? marginBottom : 0)
           )
         );
-        if (next.get(nodeIndex) !== outerHeightPx) {
+        const previousHeightPx = next.get(nodeIndex);
+        // 1px hysteresis: zoom-division rounding must not oscillate
+        // measurements and churn pagination.
+        if (
+          previousHeightPx === undefined ||
+          Math.abs(previousHeightPx - outerHeightPx) > 1
+        ) {
           next.set(nodeIndex, outerHeightPx);
           changed = true;
         }
@@ -45889,7 +46037,7 @@ export function DocxEditorViewer({
   const extractDroppedDocxFile = React.useCallback(
     (dataTransfer: DataTransfer | null): File | undefined => {
       return Array.from(dataTransfer?.files ?? []).find((candidate) =>
-        /\.docx$/i.test(candidate.name)
+        /\.docx?$/i.test(candidate.name)
       );
     },
     []
@@ -50087,7 +50235,25 @@ export function DocxEditorViewer({
                                   </div>
                                 </div>
                               ) : (
-                                <div style={{ display: "grid", gap: 0 }}>
+                                <div
+                                  style={{
+                                    display: "grid",
+                                    gap: 0,
+                                    // Word clips content of hRule="exact" rows
+                                    // at the declared height; without this the
+                                    // row balloons to fit content (height on a
+                                    // <tr>/<td> is only ever a minimum).
+                                    ...(row.style?.heightRule === "exact" &&
+                                    !isSlicedRow &&
+                                    resolvedRowHeightStyle?.height
+                                      ? {
+                                          maxHeight:
+                                            resolvedRowHeightStyle.height,
+                                          overflow: "hidden",
+                                        }
+                                      : undefined),
+                                  }}
+                                >
                                   {renderStaticCellContent()}
                                 </div>
                               )}
@@ -52240,6 +52406,11 @@ export function DocxEditorViewer({
                     return sectionGroups.map((group, groupIndex) => {
                       const sectionColumns =
                         sectionColumnsBySectionIndex[group.sectionIndex];
+                      // A column group that shares the page with later groups
+                      // sizes to its balanced content (Word's continuous
+                      // column sections), not a full page of height.
+                      const isLastGroupOnPage =
+                        groupIndex === sectionGroups.length - 1;
                       const overlaySegments = group.segments.filter(
                         (segment) => {
                           const segmentNode =
@@ -52525,7 +52696,22 @@ export function DocxEditorViewer({
                                     editor.model.metadata.numberingDefinitions,
                                     docGridLinePitchPxByNodeIndex,
                                     measuredParagraphOuterHeightsPxByNodeIndex,
-                                    isLastPage
+                                    isLastPage || !isLastGroupOnPage,
+                                    new Set(
+                                      (editor.model.metadata.sections ?? [])
+                                        .filter(
+                                          (candidate) =>
+                                            parseSectionStartType(
+                                              candidate.sectionPropertiesXml
+                                            ) === "nextColumn"
+                                        )
+                                        .map((candidate) =>
+                                          Math.max(
+                                            0,
+                                            Math.round(candidate.startNodeIndex)
+                                          )
+                                        )
+                                    )
                                   );
                                 return (
                                   <>
@@ -52569,7 +52755,12 @@ export function DocxEditorViewer({
                                           .join(" "),
                                         columnGap: sectionColumns.gapPx,
                                         alignItems: "start",
-                                        minHeight: pageBodyAvailableHeightPx,
+                                        ...(isLastGroupOnPage
+                                          ? {
+                                              minHeight:
+                                                pageBodyAvailableHeightPx,
+                                            }
+                                          : undefined),
                                         position: "relative",
                                         zIndex: 1,
                                       }}
@@ -52578,10 +52769,14 @@ export function DocxEditorViewer({
                                         (segmentsForColumn, columnIndex) => (
                                           <div
                                             key={`column-layout-flow-${pageIndex}-${groupIndex}-${columnIndex}`}
-                                            style={{
-                                              minHeight:
-                                                pageBodyAvailableHeightPx,
-                                            }}
+                                            style={
+                                              isLastGroupOnPage
+                                                ? {
+                                                    minHeight:
+                                                      pageBodyAvailableHeightPx,
+                                                  }
+                                                : undefined
+                                            }
                                           >
                                             {segmentsForColumn.map((segment) =>
                                               renderSegmentInColumn(

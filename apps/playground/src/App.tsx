@@ -1509,7 +1509,7 @@ export function App(): React.JSX.Element {
   const extractDroppedDocxFile = React.useCallback(
     (dataTransfer: DataTransfer | null): File | undefined => {
       return Array.from(dataTransfer?.files ?? []).find((candidate) =>
-        /\.docx$/i.test(candidate.name)
+        /\.docx?$/i.test(candidate.name)
       );
     },
     []
@@ -2303,7 +2303,7 @@ export function App(): React.JSX.Element {
               <input
                 ref={fileInputRef}
                 type="file"
-                accept=".docx"
+                accept=".docx,.doc"
                 className="hidden"
                 onChange={(event) => void onImport(event)}
               />

@@ -577,3 +577,5 @@ export * from "@extend-ai/react-docx-editor-ops";
 export * from "@extend-ai/react-docx-layout-engine";
 export * from "@extend-ai/react-docx-layout-core";
 export * from "@extend-ai/react-docx-serializer";
+
+export { initWasm, setWasmSource, type WasmSource } from "@extend-ai/react-docx-wasm";

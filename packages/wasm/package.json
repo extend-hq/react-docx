@@ -16,8 +16,8 @@
   },
   "files": ["dist", "pkg"],
   "scripts": {
-    "build:wasm": "wasm-pack build ../../crates/docx-wasm --target web --out-dir $INIT_CWD/pkg && node ./scripts/inline-wasm.mjs && mkdir -p src/generated && cp pkg/docx_wasm.js pkg/docx_wasm.d.ts pkg/docx_wasm_bg.wasm.d.ts src/generated/",
-    "build:js": "tsup src/index.ts --format esm,cjs --dts --sourcemap --clean",
+    "build:wasm": "wasm-pack build ../../crates/docx-wasm --target web --out-dir \"$(pwd)/pkg\" && mkdir -p src/generated && cp pkg/docx_wasm.js pkg/docx_wasm.d.ts pkg/docx_wasm_bg.wasm.d.ts pkg/docx_wasm_bg.wasm src/generated/ && cp pkg/docx_wasm_bg.wasm src/docx_wasm_bg.wasm",
+    "build:js": "tsup src/index.ts --format esm,cjs --dts --sourcemap --clean --shims && cp src/docx_wasm_bg.wasm dist/docx_wasm_bg.wasm",
     "build": "pnpm run build:wasm && pnpm run build:js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "clean": "rm -rf dist pkg"

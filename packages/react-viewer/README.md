@@ -19,6 +19,34 @@ pnpm add @extend-ai/react-docx react react-dom
 
 `react` and `react-dom` are peer dependencies.
 
+## WebAssembly Asset
+
+DOCX parsing and serialization run in a Rust/WebAssembly module that ships inside this package as `dist/docx_wasm_bg.wasm` (~2.5 MB raw, ~1 MB over the wire with gzip). It is **not** part of the JavaScript bundle:
+
+- It loads lazily, on the first call that parses or serializes a document.
+- The loader references it as `new URL("./docx_wasm_bg.wasm", import.meta.url)`, which Vite, webpack 5, Rollup, and Next.js automatically emit as a hashed static asset — no configuration needed.
+- In Node (SSR, tests, scripts) the binary is read from `node_modules` on disk.
+
+If you need to host the binary somewhere else (e.g. a CDN), override the source before the first parse:
+
+```ts
+import { setWasmSource } from "@extend-ai/react-docx";
+
+setWasmSource("https://cdn.example.com/docx_wasm_bg.wasm");
+// or pass a URL, Response, ArrayBuffer/TypedArray, or compiled WebAssembly.Module
+```
+
+The binary is also exposed as a package subpath, so with Vite you can do:
+
+```ts
+import wasmUrl from "@extend-ai/react-docx/docx_wasm_bg.wasm?url";
+import { setWasmSource } from "@extend-ai/react-docx";
+
+setWasmSource(wasmUrl);
+```
+
+You can also call `initWasm()` (optionally with a source) ahead of time to warm the module before the first document is opened.
+
 ## Main Entry Points
 
 The package exports two useful levels of API:

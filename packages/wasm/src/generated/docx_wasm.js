@@ -478,7 +478,7 @@ async function __wbg_init(module_or_path) {
     }
 
     if (module_or_path === undefined) {
-        throw new Error('react-docx wasm: initWasm must be called with inlined wasm bytes');
+        module_or_path = new URL('docx_wasm_bg.wasm', import.meta.url);
     }
     const imports = __wbg_get_imports();
 

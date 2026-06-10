@@ -396,6 +396,10 @@ pub fn get_attribute(tag_xml: &str, attribute: &str) -> Option<String> {
     let mut index = 0;
 
     while index < xml_bytes.len() {
+        if !tag_xml.is_char_boundary(index) {
+            index += 1;
+            continue;
+        }
         let remaining = &tag_xml[index..];
         if starts_with_ignore_ascii_case(remaining, attribute)
             && xml_bytes
