@@ -145,13 +145,27 @@ jobs:
         if: steps.npm_state.outputs.all_published != 'true'
         run: pnpm install --frozen-lockfile
 
+      - name: Set up Rust
+        if: steps.npm_state.outputs.all_published != 'true'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Install wasm-pack
+        if: steps.npm_state.outputs.all_published != 'true'
+        run: cargo install wasm-pack --version 0.13.1 --locked
+
       - name: Typecheck packages
         if: steps.npm_state.outputs.all_published != 'true'
         run: pnpm -r --filter './packages/*' run typecheck
 
+      - name: Build wasm package
+        if: steps.npm_state.outputs.all_published != 'true'
+        run: pnpm --filter @extend-ai/react-docx-wasm run build
+
       - name: Build packages
         if: steps.npm_state.outputs.all_published != 'true'
-        run: pnpm -r --filter './packages/*' run build
+        run: pnpm -r --filter './packages/*' --filter '!@extend-ai/react-docx-wasm' run build
 
       - name: Publish with npm token bootstrap
         if: steps.npm_state.outputs.all_published != 'true' && env.NPM_TOKEN_FALLBACK_ENABLED == 'true' && env.NPM_TOKEN != ''
