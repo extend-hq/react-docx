@@ -19,6 +19,7 @@
       "@extend-ai/react-docx-layout-core": ["packages/layout-core/src/index.ts"],
       "@extend-ai/react-docx-layout-engine": ["packages/layout-engine/src/index.ts"],
       "@extend-ai/react-docx-editor-ops": ["packages/editor-ops/src/index.ts"],
+      "@extend-ai/react-docx-wasm": ["packages/wasm/src/index.ts"],
       "@extend-ai/react-docx-serializer": ["packages/serializer/src/index.ts"],
       "@extend-ai/react-docx": ["packages/react-viewer/src/index.tsx"]
     }
