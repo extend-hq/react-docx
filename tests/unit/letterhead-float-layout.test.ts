@@ -193,21 +193,19 @@ describe("letterhead float layout", () => {
     });
   });
 
-  it("renders grouped letterhead content as two stacks justified across the row", () => {
+  it("renders grouped letterhead content as paired rows in a two-column grid", () => {
     expect(letterheadColumnGroupContainerStyle()).toEqual({
-      display: "flex",
-      justifyContent: "space-between",
-      alignItems: "flex-start",
-      gap: 28,
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr",
+      columnGap: 28,
+      alignItems: "start",
       width: "100%",
       maxWidth: "100%",
       boxSizing: "border-box"
     });
     expect(letterheadColumnStackStyle()).toEqual({
-      display: "inline-grid",
-      alignContent: "start",
       minWidth: 0,
-      maxWidth: "calc(50% - 14px)"
+      maxWidth: "100%"
     });
   });
 });

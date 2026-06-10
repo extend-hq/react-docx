@@ -19,7 +19,8 @@
     "access": "restricted"
   },
   "dependencies": {
-    "@extend-ai/react-docx-ooxml-core": "workspace:*"
+    "@extend-ai/react-docx-ooxml-core": "workspace:*",
+    "@extend-ai/react-docx-wasm": "workspace:*"
   },
   "scripts": {
     "build": "tsup src/index.ts --format esm,cjs --dts --sourcemap --clean",

@@ -262,7 +262,7 @@ describe("footer pagination reserve", () => {
         },
         footerDistancePx: 48,
       })
-    ).toBe(120);
+    ).toBe(112);
   });
 
   it("does not reserve body height for behind-text decorative footer overlays", () => {
@@ -470,7 +470,7 @@ describe("footer pagination reserve", () => {
     ).toBe(880);
   });
 
-  it("applies stored-page reconciliation scale during render when measured heights are disabled", () => {
+  it("keeps the physical page body budget during stored-page reconciliation", () => {
     expect(
       resolveRenderPageContentHeightPxForPageSegments({
         pageSegments: [
@@ -491,7 +491,7 @@ describe("footer pagination reserve", () => {
         useMeasuredPageContentHeights: false,
         pageContentHeightScale: 1.2,
       })
-    ).toBe(1056);
+    ).toBe(880);
   });
 
 });

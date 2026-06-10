@@ -37,7 +37,7 @@ describe("ooxml-core", () => {
 
   it("writes and re-parses DOCX ZIP archives", async () => {
     const source = createMinimalDocxPackage(DOCUMENT_XML);
-    const zip = packageToArrayBuffer(source);
+    const zip = await packageToArrayBuffer(source);
     const reparsed = await parseDocx(zip);
 
     expect(reparsed.parts.get("word/document.xml")?.content).toContain("Hello DOCX");

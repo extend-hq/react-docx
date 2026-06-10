@@ -14,7 +14,7 @@
   "homepage": "https://github.com/extend-hq/react-docx#readme",
   "scripts": {
     "prepare": "git config core.hooksPath .githooks || true",
-    "build": "pnpm -r --filter './packages/*' run build",
+    "build": "pnpm --filter @extend-ai/react-docx-wasm run build && pnpm -r --filter './packages/*' run build",
     "clean": "pnpm -r --filter './packages/*' run clean",
     "dev": "pnpm --filter @extend-ai/react-docx-playground dev",
     "typecheck": "pnpm -r --filter './packages/*' run typecheck && pnpm --filter @extend-ai/react-docx-playground typecheck",

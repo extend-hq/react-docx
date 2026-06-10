@@ -28,7 +28,7 @@ async function buildModelFromDocumentXml(documentXml: string) {
       { name: "word/document.xml", content: documentXml }
     ])
   );
-  return buildDocModel(pkg);
+  return await buildDocModel(pkg);
 }
 
 describe("pagination-breaks", () => {

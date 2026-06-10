@@ -123,7 +123,7 @@ describe("table grid width fidelity", () => {
       { name: "word/document.xml", content: DOCUMENT_XML, deflate: true },
     ]);
     const pkg = await parseDocx(zip);
-    const model = buildDocModel(pkg);
+    const model = await buildDocModel(pkg);
     const html = renderToStaticMarkup(React.createElement(ImportedViewer, { model }));
     const widths = extractColumnWidthsPx(html);
 
@@ -140,7 +140,7 @@ describe("table grid width fidelity", () => {
       { name: "word/document.xml", content: DOCUMENT_XML, deflate: true },
     ]);
     const pkg = await parseDocx(zip);
-    const model = buildDocModel(pkg);
+    const model = await buildDocModel(pkg);
     const html = renderToStaticMarkup(React.createElement(ImportedViewer, { model }));
     const tableNode = model.nodes[0];
 
@@ -157,7 +157,7 @@ describe("table grid width fidelity", () => {
       { name: "word/document.xml", content: DOCUMENT_WITH_SPACING_XML, deflate: true },
     ]);
     const pkg = await parseDocx(zip);
-    const model = buildDocModel(pkg);
+    const model = await buildDocModel(pkg);
     const html = renderToStaticMarkup(React.createElement(ImportedViewer, { model }));
     const tableNode = model.nodes[0];
 

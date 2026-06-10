@@ -100,7 +100,7 @@ async function renderTableWidthPx(documentXml: string): Promise<number | undefin
     { name: "word/document.xml", content: documentXml, deflate: true },
   ]);
   const pkg = await parseDocx(zip);
-  const model = buildDocModel(pkg);
+  const model = await buildDocModel(pkg);
   const html = renderToStaticMarkup(React.createElement(ImportedViewer, { model }));
   return extractFirstTableWidthPx(html);
 }

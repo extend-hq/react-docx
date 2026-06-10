@@ -43,7 +43,7 @@ describe("performance", () => {
     const sourceModel = createLargeModel(2000);
 
     const serializeStart = performance.now();
-    const serialized = serializeDocx(sourceModel);
+    const serialized = await serializeDocx(sourceModel);
     const serializeDuration = performance.now() - serializeStart;
 
     const parseStart = performance.now();
@@ -51,7 +51,7 @@ describe("performance", () => {
     const parseDuration = performance.now() - parseStart;
 
     const modelStart = performance.now();
-    const model = buildDocModel(parsed);
+    const model = await buildDocModel(parsed);
     const modelDuration = performance.now() - modelStart;
 
     const layoutStart = performance.now();

@@ -22,8 +22,8 @@ const DOCUMENT_WITH_RUN_SHADING_XML =
 describe("round-trip", () => {
   it("builds model, edits it, then serializes back to document.xml", async () => {
     const seed = createMinimalDocxPackage(DOCUMENT_XML);
-    const pkg = await parseDocx(packageToArrayBuffer(seed));
-    const model = buildDocModel(pkg);
+    const pkg = await parseDocx(await packageToArrayBuffer(seed));
+    const model = await buildDocModel(pkg);
     const edited = insertParagraph(model, "Added by test", model.nodes.length, {
       paragraphStyle: { align: "center" },
       runStyle: { bold: true, color: "#0055aa", fontSizePt: 14 }
@@ -31,7 +31,7 @@ describe("round-trip", () => {
     const headed = setParagraphHeading(edited, 1, 2);
     const highlighted = setRunHighlight(headed, 1, 0, "yellow");
     const styled = toggleRunStyleFlag(highlighted, 1, 0, "strike");
-    const serialized = serializeDocModel(styled, pkg);
+    const serialized = await serializeDocModel(styled, pkg);
 
     const xml = serialized.parts.get("word/document.xml")?.content;
     expect(xml).toContain("Added by test");
@@ -45,13 +45,13 @@ describe("round-trip", () => {
 
   it("exports parseable DOCX binary", async () => {
     const seed = createMinimalDocxPackage(DOCUMENT_XML);
-    const pkg = await parseDocx(packageToArrayBuffer(seed));
-    const model = buildDocModel(pkg);
+    const pkg = await parseDocx(await packageToArrayBuffer(seed));
+    const model = await buildDocModel(pkg);
     const edited = insertParagraph(model, "Another paragraph");
 
-    const exported = serializeDocx(edited, pkg);
+    const exported = await serializeDocx(edited, pkg);
     const reparsed = await parseDocx(exported);
-    const reparsedModel = buildDocModel(reparsed);
+    const reparsedModel = await buildDocModel(reparsed);
 
     expect(reparsedModel.nodes.some((node) => node.children.some((run) => run.text.includes("Another paragraph")))).toBe(
       true
@@ -60,8 +60,8 @@ describe("round-trip", () => {
 
   it("serializes paragraph border definitions to pBdr", async () => {
     const seed = createMinimalDocxPackage(DOCUMENT_XML);
-    const pkg = await parseDocx(packageToArrayBuffer(seed));
-    const model = buildDocModel(pkg);
+    const pkg = await parseDocx(await packageToArrayBuffer(seed));
+    const model = await buildDocModel(pkg);
 
     model.nodes = [
       {
@@ -85,7 +85,7 @@ describe("round-trip", () => {
       }
     ];
 
-    const serialized = serializeDocModel(model, pkg);
+    const serialized = await serializeDocModel(model, pkg);
     const xml = serialized.parts.get("word/document.xml")?.content ?? "";
     expect(xml).toContain("<w:pBdr>");
     expect(xml).toContain("<w:bottom");
@@ -96,8 +96,8 @@ describe("round-trip", () => {
 
   it("serializes parsed drop-cap metadata after editing paragraph text", async () => {
     const seed = createMinimalDocxPackage(DOCUMENT_WITH_DROP_CAP_XML);
-    const pkg = await parseDocx(packageToArrayBuffer(seed));
-    const model = buildDocModel(pkg);
+    const pkg = await parseDocx(await packageToArrayBuffer(seed));
+    const model = await buildDocModel(pkg);
     const paragraph = model.nodes[0];
     expect(paragraph?.type).toBe("paragraph");
     if (paragraph?.type !== "paragraph") {
@@ -113,7 +113,7 @@ describe("round-trip", () => {
     ];
     paragraph.sourceXml = undefined;
 
-    const serialized = serializeDocModel(model, pkg);
+    const serialized = await serializeDocModel(model, pkg);
     const xml = serialized.parts.get("word/document.xml")?.content ?? "";
     expect(xml).toContain("<w:framePr");
     expect(xml).toContain('w:dropCap="drop"');
@@ -130,8 +130,8 @@ describe("round-trip", () => {
 
   it("serializes parsed run border styling", async () => {
     const seed = createMinimalDocxPackage(DOCUMENT_WITH_RUN_BORDER_XML);
-    const pkg = await parseDocx(packageToArrayBuffer(seed));
-    const model = buildDocModel(pkg);
+    const pkg = await parseDocx(await packageToArrayBuffer(seed));
+    const model = await buildDocModel(pkg);
     const paragraph = model.nodes[0];
     expect(paragraph?.type).toBe("paragraph");
     if (paragraph?.type !== "paragraph") {
@@ -153,7 +153,7 @@ describe("round-trip", () => {
     ];
     paragraph.sourceXml = undefined;
 
-    const serialized = serializeDocModel(model, pkg);
+    const serialized = await serializeDocModel(model, pkg);
     const xml = serialized.parts.get("word/document.xml")?.content ?? "";
     expect(xml).toContain("<w:bdr");
     expect(xml).toContain('w:val="single"');
@@ -165,8 +165,8 @@ describe("round-trip", () => {
 
   it("serializes parsed run shading styling", async () => {
     const seed = createMinimalDocxPackage(DOCUMENT_WITH_RUN_SHADING_XML);
-    const pkg = await parseDocx(packageToArrayBuffer(seed));
-    const model = buildDocModel(pkg);
+    const pkg = await parseDocx(await packageToArrayBuffer(seed));
+    const model = await buildDocModel(pkg);
     const paragraph = model.nodes[0];
     expect(paragraph?.type).toBe("paragraph");
     if (paragraph?.type !== "paragraph") {
@@ -188,7 +188,7 @@ describe("round-trip", () => {
     ];
     paragraph.sourceXml = undefined;
 
-    const serialized = serializeDocModel(model, pkg);
+    const serialized = await serializeDocModel(model, pkg);
     const xml = serialized.parts.get("word/document.xml")?.content ?? "";
     expect(xml).toContain('<w:color w:val="FFFFFF"/>');
     expect(xml).toContain('<w:shd w:val="clear" w:color="auto" w:fill="000000"/>');
@@ -197,8 +197,8 @@ describe("round-trip", () => {
 
   it("serializes hyperlink runs with hyperlink relationship entries", async () => {
     const seed = createMinimalDocxPackage(DOCUMENT_XML);
-    const pkg = await parseDocx(packageToArrayBuffer(seed));
-    const model = buildDocModel(pkg);
+    const pkg = await parseDocx(await packageToArrayBuffer(seed));
+    const model = await buildDocModel(pkg);
 
     model.nodes = [
       {
@@ -213,7 +213,7 @@ describe("round-trip", () => {
       }
     ];
 
-    const serialized = serializeDocModel(model, pkg);
+    const serialized = await serializeDocModel(model, pkg);
     const xml = serialized.parts.get("word/document.xml")?.content ?? "";
     const rels = serialized.parts.get("word/_rels/document.xml.rels")?.content ?? "";
 
@@ -226,8 +226,8 @@ describe("round-trip", () => {
 
   it("serializes editable form-field runs back to SDT XML", async () => {
     const seed = createMinimalDocxPackage(DOCUMENT_XML);
-    const pkg = await parseDocx(packageToArrayBuffer(seed));
-    const model = buildDocModel(pkg);
+    const pkg = await parseDocx(await packageToArrayBuffer(seed));
+    const model = await buildDocModel(pkg);
 
     model.nodes = [
       {
@@ -253,7 +253,7 @@ describe("round-trip", () => {
       }
     ];
 
-    const serialized = serializeDocModel(model, pkg);
+    const serialized = await serializeDocModel(model, pkg);
     const xml = serialized.parts.get("word/document.xml")?.content ?? "";
     expect(xml).toContain("<w:sdt>");
     expect(xml).toContain("<w14:checkbox>");
@@ -264,8 +264,8 @@ describe("round-trip", () => {
 
   it("preserves legacy form widgets when edited and exported", async () => {
     const seed = createMinimalDocxPackage(DOCUMENT_XML);
-    const pkg = await parseDocx(packageToArrayBuffer(seed));
-    const model = buildDocModel(pkg);
+    const pkg = await parseDocx(await packageToArrayBuffer(seed));
+    const model = await buildDocModel(pkg);
 
     model.nodes = [
       {
@@ -308,7 +308,7 @@ describe("round-trip", () => {
       }
     ];
 
-    const serialized = serializeDocModel(model, pkg);
+    const serialized = await serializeDocModel(model, pkg);
     const xml = serialized.parts.get("word/document.xml")?.content ?? "";
     expect(xml).toContain("<w:ffData>");
     expect(xml).toContain("FORMCHECKBOX");
@@ -322,8 +322,8 @@ describe("round-trip", () => {
 
   it("round-trips legacy number text form widgets", async () => {
     const seed = createMinimalDocxPackage(DOCUMENT_XML);
-    const pkg = await parseDocx(packageToArrayBuffer(seed));
-    const model = buildDocModel(pkg);
+    const pkg = await parseDocx(await packageToArrayBuffer(seed));
+    const model = await buildDocModel(pkg);
 
     model.nodes = [
       {
@@ -347,7 +347,7 @@ describe("round-trip", () => {
       }
     ];
 
-    const serialized = serializeDocModel(model, pkg);
+    const serialized = await serializeDocModel(model, pkg);
     const xml = serialized.parts.get("word/document.xml")?.content ?? "";
     expect(xml).toContain("<w:ffData>");
     expect(xml).toContain("FORMTEXT");
@@ -356,8 +356,8 @@ describe("round-trip", () => {
     expect(xml).toContain('<w:maxLength w:val="8"/>');
     expect(xml).toContain('<w:format w:val="0.00"/>');
 
-    const reparsed = await parseDocx(packageToArrayBuffer(serialized));
-    const reparsedModel = buildDocModel(reparsed);
+    const reparsed = await parseDocx(await packageToArrayBuffer(serialized));
+    const reparsedModel = await buildDocModel(reparsed);
     const firstParagraph = reparsedModel.nodes[0];
     expect(firstParagraph?.type).toBe("paragraph");
     if (firstParagraph?.type === "paragraph") {
@@ -373,8 +373,8 @@ describe("round-trip", () => {
 
   it("serializes empty legacy number form widgets with a valid default", async () => {
     const seed = createMinimalDocxPackage(DOCUMENT_XML);
-    const pkg = await parseDocx(packageToArrayBuffer(seed));
-    const model = buildDocModel(pkg);
+    const pkg = await parseDocx(await packageToArrayBuffer(seed));
+    const model = await buildDocModel(pkg);
 
     model.nodes = [
       {
@@ -394,7 +394,7 @@ describe("round-trip", () => {
       }
     ];
 
-    const serialized = serializeDocModel(model, pkg);
+    const serialized = await serializeDocModel(model, pkg);
     const xml = serialized.parts.get("word/document.xml")?.content ?? "";
     expect(xml).toContain('<w:type w:val="number"/>');
     expect(xml).toContain('<w:default w:val="0"/>');
@@ -403,8 +403,8 @@ describe("round-trip", () => {
 
   it("serializes floating anchored images with center alignment", async () => {
     const seed = createMinimalDocxPackage(DOCUMENT_XML);
-    const pkg = await parseDocx(packageToArrayBuffer(seed));
-    const model = buildDocModel(pkg);
+    const pkg = await parseDocx(await packageToArrayBuffer(seed));
+    const model = await buildDocModel(pkg);
 
     model.nodes = [
       {
@@ -434,7 +434,7 @@ describe("round-trip", () => {
       }
     ];
 
-    const serialized = serializeDocModel(model, pkg);
+    const serialized = await serializeDocModel(model, pkg);
     const xml = serialized.parts.get("word/document.xml")?.content ?? "";
     expect(xml).toContain("<wp:anchor");
     expect(xml).toContain('<wp:positionH relativeFrom="page"><wp:align>center</wp:align></wp:positionH>');
@@ -442,8 +442,8 @@ describe("round-trip", () => {
     expect(xml).toContain("<wp:wrapTopAndBottom/>");
     expect(xml).toContain('<wp:extent cx="247650" cy="247650"/>');
 
-    const reparsed = await parseDocx(packageToArrayBuffer(serialized));
-    const reparsedModel = buildDocModel(reparsed);
+    const reparsed = await parseDocx(await packageToArrayBuffer(serialized));
+    const reparsedModel = await buildDocModel(reparsed);
     const imageRun = reparsedModel.nodes[0]?.children[0];
     expect(imageRun?.type).toBe("image");
     if (imageRun?.type === "image") {
@@ -475,8 +475,8 @@ describe("round-trip", () => {
       });
     }
 
-    const pkg = await parseDocx(packageToArrayBuffer(seed));
-    const model = buildDocModel(pkg);
+    const pkg = await parseDocx(await packageToArrayBuffer(seed));
+    const model = await buildDocModel(pkg);
     expect(model.metadata.headerSections[0]?.partName).toBe("word/header1.xml");
 
     model.metadata.headerSections = [
@@ -494,7 +494,7 @@ describe("round-trip", () => {
       }
     ];
 
-    const serialized = serializeDocModel(model, pkg);
+    const serialized = await serializeDocModel(model, pkg);
     const headerXml = serialized.parts.get("word/header1.xml")?.content ?? "";
     expect(headerXml).toContain("Updated Header");
     expect(headerXml).not.toContain("Original Header");
@@ -502,8 +502,8 @@ describe("round-trip", () => {
 
   it("preserves table row cantSplit metadata", async () => {
     const seed = createMinimalDocxPackage(DOCUMENT_XML);
-    const pkg = await parseDocx(packageToArrayBuffer(seed));
-    const model = buildDocModel(pkg);
+    const pkg = await parseDocx(await packageToArrayBuffer(seed));
+    const model = await buildDocModel(pkg);
 
     model.nodes = [
       {
@@ -537,12 +537,12 @@ describe("round-trip", () => {
       }
     ];
 
-    const serialized = serializeDocModel(model, pkg);
+    const serialized = await serializeDocModel(model, pkg);
     const xml = serialized.parts.get("word/document.xml")?.content ?? "";
     expect(xml).toContain("<w:cantSplit/>");
 
-    const reparsed = await parseDocx(packageToArrayBuffer(serialized));
-    const reparsedModel = buildDocModel(reparsed);
+    const reparsed = await parseDocx(await packageToArrayBuffer(serialized));
+    const reparsedModel = await buildDocModel(reparsed);
     const tableNode = reparsedModel.nodes[0];
     expect(tableNode?.type).toBe("table");
     if (tableNode?.type === "table") {
@@ -553,8 +553,8 @@ describe("round-trip", () => {
 
   it("round-trips diagonal table cell borders", async () => {
     const seed = createMinimalDocxPackage(DOCUMENT_XML);
-    const pkg = await parseDocx(packageToArrayBuffer(seed));
-    const model = buildDocModel(pkg);
+    const pkg = await parseDocx(await packageToArrayBuffer(seed));
+    const model = await buildDocModel(pkg);
 
     model.nodes = [
       {
@@ -584,14 +584,14 @@ describe("round-trip", () => {
       }
     ];
 
-    const serialized = serializeDocModel(model, pkg);
+    const serialized = await serializeDocModel(model, pkg);
     const xml = serialized.parts.get("word/document.xml")?.content ?? "";
     expect(xml).toContain("<w:tcBorders>");
     expect(xml).toContain("<w:tl2br");
     expect(xml).toContain("<w:tr2bl");
 
-    const reparsed = await parseDocx(packageToArrayBuffer(serialized));
-    const reparsedModel = buildDocModel(reparsed);
+    const reparsed = await parseDocx(await packageToArrayBuffer(serialized));
+    const reparsedModel = await buildDocModel(reparsed);
     const tableNode = reparsedModel.nodes[0];
     expect(tableNode?.type).toBe("table");
     if (tableNode?.type === "table") {

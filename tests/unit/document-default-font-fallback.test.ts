@@ -102,7 +102,7 @@ async function renderDoc(
     ...(extras ?? []).map((entry) => ({ ...entry, deflate: true })),
   ]);
   const pkg = await parseDocx(zip);
-  const model = buildDocModel(pkg);
+  const model = await buildDocModel(pkg);
   return renderToStaticMarkup(React.createElement(ImportedViewer, { model }));
 }
 

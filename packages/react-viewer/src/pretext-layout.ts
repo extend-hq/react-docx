@@ -644,6 +644,7 @@ function laterIntervalFitsLeadingItemWithoutSplit(
   items: PretextLayoutItem[],
   preparedItems: Array<PreparedTextWithSegments | undefined>,
   start: PretextItemCursor,
+  line: InternalPretextItemLine,
   laterIntervals: Array<{
     x: number;
     width: number;
@@ -660,17 +661,53 @@ function laterIntervalFitsLeadingItemWithoutSplit(
     return false;
   }
 
-  const wholeLine = wholeRemainingItemLine(prepared, {
+  const startCursor: LayoutCursor = {
     segmentIndex: start.segmentIndex,
     graphemeIndex: start.graphemeIndex,
-  });
+  };
+  const wholeLine = wholeRemainingItemLine(prepared, startCursor);
   if (!wholeLine) {
     return false;
   }
 
-  return laterIntervals.some(
-    (interval) => wholeLine.width <= interval.width + 0.5
-  );
+  if (
+    laterIntervals.some((interval) => wholeLine.width <= interval.width + 0.5)
+  ) {
+    return true;
+  }
+
+  // Even when the whole remaining run cannot fit a later slot, never split a
+  // word across wrap slots if some later slot in the same row can keep that
+  // leading word intact.
+  const firstFragment = line.fragments[0];
+  if (
+    !firstFragment ||
+    firstFragment.itemIndex !== start.itemIndex ||
+    !cursorSplitsLeadingBreakableSegment(
+      prepared,
+      startCursor,
+      firstFragment.end
+    )
+  ) {
+    return false;
+  }
+
+  return laterIntervals.some((interval) => {
+    const candidate = layoutNextLine(
+      prepared,
+      startCursor,
+      Math.max(1, interval.width)
+    );
+    if (!candidate) {
+      return false;
+    }
+
+    return !cursorSplitsLeadingBreakableSegment(
+      prepared,
+      startCursor,
+      candidate.end
+    );
+  });
 }
 
 function cursorIsDone(
@@ -691,10 +728,10 @@ function cursorEndedAtHardBreak(
   return prepared.kinds[cursor.segmentIndex - 1] === "hard-break";
 }
 
-function lineSplitsLeadingBreakableSegment(
+function cursorSplitsLeadingBreakableSegment(
   prepared: PreparedTextWithSegments,
   start: LayoutCursor,
-  line: LayoutLine
+  end: LayoutCursor
 ): boolean {
   if (start.graphemeIndex !== 0) {
     return false;
@@ -707,10 +744,18 @@ function lineSplitsLeadingBreakableSegment(
   }
 
   return (
-    line.end.segmentIndex === start.segmentIndex &&
-    line.end.graphemeIndex > start.graphemeIndex &&
-    line.end.graphemeIndex < segmentGraphemeCount
+    end.segmentIndex === start.segmentIndex &&
+    end.graphemeIndex > start.graphemeIndex &&
+    end.graphemeIndex < segmentGraphemeCount
   );
+}
+
+function lineSplitsLeadingBreakableSegment(
+  prepared: PreparedTextWithSegments,
+  start: LayoutCursor,
+  line: LayoutLine
+): boolean {
+  return cursorSplitsLeadingBreakableSegment(prepared, start, line.end);
 }
 
 function laterIntervalFitsLeadingSegmentWithoutSplit(
@@ -1072,6 +1117,7 @@ export function layoutItemsWithPretextAroundExclusions(
           items,
           preparedItems,
           cursor,
+          line,
           rowIntervals.slice(intervalIndex + 1)
         )
       ) {

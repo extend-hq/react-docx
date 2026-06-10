@@ -167,6 +167,9 @@ importers:
       '@extend-ai/react-docx-ooxml-core':
         specifier: workspace:*
         version: link:../ooxml-core
+      '@extend-ai/react-docx-wasm':
+        specifier: workspace:*
+        version: link:../wasm
 
   packages/editor-ops:
     dependencies:
@@ -189,7 +192,11 @@ importers:
         specifier: workspace:*
         version: link:../doc-model
 
-  packages/ooxml-core: {}
+  packages/ooxml-core:
+    dependencies:
+      '@extend-ai/react-docx-wasm':
+        specifier: workspace:*
+        version: link:../wasm
 
   packages/react-viewer:
     dependencies:
@@ -220,6 +227,18 @@ importers:
       '@extend-ai/react-docx-ooxml-core':
         specifier: workspace:*
         version: link:../ooxml-core
+      '@extend-ai/react-docx-wasm':
+        specifier: workspace:*
+        version: link:../wasm
+
+  packages/wasm:
+    devDependencies:
+      tsup:
+        specifier: ^8.5.0
+        version: 8.5.1(jiti@2.6.1)(postcss@8.5.6)(typescript@5.9.3)
+      typescript:
+        specifier: ^5.8.3
+        version: 5.9.3
 
 packages:
 

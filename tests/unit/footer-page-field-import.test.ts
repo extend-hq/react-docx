@@ -245,7 +245,7 @@ async function buildImportedModel(): Promise<DocModel> {
       { name: "word/footer1.xml", content: FOOTER_XML }
     ])
   );
-  return buildDocModel(pkg);
+  return await buildDocModel(pkg);
 }
 
 async function buildImportedModelFromDocumentXml(documentXml: string): Promise<DocModel> {
@@ -266,7 +266,7 @@ async function buildImportedModelFromDocumentAndFooterXml(
       { name: "word/footer1.xml", content: footerXml }
     ])
   );
-  return buildDocModel(pkg);
+  return await buildDocModel(pkg);
 }
 
 function ImportedFooterViewer({ model }: { model: DocModel }): React.JSX.Element {

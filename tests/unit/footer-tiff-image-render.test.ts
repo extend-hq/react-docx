@@ -92,7 +92,7 @@ async function buildImportedModel(): Promise<DocModel> {
       { name: "word/media/image1.tif", content: base64ToBytes(TINY_TIFF_BASE64) }
     ])
   );
-  return buildDocModel(pkg);
+  return await buildDocModel(pkg);
 }
 
 function ImportedFooterViewer({ model }: { model: DocModel }): React.JSX.Element {

@@ -46,6 +46,22 @@ export const DEFAULT_DOCUMENT_LAYOUT: DocumentLayoutMetrics = {
   docGridLinePitchPx: undefined
 };
 
+export function pageMarginPaddingStyle(
+  marginsPx: DocumentLayoutMetrics["marginsPx"]
+): {
+  paddingTop: number;
+  paddingRight: number;
+  paddingBottom: number;
+  paddingLeft: number;
+} {
+  return {
+    paddingTop: marginsPx.top,
+    paddingRight: marginsPx.right,
+    paddingBottom: marginsPx.bottom,
+    paddingLeft: marginsPx.left,
+  };
+}
+
 export function twipsToPixels(twips?: number): number | undefined {
   if (!Number.isFinite(twips)) {
     return undefined;
@@ -221,8 +237,17 @@ export function parseSectionLayout(sectionPropertiesXml?: string): DocumentLayou
     twipsToPixels(readTwipsAttribute(pageMarginTag, "w:header")) ?? DEFAULT_DOCUMENT_LAYOUT.headerDistancePx;
   const footerDistancePx =
     twipsToPixels(readTwipsAttribute(pageMarginTag, "w:footer")) ?? DEFAULT_DOCUMENT_LAYOUT.footerDistancePx;
+  // Word only snaps lines to the document grid for explicit grid types.
+  // A bare <w:docGrid w:linePitch="..."/> (type "default") stores the pitch
+  // but applies no grid, and Word writes that boilerplate into most documents.
+  const docGridType = readStringAttribute(docGridTag, "w:type")?.toLowerCase();
   const docGridLinePitchPx =
-    twipsToPixels(readTwipsAttribute(docGridTag, "w:linePitch")) ?? DEFAULT_DOCUMENT_LAYOUT.docGridLinePitchPx;
+    docGridType === "lines" ||
+    docGridType === "linesandchars" ||
+    docGridType === "snaptochars"
+      ? twipsToPixels(readTwipsAttribute(docGridTag, "w:linePitch")) ??
+        DEFAULT_DOCUMENT_LAYOUT.docGridLinePitchPx
+      : DEFAULT_DOCUMENT_LAYOUT.docGridLinePitchPx;
 
   return {
     pageWidthPx,

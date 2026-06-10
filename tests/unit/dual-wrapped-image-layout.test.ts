@@ -813,4 +813,200 @@ describe("dual wrapped image layout", () => {
     expect(firstLine?.fragments[0]?.text.startsWith("Documents")).toBe(true);
     expect(firstLine?.fragments[0]?.x ?? 0).toBeGreaterThanOrEqual(200);
   });
+
+  it("applies foreign image exclusions to following paragraphs", async () => {
+    const {
+      collectPageFlowWrapObstaclesForParagraph,
+      resolveForeignWrapExclusionsForFlowRange,
+      resolveParagraphDualWrappedTextLayout,
+      resolveParagraphForeignOnlyWrappedTextLayout,
+      resolveWrappedFloatingImageDropPatch,
+    } = await import("../../packages/react-viewer/src/editor");
+
+    const anchorParagraph = {
+      type: "paragraph" as const,
+      children: [
+        {
+          type: "image" as const,
+          widthPx: 120,
+          heightPx: 110,
+          floating: {
+            xPx: 80,
+            yPx: 0,
+            distLPx: 8,
+            distRPx: 8,
+            distTPx: 0,
+            distBPx: 4,
+            wrapType: "square" as const,
+            wrapText: "bothSides" as const,
+            behindDocument: false,
+          },
+        },
+        {
+          type: "text" as const,
+          text:
+            "Documents may contain images. For example, there is an image of the web accessibility symbol.",
+        },
+      ],
+    };
+    const followingParagraph = {
+      type: "paragraph" as const,
+      children: [
+        {
+          type: "text" as const,
+          text: "Following paragraph text should wrap around the protruding image.",
+        },
+      ],
+    };
+
+    const containerWidthPx = 400;
+    const lineHeightPx = 22;
+    const anchorLayout = resolveParagraphDualWrappedTextLayout(
+      anchorParagraph,
+      containerWidthPx,
+      lineHeightPx
+    );
+    expect(anchorLayout).toBeDefined();
+
+    const draggedGeometry = anchorLayout!.geometries[0]!;
+    const draggedImage = {
+      ...anchorParagraph.children[0],
+      floating: {
+        ...anchorParagraph.children[0].floating,
+        ...resolveWrappedFloatingImageDropPatch(
+          anchorParagraph.children[0],
+          containerWidthPx,
+          draggedGeometry.imageLeftPx,
+          draggedGeometry.imageTopPx + 72,
+          { widthPx: 120, heightPx: 110 }
+        ),
+      },
+    };
+    const obstacles = collectPageFlowWrapObstaclesForParagraph(
+      {
+        ...anchorParagraph,
+        children: [draggedImage, anchorParagraph.children[1]],
+      },
+      0,
+      0,
+      containerWidthPx,
+      lineHeightPx
+    );
+    const foreignExclusions = resolveForeignWrapExclusionsForFlowRange(
+      obstacles,
+      1,
+      34,
+      154
+    );
+    const followingLayout = resolveParagraphForeignOnlyWrappedTextLayout(
+      followingParagraph,
+      containerWidthPx,
+      lineHeightPx,
+      foreignExclusions
+    );
+
+    expect(foreignExclusions.length).toBeGreaterThan(0);
+    expect(followingLayout).toBeDefined();
+    expect(foreignExclusions[0]?.right ?? 0).toBeGreaterThan(100);
+    expect(followingLayout?.layout.exclusions?.length ?? 0).toBeGreaterThan(0);
+  });
+
+  it("applies foreign image exclusions to preceding paragraphs when dragged upward", async () => {
+    const {
+      collectPageFlowWrapObstaclesForParagraph,
+      resolveForeignWrapExclusionsForFlowRange,
+      resolveParagraphDualWrappedTextLayout,
+      resolveParagraphForeignOnlyWrappedTextLayout,
+    } = await import("../../packages/react-viewer/src/editor");
+
+    const anchorParagraph = {
+      type: "paragraph" as const,
+      children: [
+        {
+          type: "image" as const,
+          widthPx: 120,
+          heightPx: 110,
+          floating: {
+            xPx: 80,
+            yPx: 0,
+            distLPx: 8,
+            distRPx: 8,
+            distTPx: 0,
+            distBPx: 4,
+            wrapType: "square" as const,
+            wrapText: "bothSides" as const,
+            behindDocument: false,
+          },
+        },
+        {
+          type: "text" as const,
+          text: "Anchor paragraph with a wrapped image.",
+        },
+      ],
+    };
+    const precedingParagraph = {
+      type: "paragraph" as const,
+      children: [
+        {
+          type: "text" as const,
+          text: "Preceding paragraph text should wrap around the protruding image.",
+        },
+      ],
+    };
+
+    const containerWidthPx = 400;
+    const lineHeightPx = 22;
+    const anchorLayout = resolveParagraphDualWrappedTextLayout(
+      anchorParagraph,
+      containerWidthPx,
+      lineHeightPx
+    );
+    expect(anchorLayout).toBeDefined();
+
+    const anchorGeometry = anchorLayout!.geometries[0]!;
+    const precedingFlowHeightPx = 34;
+    const anchorFlowTopPx = precedingFlowHeightPx;
+    const upwardDeltaY = -72;
+    const obstacles = collectPageFlowWrapObstaclesForParagraph(
+      anchorParagraph,
+      1,
+      anchorFlowTopPx,
+      containerWidthPx,
+      lineHeightPx,
+      {
+        location: {
+          kind: "paragraph",
+          nodeIndex: 1,
+        },
+        floatingMovePreview: {
+          imageKey: "p:1:0",
+          deltaX: 0,
+          deltaY: upwardDeltaY,
+          baseLeftPx: anchorGeometry.imageLeftPx,
+          baseTopPx: anchorGeometry.imageTopPx,
+        },
+      }
+    );
+    const foreignExclusions = resolveForeignWrapExclusionsForFlowRange(
+      obstacles,
+      0,
+      0,
+      precedingFlowHeightPx
+    );
+    const precedingLayout = resolveParagraphForeignOnlyWrappedTextLayout(
+      precedingParagraph,
+      containerWidthPx,
+      lineHeightPx,
+      foreignExclusions
+    );
+
+    expect(foreignExclusions.length).toBeGreaterThan(0);
+    expect(precedingLayout).toBeDefined();
+    expect(foreignExclusions[0]?.right ?? 0).toBeGreaterThan(100);
+    expect(precedingLayout?.layout.exclusions?.length ?? 0).toBeGreaterThan(0);
+    const firstLine = precedingLayout?.layout.lines[0];
+    expect(
+      firstLine?.fragments.some((fragment) => (fragment.x ?? 0) > 100)
+    ).toBe(true);
+  });
 });

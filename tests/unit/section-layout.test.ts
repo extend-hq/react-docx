@@ -40,8 +40,24 @@ describe("section layout parsing", () => {
       },
       headerDistancePx: 47,
       footerDistancePx: 47,
-      docGridLinePitchPx: 24
+      // Bare <w:docGrid w:linePitch="360"/> (type "default") stores the pitch
+      // but Word applies no line grid, so the viewer must not snap to it.
+      docGridLinePitchPx: undefined
     });
+  });
+
+  it("applies the doc grid line pitch only for explicit grid types", () => {
+    const withLinesGrid = SECTION_PROPERTIES_XML.replace(
+      '<w:docGrid w:linePitch="360"/>',
+      '<w:docGrid w:type="lines" w:linePitch="360"/>'
+    );
+    expect(parseSectionLayout(withLinesGrid).docGridLinePitchPx).toBe(24);
+
+    const withDefaultGrid = SECTION_PROPERTIES_XML.replace(
+      '<w:docGrid w:linePitch="360"/>',
+      '<w:docGrid w:type="default" w:linePitch="360"/>'
+    );
+    expect(parseSectionLayout(withDefaultGrid).docGridLinePitchPx).toBeUndefined();
   });
 
   it("resolves document layout from model metadata", () => {

@@ -49,8 +49,8 @@ import {
 import {
   DEFAULT_DOCUMENT_LAYOUT,
   DEFAULT_DOC_PAGE_HEIGHT,
-  DEFAULT_DOC_PAGE_MARGIN,
   DEFAULT_DOC_PAGE_WIDTH,
+  pageMarginPaddingStyle,
   resolveDocumentLayout,
   parseSectionLayout,
   parseSectionPageBorders,
@@ -192,10 +192,11 @@ const MIN_PARAGRAPH_LINE_HEIGHT_PX = 14;
 const FLOATING_HEADER_FOOTER_CLEARANCE_BUFFER_PX = 18;
 const MEASURED_PAGE_HEADER_CLEARANCE_BUFFER_PX = 8;
 const MEASURED_PAGE_FOOTER_CLEARANCE_BUFFER_PX = 24;
-const UNOVERLAPPED_FOOTER_MIN_CLEARANCE_PX = 16;
-const FLOATING_FOOTER_BASELINE_CLEARANCE_RESERVE_PX = 16;
+const UNOVERLAPPED_FOOTER_MIN_CLEARANCE_PX = 8;
+const FLOATING_FOOTER_BASELINE_CLEARANCE_RESERVE_PX = 8;
+const MIN_VISIBLE_FLOW_FOOTER_PAGINATION_RESERVE_PX = 8;
 const PAGINATION_MEASUREMENT_INTERACTION_DEBOUNCE_MS = 180;
-const MEASURED_BODY_FOOTER_OVERLAP_STABILITY_THRESHOLD = 3;
+const MEASURED_BODY_FOOTER_OVERLAP_STABILITY_THRESHOLD = 1;
 const WORD_TABLE_CELL_PARAGRAPH_AUTO_LINE_TWIPS = 240;
 const WORD_TABLE_CELL_PARAGRAPH_BEFORE_TWIPS = 0;
 const WORD_TABLE_CELL_PARAGRAPH_AFTER_TWIPS = 0;
@@ -251,7 +252,10 @@ const DEFAULT_PAGE_VIRTUALIZATION_OVERSCAN = 2;
 const LARGE_TABLE_PAGE_VIRTUALIZATION_OVERSCAN = 0;
 const LARGE_TABLE_PAGE_ADJACENT_RENDER_COUNT = 1;
 const DEFAULT_PAGE_VIRTUALIZATION_SETTLE_DELAY_MS = 350;
+const PAGE_SCROLL_MEASUREMENT_SUSPEND_MS = 220;
 const ENABLE_TABLE_ROW_SLICING = true;
+const TABLE_ROW_HEIGHT_PAGINATION_ESTIMATE_PADDING_RATIO = 1.08;
+const TABLE_ROW_HEIGHT_PAGINATION_ESTIMATE_PADDING_MIN_ROWS = 15;
 const MIN_TABLE_ROW_SLICE_REMAINING_HEIGHT_PX =
   MIN_PARAGRAPH_LINE_HEIGHT_PX * 2;
 const TABLE_ROW_SLICE_BOUNDARY_TOLERANCE_PX = 2;
@@ -295,9 +299,13 @@ const paragraphBreakFlagsBySourceXml = new Map<
 >();
 const paragraphEstimatedHeightBySourceXml = new Map<
   string,
-  Map<number, number>
+  Map<number | string, number>
 >();
 const tableEstimatedHeightBySourceXml = new Map<string, Map<number, number>>();
+const tableEstimatedRowHeightsByNode = new WeakMap<
+  TableNode,
+  Map<number, number[]>
+>();
 const paragraphExplicitIndentBySourceXml = new Map<
   string,
   ParagraphIndent | null
@@ -714,10 +722,10 @@ export function paragraphLetterheadColumnGroupAtSegmentOffset(
 
 export function letterheadColumnGroupContainerStyle(): React.CSSProperties {
   return {
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "flex-start",
-    gap: 28,
+    display: "grid",
+    gridTemplateColumns: "1fr 1fr",
+    columnGap: 28,
+    alignItems: "start",
     width: "100%",
     maxWidth: "100%",
     boxSizing: "border-box",
@@ -726,10 +734,8 @@ export function letterheadColumnGroupContainerStyle(): React.CSSProperties {
 
 export function letterheadColumnStackStyle(): React.CSSProperties {
   return {
-    display: "inline-grid",
-    alignContent: "start",
     minWidth: 0,
-    maxWidth: "calc(50% - 14px)",
+    maxWidth: "100%",
   };
 }
 
@@ -880,7 +886,6 @@ const BASE_DOC_STYLE: React.CSSProperties = {
   margin: "0 auto",
   width: DEFAULT_DOC_PAGE_WIDTH,
   minHeight: DEFAULT_DOC_PAGE_HEIGHT,
-  padding: DEFAULT_DOC_PAGE_MARGIN,
   display: "block",
   gap: 0,
   transition: "box-shadow 0.2s ease",
@@ -1344,6 +1349,61 @@ const WORD_IMAGE_Z_INDEX_MIN = 0;
 const WORD_IMAGE_Z_INDEX_STEP = 65536;
 const WORD_IMAGE_Z_INDEX_MAX = 251658240;
 const WORD_IMAGE_Z_INDEX_DEFAULT = WORD_IMAGE_Z_INDEX_MAX;
+
+export function resolveFloatingZIndex(floating: {
+  behindDocument?: boolean;
+  zIndex?: number;
+}): number {
+  const rawZIndex = Number.isFinite(floating.zIndex)
+    ? (floating.zIndex as number)
+    : floating.behindDocument
+    ? WORD_IMAGE_Z_INDEX_MIN
+    : 0;
+  const normalized = rawZIndex / WORD_IMAGE_Z_INDEX_STEP;
+  if (floating.behindDocument) {
+    return normalized;
+  }
+  return WORD_IMAGE_Z_INDEX_STEP + normalized;
+}
+
+export function resolveUiActiveTextRange(
+  selection: DocxEditorSelection,
+  activeTextRange: DocxTextRange | undefined,
+  lastInViewerActiveTextRange: DocxTextRange | undefined
+): DocxTextRange | undefined {
+  if (activeTextRange) {
+    return activeTextRange;
+  }
+  if (
+    lastInViewerActiveTextRange &&
+    selection.kind === "paragraph" &&
+    lastInViewerActiveTextRange.start.location.kind === "paragraph" &&
+    selection.nodeIndex === lastInViewerActiveTextRange.start.location.nodeIndex
+  ) {
+    return lastInViewerActiveTextRange;
+  }
+  return undefined;
+}
+
+export function shouldPreservePendingRunStyleBetweenRanges(
+  previousRange: DocxTextRange,
+  nextRange: DocxTextRange
+): boolean {
+  const previous = normalizeTextRange(previousRange);
+  const next = normalizeTextRange(nextRange);
+
+  if (compareTextRangeBoundaries(previous.start, previous.end) < 0) {
+    return false;
+  }
+  if (compareTextRangeBoundaries(next.start, next.end) < 0) {
+    return false;
+  }
+  if (!sameParagraphLocation(previous.start.location, next.start.location)) {
+    return false;
+  }
+
+  return true;
+}
 
 interface SectionColumnLayout {
   count: number;
@@ -2233,17 +2293,22 @@ export function resolveFooterPaginationReservePx(
       )
     : 0;
 
-  if (hasFloatingFooterBodyIntrusionRisk) {
-    return Math.max(
-      explicitFooterBoundaryReservePx,
-      floatingFooterBoundaryReservePx,
-      FLOATING_FOOTER_BASELINE_CLEARANCE_RESERVE_PX
-    );
-  }
+  const resolvedReservePx = hasFloatingFooterBodyIntrusionRisk
+    ? Math.max(
+        explicitFooterBoundaryReservePx,
+        floatingFooterBoundaryReservePx,
+        FLOATING_FOOTER_BASELINE_CLEARANCE_RESERVE_PX
+      )
+    : Math.max(
+        explicitFooterBoundaryReservePx,
+        floatingFooterBoundaryReservePx
+      );
 
   return Math.max(
-    explicitFooterBoundaryReservePx,
-    floatingFooterBoundaryReservePx
+    estimatedFooterHeightPx > 0
+      ? MIN_VISIBLE_FLOW_FOOTER_PAGINATION_RESERVE_PX
+      : 0,
+    resolvedReservePx
   );
 }
 
@@ -2700,17 +2765,6 @@ export function resolveRenderPageContentHeightPxForPageSegments(params: {
       : params.measuredPageContentIdentityKeysByPageIndex,
     params.pageIdentityKey
   );
-  if (
-    params.useMeasuredPageContentHeights === false &&
-    Number.isFinite(params.pageContentHeightScale) &&
-    Math.abs((params.pageContentHeightScale as number) - 1) >= 0.001
-  ) {
-    resolvedHeightPx = Math.max(
-      120,
-      Math.round(resolvedHeightPx * (params.pageContentHeightScale as number))
-    );
-  }
-
   if (usesMeasuredVisualHeight || sectionHeightMultiplier <= 1) {
     return resolvedHeightPx;
   }
@@ -5335,6 +5389,36 @@ function likelyFullPageCoverImageRelativeToContentBox(
   );
 }
 
+export function isLikelyFullPageCoverFloatingImage(
+  image: ImageRunNode,
+  pageWidthPx: number,
+  pageHeightPx: number
+): boolean {
+  return likelyFullPageCoverImageRelativeToContentBox(
+    image,
+    pageWidthPx,
+    pageHeightPx
+  );
+}
+
+export function resolveLinkedImageWrapperStyle(params: {
+  baseStyle?: React.CSSProperties;
+  cursor?: React.CSSProperties["cursor"];
+}): React.CSSProperties {
+  const { baseStyle, cursor } = params;
+  const hasPositionedBaseStyle =
+    baseStyle !== undefined && Object.keys(baseStyle).length > 0;
+
+  return {
+    // Floating images carry their positioning (float/position/offsets) on the
+    // wrapper so the hyperlink anchor occupies the same box as the image.
+    ...(hasPositionedBaseStyle ? baseStyle : { display: "inline-block" }),
+    lineHeight: 0,
+    verticalAlign: "middle",
+    ...(cursor !== undefined ? { cursor } : undefined),
+  };
+}
+
 function paragraphIsLikelyFullPageCoverArtAnchor(
   paragraph: ParagraphNode,
   pageContentWidthPx: number,
@@ -5748,6 +5832,457 @@ interface ParagraphDualWrappedTextLayout {
   geometries: DualWrappedFloatingImageGeometry[];
   lineHeightPx: number;
   layout: PretextVariableWidthLayout;
+}
+
+interface PageFlowFloatingWrapObstacle extends PretextExclusionRect {
+  sourceNodeIndex: number;
+}
+
+function resolveDualWrapParagraphRenderBlockHeightPx(
+  layout: PretextVariableWidthLayout,
+  geometries: DualWrappedFloatingImageGeometry[]
+): number {
+  const fullHeightPx = wrappedPretextParagraphBlockHeightPx(layout);
+  const textBottomPx = pretextLayoutContentBottomPx(layout);
+  const minImageTopPx = geometries.reduce(
+    (smallest, geometry) => Math.min(smallest, geometry.exclusion.top),
+    0
+  );
+  const maxImageBottomPx = geometries.reduce(
+    (largest, geometry) => Math.max(largest, geometry.exclusion.bottom),
+    0
+  );
+  if (minImageTopPx < -4 || maxImageBottomPx > textBottomPx + 4) {
+    return Math.max(MIN_PARAGRAPH_LINE_HEIGHT_PX, textBottomPx);
+  }
+
+  return fullHeightPx;
+}
+
+export function resolveForeignWrapExclusionsForFlowRange(
+  obstacles: PageFlowFloatingWrapObstacle[],
+  sourceNodeIndex: number,
+  pageFlowTopPx: number,
+  pageFlowBottomPx: number
+): PretextExclusionRect[] {
+  const foreignExclusions: PretextExclusionRect[] = [];
+
+  for (const obstacle of obstacles) {
+    if (obstacle.sourceNodeIndex === sourceNodeIndex) {
+      continue;
+    }
+    if (obstacle.bottom <= pageFlowTopPx || obstacle.top >= pageFlowBottomPx) {
+      continue;
+    }
+
+    foreignExclusions.push({
+      left: obstacle.left,
+      right: obstacle.right,
+      top: Math.max(0, Math.round(obstacle.top - pageFlowTopPx)),
+      bottom: Math.max(0, Math.round(obstacle.bottom - pageFlowTopPx)),
+    });
+  }
+
+  return foreignExclusions;
+}
+
+function resolveWrappedImageGeometryForPageFlow(
+  image: ImageRunNode,
+  childIndex: number,
+  containerWidthPx: number,
+  options?: {
+    paragraphTopPx?: number;
+    pageMarginTopPx?: number;
+    widthPx?: number;
+    heightPx?: number;
+    movePreview?: {
+      deltaX: number;
+      deltaY: number;
+      baseLeftPx?: number;
+      baseTopPx?: number;
+    };
+    allowNegativeImageTop?: boolean;
+  }
+): DualWrappedFloatingImageGeometry | undefined {
+  return resolveDualWrappedFloatingImageGeometry(image, containerWidthPx, {
+    imageIndex: childIndex,
+    widthPx: options?.widthPx,
+    heightPx: options?.heightPx,
+    paragraphTopPx: options?.paragraphTopPx,
+    pageMarginTopPx: options?.pageMarginTopPx,
+    deltaX: options?.movePreview?.deltaX,
+    deltaY: options?.movePreview?.deltaY,
+    baseLeftPx: options?.movePreview?.baseLeftPx,
+    baseTopPx: options?.movePreview?.baseTopPx,
+    allowNegativeImageTop:
+      options?.allowNegativeImageTop ?? Boolean(options?.movePreview),
+  });
+}
+
+export function collectPageFlowWrapObstaclesForParagraph(
+  paragraph: ParagraphNode,
+  nodeIndex: number,
+  pageFlowTopPx: number,
+  containerWidthPx: number,
+  lineHeightPx: number,
+  options?: {
+    paragraphTopPx?: number;
+    pageMarginTopPx?: number;
+    location?: ParagraphLocation;
+    floatingMovePreview?: {
+      imageKey: string;
+      deltaX: number;
+      deltaY: number;
+      baseLeftPx?: number;
+      baseTopPx?: number;
+    };
+    resizePreview?: {
+      imageKey: string;
+      widthPx: number;
+      heightPx: number;
+    };
+  }
+): PageFlowFloatingWrapObstacle[] {
+  const obstacles: PageFlowFloatingWrapObstacle[] = [];
+  const movePreviewByImageIndex = new Map<
+    number,
+    {
+      deltaX: number;
+      deltaY: number;
+      baseLeftPx?: number;
+      baseTopPx?: number;
+    }
+  >();
+
+  paragraph.children.forEach((child, childIndex) => {
+    if (child.type !== "image" || !options?.location) {
+      return;
+    }
+
+    const imageKey = imageLocationKey({ ...options.location, childIndex });
+    const movePreview =
+      options.floatingMovePreview?.imageKey === imageKey
+        ? options.floatingMovePreview
+        : undefined;
+    if (!movePreview) {
+      return;
+    }
+
+    movePreviewByImageIndex.set(childIndex, {
+      deltaX: Math.round(movePreview.deltaX),
+      deltaY: Math.round(movePreview.deltaY),
+      ...(Number.isFinite(movePreview.baseLeftPx)
+        ? { baseLeftPx: Math.round(movePreview.baseLeftPx as number) }
+        : undefined),
+      ...(Number.isFinite(movePreview.baseTopPx)
+        ? { baseTopPx: Math.round(movePreview.baseTopPx as number) }
+        : undefined),
+    });
+  });
+
+  const dualWrappedLayout = resolveParagraphDualWrappedTextLayout(
+    paragraph,
+    containerWidthPx,
+    lineHeightPx,
+    {
+      paragraphTopPx: options?.paragraphTopPx,
+      pageMarginTopPx: options?.pageMarginTopPx,
+      movePreviewByImageIndex,
+      allowNegativeImageTop: movePreviewByImageIndex.size > 0,
+    }
+  );
+  const coveredImageIndexes = new Set<number>();
+
+  if (dualWrappedLayout) {
+    for (const geometry of dualWrappedLayout.geometries) {
+      coveredImageIndexes.add(geometry.imageIndex);
+      obstacles.push({
+        sourceNodeIndex: nodeIndex,
+        left: geometry.exclusion.left,
+        right: geometry.exclusion.right,
+        top: pageFlowTopPx + geometry.exclusion.top,
+        bottom: pageFlowTopPx + geometry.exclusion.bottom,
+      });
+    }
+  }
+
+  paragraph.children.forEach((child, childIndex) => {
+    if (child.type !== "image" || !shouldRenderWrappedFloatingImage(child)) {
+      return;
+    }
+    if (coveredImageIndexes.has(childIndex)) {
+      return;
+    }
+
+    const imageKey = options?.location
+      ? imageLocationKey({ ...options.location, childIndex })
+      : undefined;
+    const resizePreview =
+      imageKey && options?.resizePreview?.imageKey === imageKey
+        ? options.resizePreview
+        : undefined;
+    const movePreview = movePreviewByImageIndex.get(childIndex);
+    const geometry = resolveWrappedImageGeometryForPageFlow(
+      child,
+      childIndex,
+      containerWidthPx,
+      {
+        paragraphTopPx: options?.paragraphTopPx,
+        pageMarginTopPx: options?.pageMarginTopPx,
+        widthPx: resizePreview?.widthPx ?? child.widthPx,
+        heightPx: resizePreview?.heightPx ?? child.heightPx,
+        movePreview,
+        allowNegativeImageTop: Boolean(movePreview),
+      }
+    );
+    if (!geometry) {
+      return;
+    }
+
+    obstacles.push({
+      sourceNodeIndex: nodeIndex,
+      left: geometry.exclusion.left,
+      right: geometry.exclusion.right,
+      top: pageFlowTopPx + geometry.exclusion.top,
+      bottom: pageFlowTopPx + geometry.exclusion.bottom,
+    });
+  });
+
+  return obstacles;
+}
+
+export function resolveParagraphForeignOnlyWrappedTextLayout(
+  paragraph: ParagraphNode,
+  containerWidthPx: number,
+  lineHeightPx: number,
+  foreignExclusions: PretextExclusionRect[]
+): ParagraphDualWrappedTextLayout | undefined {
+  if (foreignExclusions.length === 0) {
+    return undefined;
+  }
+
+  const source = buildParagraphPretextLayoutSource(paragraph);
+  if (!source) {
+    return undefined;
+  }
+
+  const layout = resolveParagraphPretextExclusionLayout(
+    paragraph,
+    source,
+    containerWidthPx,
+    lineHeightPx,
+    foreignExclusions
+  );
+  if (!layout) {
+    return undefined;
+  }
+
+  return {
+    source,
+    geometries: [],
+    lineHeightPx,
+    layout,
+  };
+}
+
+function precomputePageSegmentForeignWrapExclusions(
+  segments: DocumentPageNodeSegment[],
+  model: DocModel,
+  availableWidthPx: number,
+  numberingDefinitions: NumberingDefinitionSet | undefined,
+  docGridLinePitchPxByNodeIndex: Map<number, number | undefined>,
+  pageContentWidthPxByNodeIndex: Map<number, number>,
+  pageLayout: DocumentLayoutMetrics,
+  interaction?: {
+    floatingMovePreview?: {
+      imageKey: string;
+      deltaX: number;
+      deltaY: number;
+      baseLeftPx?: number;
+      baseTopPx?: number;
+    };
+    resizePreview?: {
+      imageKey: string;
+      widthPx: number;
+      heightPx: number;
+    };
+  }
+): PretextExclusionRect[][] {
+  const flowTopPxBySegmentIndex: number[] = [];
+  const flowHeightPxBySegmentIndex: number[] = [];
+  let pageFlowTopPx = 0;
+
+  for (const segment of segments) {
+    flowTopPxBySegmentIndex.push(pageFlowTopPx);
+    const node = model.nodes[segment.nodeIndex];
+    const segmentWidthPx =
+      pageContentWidthPxByNodeIndex.get(segment.nodeIndex) ?? availableWidthPx;
+    const segmentHeightPx = estimateRenderedPageSegmentHeightPx(
+      node,
+      segment,
+      model,
+      segmentWidthPx,
+      numberingDefinitions,
+      docGridLinePitchPxByNodeIndex.get(segment.nodeIndex),
+      // For the wrap-exclusion flow simulation, a square/tight-wrapped float
+      // must not inflate its own paragraph's flow height. Following
+      // paragraphs flow beside the float (Word behavior), so they need to
+      // start right after this paragraph's text — not below the image — for
+      // the float's exclusion rect to overlap and indent them.
+      { excludeWrappedFloatingImageFootprint: true }
+    );
+    flowHeightPxBySegmentIndex.push(segmentHeightPx);
+    pageFlowTopPx += segmentHeightPx;
+  }
+
+  const obstacles: PageFlowFloatingWrapObstacle[] = [];
+  for (let segmentIndex = 0; segmentIndex < segments.length; segmentIndex += 1) {
+    const segment = segments[segmentIndex];
+    const node = model.nodes[segment.nodeIndex];
+    if (node?.type !== "paragraph") {
+      continue;
+    }
+
+    const segmentWidthPx =
+      pageContentWidthPxByNodeIndex.get(segment.nodeIndex) ?? availableWidthPx;
+    const paragraphRenderTextWidthPx = paragraphAvailableTextWidthPx(
+      node,
+      segmentWidthPx,
+      numberingDefinitions
+    );
+    obstacles.push(
+      ...collectPageFlowWrapObstaclesForParagraph(
+        node,
+        segment.nodeIndex,
+        flowTopPxBySegmentIndex[segmentIndex] ?? 0,
+        paragraphRenderTextWidthPx,
+        estimateParagraphLineHeightPx(
+          node,
+          docGridLinePitchPxByNodeIndex.get(segment.nodeIndex)
+        ),
+        {
+          paragraphTopPx: flowTopPxBySegmentIndex[segmentIndex] ?? 0,
+          pageMarginTopPx: pageLayout.marginsPx.top,
+          location: {
+            kind: "paragraph",
+            nodeIndex: segment.nodeIndex,
+          },
+          floatingMovePreview: interaction?.floatingMovePreview,
+          resizePreview: interaction?.resizePreview,
+        }
+      )
+    );
+  }
+
+  const result = segments.map((segment, segmentIndex) =>
+    resolveForeignWrapExclusionsForFlowRange(
+      obstacles,
+      segment.nodeIndex,
+      flowTopPxBySegmentIndex[segmentIndex] ?? 0,
+      (flowTopPxBySegmentIndex[segmentIndex] ?? 0) +
+        (flowHeightPxBySegmentIndex[segmentIndex] ?? 0)
+    )
+  );
+  return result;
+}
+
+function applyWrappedFloatingInteractionPreviewToParagraph(
+  paragraph: ParagraphNode,
+  location: ParagraphLocation,
+  paragraphRenderTextWidthPx: number,
+  options?: {
+    floatingMovePreview?: {
+      imageKey: string;
+      deltaX: number;
+      deltaY: number;
+      baseLeftPx?: number;
+      baseTopPx?: number;
+    };
+    resizePreview?: {
+      imageKey: string;
+      widthPx: number;
+      heightPx: number;
+    };
+  }
+): ParagraphNode {
+  const hasInteractionPreview = Boolean(
+    options?.floatingMovePreview || options?.resizePreview
+  );
+  if (!hasInteractionPreview) {
+    return paragraph;
+  }
+
+  return {
+    ...paragraph,
+    children: paragraph.children.map((child, childIndex) => {
+      if (child.type !== "image") {
+        return child;
+      }
+
+      const imageLocation: DocxImageLocation = { ...location, childIndex };
+      const imageKey = imageLocationKey(imageLocation);
+      const resizePreview =
+        options?.resizePreview?.imageKey === imageKey
+          ? options.resizePreview
+          : undefined;
+      const movePreview =
+        options?.floatingMovePreview?.imageKey === imageKey
+          ? options.floatingMovePreview
+          : undefined;
+      if (!movePreview || !shouldRenderWrappedFloatingImage(child)) {
+        return child;
+      }
+
+      const widthPx =
+        resizePreview?.widthPx ??
+        child.widthPx ??
+        MIN_PARAGRAPH_LINE_HEIGHT_PX;
+      const heightPx =
+        resizePreview?.heightPx ??
+        child.heightPx ??
+        widthPx;
+      const baseGeometry = resolveDualWrappedFloatingImageGeometry(
+        child,
+        paragraphRenderTextWidthPx,
+        {
+          widthPx,
+          heightPx,
+          ...(Number.isFinite(movePreview.baseLeftPx)
+            ? { baseLeftPx: Math.round(movePreview.baseLeftPx as number) }
+            : undefined),
+          ...(Number.isFinite(movePreview.baseTopPx)
+            ? { baseTopPx: Math.round(movePreview.baseTopPx as number) }
+            : undefined),
+        }
+      );
+      const movedLeft = clampNumber(
+        Math.round((baseGeometry?.imageLeftPx ?? 0) + movePreview.deltaX),
+        0,
+        Math.max(0, paragraphRenderTextWidthPx - widthPx)
+      );
+      const movedTop = Math.round(
+        (baseGeometry?.imageTopPx ?? 0) + movePreview.deltaY
+      );
+      const patch = resolveWrappedFloatingImageDropPatch(
+        child,
+        paragraphRenderTextWidthPx,
+        movedLeft,
+        movedTop,
+        {
+          widthPx,
+          heightPx,
+        }
+      );
+
+      return {
+        ...child,
+        floating: {
+          ...(child.floating ?? {}),
+          ...patch,
+        },
+      };
+    }),
+  };
 }
 
 const paragraphPretextLayoutSourceCache = new WeakMap<
@@ -6661,6 +7196,7 @@ export function resolveDualWrappedFloatingImageGeometry(
     baseTopPx?: number;
     paragraphTopPx?: number;
     pageMarginTopPx?: number;
+    allowNegativeImageTop?: boolean;
   }
 ): DualWrappedFloatingImageGeometry | undefined {
   const floating = image.floating;
@@ -6743,12 +7279,16 @@ export function resolveDualWrappedFloatingImageGeometry(
     0,
     Math.max(0, safeContainerWidthPx - imageWidthPx)
   );
-  const imageTopPx = Math.max(
-    0,
+  const rawImageTopPx =
     (hasExplicitBaseTopPx
       ? baseTopPx
-      : paragraphLocalBaseTopPx + (isInlinePreview ? 0 : distTPx)) + deltaY
-  );
+      : paragraphLocalBaseTopPx + (isInlinePreview ? 0 : distTPx)) + deltaY;
+  const modelAllowsNegativeTop =
+    Number.isFinite(floating?.yPx) && (floating?.yPx as number) < 0;
+  const imageTopPx =
+    options?.allowNegativeImageTop || modelAllowsNegativeTop
+      ? Math.round(rawImageTopPx)
+      : Math.max(0, Math.round(rawImageTopPx));
 
   let exclusionLeftPx = Math.max(0, imageLeftPx - distLPx);
   let exclusionRightPx = Math.min(
@@ -6819,6 +7359,8 @@ export function resolveParagraphDualWrappedTextLayout(
         baseTopPx?: number;
       }
     >;
+    foreignExclusions?: PretextExclusionRect[];
+    allowNegativeImageTop?: boolean;
   }
 ): ParagraphDualWrappedTextLayout | undefined {
   const source = buildParagraphPretextLayoutSource(paragraph);
@@ -6843,6 +7385,8 @@ export function resolveParagraphDualWrappedTextLayout(
         pageMarginTopPx: options?.pageMarginTopPx,
         baseLeftPx: movePreview?.baseLeftPx,
         baseTopPx: movePreview?.baseTopPx,
+        allowNegativeImageTop:
+          options?.allowNegativeImageTop ?? Boolean(movePreview),
       });
     })
     .filter((candidate): candidate is DualWrappedFloatingImageGeometry =>
@@ -6927,6 +7471,10 @@ export function resolveParagraphDualWrappedTextLayout(
     };
   });
 
+  const mergedExclusions = [
+    ...(options?.foreignExclusions ?? []),
+    ...anchorAdjustedGeometries.map((geometry) => geometry.exclusion),
+  ];
   const layout = resolveParagraphPretextExclusionLayout(
     paragraph,
     source,
@@ -6934,7 +7482,7 @@ export function resolveParagraphDualWrappedTextLayout(
       ...anchorAdjustedGeometries.map((geometry) => geometry.containerWidthPx)
     ),
     lineHeightPx,
-    anchorAdjustedGeometries.map((geometry) => geometry.exclusion)
+    mergedExclusions
   );
   if (!layout) {
     return undefined;
@@ -7374,6 +7922,10 @@ function paragraphIsStructuralSectionBreakSpacer(
     paragraphHasPageBreakBefore(paragraph) ||
     paragraphStartsWithLastRenderedPageBreak(paragraph)
   ) {
+    return false;
+  }
+
+  if (paragraphLetterheadSideFromIndent(paragraph)) {
     return false;
   }
 
@@ -8990,42 +9542,55 @@ function estimateTabLeaderWrappedLineCountForParagraph(
 
 const wrappedLineCountByParagraph = new WeakMap<
   ParagraphNode,
-  Map<number, number>
+  Map<number | string, number>
 >();
 
 function cachedWrappedLineCountForParagraph(
   paragraph: ParagraphNode,
-  widthPx: number
+  widthKey: number | string
 ): number | undefined {
-  return wrappedLineCountByParagraph.get(paragraph)?.get(widthPx);
+  return wrappedLineCountByParagraph.get(paragraph)?.get(widthKey);
 }
 
 function rememberWrappedLineCountForParagraph(
   paragraph: ParagraphNode,
-  widthPx: number,
+  widthKey: number | string,
   lineCount: number
 ): number {
   let countsByWidth = wrappedLineCountByParagraph.get(paragraph);
   if (!countsByWidth) {
-    countsByWidth = new Map<number, number>();
+    countsByWidth = new Map<number | string, number>();
     wrappedLineCountByParagraph.set(paragraph, countsByWidth);
   }
-  countsByWidth.set(widthPx, lineCount);
+  countsByWidth.set(widthKey, lineCount);
   return lineCount;
 }
 
 function estimateWrappedLineCountForParagraph(
   paragraph: ParagraphNode,
-  availableWidthPx: number
+  availableWidthPx: number,
+  firstLineAvailableWidthPx?: number
 ): number {
   const paragraphBaseFontPx = paragraphBaseFontSizePx(paragraph);
   const maxLineWidthPx = Math.max(
     paragraphBaseFontPx * 2,
     Math.round(availableWidthPx)
   );
+  const firstLineMaxWidthPx =
+    Number.isFinite(firstLineAvailableWidthPx) &&
+    (firstLineAvailableWidthPx as number) > 0
+      ? Math.max(
+          paragraphBaseFontPx * 2,
+          Math.round(firstLineAvailableWidthPx as number)
+        )
+      : maxLineWidthPx;
+  const widthCacheKey: number | string =
+    firstLineMaxWidthPx === maxLineWidthPx
+      ? maxLineWidthPx
+      : `${maxLineWidthPx}|${firstLineMaxWidthPx}`;
   const cachedLineCount = cachedWrappedLineCountForParagraph(
     paragraph,
-    maxLineWidthPx
+    widthCacheKey
   );
   if (cachedLineCount !== undefined) {
     return cachedLineCount;
@@ -9034,7 +9599,7 @@ function estimateWrappedLineCountForParagraph(
   const rememberLineCount = (lineCount: number): number =>
     rememberWrappedLineCountForParagraph(
       paragraph,
-      maxLineWidthPx,
+      widthCacheKey,
       Math.max(1, Math.round(lineCount))
     );
   const tabStopsPx = resolveParagraphTabStopsPx(paragraph);
@@ -9050,6 +9615,7 @@ function estimateWrappedLineCountForParagraph(
     useCenterRightTabLayout || useCenterTabLayout || useRightTabLayout;
   const paragraphEligibleForPlainPretextLineCount =
     !paragraph.style?.indent &&
+    firstLineMaxWidthPx === maxLineWidthPx &&
     !paragraphContainsExplicitLineBreakText(paragraph);
 
   if (
@@ -9116,6 +9682,11 @@ function estimateWrappedLineCountForParagraph(
   let tabLeaderRightZoneActive = false;
   let tabLeaderRightZoneWidthPx = 0;
 
+  // The first line keeps a hanging indent's extra room (minus any list marker
+  // box); subsequent lines wrap within the regular indented width.
+  const currentMaxLineWidthPx = (): number =>
+    lineCount === 1 ? firstLineMaxWidthPx : maxLineWidthPx;
+
   const advanceByTextToken = (
     token: string,
     style: TextRunNode["style"] | FormFieldRunNode["style"] | undefined
@@ -9124,15 +9695,15 @@ function estimateWrappedLineCountForParagraph(
     if (
       token.trim().length > 0 &&
       currentLineWidthPx > 0 &&
-      currentLineWidthPx + tokenWidthPx > maxLineWidthPx
+      currentLineWidthPx + tokenWidthPx > currentMaxLineWidthPx()
     ) {
       lineCount += 1;
       currentLineWidthPx = 0;
     }
 
-    if (tokenWidthPx <= maxLineWidthPx) {
+    if (tokenWidthPx <= currentMaxLineWidthPx()) {
       currentLineWidthPx = Math.min(
-        maxLineWidthPx,
+        currentMaxLineWidthPx(),
         currentLineWidthPx + tokenWidthPx
       );
       return;
@@ -9146,13 +9717,13 @@ function estimateWrappedLineCountForParagraph(
       );
       if (
         currentLineWidthPx > 0 &&
-        currentLineWidthPx + characterWidthPx > maxLineWidthPx
+        currentLineWidthPx + characterWidthPx > currentMaxLineWidthPx()
       ) {
         lineCount += 1;
         currentLineWidthPx = 0;
       }
       currentLineWidthPx = Math.min(
-        maxLineWidthPx,
+        currentMaxLineWidthPx(),
         currentLineWidthPx + characterWidthPx
       );
     }
@@ -9322,7 +9893,8 @@ function paragraphAvailableTextWidthPx(
 export function paragraphLineCountWithinWidth(
   paragraph: ParagraphNode,
   availableWidthPx?: number,
-  numberingDefinitions?: NumberingDefinitionSet
+  numberingDefinitions?: NumberingDefinitionSet,
+  numberingLabel?: ParagraphNumberingLabel
 ): number {
   const textContent = paragraph.children
     .map((child) => {
@@ -9356,7 +9928,40 @@ export function paragraphLineCountWithinWidth(
   if (dualWrappedLayout) {
     return dualWrappedLayout.layout.lineCount;
   }
-  return estimateWrappedLineCountForParagraph(paragraph, effectiveWidthPx);
+
+  // A hanging indent only narrows lines after the first, so the first line
+  // keeps the hanging offset as extra room. Numbered list paragraphs render an
+  // inline marker box at the start of that first line, which consumes part (or
+  // all) of that extra room before the paragraph text begins.
+  const resolvedIndent = resolveListParagraphIndent(
+    paragraph,
+    numberingDefinitions
+  );
+  const hangingIndentPx = twipsToSignedPixels(resolvedIndent?.hangingTwips);
+  const firstLineHangingBonusPx =
+    Number.isFinite(hangingIndentPx) && (hangingIndentPx as number) > 0
+      ? (hangingIndentPx as number)
+      : 0;
+  const numberingMarkerReservePx =
+    (paragraph.style?.numbering?.numId ?? 0) > 0
+      ? resolveNumberingMarkerBoxWidthPx(
+          paragraph,
+          numberingDefinitions,
+          numberingLabel
+        ) ?? 0
+      : 0;
+  const firstLineWidthPx = Math.max(
+    24,
+    Math.round(
+      effectiveWidthPx + firstLineHangingBonusPx - numberingMarkerReservePx
+    )
+  );
+
+  return estimateWrappedLineCountForParagraph(
+    paragraph,
+    effectiveWidthPx,
+    firstLineWidthPx
+  );
 }
 
 function estimateWrappedFloatingImageFootprintPx(
@@ -9664,7 +10269,7 @@ function resolveParagraphDocGridLinePitchPx(
   const docGridSnapState = paragraphDocGridSnapState(paragraph);
   if (
     disableDocGridSnap ||
-    docGridSnapState !== "snap" ||
+    docGridSnapState === "disable" ||
     !Number.isFinite(docGridLinePitchPx) ||
     (docGridLinePitchPx as number) <= 0
   ) {
@@ -9741,14 +10346,30 @@ function estimateParagraphHeightPx(
   availableWidthPx?: number,
   numberingDefinitions?: NumberingDefinitionSet,
   docGridLinePitchPx?: number,
-  disableDocGridSnap = false
+  disableDocGridSnap = false,
+  numberingLabel?: ParagraphNumberingLabel,
+  options?: {
+    // Word-like flow: square/tight wrapped floats do not consume flow height;
+    // following paragraphs flow beside them. The foreign-wrap exclusion
+    // simulation needs the text-flow height, not the float footprint.
+    excludeWrappedFloatingImageFootprint?: boolean;
+  }
 ): number {
+  const excludeWrappedFloatingImageFootprint =
+    options?.excludeWrappedFloatingImageFootprint === true;
   const sourceXml = paragraph.sourceXml;
-  const widthKey = heightEstimateCacheKeyPx(
+  const baseWidthKey = heightEstimateCacheKeyPx(
     availableWidthPx,
     docGridLinePitchPx,
     disableDocGridSnap
   );
+  let widthKey: number | string =
+    numberingLabel?.text !== undefined
+      ? `${baseWidthKey}|${numberingLabel.text}`
+      : baseWidthKey;
+  if (excludeWrappedFloatingImageFootprint) {
+    widthKey = `${widthKey}|no-wrap-footprint`;
+  }
   if (sourceXml) {
     const cachedByWidth = paragraphEstimatedHeightBySourceXml.get(sourceXml);
     const cached = cachedByWidth?.get(widthKey);
@@ -9784,7 +10405,8 @@ function estimateParagraphHeightPx(
   const lineCount = paragraphLineCountWithinWidth(
     paragraph,
     availableWidthPx,
-    numberingDefinitions
+    numberingDefinitions,
+    numberingLabel
   );
   const absoluteFloatingAnchorOnlyParagraph =
     paragraphIsAbsoluteFloatingImageAnchorOnly(paragraph);
@@ -9812,19 +10434,18 @@ function estimateParagraphHeightPx(
 
     return Math.max(largest, child.heightPx ?? 0);
   }, 0);
-  const wrappedFloatingImageHeightPx = paragraph.children.reduce(
-    (largest, child) => {
-      if (child.type !== "image") {
-        return largest;
-      }
+  const wrappedFloatingImageHeightPx = excludeWrappedFloatingImageFootprint
+    ? 0
+    : paragraph.children.reduce((largest, child) => {
+        if (child.type !== "image") {
+          return largest;
+        }
 
-      return Math.max(
-        largest,
-        estimateWrappedFloatingImageFootprintPx(paragraph, child)
-      );
-    },
-    0
-  );
+        return Math.max(
+          largest,
+          estimateWrappedFloatingImageFootprintPx(paragraph, child)
+        );
+      }, 0);
   const absoluteFloatingImageHeightPx = paragraph.children.reduce(
     (largest, child) => {
       if (child.type !== "image") {
@@ -9858,7 +10479,11 @@ function estimateParagraphHeightPx(
     ? 0
     : paragraphFlowAnchoredAbsoluteFloatingAnchorOnlyParagraph
     ? MIN_PARAGRAPH_LINE_HEIGHT_PX
-    : dualWrappedLayout
+    : // When excluding the wrapped-float footprint, the dual-wrapped block
+    // height spans the image; but the rendered paragraph only occupies its
+    // text lines while the float overhangs. Use the text-line height so the
+    // float's exclusion can overlap following paragraphs.
+    dualWrappedLayout && !excludeWrappedFloatingImageFootprint
     ? wrappedPretextParagraphBlockHeightPx(dualWrappedLayout.layout)
     : lineHeightPx * lineCount;
 
@@ -9875,6 +10500,8 @@ function estimateParagraphHeightPx(
     effectiveAbsoluteFloatingImageHeightPx,
     emptyParagraphHeightPx
   );
+  if (excludeWrappedFloatingImageFootprint && paragraph.children.some((c) => c.type === "image")) {
+  }
   const estimatedHeightPx = Math.max(
     1,
     beforeSpacing +
@@ -9991,7 +10618,7 @@ function estimateTableCellContentHeightPx(
     }
 
     const disableDocGridSnap =
-      paragraphDocGridSnapState(contentNode) === "disable";
+      paragraphDocGridSnapState(contentNode) !== "snap";
     const paragraphForLayout = wordLikeTableCellParagraph(
       contentNode,
       applyWordTableDefaults
@@ -10201,12 +10828,70 @@ function tableUsesWordLikeParagraphDefaults(table: TableNode): boolean {
   );
 }
 
-function estimateTableRowHeightsPx(
+export function estimateTableRowHeightsPx(
   table: TableNode,
   maxAvailableWidthPx?: number,
   numberingDefinitions?: NumberingDefinitionSet,
   docGridLinePitchPx?: number,
   pageContentHeightPx?: number
+): number[] {
+  const baseCacheKey = heightEstimateCacheKeyPx(
+    maxAvailableWidthPx,
+    docGridLinePitchPx
+  );
+  const cachedByKey = tableEstimatedRowHeightsByNode.get(table);
+  let baseRowHeights = cachedByKey?.get(baseCacheKey);
+
+  if (!baseRowHeights) {
+    baseRowHeights = computeTableCellDerivedRowHeightsPx(
+      table,
+      maxAvailableWidthPx,
+      numberingDefinitions,
+      docGridLinePitchPx
+    );
+    const cacheByKey =
+      cachedByKey ?? new Map<number, number[]>();
+    cacheByKey.set(baseCacheKey, baseRowHeights);
+    tableEstimatedRowHeightsByNode.set(table, cacheByKey);
+  }
+
+  return table.rows.map((row, rowIndex) => {
+    let rowHeightPx = baseRowHeights[rowIndex] ?? 0;
+
+    const explicitHeightPx = twipsToPixels(row.style?.heightTwips);
+    if (explicitHeightPx && explicitHeightPx > 0) {
+      rowHeightPx =
+        row.style?.heightRule === "exact"
+          ? explicitHeightPx
+          : Math.max(rowHeightPx, explicitHeightPx);
+    }
+    rowHeightPx = capSplitFriendlyTableRowEstimatePx(
+      row,
+      rowHeightPx,
+      explicitHeightPx,
+      pageContentHeightPx
+    );
+
+    const paginationPaddingRatio =
+      table.rows.length >= 35
+        ? 1.32
+        : table.rows.length >= TABLE_ROW_HEIGHT_PAGINATION_ESTIMATE_PADDING_MIN_ROWS
+        ? TABLE_ROW_HEIGHT_PAGINATION_ESTIMATE_PADDING_RATIO
+        : 1;
+    const paddedRowHeightPx =
+      paginationPaddingRatio > 1
+        ? Math.round(rowHeightPx * paginationPaddingRatio)
+        : rowHeightPx;
+
+    return Math.max(MIN_PARAGRAPH_LINE_HEIGHT_PX, paddedRowHeightPx);
+  });
+}
+
+function computeTableCellDerivedRowHeightsPx(
+  table: TableNode,
+  maxAvailableWidthPx?: number,
+  numberingDefinitions?: NumberingDefinitionSet,
+  docGridLinePitchPx?: number
 ): number[] {
   const defaultCellMargin = table.style?.cellMarginTwips;
   const columnCount = tableColumnCount(table);
@@ -10249,7 +10934,7 @@ function estimateTableRowHeightsPx(
 
   return table.rows.map((row) => {
     let columnCursor = 0;
-    let rowHeightPx = row.cells.reduce((largest, cell) => {
+    const rowHeightPx = row.cells.reduce((largest, cell) => {
       const columnSpan =
         cell.style?.gridSpan && cell.style.gridSpan > 1
           ? cell.style.gridSpan
@@ -10286,22 +10971,27 @@ function estimateTableRowHeightsPx(
       return Math.max(largest, paragraphHeightPx + verticalPaddingPx);
     }, 0);
 
-    const explicitHeightPx = twipsToPixels(row.style?.heightTwips);
-    if (explicitHeightPx && explicitHeightPx > 0) {
-      rowHeightPx =
-        row.style?.heightRule === "exact"
-          ? explicitHeightPx
-          : Math.max(rowHeightPx, explicitHeightPx);
-    }
-    rowHeightPx = capSplitFriendlyTableRowEstimatePx(
-      row,
-      rowHeightPx,
-      explicitHeightPx,
-      pageContentHeightPx
-    );
-
-    return Math.max(MIN_PARAGRAPH_LINE_HEIGHT_PX, rowHeightPx);
+    return rowHeightPx;
   });
+}
+
+function resolveTableRowHeightCss(
+  row: TableNode["rows"][number],
+  rowHeightPx?: number
+): React.CSSProperties | undefined {
+  if (!Number.isFinite(rowHeightPx) || (rowHeightPx as number) <= 0) {
+    return undefined;
+  }
+
+  const resolvedHeightPx = Math.max(
+    MIN_PARAGRAPH_LINE_HEIGHT_PX,
+    Math.round(rowHeightPx as number)
+  );
+  if (row.style?.heightRule === "exact") {
+    return { height: `${resolvedHeightPx}px` };
+  }
+
+  return { minHeight: `${resolvedHeightPx}px` };
 }
 
 interface TableCellSliceBoundaryLayout {
@@ -11535,7 +12225,10 @@ function estimateRenderedPageSegmentHeightPx(
   model: DocModel,
   availableWidthPx: number,
   numberingDefinitions?: NumberingDefinitionSet,
-  docGridLinePitchPx?: number
+  docGridLinePitchPx?: number,
+  options?: {
+    excludeWrappedFloatingImageFootprint?: boolean;
+  }
 ): number {
   if (node.type === "paragraph") {
     const paragraphLineRange = segment.paragraphLineRange;
@@ -11595,7 +12288,12 @@ function estimateRenderedPageSegmentHeightPx(
         node,
         availableWidthPx,
         numberingDefinitions,
-        docGridLinePitchPx
+        docGridLinePitchPx,
+        false,
+        undefined,
+        options?.excludeWrappedFloatingImageFootprint
+          ? { excludeWrappedFloatingImageFootprint: true }
+          : undefined
       )
     );
   }
@@ -12026,6 +12724,51 @@ function fitTableRowsWithinHeightPx(
   return rowCursor;
 }
 
+export function buildDocumentPageNodeSegmentsFromLastRenderedPageBreakHints(
+  model: DocModel
+): DocumentPageNodeSegment[][] {
+  if (model.nodes.length === 0) {
+    return [];
+  }
+
+  const pageStartNodeIndexes: number[] = [0];
+  model.nodes.forEach((node, nodeIndex) => {
+    if (nodeIndex === 0 || node.type !== "paragraph") {
+      return;
+    }
+
+    if (
+      paragraphHasLastRenderedPageBreak(node) ||
+      paragraphHasPageBreakBefore(node)
+    ) {
+      pageStartNodeIndexes.push(nodeIndex);
+    }
+  });
+
+  const uniquePageStartNodeIndexes = [...new Set(pageStartNodeIndexes)].sort(
+    (left, right) => left - right
+  );
+  const pages: DocumentPageNodeSegment[][] = [];
+
+  uniquePageStartNodeIndexes.forEach((startNodeIndex, pageIndex) => {
+    const nextStartNodeIndex =
+      uniquePageStartNodeIndexes[pageIndex + 1] ?? model.nodes.length;
+    const pageSegments: DocumentPageNodeSegment[] = [];
+    for (
+      let nodeIndex = startNodeIndex;
+      nodeIndex < nextStartNodeIndex;
+      nodeIndex += 1
+    ) {
+      pageSegments.push({ nodeIndex });
+    }
+    if (pageSegments.length > 0) {
+      pages.push(pageSegments);
+    }
+  });
+
+  return pages;
+}
+
 export function buildDocumentPageNodeSegments(
   model: DocModel,
   pageContentHeightPx: number,
@@ -12038,6 +12781,7 @@ export function buildDocumentPageNodeSegments(
     measuredTableRowHeightsByNodeIndex?: Record<number, number[]>;
     measuredPageContentHeightsPxByPageIndex?: number[];
     preferLastRenderedParagraphStartBreaks?: boolean;
+    strictLastRenderedParagraphStartBreaks?: boolean;
   }
 ): DocumentPageNodeSegment[][] {
   if (model.nodes.length === 0) {
@@ -12063,8 +12807,13 @@ export function buildDocumentPageNodeSegments(
     options?.suppressSpacingBeforeAfterPageBreak ?? false;
   const preferLastRenderedParagraphStartBreaks =
     options?.preferLastRenderedParagraphStartBreaks ?? false;
+  const strictLastRenderedParagraphStartBreaks =
+    options?.strictLastRenderedParagraphStartBreaks ?? false;
   const hardBreakStartNodeIndexes =
     collectDocxHardPageBreakStartNodeIndexes(model);
+  // Numbered-list markers consume horizontal text room, so pagination needs the
+  // rendered label text (e.g. "10.") to estimate line wrapping accurately.
+  const paginationNumberingLabels = buildParagraphNumberingLabels(model);
   const sectionStartPageBreakNodeIndexes =
     collectDocxSectionStartPageBreakNodeIndexes(model);
   const nextHardBreakStartNodeIndexByNodeIndex =
@@ -12084,7 +12833,7 @@ export function buildDocumentPageNodeSegments(
       measuredPageContentHeightsPxByPageIndex?.[pageIndex];
     if (Number.isFinite(overrideHeightPx) && (overrideHeightPx as number) > 0) {
       return Math.max(
-        120,
+        24,
         Math.min(
           Math.round(fallbackHeightPx),
           Math.round(
@@ -12093,7 +12842,7 @@ export function buildDocumentPageNodeSegments(
         )
       );
     }
-    return Math.max(120, Math.round(fallbackHeightPx));
+    return Math.max(24, Math.round(fallbackHeightPx));
   };
   const resolveMetricsPageContentHeightPx = (
     pageIndex: number,
@@ -12280,10 +13029,11 @@ export function buildDocumentPageNodeSegments(
       if (
         preferLastRenderedParagraphStartBreaks &&
         paragraphStartsWithLastRenderedPageBreak(node) &&
-        shouldHonorParagraphStartLastRenderedPageBreak({
-          pageConsumedHeightPx,
-          pageContentHeightPx: currentPageContentHeightPx,
-        }) &&
+        (strictLastRenderedParagraphStartBreaks ||
+          shouldHonorParagraphStartLastRenderedPageBreak({
+            pageConsumedHeightPx,
+            pageContentHeightPx: currentPageContentHeightPx,
+          })) &&
         !nodeAlreadyEndsAtExplicitPageBoundary(model.nodes[nodeIndex - 1]) &&
         currentPageSegments.length > 0
       ) {
@@ -12349,13 +13099,18 @@ export function buildDocumentPageNodeSegments(
             : undefined;
         return paragraphPretextLayoutForSegmentRendering;
       };
+      const nodeNumberingLabel = paginationNumberingLabels.get(
+        `p:${nodeIndex}`
+      );
       let rawNodeHeightPx = Math.max(
         1,
         estimateParagraphHeightPx(
           node,
           nodeMetrics.pageContentWidthPx,
           numberingDefinitions,
-          nodeMetrics.docGridLinePitchPx
+          nodeMetrics.docGridLinePitchPx,
+          false,
+          nodeNumberingLabel
         ) -
           directBeforeSpacingPx -
           directAfterSpacingPx +
@@ -12450,7 +13205,8 @@ export function buildDocumentPageNodeSegments(
       const paragraphLineCount = paragraphLineCountWithinWidth(
         node,
         nodeMetrics.pageContentWidthPx,
-        numberingDefinitions
+        numberingDefinitions,
+        nodeNumberingLabel
       );
       const resolvedParagraphLineCount =
         Number.isFinite(paragraphPretextLineCount) &&
@@ -13868,17 +14624,17 @@ export function resolveWrappedFloatingImageDropPatch(
       heightPx: imageHeight,
       baseLeftPx: movedLeft,
       baseTopPx: movedTop,
+      allowNegativeImageTop: true,
     }
   );
   const previewUsesSideFloat =
     previewGeometry === undefined ||
     previewGeometry.exclusion.left <= 0 ||
     previewGeometry.exclusion.right >= hostWidth;
-  const rawExplicitTopPx = Math.max(
-    0,
-    Math.round(movedTop - Math.round(baseFloating.distTPx ?? 0))
+  const rawExplicitTopPx = Math.round(
+    movedTop - Math.round(baseFloating.distTPx ?? 0)
   );
-  const currentTopPx = Math.max(0, Math.round(baseFloating.yPx ?? 0));
+  const currentTopPx = Math.round(baseFloating.yPx ?? 0);
   const explicitTopPx =
     wrapType.trim().toLowerCase() === "topandbottom" &&
     Math.abs(rawExplicitTopPx - currentTopPx) <
@@ -14777,6 +15533,10 @@ function paragraphBlockStyle(
     ...(paragraph.style?.align === "justify" && hasSoftLineBreak
       ? ({ textAlignLast: "justify" } as React.CSSProperties)
       : undefined),
+    // Pin the block font size to the paragraph's dominant run size so the
+    // line-box strut tracks the actual content instead of the browser's
+    // 16px default, which inflates lines for sub-12pt paragraphs.
+    fontSize: `${paragraphBaseFontSizePx(paragraph)}px`,
     lineHeight: suppressFlowFootprintForBehindTextAnchorOnlyParagraph
       ? 0
       : paragraphLineHeight(paragraph, docGridLinePitchPx, disableDocGridSnap),
@@ -15051,7 +15811,14 @@ function runStyleToCss(
     borderColor: borderStyle
       ? style?.runBorder?.color ?? "currentColor"
       : undefined,
-    padding: borderPaddingPt !== undefined ? `${borderPaddingPt}pt` : undefined,
+    ...(borderPaddingPt !== undefined
+      ? {
+          paddingTop: `${borderPaddingPt}pt`,
+          paddingRight: `${borderPaddingPt}pt`,
+          paddingBottom: `${borderPaddingPt}pt`,
+          paddingLeft: `${borderPaddingPt}pt`,
+        }
+      : undefined),
     boxDecorationBreak: borderStyle ? "clone" : undefined,
     whiteSpace: "pre-wrap",
   };
@@ -24345,7 +25112,7 @@ export function useDocxEditor(
         const buffer = await file.arrayBuffer();
         const pkg = await parseDocx(buffer);
         await loadEmbeddedFontsFromPackage(pkg);
-        const nextModel = buildDocModel(pkg);
+        const nextModel = await buildDocModel(pkg);
 
         setModel(nextModel);
         setDocumentLoadNonce((current) => current + 1);
@@ -24386,7 +25153,7 @@ export function useDocxEditor(
     setStatus("Created new document");
   }, [unloadEmbeddedFonts]);
 
-  const exportDocx = React.useCallback((): void => {
+  const exportDocx = React.useCallback(async (): Promise<void> => {
     const sourceModel = modelRef.current;
     const transformedModel = pendingExportModelTransformerRef.current
       ? pendingExportModelTransformerRef.current(sourceModel)
@@ -24395,7 +25162,7 @@ export function useDocxEditor(
       setModel(transformedModel);
     }
 
-    const output = serializeDocx(transformedModel, basePackage);
+    const output = await serializeDocx(transformedModel, basePackage);
     const blob = new Blob([output], {
       type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     });
@@ -29736,10 +30503,10 @@ function renderHeaderNode(
         <tbody>
           {node.rows.map((row, rowIndex) => {
             const rowHeightPx = twipsToPixels(row.style?.heightTwips);
-            const resolvedRowHeightStyle =
-              rowHeightPx && rowHeightPx > 0
-                ? { height: `${rowHeightPx}px` }
-                : undefined;
+            const resolvedRowHeightStyle = resolveTableRowHeightCss(
+              row,
+              rowHeightPx
+            );
             let columnCursor = 0;
 
             return (
@@ -31074,9 +31841,9 @@ export function DocxEditorViewer({
     pageContentWidthPxByNodeIndex,
     pageContentHeightPxByNodeIndex,
   } = React.useMemo(() => {
-    const pitchByNodeIndex = new Map<number, number | undefined>();
-    const widthByNodeIndex = new Map<number, number | undefined>();
-    const heightByNodeIndex = new Map<number, number | undefined>();
+    const pitchByNodeIndex = new Map<number, number>();
+    const widthByNodeIndex = new Map<number, number>();
+    const heightByNodeIndex = new Map<number, number>();
     if (
       editor.model.nodes.length === 0 ||
       paginationSectionMetrics.length === 0
@@ -31239,7 +32006,10 @@ export function DocxEditorViewer({
       (measuredPageContentHeightByIndex?.length ?? 0) > 0;
     const buildEstimatedPages = (
       measuredTableRowHeightsByNodeIndex?: Record<number, number[]>,
-      measuredPageContentHeightsOverride?: number[] | null
+      measuredPageContentHeightsOverride?: number[] | null,
+      paginationOptions?: {
+        strictLastRenderedParagraphStartBreaks?: boolean;
+      }
     ): DocumentPageNodeSegment[][] => {
       const allowMeasuredPageContentHeights =
         !editor.canUndo &&
@@ -31266,6 +32036,8 @@ export function DocxEditorViewer({
             allowParagraphLineSplitting: true,
             suppressSpacingBeforeAfterPageBreak,
             preferLastRenderedParagraphStartBreaks,
+            strictLastRenderedParagraphStartBreaks:
+              paginationOptions?.strictLastRenderedParagraphStartBreaks ?? false,
             measuredTableRowHeightsByNodeIndex,
             measuredPageContentHeightsPxByPageIndex: resolvedPageContentHeights,
           }
@@ -31505,29 +32277,100 @@ export function DocxEditorViewer({
     const allowMeasuredReductionOverPaginationReconciliation =
       measuredPageHeightOverridesReduceContent &&
       estimatedPages.length > resolvedTargetPageCount;
+    const tableDominatedDocument =
+      editor.model.nodes.length > 0 &&
+      editor.model.nodes.filter((node) => node.type === "table").length /
+        editor.model.nodes.length >=
+        0.4;
+    const estimatedPagesIncludeTableRowSplits = estimatedPages.some(
+      (segments) =>
+        segments.some((segment) => {
+          const tableNode = editor.model.nodes[segment.nodeIndex];
+          if (!segment.tableRowRange || tableNode?.type !== "table") {
+            return false;
+          }
+
+          return (
+            segment.tableRowRange.endRowIndex -
+              segment.tableRowRange.startRowIndex <
+            tableNode.rows.length
+          );
+        })
+    );
+    const deferTableStoredPageCountScaleReconciliation =
+      tableDominatedDocument &&
+      estimatedPagesIncludeTableRowSplits &&
+      !tableMeasuredRowHeightsForPagination &&
+      estimatedPages.length > resolvedTargetPageCount;
+    const deferSinglePageScaleUpReconciliation =
+      resolvedTargetPageCount === 1 &&
+      estimatedPages.length === 2 &&
+      !tableMeasuredRowHeightsForPagination &&
+      !hasLastRenderedPageBreakHints &&
+      !(
+        Number.isFinite(storedDocumentPageCount) &&
+        (storedDocumentPageCount as number) === 1
+      );
+    const suppressMeasuredBodyFooterOverlapForStoredSinglePage =
+      resolvedTargetPageCount === 1 &&
+      Number.isFinite(storedDocumentPageCount) &&
+      (storedDocumentPageCount as number) === 1;
+    const applyStoredSinglePageImportEstimate = (
+      pages: DocumentPageNodeSegment[][],
+      renderOptions: {
+        useMeasuredPageContentHeightsForRender: boolean;
+        renderMeasuredPageContentHeightsPxByPageIndex?: number[];
+        renderPageContentHeightScale?: number;
+      }
+    ) => {
+      if (!suppressMeasuredBodyFooterOverlapForStoredSinglePage) {
+        return {
+          pages,
+          ...renderOptions,
+        };
+      }
+
+      const singlePageEstimate = buildEstimatedPages(undefined, null);
+      if (singlePageEstimate.length !== 1 || pages.length <= 1) {
+        return {
+          pages,
+          ...renderOptions,
+        };
+      }
+
+      return {
+        pages: singlePageEstimate,
+        useMeasuredPageContentHeightsForRender: false,
+        renderMeasuredPageContentHeightsPxByPageIndex: undefined,
+        renderPageContentHeightScale: undefined,
+      };
+    };
     const allowStoredPageCountReconciliation =
       !editor.canUndo &&
       !editor.canRedo &&
       !hasPageAnchoredFloatingFooterContent &&
       !hasMultiColumnRenderedPageBreakHints &&
+      !deferTableStoredPageCountScaleReconciliation &&
+      !deferSinglePageScaleUpReconciliation &&
       shouldAllowStoredPageCountReduction({
         estimatedPageCount: estimatedPages.length,
         targetPageCount: resolvedTargetPageCount,
         hasLastRenderedPageBreakHints,
         renderedBreakHintPageCount,
-        hasMeasuredBodyFooterOverlap,
+        hasMeasuredBodyFooterOverlap: suppressMeasuredBodyFooterOverlapForStoredSinglePage
+          ? false
+          : hasMeasuredBodyFooterOverlap,
       }) &&
       (!measuredPageHeightOverridesReduceContent ||
         allowMeasuredReductionOverPaginationReconciliation);
     if (!allowStoredPageCountReconciliation) {
-      return {
-        pages: estimatedPages,
+      return applyStoredSinglePageImportEstimate(estimatedPages, {
         useMeasuredPageContentHeightsForRender:
           estimatedPagesUseMeasuredPageContentHeightsForRender,
         renderMeasuredPageContentHeightsPxByPageIndex:
           estimatedRenderMeasuredPageContentHeightsPxByPageIndex,
         renderPageContentHeightScale: estimatedRenderPageContentHeightScale,
-      };
+      });
     }
 
     if (estimatedPages.length === resolvedTargetPageCount) {
@@ -31538,6 +32381,40 @@ export function DocxEditorViewer({
         renderMeasuredPageContentHeightsPxByPageIndex:
           estimatedRenderMeasuredPageContentHeightsPxByPageIndex,
       };
+    }
+
+    if (
+      hasLastRenderedPageBreakHints &&
+      renderedBreakHintPageCount === resolvedTargetPageCount
+    ) {
+      const hintAlignedPages = applyEstimatedFootnoteReserveToPages(
+        editor.model,
+        buildDocumentPageNodeSegmentsFromLastRenderedPageBreakHints(
+          editor.model
+        ),
+        pageContentHeightPx,
+        pageContentWidthPx,
+        paginationSectionMetrics,
+        editor.model.metadata.numberingDefinitions,
+        editor.model.metadata.footnotes ?? [],
+        (pageContentHeightsOverride) =>
+          buildEstimatedPages(
+            tableMeasuredRowHeightsForPagination,
+            pageContentHeightsOverride
+          )
+      );
+      if (hintAlignedPages.length === resolvedTargetPageCount) {
+        return {
+          pages: hintAlignedPages,
+          useMeasuredPageContentHeightsForRender:
+            canUseMeasuredPageContentHeights,
+          renderMeasuredPageContentHeightsPxByPageIndex:
+            canUseMeasuredPageContentHeights
+              ? measuredPageContentHeightByIndex
+              : undefined,
+          renderPageContentHeightScale: undefined,
+        };
+      }
     }
 
     const reconciliationScales =
@@ -31601,10 +32478,7 @@ export function DocxEditorViewer({
             reconciledCandidate.scale
           )
         : undefined;
-    let reconciledRenderPageContentHeightScale =
-      reconciledPagesUseMeasuredPageContentHeightsForRender
-        ? undefined
-        : reconciledCandidate.scale;
+    let reconciledRenderPageContentHeightScale: number | undefined = undefined;
     if (!editor.canUndo && !editor.canRedo) {
       const pureEstimatedPages = buildEstimatedPages(undefined, null);
       const pureReconciledCandidate = reconcileCandidatePages(
@@ -31620,8 +32494,32 @@ export function DocxEditorViewer({
         reconciledPages = pureReconciledPages;
         reconciledPagesUseMeasuredPageContentHeightsForRender = false;
         reconciledRenderMeasuredPageContentHeightsPxByPageIndex = undefined;
-        reconciledRenderPageContentHeightScale = pureReconciledCandidate.scale;
+        reconciledRenderPageContentHeightScale = undefined;
       }
+    }
+
+    if (
+      resolvedTargetPageCount === 1 &&
+      Number.isFinite(storedDocumentPageCount) &&
+      (storedDocumentPageCount as number) === 1
+    ) {
+      const correctedSinglePagePlan = applyStoredSinglePageImportEstimate(
+        reconciledPages,
+        {
+          useMeasuredPageContentHeightsForRender:
+            reconciledPagesUseMeasuredPageContentHeightsForRender,
+          renderMeasuredPageContentHeightsPxByPageIndex:
+            reconciledRenderMeasuredPageContentHeightsPxByPageIndex,
+          renderPageContentHeightScale: reconciledRenderPageContentHeightScale,
+        }
+      );
+      reconciledPages = correctedSinglePagePlan.pages;
+      reconciledPagesUseMeasuredPageContentHeightsForRender =
+        correctedSinglePagePlan.useMeasuredPageContentHeightsForRender;
+      reconciledRenderMeasuredPageContentHeightsPxByPageIndex =
+        correctedSinglePagePlan.renderMeasuredPageContentHeightsPxByPageIndex;
+      reconciledRenderPageContentHeightScale =
+        correctedSinglePagePlan.renderPageContentHeightScale;
     }
 
     return {
@@ -31715,12 +32613,36 @@ export function DocxEditorViewer({
     sections.forEach((section, sectionIndex) => {
       const startNodeIndex = Math.max(0, Math.round(section.startNodeIndex));
       const startPageIndex = pageIndexByNodeIndex.get(startNodeIndex);
-      if (Number.isFinite(startPageIndex)) {
-        firstRenderedPageIndexBySectionIndex.set(
-          sectionIndex,
-          Math.max(0, Math.round(startPageIndex as number))
-        );
+      if (!Number.isFinite(startPageIndex)) {
+        return;
       }
+
+      let firstOwnedPageIndex = Math.max(
+        0,
+        Math.round(startPageIndex as number)
+      );
+      // A continuous section that begins partway down a physical page shares
+      // that page with the previous section: Word keeps the previous section's
+      // footer and page numbering for the shared page and only applies the new
+      // section (and any page-number restart) from the next physical page.
+      if (
+        sectionIndex > 0 &&
+        parseSectionStartType(section.sectionPropertiesXml) === "continuous"
+      ) {
+        const startPageFirstNodeIndex =
+          pageNodeSegmentsByPage[firstOwnedPageIndex]?.[0]?.nodeIndex;
+        if (
+          Number.isFinite(startPageFirstNodeIndex) &&
+          (startPageFirstNodeIndex as number) < startNodeIndex
+        ) {
+          firstOwnedPageIndex += 1;
+        }
+      }
+
+      firstRenderedPageIndexBySectionIndex.set(
+        sectionIndex,
+        firstOwnedPageIndex
+      );
     });
     if (!firstRenderedPageIndexBySectionIndex.has(0)) {
       firstRenderedPageIndexBySectionIndex.set(0, 0);
@@ -32164,9 +33086,10 @@ export function DocxEditorViewer({
       return;
     }
 
-    const nextScale = resolveEffectiveZoomScale(rootElement);
+    const nextScale =
+      Math.round(resolveEffectiveZoomScale(rootElement) * 100) / 100;
     setVirtualizerMeasurementScale((current) =>
-      Math.abs(current - nextScale) < 0.001 ? current : nextScale
+      Math.abs(current - nextScale) < 0.005 ? current : nextScale
     );
   });
   const internalPageVirtualizationEnabled =
@@ -32200,16 +33123,10 @@ export function DocxEditorViewer({
     },
     [documentLayout, pageSectionInfoByIndex, virtualizerMeasurementScale]
   );
-  const measureVirtualPageElement = React.useCallback(
-    (element: HTMLElement): number => {
-      const rect = element.getBoundingClientRect();
-      return Math.max(
-        1,
-        Math.round(rect.height + DOC_PAGE_BREAK_GAP * virtualizerMeasurementScale)
-      );
-    },
-    [virtualizerMeasurementScale]
-  );
+  const suspendPaginationMeasurementForScroll = React.useCallback((): void => {
+    paginationMeasurementSuspendUntilRef.current =
+      Date.now() + PAGE_SCROLL_MEASUREMENT_SUSPEND_MS;
+  }, []);
   const internalElementPageVirtualizer = useVirtualizer({
     count: Math.max(1, pageCount),
     getScrollElement: () =>
@@ -32217,7 +33134,6 @@ export function DocxEditorViewer({
         ? internalVirtualScrollElement
         : null,
     estimateSize: estimateVirtualPageSize,
-    measureElement: measureVirtualPageElement,
     overscan: pageVirtualizationOverscan,
   });
   const internalWindowPageVirtualizer = useWindowVirtualizer({
@@ -32227,7 +33143,6 @@ export function DocxEditorViewer({
         ? window
         : null,
     estimateSize: estimateVirtualPageSize,
-    measureElement: measureVirtualPageElement,
     overscan: pageVirtualizationOverscan,
   });
   const internalPageVirtualizer = internalVirtualScrollUsesWindow
@@ -32342,17 +33257,13 @@ export function DocxEditorViewer({
         | undefined
       >
     ): void => {
-      if (hasLargeTableLayoutSurface) {
-        flushSync(() => {
-          setObservedVisiblePageRange(updater);
-        });
-        return;
-      }
-
-      setObservedVisiblePageRange(updater);
+      React.startTransition(() => {
+        setObservedVisiblePageRange(updater);
+      });
     };
     const syncVisiblePageRange = (): void => {
       frameId = null;
+      suspendPaginationMeasurementForScroll();
 
       const viewportRect = internalVirtualScrollUsesWindow
         ? {
@@ -32426,6 +33337,7 @@ export function DocxEditorViewer({
     };
 
     const scheduleVisiblePageRangeSync = (): void => {
+      suspendPaginationMeasurementForScroll();
       if (frameId !== null) {
         return;
       }
@@ -32481,6 +33393,32 @@ export function DocxEditorViewer({
     pageCount,
     pageVirtualizationOverscan,
     shouldObserveVisiblePageRange,
+    suspendPaginationMeasurementForScroll,
+  ]);
+  React.useEffect(() => {
+    if (
+      !internalPageVirtualizationEnabled ||
+      !internalVirtualScrollElement ||
+      typeof window === "undefined"
+    ) {
+      return;
+    }
+
+    const onScroll = (): void => {
+      suspendPaginationMeasurementForScroll();
+    };
+    const scrollTarget = internalVirtualScrollUsesWindow
+      ? window
+      : internalVirtualScrollElement;
+    scrollTarget.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      scrollTarget.removeEventListener("scroll", onScroll);
+    };
+  }, [
+    internalPageVirtualizationEnabled,
+    internalVirtualScrollElement,
+    internalVirtualScrollUsesWindow,
+    suspendPaginationMeasurementForScroll,
   ]);
   const internalEffectiveRenderVisiblePageRange = React.useMemo(() => {
     if (!internalRenderVisiblePageRange) {
@@ -32598,6 +33536,10 @@ export function DocxEditorViewer({
   }, [pageCount, visiblePageEndIndex, visiblePageStartIndex]);
   React.useLayoutEffect(() => {
     if (typeof window === "undefined") {
+      return;
+    }
+
+    if (Date.now() < paginationMeasurementSuspendUntilRef.current) {
       return;
     }
 
@@ -32803,112 +33745,6 @@ export function DocxEditorViewer({
 
     onPageCountChange(stableReportedPageCount);
   }, [onPageCountChange, stableReportedPageCount]);
-  React.useLayoutEffect(() => {
-    if (
-      !internalPageVirtualizationEnabled ||
-      !internalVirtualScrollElement ||
-      typeof window === "undefined"
-    ) {
-      return;
-    }
-
-    const rootElement = viewerRootRef.current;
-    if (!rootElement) {
-      return;
-    }
-
-    let frameId: number | null = null;
-    const observedElements = new Set<HTMLElement>();
-    const resizeObserver =
-      typeof ResizeObserver === "function"
-        ? new ResizeObserver(() => {
-            if (frameId !== null) {
-              return;
-            }
-            frameId = window.requestAnimationFrame(() => {
-              frameId = null;
-              observedElements.forEach((element) => {
-                internalPageVirtualizer.measureElement(element);
-              });
-            });
-          })
-        : undefined;
-    const syncMeasuredPageWrappers = (): void => {
-      const pageWrappers = Array.from(
-        rootElement.querySelectorAll<HTMLElement>(
-          '[data-docx-page-wrapper="true"][data-index]'
-        )
-      ).filter((element) => {
-        const pageIndex = Number.parseInt(
-          element.getAttribute("data-index") ?? "",
-          10
-        );
-        return (
-          Number.isFinite(pageIndex) &&
-          pageIndex >= visiblePageStartIndex &&
-          pageIndex <= visiblePageEndIndex
-        );
-      });
-      const nextElements = new Set(pageWrappers);
-
-      observedElements.forEach((element) => {
-        if (!nextElements.has(element)) {
-          resizeObserver?.unobserve(element);
-        }
-      });
-      pageWrappers.forEach((element) => {
-        if (!observedElements.has(element)) {
-          resizeObserver?.observe(element);
-        }
-        internalPageVirtualizer.measureElement(element);
-      });
-
-      observedElements.clear();
-      nextElements.forEach((element) => observedElements.add(element));
-    };
-
-    syncMeasuredPageWrappers();
-
-    const mutationObserver =
-      typeof MutationObserver === "function"
-        ? new MutationObserver(() => {
-            syncMeasuredPageWrappers();
-          })
-        : undefined;
-    mutationObserver?.observe(rootElement, {
-      childList: true,
-      subtree: true,
-    });
-
-    return () => {
-      if (frameId !== null) {
-        window.cancelAnimationFrame(frameId);
-      }
-      mutationObserver?.disconnect();
-      resizeObserver?.disconnect();
-      observedElements.clear();
-    };
-  }, [
-    internalPageVirtualizationEnabled,
-    internalPageVirtualizer,
-    internalVirtualScrollElement,
-    pageCount,
-    visiblePageEndIndex,
-    visiblePageStartIndex,
-  ]);
-  React.useEffect(() => {
-    if (!internalPageVirtualizationEnabled) {
-      return;
-    }
-
-    internalPageVirtualizer.measure();
-  }, [
-    internalPageVirtualizationEnabled,
-    internalPageVirtualizer,
-    pageCount,
-    trackedChangesEnabled,
-    virtualizerMeasurementScale,
-  ]);
   React.useEffect(() => {
     const nextCurrentPage = clampNumber(
       visiblePageStartIndex + 1,
@@ -36439,7 +37275,9 @@ export function DocxEditorViewer({
     tableCellDraftsRef.current.clear();
     tableCellParagraphDraftsRef.current.clear();
     sectionParagraphDraftsRef.current.clear();
-    pendingTableCellFocusRef.current = undefined;
+    // Keep pendingTableCellFocusRef intact: it carries the precise boundary
+    // captured on pointer-down for the cell the user just clicked, and the
+    // table-cell branch of applyRestore below consumes it to place the caret.
     const normalizedTargetRange = restoreRequest.activeTextRange
       ? normalizeTextRange(restoreRequest.activeTextRange)
       : undefined;
@@ -36477,6 +37315,26 @@ export function DocxEditorViewer({
         return;
       }
 
+      // Check for an existing in-cell selection BEFORE focusing: focusing a
+      // contentEditable cell can collapse a caret that an earlier pending
+      // click-focus restore already placed precisely.
+      if (
+        !normalizedTargetRange &&
+        restoreRequest.selection.kind === "table-cell"
+      ) {
+        const selection = window.getSelection();
+        const selectionAlreadyInCell = Boolean(
+          selection &&
+            selection.rangeCount > 0 &&
+            element.contains(selection.getRangeAt(0).startContainer) &&
+            element.contains(selection.getRangeAt(0).endContainer)
+        );
+        if (selectionAlreadyInCell) {
+          editor.clearSelectionSession("history-restore");
+          return;
+        }
+      }
+
       try {
         element.focus({ preventScroll: true });
       } catch {
@@ -36492,17 +37350,6 @@ export function DocxEditorViewer({
       }
 
       if (restoreRequest.selection.kind === "table-cell") {
-        const selection = window.getSelection();
-        const selectionAlreadyInCell = Boolean(
-          selection &&
-            selection.rangeCount > 0 &&
-            element.contains(selection.getRangeAt(0).startContainer) &&
-            element.contains(selection.getRangeAt(0).endContainer)
-        );
-        if (selectionAlreadyInCell) {
-          editor.clearSelectionSession("history-restore");
-          return;
-        }
 
         const pendingCellElementKey =
           `cell-${restoreRequest.selection.tableIndex}` +
@@ -36511,6 +37358,26 @@ export function DocxEditorViewer({
         const pendingFocus = pendingTableCellFocusRef.current;
         const pendingFocusMatchesCell =
           pendingFocus?.cellElementKey === pendingCellElementKey;
+        const pendingFocusBoundary =
+          pendingFocusMatchesCell &&
+          pendingFocus?.boundary?.location.kind === "table-cell" &&
+          pendingFocus.boundary.location.tableIndex ===
+            restoreRequest.selection.tableIndex &&
+          pendingFocus.boundary.location.rowIndex ===
+            restoreRequest.selection.rowIndex &&
+          pendingFocus.boundary.location.cellIndex ===
+            restoreRequest.selection.cellIndex
+            ? pendingFocus.boundary
+            : undefined;
+        if (pendingFocusBoundary) {
+          setSelectionFromDocxBoundaries(
+            pendingFocusBoundary,
+            pendingFocusBoundary
+          );
+          pendingTableCellFocusRef.current = undefined;
+          editor.clearSelectionSession("history-restore");
+          return;
+        }
         const pendingFocusPoint = pendingFocusMatchesCell
           ? pendingFocus.point
           : undefined;
@@ -40586,8 +41453,7 @@ export function DocxEditorViewer({
             0,
             Math.max(0, hostWidth - imageWidth)
           );
-          const movedTop = Math.max(
-            0,
+          const movedTop = Math.round(
             (baseGeometry?.imageTopPx ?? 0) + latestDeltaY
           );
           editor.moveFloatingImage(
@@ -40887,7 +41753,7 @@ export function DocxEditorViewer({
             )
           );
           const movedTop = Math.round(
-            Math.max(0, (baseGeometry?.imageTopPx ?? 0) + latestDeltaY)
+            (baseGeometry?.imageTopPx ?? 0) + latestDeltaY
           );
           editor.moveSectionFloatingImage(
             location,
@@ -41874,6 +42740,7 @@ export function DocxEditorViewer({
           display: "block",
           position: pageAbsoluteObstacleNodes ? "static" : "relative",
           minHeight: blockHeightPx ?? layout.height,
+          overflow: "visible",
           userSelect: "none",
           WebkitUserSelect: "none",
         }}
@@ -42390,11 +43257,12 @@ export function DocxEditorViewer({
       keyPrefix: string,
       location: ParagraphLocation,
       options?: {
-        pageFlowTopPx?: number;
-        pageLayout?: DocumentLayoutMetrics;
-        suppressLikelyFullPageCoverImageKeys?: Set<string>;
-      }
-    ): React.ReactNode => {
+    pageFlowTopPx?: number;
+    pageFlowForeignExclusions?: PretextExclusionRect[];
+    pageLayout?: DocumentLayoutMetrics;
+    suppressLikelyFullPageCoverImageKeys?: Set<string>;
+  }
+): React.ReactNode => {
       const nodes: React.ReactNode[] = [];
       const checkboxChoiceRow = paragraphLooksLikeCheckboxChoiceRow(paragraph);
       const fallbackTabWidthPx = checkboxChoiceRow
@@ -42598,84 +43466,15 @@ export function DocxEditorViewer({
           });
         }
       });
-      const previewParagraph =
-        movePreviewByImageIndex.size > 0
-          ? {
-              ...paragraph,
-              children: paragraph.children.map((child, childIndex) => {
-                if (child.type !== "image") {
-                  return child;
-                }
-
-                const movePreview = movePreviewByImageIndex.get(childIndex);
-                if (!movePreview || !shouldRenderWrappedFloatingImage(child)) {
-                  return child;
-                }
-
-                const widthPx =
-                  resizedWidthPxByImageIndex.get(childIndex) ??
-                  child.widthPx ??
-                  MIN_PARAGRAPH_LINE_HEIGHT_PX;
-                const heightPx =
-                  resizedHeightPxByImageIndex.get(childIndex) ??
-                  child.heightPx ??
-                  widthPx;
-                const baseGeometry = resolveDualWrappedFloatingImageGeometry(
-                  child,
-                  paragraphRenderTextWidthPx,
-                  {
-                    widthPx,
-                    heightPx,
-                    ...(Number.isFinite(movePreview.baseLeftPx)
-                      ? {
-                          baseLeftPx: Math.round(
-                            movePreview.baseLeftPx as number
-                          ),
-                        }
-                      : undefined),
-                    ...(Number.isFinite(movePreview.baseTopPx)
-                      ? {
-                          baseTopPx: Math.round(
-                            movePreview.baseTopPx as number
-                          ),
-                        }
-                      : undefined),
-                  }
-                );
-                const movedLeft = clampNumber(
-                  Math.round(
-                    (baseGeometry?.imageLeftPx ?? 0) + movePreview.deltaX
-                  ),
-                  0,
-                  Math.max(0, paragraphRenderTextWidthPx - widthPx)
-                );
-                const movedTop = Math.max(
-                  0,
-                  Math.round(
-                    (baseGeometry?.imageTopPx ?? 0) + movePreview.deltaY
-                  )
-                );
-                const patch = resolveWrappedFloatingImageDropPatch(
-                  child,
-                  paragraphRenderTextWidthPx,
-                  movedLeft,
-                  movedTop,
-                  {
-                    widthPx,
-                    heightPx,
-                  }
-                );
-
-                return {
-                  ...child,
-                  floating: {
-                    ...(child.floating ?? {}),
-                    ...patch,
-                  },
-                };
-              }),
-            }
-          : paragraph;
+      const previewParagraph = applyWrappedFloatingInteractionPreviewToParagraph(
+        paragraph,
+        location,
+        paragraphRenderTextWidthPx,
+        {
+          floatingMovePreview,
+          resizePreview,
+        }
+      );
       const anchoredTabLayout = paragraphAnchoredTabLayout(paragraph);
       const useSpecialTabLayout =
         paragraphUsesTabLeaders(paragraph) ||
@@ -42710,22 +43509,37 @@ export function DocxEditorViewer({
         );
       }
 
+      const paragraphLineHeightPx = estimateParagraphLineHeightPx(paragraph);
       const manualDualWrappedLayout = !numberingLabel
         ? resolveParagraphDualWrappedTextLayout(
-            previewParagraph,
+            paragraph,
             paragraphRenderTextWidthPx,
-            estimateParagraphLineHeightPx(previewParagraph),
+            paragraphLineHeightPx,
             {
               widthPxByImageIndex: resizedWidthPxByImageIndex,
               heightPxByImageIndex: resizedHeightPxByImageIndex,
               paragraphTopPx: paragraphPageFlowTopPx,
               pageMarginTopPx: paragraphPageLayout.marginsPx.top,
+              foreignExclusions: options?.pageFlowForeignExclusions,
+              movePreviewByImageIndex,
+              allowNegativeImageTop: movePreviewByImageIndex.size > 0,
             }
           )
         : undefined;
-      if (manualDualWrappedLayout) {
+      const foreignOnlyWrappedLayout =
+        !numberingLabel && !manualDualWrappedLayout
+          ? resolveParagraphForeignOnlyWrappedTextLayout(
+              paragraph,
+              paragraphRenderTextWidthPx,
+              paragraphLineHeightPx,
+              options?.pageFlowForeignExclusions ?? []
+            )
+          : undefined;
+      const activeDualWrappedLayout =
+        manualDualWrappedLayout ?? foreignOnlyWrappedLayout;
+      if (activeDualWrappedLayout) {
         const manualGeometryImageIndexes = new Set(
-          manualDualWrappedLayout.geometries.map(
+          activeDualWrappedLayout.geometries.map(
             (geometry) => geometry.imageIndex
           )
         );
@@ -42733,7 +43547,7 @@ export function DocxEditorViewer({
           fragment: PretextLineFragment,
           lineIndex: number
         ): React.ReactNode => {
-          const pieces = manualDualWrappedLayout.source.runs
+          const pieces = activeDualWrappedLayout.source.runs
             .map((run) => {
               const overlapStart = Math.max(
                 fragment.startOffset,
@@ -42850,10 +43664,10 @@ export function DocxEditorViewer({
               style={{
                 position: "absolute",
                 left: fragment.x,
-                top: manualDualWrappedLayout.layout.lines[lineIndex]?.y ?? 0,
+                top: activeDualWrappedLayout.layout.lines[lineIndex]?.y ?? 0,
                 display: "inline-block",
                 whiteSpace: "pre",
-                lineHeight: `${manualDualWrappedLayout.lineHeightPx}px`,
+                lineHeight: `${activeDualWrappedLayout.lineHeightPx}px`,
               }}
             >
               {pieces}
@@ -43660,7 +44474,7 @@ export function DocxEditorViewer({
             ? activeWrappedParagraphSession
             : undefined;
         const manualPageFixedWrappedImageIndexes = new Set(
-          manualDualWrappedLayout.geometries
+          activeDualWrappedLayout.geometries
             .filter((geometry) => {
               const child = previewParagraph.children[geometry.imageIndex];
               return (
@@ -43675,30 +44489,36 @@ export function DocxEditorViewer({
               activeSession.text,
               firstRunStyle(previewParagraph)
             )
-          : manualDualWrappedLayout.source;
+          : activeDualWrappedLayout.source;
+        const activeWrappedExclusions = [
+          ...(options?.pageFlowForeignExclusions ?? []),
+          ...activeDualWrappedLayout.geometries.map(
+            (geometry) => geometry.exclusion
+          ),
+        ];
         const activeWrappedLayout = activeSession
           ? layoutParagraphPretextSource(
               previewParagraph,
               activeWrappedSource,
               paragraphRenderTextWidthPx,
-              manualDualWrappedLayout.lineHeightPx,
-              manualDualWrappedLayout.geometries.map(
-                (geometry) => geometry.exclusion
-              )
-            ) ?? manualDualWrappedLayout.layout
-          : manualDualWrappedLayout.layout;
+              activeDualWrappedLayout.lineHeightPx,
+              activeWrappedExclusions
+            ) ?? activeDualWrappedLayout.layout
+          : activeDualWrappedLayout.layout;
 
         return renderWrappedPretextParagraph({
           location,
           keyPrefix: `${keyPrefix}-dual-wrap-manual`,
           source: activeWrappedSource,
           layout: activeWrappedLayout,
-          lineHeightPx: manualDualWrappedLayout.lineHeightPx,
-          blockHeightPx:
-            wrappedPretextParagraphBlockHeightPx(activeWrappedLayout),
+          lineHeightPx: activeDualWrappedLayout.lineHeightPx,
+          blockHeightPx: resolveDualWrapParagraphRenderBlockHeightPx(
+            activeWrappedLayout,
+            activeDualWrappedLayout.geometries
+          ),
           obstacleNodes: (
             <>
-              {manualDualWrappedLayout.geometries.map((geometry) =>
+              {activeDualWrappedLayout.geometries.map((geometry) =>
                 manualPageFixedWrappedImageIndexes.has(geometry.imageIndex)
                   ? null
                   : renderManualImage(geometry)
@@ -43715,7 +44535,7 @@ export function DocxEditorViewer({
           ),
           pageAbsoluteObstacleNodes: (
             <>
-              {manualDualWrappedLayout.geometries.map((geometry) =>
+              {activeDualWrappedLayout.geometries.map((geometry) =>
                 manualPageFixedWrappedImageIndexes.has(geometry.imageIndex)
                   ? renderManualPageFixedWrappedImage(geometry)
                   : null
@@ -45928,6 +46748,7 @@ export function DocxEditorViewer({
     contentWidthPxOverride?: number;
     pageLayout?: DocumentLayoutMetrics;
     pageFlowTopPx?: number;
+    pageFlowForeignExclusions?: PretextExclusionRect[];
     suppressLikelyFullPageCoverImageKeys?: Set<string>;
     forceReadOnly?: boolean;
     suppressParagraphElementTracking?: boolean;
@@ -46199,8 +47020,15 @@ export function DocxEditorViewer({
           {
             paragraphTopPx: paragraphPageFlowTopPx,
             pageMarginTopPx: resolvedPageLayout.marginsPx.top,
+            foreignExclusions: options?.pageFlowForeignExclusions,
           }
-        )
+        ) ??
+          resolveParagraphForeignOnlyWrappedTextLayout(
+            node,
+            paragraphRenderTextWidthPx,
+            paragraphSegmentLineHeightPx,
+            options?.pageFlowForeignExclusions ?? []
+          )
       );
       const leadingCoverLayoutSpacer = paragraphActsAsLeadingCoverLayoutSpacer(
         editor.model,
@@ -46346,6 +47174,7 @@ export function DocxEditorViewer({
             },
             {
               pageFlowTopPx: paragraphPageFlowTopPx,
+              pageFlowForeignExclusions: options?.pageFlowForeignExclusions,
               pageLayout: resolvedPageLayout,
               suppressLikelyFullPageCoverImageKeys:
                 options?.suppressLikelyFullPageCoverImageKeys,
@@ -47571,8 +48400,21 @@ export function DocxEditorViewer({
                       typeof rowHeightPx === "number" &&
                       Number.isFinite(rowHeightPx) &&
                       rowHeightPx > 0;
-                    const resolvedRowHeightStyle = hasResolvedRowHeight
-                      ? { height: `${rowHeightPx}px` }
+                    const slicedRowViewportHeightPx =
+                      isSlicedRow && tableRowSlice
+                        ? Math.max(
+                            MIN_PARAGRAPH_LINE_HEIGHT_PX,
+                            Math.round(tableRowSlice.sliceHeightPx)
+                          )
+                        : undefined;
+                    const resolvedRowHeightStyle = slicedRowViewportHeightPx
+                      ? {
+                          height: `${slicedRowViewportHeightPx}px`,
+                          maxHeight: `${slicedRowViewportHeightPx}px`,
+                          overflow: "hidden" as const,
+                        }
+                      : hasResolvedRowHeight
+                      ? resolveTableRowHeightCss(row, rowHeightPx)
                       : undefined;
                     let columnCursor = 0;
 
@@ -47946,7 +48788,8 @@ export function DocxEditorViewer({
                                     : spannedWidthPx > 0
                                     ? `${spannedWidthPx}px`
                                     : undefined,
-                                ...(hasCustomCellRowHeight
+                                ...(hasCustomCellRowHeight &&
+                                !isSlicedRow
                                   ? resolvedRowHeightStyle
                                   : undefined),
                                 wordWrap: "break-word",
@@ -48341,7 +49184,11 @@ export function DocxEditorViewer({
                                     padding: 0,
                                     borderRadius: 0,
                                     display: "grid",
-                                    gap: 4,
+                                    // Must match the read-mode cell wrapper (gap 0):
+                                    // a different gap shifts paragraphs between the
+                                    // read->edit DOM swap and breaks point-based
+                                    // caret placement from the original click.
+                                    gap: 0,
                                     whiteSpace: "pre-wrap",
                                     wordWrap: "break-word",
                                     overflowWrap: "break-word",
@@ -48589,6 +49436,50 @@ export function DocxEditorViewer({
                                             boundary,
                                             boundary
                                           );
+                                          // Re-renders can replace the cell's
+                                          // innerHTML right after this restore,
+                                          // silently destroying the selection.
+                                          // Verify for a few frames and re-apply
+                                          // while the caret is degenerate.
+                                          const verifyBoundaryRestore = (
+                                            attempt: number
+                                          ): void => {
+                                            window.requestAnimationFrame(() => {
+                                              if (!element.isConnected) {
+                                                return;
+                                              }
+                                              const selection =
+                                                window.getSelection();
+                                              const range =
+                                                selection &&
+                                                selection.rangeCount > 0
+                                                  ? selection.getRangeAt(0)
+                                                  : null;
+                                              const degenerate =
+                                                !range ||
+                                                (selection?.isCollapsed ===
+                                                  true &&
+                                                  range.startContainer ===
+                                                    element &&
+                                                  range.startOffset === 0);
+                                              if (degenerate) {
+                                                setSelectionFromDocxBoundaries(
+                                                  boundary,
+                                                  boundary
+                                                );
+                                              }
+                                              // Keep watching for the full
+                                              // window: late re-renders can
+                                              // still destroy the selection
+                                              // after a healthy frame.
+                                              if (attempt < 6) {
+                                                verifyBoundaryRestore(
+                                                  attempt + 1
+                                                );
+                                              }
+                                            });
+                                          };
+                                          verifyBoundaryRestore(0);
                                         } else if (paragraphElement) {
                                           placeCaretInsideElement(
                                             paragraphElement,
@@ -49589,6 +50480,21 @@ export function DocxEditorViewer({
     ): React.ReactNode[] => {
       const rendered: React.ReactNode[] = [];
       let pageFlowTopPx = 0;
+      const resolvedPageLayout = options?.pageLayout ?? documentLayout;
+      const foreignWrapExclusionsBySegmentIndex =
+        precomputePageSegmentForeignWrapExclusions(
+          nodeSegments,
+          editor.model,
+          documentContentWidthPx,
+          editor.model.metadata.numberingDefinitions,
+          docGridLinePitchPxByNodeIndex,
+          pageContentWidthPxByNodeIndex,
+          resolvedPageLayout,
+          {
+            floatingMovePreview,
+            resizePreview,
+          }
+        );
 
       for (let offset = 0; offset < nodeSegments.length; offset += 1) {
         const letterheadGroup = paragraphLetterheadColumnGroupAtSegmentOffset(
@@ -49650,116 +50556,81 @@ export function DocxEditorViewer({
             );
           };
 
-          const letterheadEntryHasVisibleContent = (
-            entry: (typeof letterheadGroup.entries)[number]
-          ): boolean => {
-            const entryNode = editor.model.nodes[entry.segment.nodeIndex];
-            return (
-              entryNode?.type === "paragraph" &&
-              (paragraphHasVisibleText(entryNode) ||
-                paragraphHasImage(entryNode) ||
-                paragraphHasFormField(entryNode))
+          const leftSegments = letterheadGroup.leftSegments;
+          const rightSegments = letterheadGroup.rightSegments;
+          const letterheadRowCount = Math.max(
+            leftSegments.length,
+            rightSegments.length
+          );
+          const estimateLetterheadSegmentHeightPx = (
+            segment: DocumentPageNodeSegment
+          ): number => {
+            const groupNode = editor.model.nodes[segment.nodeIndex];
+            if (!groupNode) {
+              return 0;
+            }
+
+            return estimateRenderedPageSegmentHeightPx(
+              groupNode,
+              segment,
+              editor.model,
+              documentContentWidthPx,
+              editor.model.metadata.numberingDefinitions,
+              docGridLinePitchPxByNodeIndex.get(segment.nodeIndex)
             );
           };
-
-          const leadingSpacerEntries: typeof letterheadGroup.entries = [];
-          for (const entry of letterheadGroup.entries) {
-            if (letterheadEntryHasVisibleContent(entry)) {
-              break;
-            }
-            leadingSpacerEntries.push(entry);
-          }
-
-          const sharedLeadingSpacerHeightPx = leadingSpacerEntries.reduce(
-            (sum, entry) => {
-              const entryNode = editor.model.nodes[entry.segment.nodeIndex];
-              if (!entryNode || entryNode.type !== "paragraph") {
-                return sum;
-              }
-              return (
-                sum +
-                estimateParagraphHeightPx(
-                  entryNode,
-                  undefined,
-                  editor.model.metadata.numberingDefinitions,
-                  docGridLinePitchPxByNodeIndex.get(entry.segment.nodeIndex)
-                )
-              );
-            },
-            0
-          );
-
-          const leadingSpacerNodeIndexes = new Set(
-            leadingSpacerEntries.map((entry) => entry.segment.nodeIndex)
-          );
-          const leftSegments = letterheadGroup.leftSegments.filter(
-            (segment) => !leadingSpacerNodeIndexes.has(segment.nodeIndex)
-          );
-          const rightSegments = letterheadGroup.rightSegments.filter(
-            (segment) => !leadingSpacerNodeIndexes.has(segment.nodeIndex)
-          );
 
           rendered.push(
             <div
               key={`letterhead-group-${letterheadGroup.startOffset}-${letterheadGroup.endOffset}`}
               style={letterheadColumnGroupContainerStyle()}
             >
-              <div
-                style={{
-                  ...letterheadColumnStackStyle(),
-                  paddingTop:
-                    sharedLeadingSpacerHeightPx > 0
-                      ? sharedLeadingSpacerHeightPx
-                      : undefined,
-                }}
-              >
-                {leftSegments.map((segment, index) =>
-                  renderLetterheadSegment(segment, "left", "right", index === 0)
-                )}
-              </div>
-              <div
-                style={{
-                  ...letterheadColumnStackStyle(),
-                  paddingTop:
-                    sharedLeadingSpacerHeightPx > 0
-                      ? sharedLeadingSpacerHeightPx
-                      : undefined,
-                }}
-              >
-                {rightSegments.map((segment, index) =>
-                  renderLetterheadSegment(segment, "right", "left", index === 0)
-                )}
-              </div>
+              {Array.from({ length: letterheadRowCount }, (_, rowIndex) => {
+                const leftSegment = leftSegments[rowIndex];
+                const rightSegment = rightSegments[rowIndex];
+
+                return (
+                  <React.Fragment
+                    key={`letterhead-row-${letterheadGroup.startOffset}-${rowIndex}`}
+                  >
+                    <div style={letterheadColumnStackStyle()}>
+                      {leftSegment
+                        ? renderLetterheadSegment(
+                            leftSegment,
+                            "left",
+                            "right",
+                            rowIndex === 0
+                          )
+                        : null}
+                    </div>
+                    <div style={letterheadColumnStackStyle()}>
+                      {rightSegment
+                        ? renderLetterheadSegment(
+                            rightSegment,
+                            "right",
+                            "left",
+                            rowIndex === 0
+                          )
+                        : null}
+                    </div>
+                  </React.Fragment>
+                );
+              })}
             </div>
           );
 
-          const estimateLetterheadColumnHeightPx = (
-            segments: DocumentPageNodeSegment[]
-          ): number =>
-            segments.reduce((sum, segment) => {
-              const groupNode = editor.model.nodes[segment.nodeIndex];
-              if (!groupNode) {
-                return sum;
-              }
-
-              return (
-                sum +
-                estimateRenderedPageSegmentHeightPx(
-                  groupNode,
-                  segment,
-                  editor.model,
-                  documentContentWidthPx,
-                  editor.model.metadata.numberingDefinitions,
-                  docGridLinePitchPxByNodeIndex.get(segment.nodeIndex)
-                )
-              );
-            }, 0);
-          pageFlowTopPx += Math.max(
-            sharedLeadingSpacerHeightPx +
-              estimateLetterheadColumnHeightPx(leftSegments),
-            sharedLeadingSpacerHeightPx +
-              estimateLetterheadColumnHeightPx(rightSegments)
-          );
+          pageFlowTopPx += Array.from(
+            { length: letterheadRowCount },
+            (_, rowIndex) => {
+              const leftHeightPx = leftSegments[rowIndex]
+                ? estimateLetterheadSegmentHeightPx(leftSegments[rowIndex]!)
+                : 0;
+              const rightHeightPx = rightSegments[rowIndex]
+                ? estimateLetterheadSegmentHeightPx(rightSegments[rowIndex]!)
+                : 0;
+              return Math.max(leftHeightPx, rightHeightPx);
+            }
+          ).reduce((sum, rowHeightPx) => sum + rowHeightPx, 0);
 
           offset = letterheadGroup.endOffset - 1;
           continue;
@@ -50384,6 +51255,8 @@ export function DocxEditorViewer({
             {
               pageLayout: options?.pageLayout,
               pageFlowTopPx,
+              pageFlowForeignExclusions:
+                foreignWrapExclusionsBySegmentIndex[offset],
               suppressLikelyFullPageCoverImageKeys:
                 options?.suppressLikelyFullPageCoverImageKeys,
             }
@@ -50408,13 +51281,17 @@ export function DocxEditorViewer({
       clearObjectSelectionForParagraphEntry,
       docGridLinePitchPxByNodeIndex,
       documentContentWidthPx,
+      documentLayout,
       dropCapMovePreview,
       dropCapResizePreview,
       editor,
+      floatingMovePreview,
       focusDropCapWrappedParagraph,
       hoveredDropCapNodeIndex,
       isReadOnly,
+      pageContentWidthPxByNodeIndex,
       renderDocumentNode,
+      resizePreview,
       selectedDropCapNodeIndex,
     ]
   );
@@ -50807,6 +51684,7 @@ export function DocxEditorViewer({
                 ref={pagePlaceholderRefForIndex(pageIndex)}
                 style={{
                   ...pageSurfaceBaseStyle,
+                  ...pageMarginPaddingStyle(pageLayout.marginsPx),
                   height: pageLayout.pageHeightPx,
                   minHeight: pageLayout.pageHeightPx,
                   width: pageLayout.pageWidthPx,
@@ -50984,10 +51862,7 @@ export function DocxEditorViewer({
             documentPageBackgroundColor ??
             pageSurfaceBaseStyle.backgroundColor,
           position: "relative",
-          paddingTop: pageLayout.marginsPx.top,
-          paddingRight: pageLayout.marginsPx.right,
-          paddingBottom: pageLayout.marginsPx.bottom,
-          paddingLeft: pageLayout.marginsPx.left,
+          ...pageMarginPaddingStyle(pageLayout.marginsPx),
         };
         const pageTrackedChanges =
           positionedTrackedChangesByPage[pageIndex] ?? [];

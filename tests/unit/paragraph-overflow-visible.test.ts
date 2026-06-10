@@ -89,7 +89,7 @@ describe("paragraph overflow visibility", () => {
       { name: "word/document.xml", content: DOCUMENT_XML, deflate: true },
     ]);
     const pkg = await parseDocx(zip);
-    const model = buildDocModel(pkg);
+    const model = await buildDocModel(pkg);
     const html = renderToStaticMarkup(React.createElement(ImportedViewer, { model }));
 
     expect(html).toMatch(
@@ -114,7 +114,7 @@ describe("paragraph overflow visibility", () => {
       },
     ]);
     const pkg = await parseDocx(zip);
-    const model = buildDocModel(pkg);
+    const model = await buildDocModel(pkg);
     const html = renderToStaticMarkup(React.createElement(ImportedViewer, { model }));
 
     expect(html).toContain('data-docx-row-sliced="true"');

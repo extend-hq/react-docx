@@ -157,7 +157,7 @@ export function useDocxModel(file?: ArrayBuffer): UseDocxModelState {
         }
         setState({
           isLoading: false,
-          model: buildDocModel(pkg)
+          model: await buildDocModel(pkg)
         });
       } catch (error) {
         if (!isCurrent) {

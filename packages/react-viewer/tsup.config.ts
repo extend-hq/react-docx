@@ -6,7 +6,8 @@ const bundledWorkspacePackages = [
   "@extend-ai/react-docx-layout-core",
   "@extend-ai/react-docx-layout-engine",
   "@extend-ai/react-docx-ooxml-core",
-  "@extend-ai/react-docx-serializer"
+  "@extend-ai/react-docx-serializer",
+  "@extend-ai/react-docx-wasm"
 ];
 
 export default defineConfig({

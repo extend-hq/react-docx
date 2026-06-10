@@ -1527,7 +1527,7 @@ describe("doc-model import", () => {
     ]);
 
     const pkg = await parseDocx(zip);
-    const model = buildDocModel(pkg);
+    const model = await buildDocModel(pkg);
 
     expect(model.nodes[0]?.type).toBe("paragraph");
     expect(model.nodes[1]?.type).toBe("paragraph");
@@ -1573,7 +1573,7 @@ describe("doc-model import", () => {
     ]);
 
     const pkg = await parseDocx(zip);
-    const model = buildDocModel(pkg);
+    const model = await buildDocModel(pkg);
 
     expect(model.nodes[0]?.type).toBe("paragraph");
     if (model.nodes[0]?.type === "paragraph") {
@@ -1592,7 +1592,7 @@ describe("doc-model import", () => {
     ]);
 
     const pkg = await parseDocx(zip);
-    const model = buildDocModel(pkg);
+    const model = await buildDocModel(pkg);
 
     const firstParagraph = model.nodes[0];
     expect(firstParagraph?.type).toBe("paragraph");
@@ -1636,7 +1636,7 @@ describe("doc-model import", () => {
     ]);
 
     const pkg = await parseDocx(zip);
-    const model = buildDocModel(pkg);
+    const model = await buildDocModel(pkg);
 
     expect(model.metadata.numberingDefinitions).toBeDefined();
     const levelSet = model.metadata.numberingDefinitions;
@@ -1663,7 +1663,7 @@ describe("doc-model import", () => {
     ]);
 
     const pkg = await parseDocx(zip);
-    const model = buildDocModel(pkg);
+    const model = await buildDocModel(pkg);
     const firstParagraph = model.nodes[0];
     expect(firstParagraph?.type).toBe("paragraph");
 
@@ -1687,7 +1687,7 @@ describe("doc-model import", () => {
     ]);
 
     const pkg = await parseDocx(zip);
-    const model = buildDocModel(pkg);
+    const model = await buildDocModel(pkg);
     const firstParagraph = model.nodes[0];
     expect(firstParagraph?.type).toBe("paragraph");
 
@@ -1710,7 +1710,7 @@ describe("doc-model import", () => {
     ]);
 
     const pkg = await parseDocx(zip);
-    const model = buildDocModel(pkg);
+    const model = await buildDocModel(pkg);
 
     const firstParagraph = model.nodes[0];
     expect(firstParagraph?.type).toBe("paragraph");
@@ -1767,7 +1767,7 @@ describe("doc-model import", () => {
     ]);
 
     const pkg = await parseDocx(zip);
-    const model = buildDocModel(pkg);
+    const model = await buildDocModel(pkg);
 
     const firstParagraph = model.nodes[0];
     expect(firstParagraph?.type).toBe("paragraph");
@@ -1799,7 +1799,7 @@ describe("doc-model import", () => {
     ]);
 
     const pkg = await parseDocx(zip);
-    const model = buildDocModel(pkg);
+    const model = await buildDocModel(pkg);
 
     const tableNode = model.nodes.find((node) => node.type === "table");
     expect(tableNode).toBeDefined();
@@ -1842,7 +1842,7 @@ describe("doc-model import", () => {
     ]);
 
     const pkg = await parseDocx(zip);
-    const model = buildDocModel(pkg);
+    const model = await buildDocModel(pkg);
 
     expect(model.metadata.sections).toBeDefined();
     expect(model.metadata.sections).toHaveLength(2);
@@ -1862,7 +1862,7 @@ describe("doc-model import", () => {
     ]);
 
     const pkg = await parseDocx(zip);
-    const model = buildDocModel(pkg);
+    const model = await buildDocModel(pkg);
 
     const firstParagraph = model.nodes[0];
     expect(firstParagraph?.type).toBe("paragraph");
@@ -1898,7 +1898,7 @@ describe("doc-model import", () => {
     ]);
 
     const pkg = await parseDocx(zip);
-    const model = buildDocModel(pkg);
+    const model = await buildDocModel(pkg);
 
     const firstParagraph = model.nodes[0];
     expect(firstParagraph?.type).toBe("paragraph");
@@ -1922,7 +1922,7 @@ describe("doc-model import", () => {
     ]);
 
     const pkg = await parseDocx(zip);
-    const model = buildDocModel(pkg);
+    const model = await buildDocModel(pkg);
 
     const firstParagraph = model.nodes[0];
     expect(firstParagraph?.type).toBe("paragraph");
@@ -1953,7 +1953,7 @@ describe("doc-model import", () => {
     ]);
 
     const pkg = await parseDocx(zip);
-    const model = buildDocModel(pkg);
+    const model = await buildDocModel(pkg);
 
     const firstParagraph = model.nodes[0];
     expect(firstParagraph?.type).toBe("paragraph");
@@ -1986,7 +1986,7 @@ describe("doc-model import", () => {
     ]);
 
     const pkg = await parseDocx(zip);
-    const model = buildDocModel(pkg);
+    const model = await buildDocModel(pkg);
 
     const firstParagraph = model.nodes[0];
     expect(firstParagraph?.type).toBe("paragraph");
@@ -2023,7 +2023,7 @@ describe("doc-model import", () => {
     ]);
 
     const pkg = await parseDocx(zip);
-    const model = buildDocModel(pkg);
+    const model = await buildDocModel(pkg);
 
     const firstParagraph = model.nodes[0];
     expect(firstParagraph?.type).toBe("paragraph");
@@ -2053,7 +2053,7 @@ describe("doc-model import", () => {
     ]);
 
     const pkg = await parseDocx(zip);
-    const model = buildDocModel(pkg);
+    const model = await buildDocModel(pkg);
 
     const firstParagraph = model.nodes[0];
     expect(firstParagraph?.type).toBe("paragraph");
@@ -2107,7 +2107,7 @@ describe("doc-model import", () => {
     ]);
 
     const pkg = await parseDocx(zip);
-    const model = buildDocModel(pkg);
+    const model = await buildDocModel(pkg);
     const firstParagraph = model.nodes[0];
     expect(firstParagraph?.type).toBe("paragraph");
     if (firstParagraph?.type === "paragraph") {
@@ -2133,7 +2133,7 @@ describe("doc-model import", () => {
     ]);
 
     const pkg = await parseDocx(zip);
-    const model = buildDocModel(pkg);
+    const model = await buildDocModel(pkg);
 
     const chartParagraph = model.nodes.find(
       (node) => node.type === "paragraph" && node.children.some((child) => child.type === "image")
@@ -2161,7 +2161,7 @@ describe("doc-model import", () => {
     ]);
 
     const pkg = await parseDocx(zip);
-    const model = buildDocModel(pkg);
+    const model = await buildDocModel(pkg);
 
     expect(model.metadata.defaultParagraphStyleId).toBe("Normal");
     expect(model.metadata.paragraphStyles.some((style) => style.id === "CustomBody")).toBe(true);
@@ -2212,7 +2212,7 @@ describe("doc-model import", () => {
     ]);
 
     const pkg = await parseDocx(zip);
-    const model = buildDocModel(pkg);
+    const model = await buildDocModel(pkg);
 
     const paragraph = model.nodes[0];
     expect(paragraph?.type).toBe("paragraph");
@@ -2239,7 +2239,7 @@ describe("doc-model import", () => {
     ]);
 
     const pkg = await parseDocx(zip);
-    const model = buildDocModel(pkg);
+    const model = await buildDocModel(pkg);
 
     expect(model.metadata.defaultParagraphStyleId).toBeUndefined();
 
@@ -2272,7 +2272,7 @@ describe("doc-model import", () => {
     ]);
 
     const pkg = await parseDocx(zip);
-    const model = buildDocModel(pkg);
+    const model = await buildDocModel(pkg);
 
     const keepWithNextStyle = model.metadata.paragraphStyles.find((style) => style.id === "KeepWithNext");
     expect(keepWithNextStyle).toBeDefined();
@@ -2305,7 +2305,7 @@ describe("doc-model import", () => {
     ]);
 
     const pkg = await parseDocx(zip);
-    const model = buildDocModel(pkg);
+    const model = await buildDocModel(pkg);
 
     const titleStyle = model.metadata.paragraphStyles.find((style) => style.id === "Title");
     expect(titleStyle).toBeDefined();
@@ -2337,7 +2337,7 @@ describe("doc-model import", () => {
     ]);
 
     const pkg = await parseDocx(zip);
-    const model = buildDocModel(pkg);
+    const model = await buildDocModel(pkg);
 
     const firstParagraph = model.nodes[0];
     expect(firstParagraph?.type).toBe("paragraph");
@@ -2354,7 +2354,7 @@ describe("doc-model import", () => {
       { name: "word/document.xml", content: DOC_WITH_JC_BOTH_XML }
     ]);
     const pkg = await parseDocx(zip);
-    const model = buildDocModel(pkg);
+    const model = await buildDocModel(pkg);
     const firstParagraph = model.nodes[0];
 
     expect(firstParagraph?.type).toBe("paragraph");
@@ -2372,7 +2372,7 @@ describe("doc-model import", () => {
     ]);
 
     const pkg = await parseDocx(zip);
-    const model = buildDocModel(pkg);
+    const model = await buildDocModel(pkg);
 
     expect(model.nodes).toHaveLength(1);
     const table = model.nodes[0];
@@ -2413,7 +2413,7 @@ describe("doc-model import", () => {
     ]);
 
     const pkg = await parseDocx(zip);
-    const model = buildDocModel(pkg);
+    const model = await buildDocModel(pkg);
 
     expect(model.nodes).toHaveLength(2);
     expect(model.nodes[0]?.type).toBe("table");
@@ -2450,7 +2450,7 @@ describe("doc-model import", () => {
     ]);
 
     const pkg = await parseDocx(zip);
-    const model = buildDocModel(pkg);
+    const model = await buildDocModel(pkg);
     const table = model.nodes[0];
     expect(table?.type).toBe("table");
     if (table?.type !== "table") {
@@ -2478,7 +2478,7 @@ describe("doc-model import", () => {
     ]);
 
     const pkg = await parseDocx(zip);
-    const model = buildDocModel(pkg);
+    const model = await buildDocModel(pkg);
     const table = model.nodes[0];
     expect(table?.type).toBe("table");
     if (table?.type !== "table") {
@@ -2517,7 +2517,7 @@ describe("doc-model import", () => {
     ]);
 
     const pkg = await parseDocx(zip);
-    const model = buildDocModel(pkg);
+    const model = await buildDocModel(pkg);
     const outerTable = model.nodes[0];
     expect(outerTable?.type).toBe("table");
     if (outerTable?.type !== "table") {
@@ -2545,7 +2545,7 @@ describe("doc-model import", () => {
     ]);
 
     const pkg = await parseDocx(zip);
-    const model = buildDocModel(pkg);
+    const model = await buildDocModel(pkg);
     const table = model.nodes[0];
     expect(table?.type).toBe("table");
     if (table?.type !== "table") {
@@ -2575,7 +2575,7 @@ describe("doc-model import", () => {
     ]);
 
     const pkg = await parseDocx(zip);
-    const model = buildDocModel(pkg);
+    const model = await buildDocModel(pkg);
     const table = model.nodes[0];
     expect(table?.type).toBe("table");
     if (table?.type !== "table") {
@@ -2617,7 +2617,7 @@ describe("doc-model import", () => {
     ]);
 
     const pkg = await parseDocx(zip);
-    const model = buildDocModel(pkg);
+    const model = await buildDocModel(pkg);
 
     expect(model.metadata.compatibility).toEqual({
       suppressSpacingBeforeAfterPageBreak: true,
@@ -2636,7 +2636,7 @@ describe("doc-model import", () => {
     ]);
 
     const pkg = await parseDocx(zip);
-    const model = buildDocModel(pkg);
+    const model = await buildDocModel(pkg);
     const paragraph = model.nodes[0];
     expect(paragraph?.type).toBe("paragraph");
     if (paragraph?.type !== "paragraph") {
@@ -2678,7 +2678,7 @@ describe("doc-model import", () => {
     ]);
 
     const pkg = await parseDocx(zip);
-    const model = buildDocModel(pkg);
+    const model = await buildDocModel(pkg);
     const paragraph = model.nodes[0];
     expect(paragraph?.type).toBe("paragraph");
     if (paragraph?.type !== "paragraph") {
@@ -2702,7 +2702,7 @@ describe("doc-model import", () => {
     ]);
 
     const pkg = await parseDocx(zip);
-    const model = buildDocModel(pkg);
+    const model = await buildDocModel(pkg);
     const paragraph = model.nodes[0];
     expect(paragraph?.type).toBe("paragraph");
     if (paragraph?.type !== "paragraph") {
@@ -2731,7 +2731,7 @@ describe("doc-model import", () => {
     ]);
 
     const pkg = await parseDocx(zip);
-    const model = buildDocModel(pkg);
+    const model = await buildDocModel(pkg);
     const paragraph = model.nodes[0];
     expect(paragraph?.type).toBe("paragraph");
     if (paragraph?.type !== "paragraph") {

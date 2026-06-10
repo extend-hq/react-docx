@@ -104,7 +104,7 @@ async function buildImportedModel(): Promise<DocModel> {
       { name: "word/header1.xml", content: HEADER_XML }
     ])
   );
-  return buildDocModel(pkg);
+  return await buildDocModel(pkg);
 }
 
 function normalizeTextContent(markup: string): string {

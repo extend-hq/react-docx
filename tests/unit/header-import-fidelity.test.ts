@@ -66,7 +66,7 @@ describe("header import fidelity", () => {
     ]);
 
     const pkg = await parseDocx(zip);
-    const model = buildDocModel(pkg);
+    const model = await buildDocModel(pkg);
     const table = model.nodes[0];
 
     expect(table?.type).toBe("table");

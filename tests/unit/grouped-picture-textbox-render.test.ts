@@ -461,7 +461,7 @@ describe("grouped picture textbox render", () => {
     ]);
 
     const pkg = await parseDocx(zip);
-    const model = buildDocModel(pkg);
+    const model = await buildDocModel(pkg);
     const html = renderToStaticMarkup(
       React.createElement(ImportedViewer, { model })
     );
@@ -482,7 +482,7 @@ describe("grouped picture textbox render", () => {
     ]);
 
     const pkg = await parseDocx(zip);
-    const model = buildDocModel(pkg);
+    const model = await buildDocModel(pkg);
     const html = renderToStaticMarkup(
       React.createElement(ImportedViewer, { model })
     );
@@ -510,7 +510,7 @@ describe("grouped picture textbox render", () => {
     ]);
 
     const pkg = await parseDocx(zip);
-    const model = buildDocModel(pkg);
+    const model = await buildDocModel(pkg);
     const imageNode = ((model.nodes[0] as any)?.children ?? []).find(
       (child: any) => child.type === "image" && child.alt === "Group 24"
     );
@@ -543,7 +543,7 @@ describe("grouped picture textbox render", () => {
     ]);
 
     const pkg = await parseDocx(zip);
-    const model = buildDocModel(pkg);
+    const model = await buildDocModel(pkg);
     const imageNode = ((model.nodes[0] as any)?.children ?? []).find(
       (child: any) => child.type === "image"
     );

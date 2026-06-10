@@ -108,7 +108,7 @@ describe("slack table width fidelity", () => {
       { name: "word/document.xml", content: DOCUMENT_XML, deflate: true },
     ]);
     const pkg = await parseDocx(zip);
-    const model = buildDocModel(pkg);
+    const model = await buildDocModel(pkg);
     const html = renderToStaticMarkup(React.createElement(ImportedViewer, { model }));
     const tableWidthPx = extractFirstTableWidthPx(html);
     const columnWidthsPx = extractColumnWidthsPx(html);

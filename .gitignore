@@ -4,6 +4,7 @@
 node_modules
 .pnpm-store
 dist
+target/
 coverage
 playwright-report
 test-results

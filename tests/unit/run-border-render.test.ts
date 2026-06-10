@@ -67,7 +67,7 @@ describe("run border render", () => {
     ]);
 
     const pkg = await parseDocx(zip);
-    const model = buildDocModel(pkg);
+    const model = await buildDocModel(pkg);
     const html = renderToStaticMarkup(React.createElement(ImportedViewer, { model }));
 
     expect(html).toContain(">box<");
@@ -83,7 +83,7 @@ describe("run border render", () => {
     ]);
 
     const pkg = await parseDocx(zip);
-    const model = buildDocModel(pkg);
+    const model = await buildDocModel(pkg);
     const html = renderToStaticMarkup(React.createElement(ImportedViewer, { model }));
 
     expect(html).toContain(">inverse video<");
