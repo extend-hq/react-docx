@@ -10706,25 +10706,10 @@ function estimateTableCellContentHeightPx(
     totalHeightPx += Math.max(1, resolvedBaseHeight - beforeSpacing);
   }
 
-  const finalH2 =
+  return (
     totalHeightPx +
-    (expandedWithPretextLayout ? Math.max(1, MIN_PARAGRAPH_LINE_HEIGHT_PX) : 0);
-  if ((globalThis as any).__cellEst2) {
-    const txt = nodeContent
-      .flatMap((n: any) => (n.children ?? []))
-      .filter((c: any) => c.type === "text")
-      .map((c: any) => c.text)
-      .join(" ")
-      .replace(/\s+/g, " ")
-      .trim()
-      .slice(0, 40);
-    (globalThis as any).__cellEst2.push({
-      txt,
-      availW: availableWidthPx ? Math.round(availableWidthPx) : null,
-      finalH: Math.round(finalH2),
-    });
-  }
-  return finalH2;
+    (expandedWithPretextLayout ? Math.max(1, MIN_PARAGRAPH_LINE_HEIGHT_PX) : 0)
+  );
 }
 
 function rowAllowsPageSplit(row: TableNode["rows"][number]): boolean {
