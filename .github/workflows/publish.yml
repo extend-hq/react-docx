@@ -177,6 +177,11 @@ jobs:
           node <<'NODE'
           const { execFileSync } = require("node:child_process");
 
+          function npmDistTag(version) {
+            const prerelease = version.match(/^[0-9]+\.[0-9]+\.[0-9]+-([0-9A-Za-z-]+)/);
+            return prerelease?.[1] ?? "latest";
+          }
+
           const packages = JSON.parse(process.env.PACKAGES_JSON ?? "[]");
           const unpublished = JSON.parse(process.env.UNPUBLISHED_JSON ?? "[]");
           const unpublishedNames = new Set(unpublished.map((pkg) => pkg.name));
@@ -224,10 +229,11 @@ jobs:
 
           for (const name of ordered) {
             const pkg = unpublishedByName.get(name);
-            console.log(`Publishing ${pkg.name}@${pkg.version}`);
+            const tag = npmDistTag(pkg.version);
+            console.log(`Publishing ${pkg.name}@${pkg.version} with dist-tag ${tag}`);
             execFileSync(
               "pnpm",
-              ["publish", "--access", "public", "--no-git-checks"],
+              ["publish", "--access", "public", "--no-git-checks", "--tag", tag],
               {
                 cwd: pkg.dir,
                 stdio: "inherit",
@@ -245,6 +251,11 @@ jobs:
           node <<'NODE'
           const { execFileSync } = require("node:child_process");
 
+          function npmDistTag(version) {
+            const prerelease = version.match(/^[0-9]+\.[0-9]+\.[0-9]+-([0-9A-Za-z-]+)/);
+            return prerelease?.[1] ?? "latest";
+          }
+
           const packages = JSON.parse(process.env.PACKAGES_JSON ?? "[]");
           const unpublished = JSON.parse(process.env.UNPUBLISHED_JSON ?? "[]");
           const unpublishedNames = new Set(unpublished.map((pkg) => pkg.name));
@@ -292,10 +303,11 @@ jobs:
 
           for (const name of ordered) {
             const pkg = unpublishedByName.get(name);
-            console.log(`Publishing ${pkg.name}@${pkg.version}`);
+            const tag = npmDistTag(pkg.version);
+            console.log(`Publishing ${pkg.name}@${pkg.version} with dist-tag ${tag}`);
             execFileSync(
               "pnpm",
-              ["publish", "--access", "public", "--no-git-checks"],
+              ["publish", "--access", "public", "--no-git-checks", "--tag", tag],
               {
                 cwd: pkg.dir,
                 stdio: "inherit",
