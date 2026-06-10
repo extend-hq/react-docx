@@ -10689,7 +10689,12 @@ function estimateTableCellContentHeightPx(
       : 0;
     const resolvedBaseHeight =
       pretextHeightPx > 0 ? Math.max(baseHeight, pretextHeightPx) : baseHeight;
-    if (pretextHeightPx > baseHeight) {
+    // Only treat the pretext layout as a genuine multi-line expansion when it
+    // exceeds the base estimate by at least half a line. A tiny (rounding)
+    // difference between the two height calcs must not trigger the extra-line
+    // safety pad below, which otherwise added a phantom ~14px to every
+    // single-line cell and roughly doubled table heights during pagination.
+    if (pretextHeightPx > baseHeight + lineHeightPx / 2) {
       expandedWithPretextLayout = true;
     }
 
@@ -10701,10 +10706,25 @@ function estimateTableCellContentHeightPx(
     totalHeightPx += Math.max(1, resolvedBaseHeight - beforeSpacing);
   }
 
-  return (
+  const finalH2 =
     totalHeightPx +
-    (expandedWithPretextLayout ? Math.max(1, MIN_PARAGRAPH_LINE_HEIGHT_PX) : 0)
-  );
+    (expandedWithPretextLayout ? Math.max(1, MIN_PARAGRAPH_LINE_HEIGHT_PX) : 0);
+  if ((globalThis as any).__cellEst2) {
+    const txt = nodeContent
+      .flatMap((n: any) => (n.children ?? []))
+      .filter((c: any) => c.type === "text")
+      .map((c: any) => c.text)
+      .join(" ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 40);
+    (globalThis as any).__cellEst2.push({
+      txt,
+      availW: availableWidthPx ? Math.round(availableWidthPx) : null,
+      finalH: Math.round(finalH2),
+    });
+  }
+  return finalH2;
 }
 
 function rowAllowsPageSplit(row: TableNode["rows"][number]): boolean {
@@ -10991,7 +11011,12 @@ function resolveTableRowHeightCss(
     return { height: `${resolvedHeightPx}px` };
   }
 
-  return { minHeight: `${resolvedHeightPx}px` };
+  // Use `height` rather than `min-height`: browsers ignore `min-height` on
+  // table rows/cells, but on a table row `height` is treated as a MINIMUM
+  // (the row still grows when content is taller). This is what makes an
+  // explicit "at least" row height (e.g. a docx trHeight on a header band)
+  // actually apply instead of collapsing to the text line height.
+  return { height: `${resolvedHeightPx}px` };
 }
 
 interface TableCellSliceBoundaryLayout {
@@ -14112,12 +14137,6 @@ function shouldRenderTopAnchoredMarginFloatAsAbsolute(
     return false;
   }
 
-  const hasExplicitOffsets =
-    Number.isFinite(floating.xPx) || Number.isFinite(floating.yPx);
-  if (hasExplicitOffsets) {
-    return false;
-  }
-
   const horizontalRelativeTo = floating.horizontalRelativeTo?.toLowerCase();
   const verticalRelativeTo = floating.verticalRelativeTo?.toLowerCase();
   const horizontalAlign = floating.horizontalAlign?.toLowerCase();
@@ -14134,6 +14153,12 @@ function shouldRenderTopAnchoredMarginFloatAsAbsolute(
     horizontalAlign === "outside";
   const topAligned = verticalAlign === "top" || verticalAlign === "inside";
 
+  // Anchor it absolutely only when an explicit side/top ALIGNMENT is present.
+  // Such corner-anchored floats stay fixed on the page. Dragging one keeps its
+  // alignment and adds a posOffset (xPx/yPx) for the new position — the
+  // absolute render honors that offset, so it lands exactly at the drop point.
+  // Offset-only floats (no alignment) keep flowing as wrapped content so text
+  // still wraps around them; those are handled by the wrapped layout path.
   return (
     pageAnchoredHorizontally &&
     pageAnchoredVertically &&
@@ -14542,12 +14567,20 @@ export function resolveAbsoluteFloatingImageDropPatch(
     ? Math.max(1, Math.round(options.wrapperRect.height as number))
     : undefined;
 
+  // Preserve any existing side/top alignment so corner-anchored margin floats
+  // keep rendering via the fixed-position (absolute) path after a drag instead
+  // of flipping to in-flow wrapped rendering (which would re-clamp them to
+  // their anchor paragraph and jump away from the drop point). The explicit
+  // xPx/yPx below take precedence in the absolute renderer.
+  const preservedHorizontalAlign = floating?.horizontalAlign;
+  const preservedVerticalAlign = floating?.verticalAlign;
+
   if (!options.pageSurfaceRect) {
     return {
       xPx: Math.round((floating?.xPx ?? 0) + options.deltaX),
       yPx: Math.round((floating?.yPx ?? 0) + options.deltaY),
-      horizontalAlign: undefined,
-      verticalAlign: undefined,
+      horizontalAlign: preservedHorizontalAlign,
+      verticalAlign: preservedVerticalAlign,
       horizontalRelativeTo: "margin",
       verticalRelativeTo: "margin",
     };
@@ -14581,8 +14614,8 @@ export function resolveAbsoluteFloatingImageDropPatch(
       minimumYPx,
       maximumYPx
     ),
-    horizontalAlign: undefined,
-    verticalAlign: undefined,
+    horizontalAlign: preservedHorizontalAlign,
+    verticalAlign: preservedVerticalAlign,
     horizontalRelativeTo: "margin",
     verticalRelativeTo: "margin",
   };
@@ -29060,40 +29093,38 @@ async function rasterizeDocxViewerPageSurfaceToCanvas(params: {
       </foreignObject>
     </svg>
   `;
-  const blob = new Blob([svgMarkup], {
-    type: "image/svg+xml;charset=utf-8",
+  // Load the foreignObject SVG via a data: URL rather than a blob: URL.
+  // WebKit/Safari still taints a canvas drawn from a blob:-backed SVG image
+  // (bug 156176), but a data:-URI SVG is explicitly exempted (bug 180301), and
+  // Chrome/Firefox never taint either way. Keeping the canvas clean lets
+  // callers run toDataURL()/toBlob() for client-side thumbnail export.
+  const svgDataUrl = svgDataUri(svgMarkup);
+
+  const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+    const nextImage = new Image();
+    nextImage.decoding = "async";
+    nextImage.onload = () => resolve(nextImage);
+    nextImage.onerror = () => {
+      reject(new Error("Failed to rasterize DOCX page thumbnail."));
+    };
+    nextImage.src = svgDataUrl;
   });
-  const objectUrl = URL.createObjectURL(blob);
 
-  try {
-    const image = await new Promise<HTMLImageElement>((resolve, reject) => {
-      const nextImage = new Image();
-      nextImage.decoding = "async";
-      nextImage.onload = () => resolve(nextImage);
-      nextImage.onerror = () => {
-        reject(new Error("Failed to rasterize DOCX page thumbnail."));
-      };
-      nextImage.src = objectUrl;
-    });
+  canvas.width = Math.max(1, Math.round(pixelWidthPx));
+  canvas.height = Math.max(1, Math.round(pixelHeightPx));
+  canvas.style.width = `${Math.max(1, Math.round(widthPx))}px`;
+  canvas.style.height = `${Math.max(1, Math.round(heightPx))}px`;
 
-    canvas.width = Math.max(1, Math.round(pixelWidthPx));
-    canvas.height = Math.max(1, Math.round(pixelHeightPx));
-    canvas.style.width = `${Math.max(1, Math.round(widthPx))}px`;
-    canvas.style.height = `${Math.max(1, Math.round(heightPx))}px`;
-
-    const context = canvas.getContext("2d");
-    if (!context) {
-      throw new Error("2D canvas context is unavailable for DOCX thumbnails.");
-    }
-
-    context.setTransform(1, 0, 0, 1, 0, 0);
-    context.clearRect(0, 0, canvas.width, canvas.height);
-    context.imageSmoothingEnabled = true;
-    context.imageSmoothingQuality = "high";
-    context.drawImage(image, 0, 0, canvas.width, canvas.height);
-  } finally {
-    URL.revokeObjectURL(objectUrl);
+  const context = canvas.getContext("2d");
+  if (!context) {
+    throw new Error("2D canvas context is unavailable for DOCX thumbnails.");
   }
+
+  context.setTransform(1, 0, 0, 1, 0, 0);
+  context.clearRect(0, 0, canvas.width, canvas.height);
+  context.imageSmoothingEnabled = true;
+  context.imageSmoothingQuality = "high";
+  context.drawImage(image, 0, 0, canvas.width, canvas.height);
 }
 
 export function resolveDocxPageThumbnailResolution(
@@ -34274,9 +34305,12 @@ export function DocxEditorViewer({
         0,
         maxOverflowCapPx
       );
-      if (boundedClearancePx > 0) {
-        next[pageIndex] = boundedClearancePx;
-      }
+      // Record every measured header page (including a 0 clearance) so the
+      // renderer can tell "measured to need no extra clearance" apart from
+      // "not measured yet". An in-flow header already provides its own body
+      // offset, so once measured the estimated floor must not be re-added on
+      // top of it (that double-counts and pushes the body far down the page).
+      next[pageIndex] = boundedClearancePx;
     }
 
     setHeaderBodyClearanceByPage((current) => {
@@ -51771,10 +51805,17 @@ export function DocxEditorViewer({
         const headerOverlayTop = Math.max(0, pageLayout.headerDistancePx);
         const footerOverlayBottom = Math.max(0, pageLayout.footerDistancePx);
         const headerTopOffsetPx = headerOverlayTop - pageLayout.marginsPx.top;
-        const headerBodyClearancePx = Math.max(
-          headerBodyClearanceFloorByPage[pageIndex] ?? 0,
-          headerBodyClearanceByPage[pageIndex] ?? 0
-        );
+        // The header region renders in-flow, so its own height already offsets
+        // the body. Once the header has been measured, use that measured
+        // clearance directly (it positions the body right after the header).
+        // Only fall back to the estimated floor before measurement, to avoid
+        // a first-paint overlap. Taking max(floor, measured) double-counted the
+        // in-flow header height and left a large empty gap below tall headers.
+        const measuredHeaderClearancePx = headerBodyClearanceByPage[pageIndex];
+        const headerBodyClearancePx =
+          measuredHeaderClearancePx !== undefined
+            ? measuredHeaderClearancePx
+            : headerBodyClearanceFloorByPage[pageIndex] ?? 0;
         const footerBottomOffsetPx = footerOverlayBottom;
         const headerHostPageOriginLeftPx = headerNeedsPageWideLayout
           ? 0
