@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
 
-use regex::Regex;
+use regex_lite::Regex;
 
 static REGEX_CACHE: LazyLock<Mutex<HashMap<String, &'static Regex>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));

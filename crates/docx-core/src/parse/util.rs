@@ -96,7 +96,7 @@ pub fn prefer_alternate_content_choice(xml: &str) -> String {
     }
 
     let re = re::get_unchecked(r"(?is)<mc:AlternateContent\b[\s\S]*?</mc:AlternateContent>");
-    re.replace_all(xml, |caps: &regex::Captures| {
+    re.replace_all(xml, |caps: &regex_lite::Captures| {
         let alternate_xml = &caps[0];
         let choice_re = re::get_unchecked(r"(?is)<mc:Choice\b[\s\S]*?</mc:Choice>");
         let Some(choice_xml) = choice_re.find(alternate_xml) else {

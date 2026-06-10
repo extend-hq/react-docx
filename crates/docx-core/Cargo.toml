@@ -9,7 +9,7 @@ serde.workspace = true
 serde_json.workspace = true
 serde_bytes.workspace = true
 miniz_oxide.workspace = true
-regex = "1"
+regex-lite = "0.1"
 base64 = "0.22"
 
 [dev-dependencies]
