@@ -451,6 +451,10 @@ export function collectDocxEstimatedOverflowBreakStartNodeIndexes(
   let pageConsumedHeightPx = 0;
   let previousParagraphAfterPx = 0;
   let currentMetricsIndex = 0;
+  // Once a keepNext chain head starts a page, later chain members must not
+  // re-trigger a keep-induced break — that would strand the head on a
+  // near-empty page without satisfying the keep rule.
+  let committedKeepNextChainEndNodeIndex = -1;
   const suppressSpacingBeforeAfterPageBreak =
     options?.suppressSpacingBeforeAfterPageBreak ?? false;
   let currentPageContentHeightPx =
@@ -500,10 +504,12 @@ export function collectDocxEstimatedOverflowBreakStartNodeIndexes(
     const collapsedNodeHeightPx = Math.max(1, rawNodeHeightPx - collapsedMarginPx);
 
     let requiredHeightPx = collapsedNodeHeightPx;
+    let keepNextChainEndNodeIndex = -1;
 
     if (
       node.type === "paragraph" &&
       node.style?.keepNext === true &&
+      nodeIndex > committedKeepNextChainEndNodeIndex &&
       callbacks.paragraphHasVisibleText(node)
     ) {
       let chainCursor = nodeIndex;
@@ -568,6 +574,7 @@ export function collectDocxEstimatedOverflowBreakStartNodeIndexes(
         );
         chainPreviousParagraphAfterPx = paragraphAfterSpacingPx(nextChainNode);
       }
+      keepNextChainEndNodeIndex = chainCursor;
     }
 
     const remainingHeightPx = currentPageContentHeightPx - pageConsumedHeightPx;
@@ -581,6 +588,9 @@ export function collectDocxEstimatedOverflowBreakStartNodeIndexes(
       currentPageContentHeightPx = nodeMetrics.pageContentHeightPx;
     }
 
+    if (pageConsumedHeightPx === 0 && keepNextChainEndNodeIndex > nodeIndex) {
+      committedKeepNextChainEndNodeIndex = keepNextChainEndNodeIndex;
+    }
     const effectiveNodeHeightPx =
       pageConsumedHeightPx > 0 ? collapsedNodeHeightPx : rawNodeHeightPx;
     pageConsumedHeightPx += effectiveNodeHeightPx;
@@ -661,6 +671,11 @@ export function buildDocumentPageNodeSegments(
   let pageConsumedHeightPx = 0;
   let previousParagraphAfterPx = 0;
   let currentMetricsIndex = 0;
+  // Once a keepNext chain head starts a page, every page up to the chain end
+  // begins with a chain member, so a keep-induced push for a later member can
+  // never reunite it with its predecessors — it would only strand the chain
+  // head on a near-empty page. Track the chain end to suppress those pushes.
+  let committedKeepNextChainEndNodeIndex = -1;
   let currentPageContentHeightPx = resolvePageContentHeightPx(
     0,
     metricsBySection[0]?.pageContentHeightPx ?? fallbackMetrics.pageContentHeightPx
@@ -738,7 +753,14 @@ export function buildDocumentPageNodeSegments(
       const keepNextOverflowSplit =
         node.style?.keepNext === true && paragraphTooTallForSinglePage;
       const forceOverflowSplit = keepLinesOverflowSplit || keepNextOverflowSplit;
-      if (forceOverflowSplit && pageConsumedHeightPx > 0 && currentPageSegments.length > 0) {
+      const nodeIsWithinCommittedKeepNextChain =
+        nodeIndex <= committedKeepNextChainEndNodeIndex;
+      if (
+        forceOverflowSplit &&
+        !nodeIsWithinCommittedKeepNextChain &&
+        pageConsumedHeightPx > 0 &&
+        currentPageSegments.length > 0
+      ) {
         startNextPage();
         pageConsumedHeightPx = 0;
         previousParagraphAfterPx = 0;
@@ -912,7 +934,12 @@ export function buildDocumentPageNodeSegments(
       }
 
       let requiredHeightPx = collapsedNodeHeightPx;
-      if (node.style?.keepNext === true && callbacks.paragraphHasVisibleText(node)) {
+      let keepNextChainEndNodeIndex = -1;
+      if (
+        node.style?.keepNext === true &&
+        !nodeIsWithinCommittedKeepNextChain &&
+        callbacks.paragraphHasVisibleText(node)
+      ) {
         let chainCursor = nodeIndex;
         let chainPreviousParagraphAfterPx = afterSpacingPx;
         while (chainCursor < model.nodes.length - 1) {
@@ -975,6 +1002,7 @@ export function buildDocumentPageNodeSegments(
           );
           chainPreviousParagraphAfterPx = paragraphAfterSpacingPx(nextChainNode);
         }
+        keepNextChainEndNodeIndex = chainCursor;
       }
 
       const remainingHeightPx = currentPageContentHeightPx - pageConsumedHeightPx;
@@ -991,6 +1019,9 @@ export function buildDocumentPageNodeSegments(
         );
       }
 
+      if (pageConsumedHeightPx === 0 && keepNextChainEndNodeIndex > nodeIndex) {
+        committedKeepNextChainEndNodeIndex = keepNextChainEndNodeIndex;
+      }
       currentPageSegments.push({ nodeIndex });
       const effectiveNodeHeightPx =
         pageConsumedHeightPx > 0 ? collapsedNodeHeightPx : rawNodeHeightPx;

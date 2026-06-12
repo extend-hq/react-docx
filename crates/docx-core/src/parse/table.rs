@@ -12,9 +12,9 @@ use crate::parse::context::{
 };
 use crate::parse::paragraph::parse_paragraph;
 use crate::parse::style::parse_paragraph_align_from_xml;
+use crate::parse::styles::parse_table_box_spacing;
 use crate::parse::util::{
     merge_table_border_sets, merge_text_styles, normalize_hex_color, parse_table_border_set,
-    parse_table_box_spacing, to_model_alignment,
 };
 use crate::xml::{
     extract_balanced_tag_blocks, extract_balanced_tag_blocks_in_order, get_attribute,
@@ -505,6 +505,8 @@ fn normalize_conflicting_table_grid(
     rows: &mut [TableRowNode],
 ) -> Vec<i64> {
     const BOUNDARY_TOLERANCE_TWIPS: i64 = 80;
+    // Temporary A/B toggle for corpus verification; remove before commit.
+    const LEGACY_GATE: bool = false;
     if grid.is_empty() || rows.is_empty() {
         return grid;
     }
@@ -522,6 +524,12 @@ fn normalize_conflicting_table_grid(
             .and_then(|style| style.width_twips)
             .filter(|&width| width > 0)
     };
+    let is_continuation = |cell: &TableCellNode| -> bool {
+        cell.style
+            .as_ref()
+            .and_then(|style| style.v_merge_continuation)
+            .unwrap_or(false)
+    };
 
     // Only regrid when the declared grid is structurally consistent with the
     // rows (cell spans actually address its columns) but width-wrong. When the
@@ -536,6 +544,21 @@ fn normalize_conflicting_table_grid(
         return grid;
     }
 
+    // Generators that slice page layouts into (nested) tables emit uniform
+    // placeholder grids — equal divisions of the table width — while the real
+    // geometry lives in per-cell tcW values. Small per-cell deviations slip
+    // under the conflict ratio below yet still misplace the text fragments the
+    // cells position, so when the declared grid is uniform and every cell
+    // carries an explicit width, trust the cell widths outright.
+    let grid_is_uniform =
+        grid.len() > 1 && grid.iter().all(|&width| (width - grid[0]).abs() <= 1);
+    let cells_fully_measured = rows.iter().all(|row| {
+        row.cells
+            .iter()
+            .all(|cell| is_continuation(cell) || width_of(cell).is_some())
+    });
+    let uniform_placeholder_grid = grid_is_uniform && cells_fully_measured;
+
     // Conflict detection: do explicit cell widths disagree with the grid?
     let mut measured_rows = 0usize;
     let mut conflict_rows = 0usize;
@@ -547,6 +570,12 @@ fn normalize_conflicting_table_grid(
             let span = span_of(cell);
             let expected: i64 = grid.iter().skip(cursor).take(span).sum();
             cursor += span;
+            // Continuation cells inherit the anchor row's geometry, and
+            // generators often stamp them with placeholder widths copied from
+            // the bogus grid — they are evidence of nothing.
+            if is_continuation(cell) {
+                continue;
+            }
             let Some(actual) = width_of(cell) else {
                 continue;
             };
@@ -565,7 +594,9 @@ fn normalize_conflicting_table_grid(
             }
         }
     }
-    if measured_rows == 0 || conflict_rows * 2 <= measured_rows {
+    if measured_rows == 0
+        || (!uniform_placeholder_grid && conflict_rows * 2 <= measured_rows)
+    {
         return grid;
     }
 
@@ -577,12 +608,6 @@ fn normalize_conflicting_table_grid(
     // (matching how LibreOffice resolves such tables).
     let bucket_of = |position: i64| -> i64 {
         (position + BOUNDARY_TOLERANCE_TWIPS / 2) / BOUNDARY_TOLERANCE_TWIPS
-    };
-    let is_continuation = |cell: &TableCellNode| -> bool {
-        cell.style
-            .as_ref()
-            .and_then(|style| style.v_merge_continuation)
-            .unwrap_or(false)
     };
     let mut anchor_width_by_bucket: HashMap<i64, i64> = HashMap::new();
     let mut boundaries: Vec<i64> = vec![0];

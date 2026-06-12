@@ -5,7 +5,7 @@ use crate::model::{
     ImageHorizontalAlign, ImageVerticalAlign, ParagraphAlignment, ParagraphBorderSet,
     ParagraphBorderStyle, ParagraphIndent, ParagraphLineRule, ParagraphSpacing,
     ParagraphTabStop, ParagraphTabStopAlignment, ParagraphTabStopLeader, TableBorderSet,
-    TableBorderStyle, TableBoxSpacing, TextRunBorderStyle, TextStyle,
+    TableBorderStyle, TextRunBorderStyle, TextStyle,
 };
 use crate::package::OoxmlPart;
 use crate::parse::context::{ContentTypeLookup, ThemeColorMap, ThemeFontMap};
@@ -828,27 +828,6 @@ pub fn parse_table_border_set(xml: &str) -> Option<TableBorderSet> {
         return None;
     }
     Some(TableBorderSet { top, right, bottom, left, inside_h, inside_v, tl2br, tr2bl })
-}
-
-pub fn parse_table_box_spacing(xml: &str) -> Option<TableBoxSpacing> {
-    let top_match = regex_capture_tag(xml, r"(?i)<w:top\b[^>]*>");
-    let right_match = regex_capture_tag(xml, r"(?i)<w:right\b[^>]*>");
-    let bottom_match = regex_capture_tag(xml, r"(?i)<w:bottom\b[^>]*>");
-    let left_match = regex_capture_tag(xml, r"(?i)<w:left\b[^>]*>");
-    let spacing = TableBoxSpacing {
-        top_twips: top_match.as_deref().and_then(|t| parse_integer_attribute(t, "w:w")),
-        right_twips: right_match.as_deref().and_then(|t| parse_integer_attribute(t, "w:w")),
-        bottom_twips: bottom_match.as_deref().and_then(|t| parse_integer_attribute(t, "w:w")),
-        left_twips: left_match.as_deref().and_then(|t| parse_integer_attribute(t, "w:w")),
-    };
-    if spacing.top_twips.is_none()
-        && spacing.right_twips.is_none()
-        && spacing.bottom_twips.is_none()
-        && spacing.left_twips.is_none()
-    {
-        return None;
-    }
-    Some(spacing)
 }
 
 pub fn normalize_tab_stop_alignment(value: Option<&str>) -> Option<ParagraphTabStopAlignment> {

@@ -402,9 +402,13 @@ pub fn parse_paragraph_border_set_from_xml(xml: &str) -> Option<ParagraphBorderS
 /// Mirrors TypeScript `parseTableBoxSpacing`.
 pub fn parse_table_box_spacing(xml: &str) -> Option<TableBoxSpacing> {
     let top_match = super::scan::find_tag_token(xml, "w:top");
-    let right_match = super::scan::find_tag_token(xml, "w:right");
+    // Word writes the bidi-aware w:start/w:end instead of w:left/w:right in
+    // newer documents; treat them as left/right (LTR rendering).
+    let right_match = super::scan::find_tag_token(xml, "w:right")
+        .or_else(|| super::scan::find_tag_token(xml, "w:end"));
     let bottom_match = super::scan::find_tag_token(xml, "w:bottom");
-    let left_match = super::scan::find_tag_token(xml, "w:left");
+    let left_match = super::scan::find_tag_token(xml, "w:left")
+        .or_else(|| super::scan::find_tag_token(xml, "w:start"));
 
     let spacing = TableBoxSpacing {
         top_twips: top_match
@@ -2318,4 +2322,19 @@ pub fn clone_paragraph_style_definition(style: &ParagraphStyleDefinition) -> Par
 
 pub fn clone_numbering_definitions(definitions: &NumberingDefinitionSet) -> NumberingDefinitionSet {
     definitions.clone()
+}
+
+#[cfg(test)]
+mod table_box_spacing_tests {
+    use super::parse_table_box_spacing;
+
+    #[test]
+    fn parses_start_end_aliases() {
+        let xml = r#"<w:tcMar><w:start w:w="0" w:type="dxa"/><w:end w:w="0" w:type="dxa"/></w:tcMar>"#;
+        let spacing = parse_table_box_spacing(xml).expect("spacing");
+        assert_eq!(spacing.left_twips, Some(0));
+        assert_eq!(spacing.right_twips, Some(0));
+        assert_eq!(spacing.top_twips, None);
+        assert_eq!(spacing.bottom_twips, None);
+    }
 }

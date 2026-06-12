@@ -58,7 +58,10 @@ describe("toc tab leader pagination", () => {
       ]
     };
 
-    expect(paragraphLineCountWithinWidth(paragraph, 260)).toBe(4);
+    // Tabs without explicit stops advance to the next default-stop multiple
+    // (Word behavior) rather than a fixed 48px gap, so the marker tab ends at
+    // x=48 instead of x≈58 and the title wraps one line earlier.
+    expect(paragraphLineCountWithinWidth(paragraph, 260)).toBe(3);
   });
 
   it("renders TOC entry tabs as measured spacers before the page-number zone", () => {

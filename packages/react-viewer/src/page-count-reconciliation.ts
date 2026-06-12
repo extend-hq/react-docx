@@ -30,23 +30,29 @@ export function shouldAllowStoredPageCountReduction(options: {
     return true;
   }
 
+  const renderedBreakHintPageCount = Number.isFinite(
+    options.renderedBreakHintPageCount
+  )
+    ? Math.max(1, Math.round(options.renderedBreakHintPageCount as number))
+    : undefined;
+  const renderedBreakHintsSupportTarget =
+    options.hasLastRenderedPageBreakHints === true &&
+    renderedBreakHintPageCount !== undefined &&
+    targetPageCount >= renderedBreakHintPageCount;
+
   if (options.hasMeasuredBodyFooterOverlap === true) {
-    return false;
+    // Word's own rendered break markers outrank a measured body/footer
+    // overlap. Dense documents can legitimately overflow our estimated footer
+    // reserve on every page; abandoning the hint-aligned page count for the
+    // (over-)estimated one trades a correct page count for a wrong one.
+    return renderedBreakHintsSupportTarget;
   }
 
   if (options.hasLastRenderedPageBreakHints !== true) {
     return true;
   }
 
-  const renderedBreakHintPageCount = Number.isFinite(
-    options.renderedBreakHintPageCount
-  )
-    ? Math.max(1, Math.round(options.renderedBreakHintPageCount as number))
-    : undefined;
-  return (
-    renderedBreakHintPageCount !== undefined &&
-    targetPageCount >= renderedBreakHintPageCount
-  );
+  return renderedBreakHintsSupportTarget;
 }
 
 export function shouldLatchMeasuredBodyFooterOverlap(options: {

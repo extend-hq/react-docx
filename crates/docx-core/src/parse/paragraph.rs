@@ -1034,6 +1034,23 @@ pub fn parse_paragraph_form_field_tokens(
     combined
 }
 
+fn parse_paragraph_mark_run_style(
+    paragraph_xml: &str,
+    context: &ParseContext<'_>,
+    paragraph_style_id: Option<&str>,
+) -> Option<TextStyle> {
+    let paragraph_properties_xml = extract_balanced_tag_blocks(paragraph_xml, "w:pPr")
+        .into_iter()
+        .next()
+        .unwrap_or_default();
+    let mark_run_properties_xml = extract_balanced_tag_blocks(&paragraph_properties_xml, "w:rPr")
+        .into_iter()
+        .next()
+        .unwrap_or_default();
+    let synthetic_mark_run_xml = format!("<w:r>{}</w:r>", mark_run_properties_xml);
+    parse_run_style(&synthetic_mark_run_xml, context, paragraph_style_id)
+}
+
 pub fn parse_paragraph(paragraph_xml: &str, context: &ParseContext<'_>) -> ParagraphNode {
     let mut children: Vec<ParagraphChildNode> = Vec::new();
     let paragraph_style = parse_paragraph_style(paragraph_xml, context);
@@ -1126,10 +1143,17 @@ pub fn parse_paragraph(paragraph_xml: &str, context: &ParseContext<'_>) -> Parag
     }
 
     if children.is_empty() {
+        // An empty paragraph renders at the line height of its paragraph mark
+        // (the pPr>rPr formatting), so the synthetic empty run must carry that
+        // style — otherwise spacer paragraphs collapse to the default font size.
         children.push(ParagraphChildNode::Text(TextRunNode {
             r#type: TextRunNodeType::Text,
             text: String::new(),
-            style: None,
+            style: parse_paragraph_mark_run_style(
+                paragraph_xml,
+                context,
+                paragraph_style.as_ref().and_then(|s| s.style_id.as_deref()),
+            ),
             link: None,
             note_reference: None,
         }));

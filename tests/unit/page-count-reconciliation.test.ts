@@ -172,6 +172,35 @@ describe("page-count-reconciliation", () => {
     ).toBe(false);
   });
 
+  it("keeps reducing despite measured footer overlap when rendered break hints support the stored page count", () => {
+    // Regression: 8256f805 (Fannie Mae form 3141) — Word renders 3 pages with
+    // 2 mid-paragraph lastRenderedPageBreak markers. The dense pages measure
+    // as overlapping the estimated footer reserve, but the hint-aligned
+    // 3-page plan is Word's own truth and must not be abandoned for the
+    // over-estimated 5-page layout.
+    expect(
+      shouldAllowStoredPageCountReduction({
+        estimatedPageCount: 5,
+        targetPageCount: 3,
+        hasLastRenderedPageBreakHints: true,
+        renderedBreakHintPageCount: 3,
+        hasMeasuredBodyFooterOverlap: true,
+      })
+    ).toBe(true);
+  });
+
+  it("still blocks reduction on measured footer overlap when hints contradict the stored page count", () => {
+    expect(
+      shouldAllowStoredPageCountReduction({
+        estimatedPageCount: 5,
+        targetPageCount: 3,
+        hasLastRenderedPageBreakHints: true,
+        renderedBreakHintPageCount: 4,
+        hasMeasuredBodyFooterOverlap: true,
+      })
+    ).toBe(false);
+  });
+
   it("only latches measured footer overlap once pagination is at or below the stored target", () => {
     expect(
       shouldLatchMeasuredBodyFooterOverlap({

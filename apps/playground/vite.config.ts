@@ -6,7 +6,11 @@ import tsconfigPaths from "vite-tsconfig-paths";
 
 export default defineConfig({
   plugins: [react(), tsconfigPaths(), tailwindcss()],
+  optimizeDeps: {
+    exclude: ["@extend-ai/react-docx"],
+  },
   resolve: {
+    dedupe: ["react", "react-dom"],
     alias: {
       "@": path.resolve(__dirname, "./src"),
     },
