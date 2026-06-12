@@ -13,8 +13,8 @@ use super::metadata::{
 use super::numbering::parse_numbering_definitions;
 use super::relationships::parse_part_relationships;
 use super::sections::{
-    parse_document_notes_from_part, parse_document_sections, parse_footer_sections,
-    parse_header_sections,
+    parse_document_comments, parse_document_notes_from_part, parse_document_sections,
+    parse_footer_sections, parse_header_sections,
 };
 use super::styles::{
     clone_numbering_definitions, clone_paragraph_style_definition, parse_style_sheet,
@@ -90,6 +90,7 @@ pub fn build_doc_model(pkg: &OoxmlPackage) -> DocModel {
         &style_sheet,
         &mut warnings,
     );
+    let comments = parse_document_comments(pkg, &content_types, &style_sheet);
 
     warnings.extend(context.warnings.borrow().iter().cloned());
 
@@ -117,6 +118,11 @@ pub fn build_doc_model(pkg: &OoxmlPackage) -> DocModel {
             compatibility: compatibility.clone(),
             footnotes: clone_notes_if_non_empty(footnotes),
             endnotes: clone_notes_if_non_empty(endnotes),
+            comments: if comments.is_empty() {
+                None
+            } else {
+                Some(comments)
+            },
         },
     }
 }

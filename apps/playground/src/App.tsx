@@ -22,6 +22,7 @@ import {
   useDocxPageThumbnails,
   useDocxParagraphStyles,
   useDocxTrackChanges,
+  useDocxComments,
 } from "@extend-ai/react-docx";
 import {
   ArrowDown,
@@ -43,6 +44,7 @@ import {
   Link2,
   List,
   ListOrdered,
+  MessageSquareText,
   Moon,
   PanelsTopLeft,
   Redo2,
@@ -1400,6 +1402,7 @@ export function App(): React.JSX.Element {
     useDocxFormFields(editor);
   const { showTrackedChanges, setShowTrackedChanges } =
     useDocxTrackChanges(editor);
+  const { comments, showComments, setShowComments } = useDocxComments(editor);
   const [themeReady, setThemeReady] = React.useState(false);
   const paragraphStylePreviewHandle = React.useMemo(
     () => createHoverCardHandle<ParagraphStyleOption>(),
@@ -2886,6 +2889,22 @@ export function App(): React.JSX.Element {
                 </div>
                 <Separator orientation="vertical" className="h-6" />
                 <div className="flex items-center gap-2 px-2">
+                  <span className="inline-flex items-center gap-1 text-sm text-muted-foreground">
+                    <MessageSquareText className="h-4 w-4" />
+                    Show comments
+                    {comments.length > 0 ? (
+                      <span className="rounded-full bg-amber-500/15 px-1.5 text-xs font-medium text-amber-600">
+                        {comments.length}
+                      </span>
+                    ) : null}
+                  </span>
+                  <Switch
+                    checked={showComments}
+                    onCheckedChange={setShowComments}
+                  />
+                </div>
+                <Separator orientation="vertical" className="h-6" />
+                <div className="flex items-center gap-2 px-2">
                   <span className="text-sm text-muted-foreground">
                     Read only
                   </span>
@@ -2927,6 +2946,7 @@ export function App(): React.JSX.Element {
                 mode={isReadOnly ? "read-only" : "edit"}
                 showTrackedChanges={showTrackedChanges}
                 renderTrackedChangeCard={renderTrackedChangeCard}
+                showComments={showComments}
                 renderContextMenu={renderContextMenu}
                 renderTableContextMenu={renderTableContextMenu}
                 onFormFieldDoubleClick={(location) => {

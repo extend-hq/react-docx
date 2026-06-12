@@ -394,6 +394,18 @@ export interface DocumentNoteDefinition {
   nodes?: DocNode[];
 }
 
+export interface DocumentCommentDefinition {
+  id: number;
+  author?: string;
+  initials?: string;
+  date?: string;
+  text: string;
+  /** Comment id this comment replies to (from commentsExtended threading). */
+  parentId?: number;
+  /** True when the comment thread is marked done in commentsExtended. */
+  resolved?: boolean;
+}
+
 export interface DocumentCompatibilitySettings {
   suppressSpacingBeforeAfterPageBreak?: boolean;
   usePrinterMetrics?: boolean;
@@ -421,5 +433,6 @@ export interface DocModel {
     compatibility?: DocumentCompatibilitySettings;
     footnotes?: DocumentNoteDefinition[];
     endnotes?: DocumentNoteDefinition[];
+    comments?: DocumentCommentDefinition[];
   };
 }

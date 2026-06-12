@@ -520,6 +520,9 @@ export {
   type DocxTableContextMenuContext,
   type DocxTableContextMenuRenderProps,
   type DocxTrackedChangeCardRenderProps,
+  type DocxComment,
+  type DocxCommentCardRenderProps,
+  type UseDocxCommentsResult,
   type DocxPageLayoutInfo,
   type DocxPaginationInfo,
   type DocxLineSpacingInfo,
@@ -561,6 +564,7 @@ export {
   useDocxPagination,
   useDocxParagraphStyles,
   useDocxTrackChanges,
+  useDocxComments,
   useDocxEditor,
   resolveDocxPageThumbnailResolution,
   type UseDocxEditorOptions

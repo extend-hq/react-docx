@@ -259,5 +259,20 @@ export function reconcilePageCountCandidateToTargetCountByScalingHeight<TPage>(
     previousPageCount = candidate.pageCount;
   }
 
+  if (!needMorePages && selectedCandidate.pageCount !== safeTargetPageCount) {
+    // A compressed pagination that still misses the stored count keeps the
+    // wrong page count AND over-fills every page: its segments were budgeted
+    // against a taller virtual page than the physical one they render in, so
+    // the tail of each page gets clipped (stale generator page counts, e.g. a
+    // never-repaginated <Pages>1</Pages>, would otherwise squeeze multi-page
+    // documents). Best-effort only helps in the page-growing direction, where
+    // pages under-fill harmlessly.
+    return {
+      pageCount: initialPageCount,
+      pages: initialPages,
+      scale: 1,
+    };
+  }
+
   return selectedCandidate;
 }

@@ -1083,6 +1083,24 @@ pub struct DocumentNoteDefinition {
     pub nodes: Option<Vec<DocNode>>,
 }
 
+/// Mirrors TypeScript `DocumentCommentDefinition`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentCommentDefinition {
+    pub id: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub initials: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub date: Option<String>,
+    pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolved: Option<bool>,
+}
+
 /// Mirrors TypeScript `DocumentCompatibilitySettings`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1130,6 +1148,8 @@ pub struct DocModelMetadata {
     pub footnotes: Option<Vec<DocumentNoteDefinition>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub endnotes: Option<Vec<DocumentNoteDefinition>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub comments: Option<Vec<DocumentCommentDefinition>>,
 }
 
 /// Mirrors TypeScript `DocModel`.

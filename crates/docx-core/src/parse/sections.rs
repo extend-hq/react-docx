@@ -3,11 +3,15 @@ use std::collections::{HashMap, HashSet};
 use std::cell::RefCell;
 
 use crate::model::{
-    DocNode, DocumentNoteDefinition, DocumentSection, FooterSection, FormFieldRunNode,
-    FormFieldType, HeaderSection, ParagraphChildNode, ParagraphNode, TableCellContentNode,
+    DocNode, DocumentCommentDefinition, DocumentNoteDefinition, DocumentSection, FooterSection,
+    FormFieldRunNode, FormFieldType, HeaderSection, ParagraphChildNode, ParagraphNode,
+    TableCellContentNode,
 };
 use crate::package::OoxmlPackage;
-use crate::xml::{extract_balanced_tag_blocks, get_attribute, parse_integer_attribute};
+use crate::parse::re;
+use crate::xml::{
+    decode_xml_entities, extract_balanced_tag_blocks, get_attribute, parse_integer_attribute,
+};
 
 use super::context::{ContentTypeLookup, ParseContext, ParsedStyleSheet};
 use super::body::extract_body_xml;
@@ -318,6 +322,111 @@ pub fn parse_document_notes_from_part(
 
     notes.sort_by_key(|note| note.id);
     notes
+}
+
+/// Parses `word/comments.xml` into comment definitions, enriched with
+/// resolution state and threading from `word/commentsExtended.xml` (matched
+/// through the `w14:paraId` of each comment's final paragraph, per MS-DOCX).
+pub fn parse_document_comments(
+    pkg: &OoxmlPackage,
+    content_types: &ContentTypeLookup,
+    style_sheet: &ParsedStyleSheet,
+) -> Vec<DocumentCommentDefinition> {
+    let Some(comments_xml) = pkg
+        .parts
+        .get("word/comments.xml")
+        .map(|part| part.content.as_str())
+    else {
+        return Vec::new();
+    };
+
+    let context = ParseContext {
+        relationships: parse_part_relationships(pkg, "word/comments.xml"),
+        content_types: content_types.clone(),
+        parts: &pkg.parts,
+        binary_assets: &pkg.binary_assets,
+        style_sheet: style_sheet.clone(),
+        warnings: RefCell::new(Vec::new()),
+    };
+
+    // commentsExtended: paraId -> (done, parent paraId).
+    let mut extended_by_para_id: HashMap<String, (Option<bool>, Option<String>)> = HashMap::new();
+    if let Some(extended_xml) = pkg
+        .parts
+        .get("word/commentsExtended.xml")
+        .map(|part| part.content.as_str())
+    {
+        for tag in re::get_unchecked(r"(?i)<w15:commentEx\b[^>]*/?>")
+            .find_iter(extended_xml)
+            .map(|m| m.as_str())
+        {
+            let Some(para_id) = get_attribute(tag, "w15:paraId") else {
+                continue;
+            };
+            let done = get_attribute(tag, "w15:done")
+                .map(|value| value == "1" || value.eq_ignore_ascii_case("true"));
+            let parent_para_id = get_attribute(tag, "w15:paraIdParent");
+            extended_by_para_id.insert(para_id, (done, parent_para_id));
+        }
+    }
+
+    let mut comments = Vec::new();
+    let mut comment_id_by_para_id: HashMap<String, i64> = HashMap::new();
+    let mut parent_para_id_by_comment_id: HashMap<i64, String> = HashMap::new();
+    for comment_xml in extract_balanced_tag_blocks(comments_xml, "w:comment") {
+        let comment_tag = find_opening_tag(&comment_xml, "w:comment").unwrap_or_default();
+        let Some(comment_id) = parse_integer_attribute(&comment_tag, "w:id") else {
+            continue;
+        };
+
+        let parsed_nodes = parse_document_xml(&comment_xml, &context);
+        let text = note_text_from_nodes(&parsed_nodes);
+        let author = get_attribute(&comment_tag, "w:author")
+            .map(|value| decode_xml_entities(&value))
+            .filter(|value| !value.trim().is_empty());
+        let initials = get_attribute(&comment_tag, "w:initials")
+            .map(|value| decode_xml_entities(&value))
+            .filter(|value| !value.trim().is_empty());
+        let date = get_attribute(&comment_tag, "w:date").filter(|value| !value.trim().is_empty());
+
+        // The comment's paragraphs carry w14:paraId attributes; the LAST one
+        // identifies the comment in commentsExtended.
+        let para_ids: Vec<String> = re::get_unchecked(r#"(?i)w14:paraId="([^"]+)""#)
+            .captures_iter(&comment_xml)
+            .filter_map(|captures| captures.get(1).map(|m| m.as_str().to_string()))
+            .collect();
+        let mut resolved = None;
+        if let Some(last_para_id) = para_ids.last() {
+            for para_id in &para_ids {
+                comment_id_by_para_id.insert(para_id.clone(), comment_id);
+            }
+            if let Some((done, parent_para_id)) = extended_by_para_id.get(last_para_id) {
+                resolved = done.filter(|value| *value);
+                if let Some(parent_para_id) = parent_para_id {
+                    parent_para_id_by_comment_id.insert(comment_id, parent_para_id.clone());
+                }
+            }
+        }
+
+        comments.push(DocumentCommentDefinition {
+            id: comment_id,
+            author,
+            initials,
+            date,
+            text,
+            parent_id: None,
+            resolved,
+        });
+    }
+
+    for comment in comments.iter_mut() {
+        if let Some(parent_para_id) = parent_para_id_by_comment_id.get(&comment.id) {
+            comment.parent_id = comment_id_by_para_id.get(parent_para_id).copied();
+        }
+    }
+
+    comments.sort_by_key(|comment| comment.id);
+    comments
 }
 
 fn parse_referenced_sections(

@@ -57,6 +57,24 @@ describe("page-count-reconciliation", () => {
     expect(reconciled).toBe(initialPages);
   });
 
+  it("keeps the original pagination when no scale reaches a smaller stored count", () => {
+    // A stale generator page count (e.g. a never-repaginated <Pages>1</Pages>)
+    // that scaling cannot actually reach must not leave a partially compressed
+    // pagination behind: those pages were budgeted against a taller virtual
+    // page than the physical one and render clipped.
+    const initialPages = [["page-1"], ["page-2"], ["page-3"], ["page-4"]];
+    const reconciledCandidate =
+      reconcilePageCountCandidateToTargetCountByScalingHeight({
+        initialPages,
+        targetPageCount: 1,
+        buildPagesAtScale: (scale) =>
+          scale >= 1.2 ? [["page-1"], ["page-2"]] : initialPages,
+      });
+
+    expect(reconciledCandidate.pages).toBe(initialPages);
+    expect(reconciledCandidate.scale).toBe(1);
+  });
+
   it("respects custom candidate scales when narrowing an over-pagination case", () => {
     const initialPages = [["page-1"], ["page-2"], ["page-3"]];
     const reconciled = reconcilePagesToTargetCountByScalingHeight({

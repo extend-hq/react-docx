@@ -359,9 +359,17 @@ interface ParagraphTrackedMarkup {
   changes: ParagraphTrackedInlineChange[];
 }
 
+interface ParagraphCommentMarkup {
+  commentIdsByVisibleChildIndex: Array<number[] | undefined>;
+}
+
 const paragraphTrackedMarkupBySourceXml = new Map<
   string,
   ParagraphTrackedMarkup | null
+>();
+const paragraphCommentMarkupBySourceXml = new Map<
+  string,
+  ParagraphCommentMarkup | null
 >();
 let paragraphMeasureCanvasContext: CanvasRenderingContext2D | undefined;
 const textWidthByFontAndValue = new Map<string, number>();
@@ -3497,6 +3505,33 @@ export interface DocxTrackedChange {
   location: DocxTextRangeLocation;
 }
 
+/**
+ * A document comment anchored to a text range.
+ *
+ * Comment definitions come from `word/comments.xml` (threading and resolution
+ * state from `word/commentsExtended.xml`); the anchor location is resolved
+ * from the paragraph that carries the `commentReference` run.
+ */
+export interface DocxComment {
+  /** Stable identifier (unique per rendered anchor). */
+  id: string;
+  /** Comment id from `word/comments.xml` (`w:id`). */
+  commentId: number;
+  author?: string;
+  initials?: string;
+  date?: string;
+  /** Plain-text comment body. */
+  text: string;
+  /** Comment id this comment replies to, when part of a thread. */
+  parentId?: number;
+  /** True when the comment thread is marked done. */
+  resolved?: boolean;
+  /** Plain-text excerpt of the commented document range. */
+  anchorText?: string;
+  nodeIndex: number;
+  location: DocxTextRangeLocation;
+}
+
 export type DocxLineSpacingRule = "auto" | "exact" | "atLeast";
 export type DocxSelectionSessionKind =
   | "idle"
@@ -3568,6 +3603,12 @@ export interface UseDocxEditorOptions {
    * @defaultValue `false`
    */
   initialShowTrackedChanges?: boolean;
+  /**
+   * Whether document comments are visible when the editor first mounts.
+   *
+   * @defaultValue `false`
+   */
+  initialShowComments?: boolean;
 }
 
 /**
@@ -3620,6 +3661,8 @@ export interface DocxEditorController {
   availableParagraphStyles: ParagraphStyleDefinition[];
   trackedChanges: DocxTrackedChange[];
   showTrackedChanges: boolean;
+  comments: DocxComment[];
+  showComments: boolean;
   currentPage: number;
   totalPages: number;
   hasUnorderedList: boolean;
@@ -3632,8 +3675,10 @@ export interface DocxEditorController {
   setStatus: React.Dispatch<React.SetStateAction<string>>;
   setDocumentTheme: (theme: DocxDocumentTheme) => void;
   setShowTrackedChanges: (showTrackedChanges: boolean) => void;
+  setShowComments: (showComments: boolean) => void;
   syncPaginationInfo: (pagination: DocxPaginationInfo) => void;
   toggleShowTrackedChanges: () => void;
+  toggleShowComments: () => void;
   importDocxFile: (file: File) => Promise<void>;
   newDocument: () => void;
   exportDocx: () => void;
@@ -4075,6 +4120,17 @@ export interface DocxEditorViewerProps {
     props: DocxTrackedChangeCardRenderProps
   ) => React.ReactNode;
   /**
+   * Overrides whether document comments are shown.
+   *
+   * If omitted, the value from `useDocxComments(editor)` or
+   * `editor.showComments` is used.
+   */
+  showComments?: boolean;
+  /**
+   * Custom renderer for comment cards in the page gutter.
+   */
+  renderCommentCard?: (props: DocxCommentCardRenderProps) => React.ReactNode;
+  /**
    * Custom renderer for table context menus.
    *
    * Call `props.runAction(action.id)` to execute built-in actions.
@@ -4106,6 +4162,23 @@ export interface DocxTrackedChangeCardRenderProps {
   /** Formatted change date, if the source document provided one. */
   formattedDate?: string;
   /** Accent color chosen for this change kind. */
+  accentColor: string;
+  /** Current document theme. */
+  documentTheme: DocxDocumentTheme;
+  /** Zero-based page index that owns the card. */
+  pageIndex: number;
+  /** Positioning style computed by the viewer. Apply this to the card root. */
+  style: React.CSSProperties;
+}
+
+export interface DocxCommentCardRenderProps {
+  /** Comment data represented by the card. */
+  comment: DocxComment;
+  /** Plain-text comment body (already normalized for display). */
+  snippet: string;
+  /** Formatted comment date, if the source document provided one. */
+  formattedDate?: string;
+  /** Accent color chosen for comments. */
   accentColor: string;
   /** Current document theme. */
   documentTheme: DocxDocumentTheme;
@@ -4171,6 +4244,15 @@ export interface UseDocxTrackChangesResult {
   getChangesForLocation: (
     location: DocxTextRangeLocation
   ) => DocxTrackedChange[];
+}
+
+export interface UseDocxCommentsResult {
+  comments: DocxComment[];
+  showComments: boolean;
+  setShowComments: (showComments: boolean) => void;
+  toggleShowComments: () => void;
+  commentsByLocation: Map<string, DocxComment[]>;
+  getCommentsForLocation: (location: DocxTextRangeLocation) => DocxComment[];
 }
 
 export interface DocxSectionColumnLayout {
@@ -17384,6 +17466,104 @@ function resolveParagraphTrackedMarkup(
   return resolved;
 }
 
+/**
+ * Maps comment ranges (`commentRangeStart`/`commentRangeEnd`) to the
+ * paragraph's visible child indexes using the same run accounting as
+ * `resolveParagraphTrackedMarkup`, so the run renderer can highlight
+ * commented content at the matching child cursor.
+ */
+function resolveParagraphCommentMarkup(
+  paragraph: ParagraphNode
+): ParagraphCommentMarkup | undefined {
+  const sourceXml = paragraph.sourceXml ?? "";
+  if (!sourceXml || !/commentRange|commentReference/i.test(sourceXml)) {
+    return undefined;
+  }
+
+  const cached = paragraphCommentMarkupBySourceXml.get(sourceXml);
+  if (cached !== undefined) {
+    return cached ?? undefined;
+  }
+
+  const rangeStartById = new Map<number, number>();
+  const rangeEndById = new Map<number, number>();
+  for (const match of sourceXml.matchAll(
+    /<w:commentRangeStart\b[^>]*w:id="(-?\d+)"[^>]*\/?>/gi
+  )) {
+    const commentId = Number.parseInt(match[1] ?? "", 10);
+    if (Number.isFinite(commentId) && match.index !== undefined) {
+      rangeStartById.set(commentId, match.index + match[0].length);
+    }
+  }
+  for (const match of sourceXml.matchAll(
+    /<w:commentRangeEnd\b[^>]*w:id="(-?\d+)"[^>]*\/?>/gi
+  )) {
+    const commentId = Number.parseInt(match[1] ?? "", 10);
+    if (Number.isFinite(commentId) && match.index !== undefined) {
+      rangeEndById.set(commentId, match.index);
+    }
+  }
+  // Ranges may open in an earlier paragraph (start missing) or close in a
+  // later one (end missing); treat the missing side as the paragraph edge.
+  const ranges: Array<{ commentId: number; start: number; end: number }> = [];
+  const rangeIds = new Set<number>([
+    ...rangeStartById.keys(),
+    ...rangeEndById.keys(),
+  ]);
+  rangeIds.forEach((commentId) => {
+    const start = rangeStartById.get(commentId) ?? 0;
+    const end = rangeEndById.get(commentId) ?? sourceXml.length;
+    if (end > start) {
+      ranges.push({ commentId, start, end });
+    }
+  });
+  if (ranges.length === 0) {
+    setCacheEntry(paragraphCommentMarkupBySourceXml, sourceXml, null);
+    return undefined;
+  }
+
+  const commentIdsByVisibleChildIndex: Array<number[] | undefined> = [];
+  let visibleChildIndex = 0;
+  const runPattern = /<w:r\b[\s\S]*?<\/w:r>/gi;
+  for (const runMatch of sourceXml.matchAll(runPattern)) {
+    const runXml = runMatch[0] ?? "";
+    if (!runXml) {
+      continue;
+    }
+
+    const runStart = runMatch.index ?? 0;
+    const contentRunXml = stripTextBoxContentFromRunXml(runXml);
+    const visibleTokens = parseTrackedRunTokens(contentRunXml, false);
+    const hasImage = /<w:(?:drawing|pict)\b/i.test(runXml);
+    const visibleChildCount =
+      visibleTokens.filter((token) => token.text.length > 0 || token.isNote)
+        .length + (hasImage ? 1 : 0);
+    if (visibleChildCount === 0) {
+      continue;
+    }
+
+    const activeCommentIds = ranges
+      .filter((range) => runStart >= range.start && runStart < range.end)
+      .map((range) => range.commentId);
+    if (activeCommentIds.length > 0) {
+      for (let index = 0; index < visibleChildCount; index += 1) {
+        commentIdsByVisibleChildIndex[visibleChildIndex + index] =
+          activeCommentIds;
+      }
+    }
+    visibleChildIndex += visibleChildCount;
+  }
+
+  if (commentIdsByVisibleChildIndex.length === 0) {
+    setCacheEntry(paragraphCommentMarkupBySourceXml, sourceXml, null);
+    return undefined;
+  }
+
+  const resolved: ParagraphCommentMarkup = { commentIdsByVisibleChildIndex };
+  setCacheEntry(paragraphCommentMarkupBySourceXml, sourceXml, resolved);
+  return resolved;
+}
+
 function instructionTextToPageFieldKind(
   rawInstruction: string
 ): PageFieldKind | undefined {
@@ -17820,6 +18000,7 @@ function normalizeDateInputValue(value?: string): string | undefined {
 
 interface ParagraphRunRenderOptions {
   showTrackedChanges?: boolean;
+  showCommentHighlights?: boolean;
   numberingDefinitions?: NumberingDefinitionSet;
   tocLinkColorByLevel?: Partial<Record<number, string | undefined>>;
   trackedMarkupMode?: "inline" | "gutter";
@@ -17901,6 +18082,10 @@ function renderParagraphRuns(
   const trackedMarkup = showTrackedInlineMarkup
     ? resolveParagraphTrackedMarkup(paragraph)
     : undefined;
+  const commentMarkup =
+    options?.showCommentHighlights === true
+      ? resolveParagraphCommentMarkup(paragraph)
+      : undefined;
   const tocParagraphLevel = tableOfContentsLevel(paragraph);
   const tocLinkColor = tocParagraphLevel
     ? options?.tocLinkColorByLevel?.[tocParagraphLevel]
@@ -17961,10 +18146,27 @@ function renderParagraphRuns(
     | ParagraphTrackedInlineChange
     | undefined =>
     trackedMarkup?.inlineChangeByVisibleChildIndex[trackedVisibleChildCursor];
+  const currentCommentHighlightStyle = ():
+    | React.CSSProperties
+    | undefined => {
+    const commentIds =
+      commentMarkup?.commentIdsByVisibleChildIndex[trackedVisibleChildCursor];
+    if (!commentIds || commentIds.length === 0) {
+      return undefined;
+    }
+    const accent = commentAccentColor(documentTheme);
+    return {
+      backgroundColor:
+        documentTheme === "dark"
+          ? "rgba(251, 191, 36, 0.24)"
+          : "rgba(251, 191, 36, 0.3)",
+      borderBottom: `2px solid ${accent}`,
+    };
+  };
   const consumeTrackedVisibleChild = (
     child: ParagraphNode["children"][number]
   ): void => {
-    if (!trackedMarkup) {
+    if (!trackedMarkup && !commentMarkup) {
       return;
     }
     if (child.type === "form-field") {
@@ -18197,23 +18399,29 @@ function renderParagraphRuns(
     trackedInlineChange: ParagraphTrackedInlineChange | undefined
   ): React.CSSProperties => {
     if (!isTableOfContentsParagraph(paragraph)) {
-      return trackedInlineStyle(
-        linkStyleToCss(style, documentTheme),
-        trackedInlineChange
-      );
+      return {
+        ...trackedInlineStyle(
+          linkStyleToCss(style, documentTheme),
+          trackedInlineChange
+        ),
+        ...currentCommentHighlightStyle(),
+      };
     }
 
     const base = runStyleToCss(style, documentTheme);
-    return trackedInlineStyle(
-      {
-        ...base,
-        color: tocLinkColor
-          ? themedRunColor(tocLinkColor, documentTheme)
-          : "inherit",
-        textDecoration: "none",
-      },
-      trackedInlineChange
-    );
+    return {
+      ...trackedInlineStyle(
+        {
+          ...base,
+          color: tocLinkColor
+            ? themedRunColor(tocLinkColor, documentTheme)
+            : "inherit",
+          textDecoration: "none",
+        },
+        trackedInlineChange
+      ),
+      ...currentCommentHighlightStyle(),
+    };
   };
   const usesExternalHorizontalAnchorOrigin = (image: ImageRunNode): boolean => {
     const horizontalRelativeTo = image.floating?.horizontalRelativeTo
@@ -18275,10 +18483,13 @@ function renderParagraphRuns(
         return;
       }
 
-      const trackedStyle = trackedInlineStyle(
-        runStyleToCss(child.style, documentTheme),
-        trackedInlineChange
-      );
+      const trackedStyle = {
+        ...trackedInlineStyle(
+          runStyleToCss(child.style, documentTheme),
+          trackedInlineChange
+        ),
+        ...currentCommentHighlightStyle(),
+      };
       if (text === "\t" && !useTabLeaderLayout && !useAnchoredTabLayout) {
         target.push(
           <span key={key} style={tabTextStyle(child.style, trackedStyle)}>
@@ -18645,10 +18856,13 @@ function renderParagraphRuns(
       return;
     }
 
-    const textStyle = trackedInlineStyle(
-      runStyleToCss(child.style, documentTheme),
-      trackedInlineChange
-    );
+    const textStyle = {
+      ...trackedInlineStyle(
+        runStyleToCss(child.style, documentTheme),
+        trackedInlineChange
+      ),
+      ...currentCommentHighlightStyle(),
+    };
     const noteLabel = noteMarkerLabel(
       child.noteReference,
       safeNoteMarkerIndexes.footnote,
@@ -22488,6 +22702,155 @@ function collectTrackedChangesFromModel(model: DocModel): DocxTrackedChange[] {
   return trackedChanges;
 }
 
+function decodeCommentRangeText(rangeXml: string): string | undefined {
+  const texts: string[] = [];
+  for (const match of rangeXml.matchAll(
+    /<w:t\b[^>]*>([\s\S]*?)<\/w:t>/gi
+  )) {
+    texts.push(decodeXmlText(match[1] ?? ""));
+  }
+  const combined = texts.join("").replace(/\s+/g, " ").trim();
+  if (!combined) {
+    return undefined;
+  }
+  return combined.length > 120 ? `${combined.slice(0, 119)}…` : combined;
+}
+
+function resolveCommentAnchorText(
+  sourceXml: string,
+  commentId: number
+): string | undefined {
+  const startMatch = sourceXml.match(
+    new RegExp(`<w:commentRangeStart\\b[^>]*w:id="${commentId}"[^>]*/?>`, "i")
+  );
+  const endMatch = sourceXml.match(
+    new RegExp(`<w:commentRangeEnd\\b[^>]*w:id="${commentId}"[^>]*/?>`, "i")
+  );
+  const startIndex =
+    startMatch?.index !== undefined
+      ? startMatch.index + startMatch[0].length
+      : // Range opened in an earlier paragraph: take from the paragraph start.
+        endMatch?.index !== undefined
+      ? 0
+      : undefined;
+  if (startIndex === undefined) {
+    return undefined;
+  }
+  const endIndex =
+    endMatch?.index !== undefined ? endMatch.index : sourceXml.length;
+  if (endIndex <= startIndex) {
+    return undefined;
+  }
+  return decodeCommentRangeText(sourceXml.slice(startIndex, endIndex));
+}
+
+function collectCommentsFromModel(model: DocModel): DocxComment[] {
+  const definitions = model.metadata.comments ?? [];
+  if (definitions.length === 0) {
+    return [];
+  }
+  const definitionById = new Map(
+    definitions.map((definition) => [definition.id, definition])
+  );
+
+  const comments: DocxComment[] = [];
+  const appendParagraphComments = (
+    paragraph: ParagraphNode,
+    nodeIndex: number,
+    location: ParagraphLocation
+  ): void => {
+    const sourceXml = paragraph.sourceXml ?? "";
+    if (!sourceXml || !/commentReference/i.test(sourceXml)) {
+      return;
+    }
+
+    for (const match of sourceXml.matchAll(
+      /<w:commentReference\b[^>]*w:id="(-?\d+)"/gi
+    )) {
+      const commentId = Number.parseInt(match[1] ?? "", 10);
+      const definition = Number.isFinite(commentId)
+        ? definitionById.get(commentId)
+        : undefined;
+      if (!definition) {
+        continue;
+      }
+
+      comments.push({
+        id: `${paragraphLocationKey(location)}:comment:${commentId}`,
+        commentId,
+        author: definition.author,
+        initials: definition.initials,
+        date: definition.date,
+        text: definition.text,
+        parentId: definition.parentId,
+        resolved: definition.resolved,
+        anchorText: resolveCommentAnchorText(sourceXml, commentId),
+        nodeIndex,
+        location:
+          location.kind === "paragraph"
+            ? { kind: "paragraph", nodeIndex: location.nodeIndex }
+            : {
+                kind: "table-cell",
+                tableIndex: location.tableIndex,
+                rowIndex: location.rowIndex,
+                cellIndex: location.cellIndex,
+                paragraphIndex: location.paragraphIndex,
+              },
+      });
+    }
+  };
+
+  model.nodes.forEach((node, nodeIndex) => {
+    if (node.type === "paragraph") {
+      appendParagraphComments(node, nodeIndex, {
+        kind: "paragraph",
+        nodeIndex,
+      });
+      return;
+    }
+
+    node.rows.forEach((row, rowIndex) => {
+      row.cells.forEach((cell, cellIndex) => {
+        const directParagraphs = tableCellParagraphs(cell.nodes);
+        directParagraphs.forEach((paragraph, paragraphIndex) => {
+          appendParagraphComments(paragraph, nodeIndex, {
+            kind: "table-cell",
+            tableIndex: nodeIndex,
+            rowIndex,
+            cellIndex,
+            paragraphIndex,
+          });
+        });
+
+        const nestedParagraphs = tableCellParagraphsRecursively(
+          cell.nodes
+        ).filter((paragraph) => !directParagraphs.includes(paragraph));
+        nestedParagraphs.forEach((paragraph, nestedParagraphIndex) => {
+          appendParagraphComments(paragraph, nodeIndex, {
+            kind: "table-cell",
+            tableIndex: nodeIndex,
+            rowIndex,
+            cellIndex,
+            paragraphIndex: -(nestedParagraphIndex + 1),
+          });
+        });
+      });
+    });
+  });
+
+  return comments;
+}
+
+function commentAccentColor(documentTheme: DocxDocumentTheme): string {
+  return documentTheme === "dark" ? "#fbbf24" : "#d97706";
+}
+
+function estimateCommentCardHeight(comment: DocxComment): number {
+  const snippet = comment.text || "Comment";
+  const lines = Math.max(1, Math.ceil(snippet.length / 30));
+  return Math.max(TRACKED_CHANGE_GUTTER_CARD_MIN_HEIGHT_PX, 34 + lines * 14);
+}
+
 function trackedChangeKindLabel(kind: DocxTrackedChangeKind): string {
   switch (kind) {
     case "insertion":
@@ -22545,18 +22908,18 @@ function trackedChangeAccentColor(
   }
 }
 
-function trackedChangeSortTuple(
-  change: DocxTrackedChange
+function gutterAnnotationSortTuple(
+  location: DocxTextRangeLocation
 ): [number, number, number, number] {
-  if (change.location.kind === "paragraph") {
-    return [change.location.nodeIndex, 0, 0, 0];
+  if (location.kind === "paragraph") {
+    return [location.nodeIndex, 0, 0, 0];
   }
 
   return [
-    change.location.tableIndex,
-    change.location.rowIndex,
-    change.location.cellIndex,
-    change.location.paragraphIndex,
+    location.tableIndex,
+    location.rowIndex,
+    location.cellIndex,
+    location.paragraphIndex,
   ];
 }
 
@@ -22586,8 +22949,8 @@ function trackedChangeBelongsToPageSegments(
   });
 }
 
-function resolveTrackedChangePageIndex(
-  change: DocxTrackedChange,
+function resolveGutterAnnotationPageIndex(
+  location: DocxTextRangeLocation,
   pageNodeSegmentsByPage: DocumentPageNodeSegment[][]
 ): number {
   for (
@@ -22597,7 +22960,7 @@ function resolveTrackedChangePageIndex(
   ) {
     if (
       trackedChangeBelongsToPageSegments(
-        change.location,
+        location,
         pageNodeSegmentsByPage[pageIndex] ?? []
       )
     ) {
@@ -22677,8 +23040,19 @@ interface TrackedChangeAnchorPoint {
   y: number;
 }
 
-interface PositionedTrackedChange {
-  change: DocxTrackedChange;
+/**
+ * One entry in the page gutter: either a tracked change or a comment. Both
+ * share the anchor/stacking pipeline so they interleave in document order.
+ */
+interface DocxGutterAnnotation {
+  id: string;
+  location: DocxTextRangeLocation;
+  trackedChange?: DocxTrackedChange;
+  comment?: DocxComment;
+}
+
+interface PositionedGutterAnnotation {
+  annotation: DocxGutterAnnotation;
   anchorX: number;
   anchorY: number;
   top: number;
@@ -22694,30 +23068,34 @@ function estimateTrackedChangeCardHeight(change: DocxTrackedChange): number {
 }
 
 function layoutTrackedChangesForPage(
-  changes: DocxTrackedChange[],
+  annotations: DocxGutterAnnotation[],
   anchorByChangeId: Map<string, TrackedChangeAnchorPoint>,
   cardHeightsByChangeId: Map<string, number> | undefined,
   pageWidthPx: number,
   pageHeightPx: number
-): PositionedTrackedChange[] {
-  if (changes.length === 0) {
+): PositionedGutterAnnotation[] {
+  if (annotations.length === 0) {
     return [];
   }
 
   const fallbackStride = Math.max(
     18,
-    pageHeightPx / Math.max(1, changes.length + 1)
+    pageHeightPx / Math.max(1, annotations.length + 1)
   );
-  const withAnchors = changes.map((change, index) => {
+  const withAnchors = annotations.map((annotation, index) => {
     const defaultAnchor = Math.min(
       Math.max(10, Math.round((index + 1) * fallbackStride)),
       Math.max(10, pageHeightPx - 10)
     );
-    const anchorPoint = anchorByChangeId.get(change.id);
+    const anchorPoint = anchorByChangeId.get(annotation.id);
     const anchorY = anchorPoint?.y ?? defaultAnchor;
     const anchorX = anchorPoint?.x ?? Math.max(10, pageWidthPx - 10);
-    const measuredHeightPx = cardHeightsByChangeId?.get(change.id);
-    const estimatedHeightPx = estimateTrackedChangeCardHeight(change);
+    const measuredHeightPx = cardHeightsByChangeId?.get(annotation.id);
+    const estimatedHeightPx = annotation.trackedChange
+      ? estimateTrackedChangeCardHeight(annotation.trackedChange)
+      : annotation.comment
+      ? estimateCommentCardHeight(annotation.comment)
+      : TRACKED_CHANGE_GUTTER_CARD_MIN_HEIGHT_PX;
     const heightPx =
       Number.isFinite(measuredHeightPx) && (measuredHeightPx as number) > 0
         ? Math.max(
@@ -22726,7 +23104,7 @@ function layoutTrackedChangesForPage(
           )
         : estimatedHeightPx;
     return {
-      change,
+      annotation,
       anchorX: clampNumber(
         Math.round(anchorX),
         10,
@@ -24218,6 +24596,9 @@ export function useDocxEditor(
     React.useState<DocxDocumentTheme>(options.initialDocumentTheme ?? "light");
   const [showTrackedChanges, setShowTrackedChangesState] =
     React.useState<boolean>(options.initialShowTrackedChanges ?? false);
+  const [showComments, setShowCommentsState] = React.useState<boolean>(
+    options.initialShowComments ?? false
+  );
   const [paginationInfo, setPaginationInfo] =
     React.useState<DocxPaginationInfo>({
       currentPage: 1,
@@ -24653,6 +25034,9 @@ export function useDocxEditor(
     () => collectTrackedChangesFromModel(model),
     [model]
   );
+  const comments = React.useMemo(() => collectCommentsFromModel(model), [
+    model,
+  ]);
   const hasUnorderedList = selectedListType === "unordered";
   const hasOrderedList = selectedListType === "ordered";
   const canUndo = history.past.length > 0;
@@ -24674,6 +25058,15 @@ export function useDocxEditor(
   );
   const toggleShowTrackedChanges = React.useCallback((): void => {
     setShowTrackedChangesState((current) => !current);
+  }, []);
+  const setShowComments = React.useCallback(
+    (nextShowComments: boolean): void => {
+      setShowCommentsState(nextShowComments);
+    },
+    []
+  );
+  const toggleShowComments = React.useCallback((): void => {
+    setShowCommentsState((current) => !current);
   }, []);
   const registerPendingExportModelTransformer = React.useCallback(
     (transformer?: (model: DocModel) => DocModel): void => {
@@ -28639,6 +29032,8 @@ export function useDocxEditor(
     documentTheme,
     trackedChanges,
     showTrackedChanges,
+    comments,
+    showComments,
     currentPage: paginationInfo.currentPage,
     totalPages: paginationInfo.totalPages,
     selection,
@@ -28666,8 +29061,10 @@ export function useDocxEditor(
     setStatus,
     setDocumentTheme,
     setShowTrackedChanges,
+    setShowComments,
     syncPaginationInfo,
     toggleShowTrackedChanges,
+    toggleShowComments,
     importDocxFile,
     newDocument,
     exportDocx,
@@ -29615,6 +30012,55 @@ export function useDocxTrackChanges(
       editor.toggleShowTrackedChanges,
       changesByLocation,
       getChangesForLocation,
+    ]
+  );
+}
+
+/**
+ * Exposes document comments and the show/hide state, mirroring
+ * `useDocxTrackChanges`. Pair with `DocxEditorViewer`'s `renderCommentCard`
+ * to fully customize how comments render.
+ */
+export function useDocxComments(
+  editor: Pick<
+    DocxEditorController,
+    "comments" | "showComments" | "setShowComments" | "toggleShowComments"
+  >
+): UseDocxCommentsResult {
+  const commentsByLocation = React.useMemo(() => {
+    const grouped = new Map<string, DocxComment[]>();
+    editor.comments.forEach((comment) => {
+      const key = paragraphLocationKey(comment.location);
+      const bucket = grouped.get(key) ?? [];
+      bucket.push(comment);
+      grouped.set(key, bucket);
+    });
+    return grouped;
+  }, [editor.comments]);
+
+  const getCommentsForLocation = React.useCallback(
+    (location: DocxTextRangeLocation): DocxComment[] => {
+      return commentsByLocation.get(paragraphLocationKey(location)) ?? [];
+    },
+    [commentsByLocation]
+  );
+
+  return React.useMemo(
+    () => ({
+      comments: editor.comments,
+      showComments: editor.showComments,
+      setShowComments: editor.setShowComments,
+      toggleShowComments: editor.toggleShowComments,
+      commentsByLocation,
+      getCommentsForLocation,
+    }),
+    [
+      editor.comments,
+      editor.showComments,
+      editor.setShowComments,
+      editor.toggleShowComments,
+      commentsByLocation,
+      getCommentsForLocation,
     ]
   );
 }
@@ -30867,6 +31313,8 @@ export function DocxEditorViewer({
   headingStyles,
   showTrackedChanges,
   renderTrackedChangeCard,
+  showComments,
+  renderCommentCard,
   renderTableContextMenu,
   renderContextMenu,
   onFormFieldDoubleClick,
@@ -30875,7 +31323,11 @@ export function DocxEditorViewer({
   const pageSurfaceRegistryOwner = docxViewerPageSurfaceRegistryOwner(editor);
   const trackedChangesEnabled = showTrackedChanges ?? editor.showTrackedChanges;
   const hasTrackedChanges = editor.trackedChanges.length > 0;
-  const showTrackedChangeGutter = trackedChangesEnabled;
+  const commentsEnabled = showComments ?? editor.showComments;
+  const hasComments = editor.comments.length > 0;
+  // Comments share the tracked-change gutter: cards for both annotation kinds
+  // stack in the same margin column.
+  const showTrackedChangeGutter = trackedChangesEnabled || commentsEnabled;
   const isReadOnly = mode === "read-only" || trackedChangesEnabled;
   const isNightReaderMode = isReadOnly && editor.documentTheme === "dark";
   const documentContentTheme: DocxDocumentTheme = isNightReaderMode
@@ -30900,11 +31352,13 @@ export function DocxEditorViewer({
   const paragraphRunRenderOptions = React.useMemo<ParagraphRunRenderOptions>(
     () => ({
       showTrackedChanges: trackedChangesEnabled,
+      showCommentHighlights: commentsEnabled,
       numberingDefinitions: editor.model.metadata.numberingDefinitions,
       tocLinkColorByLevel,
       imageFilterSuffix: documentContentFilter,
     }),
     [
+      commentsEnabled,
       documentContentFilter,
       editor.model.metadata.numberingDefinitions,
       tocLinkColorByLevel,
@@ -33764,24 +34218,43 @@ export function DocxEditorViewer({
   ]);
   const trackedChangesByPage = React.useMemo(() => {
     const pageBuckets = pageNodeSegmentsByPage.map(
-      () => [] as DocxTrackedChange[]
+      () => [] as DocxGutterAnnotation[]
     );
 
-    editor.trackedChanges.forEach((change) => {
-      const pageIndex = resolveTrackedChangePageIndex(
-        change,
+    const placeAnnotation = (annotation: DocxGutterAnnotation): void => {
+      const pageIndex = resolveGutterAnnotationPageIndex(
+        annotation.location,
         pageNodeSegmentsByPage
       );
       if (pageIndex < 0 || pageIndex >= pageBuckets.length) {
         return;
       }
-      pageBuckets[pageIndex].push(change);
-    });
+      pageBuckets[pageIndex].push(annotation);
+    };
 
-    pageBuckets.forEach((pageChanges) => {
-      pageChanges.sort((left, right) => {
-        const leftKey = trackedChangeSortTuple(left);
-        const rightKey = trackedChangeSortTuple(right);
+    if (trackedChangesEnabled) {
+      editor.trackedChanges.forEach((change) => {
+        placeAnnotation({
+          id: change.id,
+          location: change.location,
+          trackedChange: change,
+        });
+      });
+    }
+    if (commentsEnabled) {
+      editor.comments.forEach((comment) => {
+        placeAnnotation({
+          id: comment.id,
+          location: comment.location,
+          comment,
+        });
+      });
+    }
+
+    pageBuckets.forEach((pageAnnotations) => {
+      pageAnnotations.sort((left, right) => {
+        const leftKey = gutterAnnotationSortTuple(left.location);
+        const rightKey = gutterAnnotationSortTuple(right.location);
         for (let index = 0; index < leftKey.length; index += 1) {
           if (leftKey[index] === rightKey[index]) {
             continue;
@@ -33793,7 +34266,13 @@ export function DocxEditorViewer({
     });
 
     return pageBuckets;
-  }, [editor.trackedChanges, pageNodeSegmentsByPage]);
+  }, [
+    commentsEnabled,
+    editor.comments,
+    editor.trackedChanges,
+    pageNodeSegmentsByPage,
+    trackedChangesEnabled,
+  ]);
   const [trackedChangeAnchorByPage, setTrackedChangeAnchorByPage] =
     React.useState<Array<Map<string, TrackedChangeAnchorPoint>>>([]);
   const [headerBodyClearanceByPage, setHeaderBodyClearanceByPage] =
@@ -33811,19 +34290,19 @@ export function DocxEditorViewer({
       return;
     }
 
-    const nextAnchorMaps = trackedChangesByPage.map((changes, pageIndex) => {
+    const nextAnchorMaps = trackedChangesByPage.map((annotations, pageIndex) => {
       const pageElement = pageElementsRef.current.get(pageIndex);
       const anchorsByChangeId = new Map<string, TrackedChangeAnchorPoint>();
-      if (!pageElement || changes.length === 0) {
+      if (!pageElement || annotations.length === 0) {
         return anchorsByChangeId;
       }
 
       const pageHeightPx = Math.max(1, pageElement.offsetHeight);
       const pageWidthPx = Math.max(1, pageElement.offsetWidth);
-      changes.forEach((change) => {
+      annotations.forEach((annotation) => {
         const anchorElement = findTrackedChangeAnchorElementInPage(
           pageElement,
-          change.location
+          annotation.location
         );
         if (!anchorElement) {
           return;
@@ -33849,7 +34328,7 @@ export function DocxEditorViewer({
           10,
           Math.max(10, pageWidthPx - 10)
         );
-        anchorsByChangeId.set(change.id, { x: anchorX, y: anchorY });
+        anchorsByChangeId.set(annotation.id, { x: anchorX, y: anchorY });
       });
 
       return anchorsByChangeId;
@@ -33870,30 +34349,32 @@ export function DocxEditorViewer({
       return;
     }
 
-    const nextHeightsByPage = trackedChangesByPage.map((changes, pageIndex) => {
-      const pageHeights = new Map<string, number>();
-      changes.forEach((change) => {
-        const cardElement = trackedChangeCardElementsRef.current.get(
-          `${pageIndex}:${change.id}`
-        );
-        if (!cardElement) {
-          return;
-        }
+    const nextHeightsByPage = trackedChangesByPage.map(
+      (annotations, pageIndex) => {
+        const pageHeights = new Map<string, number>();
+        annotations.forEach((annotation) => {
+          const cardElement = trackedChangeCardElementsRef.current.get(
+            `${pageIndex}:${annotation.id}`
+          );
+          if (!cardElement) {
+            return;
+          }
 
-        const measuredHeight = Math.round(
-          cardElement.getBoundingClientRect().height
-        );
-        if (!Number.isFinite(measuredHeight) || measuredHeight <= 0) {
-          return;
-        }
+          const measuredHeight = Math.round(
+            cardElement.getBoundingClientRect().height
+          );
+          if (!Number.isFinite(measuredHeight) || measuredHeight <= 0) {
+            return;
+          }
 
-        pageHeights.set(
-          change.id,
-          Math.max(TRACKED_CHANGE_GUTTER_CARD_MIN_HEIGHT_PX, measuredHeight)
-        );
-      });
-      return pageHeights;
-    });
+          pageHeights.set(
+            annotation.id,
+            Math.max(TRACKED_CHANGE_GUTTER_CARD_MIN_HEIGHT_PX, measuredHeight)
+          );
+        });
+        return pageHeights;
+      }
+    );
 
     setTrackedChangeCardHeightsByPage((current) => {
       if (current.length === nextHeightsByPage.length) {
@@ -34521,10 +35002,22 @@ export function DocxEditorViewer({
       },
       []
     );
+    // The latch must compare against the same clamped target the pagination
+    // plan chases (stored count raised to the hard-break minimum); the raw
+    // stored count can sit below the achievable page count, which would keep
+    // the latch from ever releasing an over-compressed plan.
+    const storedDocumentPageCountForLatch =
+      editor.model.metadata.documentPageCount;
+    const latchTargetPageCount = Number.isFinite(storedDocumentPageCountForLatch)
+      ? Math.max(
+          collectDocxHardPageBreakStartNodeIndexes(editor.model).size + 1,
+          Math.round(storedDocumentPageCountForLatch as number)
+        )
+      : undefined;
     const nextMeasuredBodyFooterOverlapLatchState =
       resolveMeasuredBodyFooterOverlapLatchState({
         pageCount,
-        targetPageCount: editor.model.metadata.documentPageCount,
+        targetPageCount: latchTargetPageCount,
         overlappingPageIndexes,
         previousSignature:
           measuredBodyFooterOverlapCandidateRef.current.signature,
@@ -43500,8 +43993,16 @@ export function DocxEditorViewer({
         (child) =>
           child.type === "image" && isFixedPositionWrappedFloatingImage(child)
       );
+      // Commented paragraphs render through the markup-aware run path so the
+      // comment range highlight applies (same static-run path special tab
+      // layouts already use in edit mode).
+      const paragraphHasCommentAnchors =
+        commentsEnabled &&
+        /commentRange|commentReference/i.test(paragraph.sourceXml ?? "");
       if (
-        (trackedChangesEnabled || useSpecialTabLayout) &&
+        (trackedChangesEnabled ||
+          useSpecialTabLayout ||
+          paragraphHasCommentAnchors) &&
         !hasFixedPositionWrappedImage
       ) {
         return renderParagraphRuns(
@@ -43516,6 +44017,7 @@ export function DocxEditorViewer({
           undefined,
           {
             showTrackedChanges: trackedChangesEnabled,
+            showCommentHighlights: commentsEnabled,
             numberingDefinitions: editor.model.metadata.numberingDefinitions,
             tocLinkColorByLevel,
             paragraphOriginLeftPx: bodyParagraphOriginLeftPx,
@@ -53449,10 +53951,12 @@ export function DocxEditorViewer({
                   }}
                 >
                   {pageTrackedChanges.map((entry) => {
-                    const accentColor = trackedChangeAccentColor(
-                      entry.change.kind,
-                      editor.documentTheme
-                    );
+                    const accentColor = entry.annotation.trackedChange
+                      ? trackedChangeAccentColor(
+                          entry.annotation.trackedChange.kind,
+                          editor.documentTheme
+                        )
+                      : commentAccentColor(editor.documentTheme);
                     const cardCenterY = clampNumber(
                       Math.round(entry.top + entry.heightPx / 2),
                       8,
@@ -53479,7 +53983,7 @@ export function DocxEditorViewer({
                     );
                     return (
                       <g
-                        key={`tracked-connector-${pageIndex}-${entry.change.id}`}
+                        key={`tracked-connector-${pageIndex}-${entry.annotation.id}`}
                       >
                         <path
                           d={`M ${anchorX} ${anchorY} L ${bendX} ${anchorY} L ${cardLeadX} ${cardCenterY}`}
@@ -53513,7 +54017,9 @@ export function DocxEditorViewer({
                     );
                   })}
                 </svg>
-                {!hasTrackedChanges && pageIndex === 0 ? (
+                {(!trackedChangesEnabled || !hasTrackedChanges) &&
+                (!commentsEnabled || !hasComments) &&
+                pageIndex === 0 ? (
                   <p
                     style={{
                       position: "absolute",
@@ -53526,24 +54032,39 @@ export function DocxEditorViewer({
                       color: "#94a3b8",
                     }}
                   >
-                    No edits found
+                    {trackedChangesEnabled && commentsEnabled
+                      ? "No edits or comments found"
+                      : commentsEnabled
+                      ? "No comments found"
+                      : "No edits found"}
                   </p>
                 ) : null}
                 {pageTrackedChanges.map((entry) => {
-                  const accentColor = trackedChangeAccentColor(
-                    entry.change.kind,
-                    editor.documentTheme
-                  );
+                  const trackedChange = entry.annotation.trackedChange;
+                  const comment = entry.annotation.comment;
+                  const accentColor = trackedChange
+                    ? trackedChangeAccentColor(
+                        trackedChange.kind,
+                        editor.documentTheme
+                      )
+                    : commentAccentColor(editor.documentTheme);
                   const formattedDate = formatTrackedChangeDate(
-                    entry.change.date
+                    trackedChange?.date ?? comment?.date
                   );
-                  const kindLabel = trackedChangeKindLabel(entry.change.kind);
-                  const snippet =
-                    normalizeTrackedChangeSnippet(entry.change.text) ??
-                    (entry.change.kind === "format-change" ||
-                    entry.change.kind === "paragraph-format-change"
-                      ? "Formatting"
-                      : "Change");
+                  const kindLabel = trackedChange
+                    ? trackedChangeKindLabel(trackedChange.kind)
+                    : comment?.resolved
+                    ? "Comment · Resolved"
+                    : comment?.parentId !== undefined
+                    ? "Reply"
+                    : "Comment";
+                  const snippet = trackedChange
+                    ? normalizeTrackedChangeSnippet(trackedChange.text) ??
+                      (trackedChange.kind === "format-change" ||
+                      trackedChange.kind === "paragraph-format-change"
+                        ? "Formatting"
+                        : "Change")
+                    : comment?.text || "Comment";
                   const cardWidthPx = Math.max(
                     140,
                     TRACKED_CHANGE_GUTTER_WIDTH_PX -
@@ -53614,7 +54135,8 @@ export function DocxEditorViewer({
                             lineHeight: 1.25,
                           }}
                         >
-                          {entry.change.author?.trim() || "Unknown author"}
+                          {(trackedChange?.author ?? comment?.author)?.trim() ||
+                            "Unknown author"}
                         </p>
                         {formattedDate ? (
                           <p
@@ -53633,6 +54155,22 @@ export function DocxEditorViewer({
                           </p>
                         ) : null}
                       </div>
+                      {comment?.anchorText ? (
+                        <p
+                          style={{
+                            margin: "2px 0 0",
+                            fontSize: 11,
+                            lineHeight: 1.3,
+                            fontStyle: "italic",
+                            color:
+                              editor.documentTheme === "dark"
+                                ? "#94a3b8"
+                                : "#6b7280",
+                          }}
+                        >
+                          “{comment.anchorText}”
+                        </p>
+                      ) : null}
                       <p
                         style={{
                           margin: "2px 0 0",
@@ -53644,10 +54182,22 @@ export function DocxEditorViewer({
                       </p>
                     </div>
                   );
-                  const renderedCard = renderTrackedChangeCard
-                    ? renderTrackedChangeCard({
-                        change: entry.change,
-                        kindLabel,
+                  const renderedCard = trackedChange
+                    ? renderTrackedChangeCard
+                      ? renderTrackedChangeCard({
+                          change: trackedChange,
+                          kindLabel,
+                          snippet,
+                          formattedDate,
+                          accentColor,
+                          documentTheme: editor.documentTheme,
+                          pageIndex,
+                          style: cardStyle,
+                        })
+                      : defaultCard
+                    : comment && renderCommentCard
+                    ? renderCommentCard({
+                        comment,
                         snippet,
                         formattedDate,
                         accentColor,
@@ -53658,9 +54208,12 @@ export function DocxEditorViewer({
                     : defaultCard;
                   return (
                     <div
-                      key={`tracked-card-${pageIndex}-${entry.change.id}`}
+                      key={`tracked-card-${pageIndex}-${entry.annotation.id}`}
+                      data-docx-gutter-annotation={
+                        trackedChange ? "tracked-change" : "comment"
+                      }
                       ref={(element) => {
-                        const elementKey = `${pageIndex}:${entry.change.id}`;
+                        const elementKey = `${pageIndex}:${entry.annotation.id}`;
                         if (element) {
                           trackedChangeCardElementsRef.current.set(
                             elementKey,

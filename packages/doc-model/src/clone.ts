@@ -400,6 +400,7 @@ export function cloneDocModel(model: DocModel): DocModel {
         ...note,
         nodes: note.nodes?.map(cloneDocNode),
       })),
+      comments: model.metadata.comments?.map((comment) => ({ ...comment })),
     },
   };
 }
