@@ -8945,11 +8945,21 @@ function emptyParagraphLineScaleForFontFamily(fontFamily?: string): number {
   return WORD_EMPTY_PARAGRAPH_LINE_SCALE;
 }
 
+// A paragraph whose only content is whitespace and/or floating anchors lays
+// out as one empty line at the mark font's natural metrics — floating
+// objects never contribute to the line box.
+function paragraphRendersTextFreeLine(paragraph: ParagraphNode): boolean {
+  return (
+    paragraphHasOnlyWhitespaceText(paragraph) ||
+    paragraphIsFloatingImageAnchorOnly(paragraph)
+  );
+}
+
 function resolveParagraphSingleLineAutoScale(
   paragraph: ParagraphNode,
   fontFamily?: string
 ): number {
-  if (paragraphHasOnlyWhitespaceText(paragraph)) {
+  if (paragraphRendersTextFreeLine(paragraph)) {
     return emptyParagraphLineScaleForFontFamily(fontFamily);
   }
 
@@ -10182,7 +10192,7 @@ export function estimateParagraphLineHeightPx(
   // metrics, and an explicit auto multiple scales that natural line (Word
   // semantics). The wrapped-text blend toward bare font-size lines exists to
   // offset wrapped-line overcounting, which cannot happen here.
-  const multiple = paragraphHasOnlyWhitespaceText(paragraph)
+  const multiple = paragraphRendersTextFreeLine(paragraph)
     ? Math.max(
         MIN_AUTO_LINE_MULTIPLE,
         Number((resolvedAutoMultiple * singleLineScale).toFixed(3))
@@ -10272,17 +10282,12 @@ function estimateParagraphHeightPx(
   );
   const absoluteFloatingAnchorOnlyParagraph =
     paragraphIsAbsoluteFloatingImageAnchorOnly(paragraph);
-  const sectionBreakAnchorCarryoverParagraph =
-    paragraphIsSectionBreakAnchorCarryover(paragraph);
+  // Word still lays out an anchor-only paragraph as one empty line at its
+  // mark/run height; only section-break carryover anchors collapse (their
+  // paragraph mark belongs to the swallowed section boundary).
   const collapsibleAbsoluteFloatingAnchorOnlyParagraph =
     absoluteFloatingAnchorOnlyParagraph &&
-    (!paragraphAbsoluteFloatingAnchorsDependOnParagraphFlow(paragraph) ||
-      sectionBreakAnchorCarryoverParagraph);
-  const paragraphFlowAnchoredAbsoluteFloatingAnchorOnlyParagraph =
-    absoluteFloatingAnchorOnlyParagraph &&
-    !collapsibleAbsoluteFloatingAnchorOnlyParagraph;
-  const decorativeBehindTextAnchorOnlyParagraph =
-    paragraphActsAsDecorativeBehindTextBackgroundOverlay(paragraph);
+    paragraphIsSectionBreakAnchorCarryover(paragraph);
   const inlineImageHeightPx = paragraph.children.reduce((largest, child) => {
     if (child.type !== "image") {
       return largest;
@@ -10308,9 +10313,7 @@ function estimateParagraphHeightPx(
           estimateWrappedFloatingImageFootprintPx(paragraph, child)
         );
       }, 0);
-  const emptyParagraphHeightPx = decorativeBehindTextAnchorOnlyParagraph
-    ? 0
-    : paragraphIsEffectivelyEmpty(paragraph)
+  const emptyParagraphHeightPx = paragraphIsEffectivelyEmpty(paragraph)
     ? lineHeightPx + EMPTY_PARAGRAPH_EXTRA_HEIGHT_PX
     : 0;
   const topBorderInsetPx = paragraphBorderInsetPx(
@@ -10321,8 +10324,6 @@ function estimateParagraphHeightPx(
   );
   const textFlowHeightPx = collapsibleAbsoluteFloatingAnchorOnlyParagraph
     ? 0
-    : paragraphFlowAnchoredAbsoluteFloatingAnchorOnlyParagraph
-    ? MIN_PARAGRAPH_LINE_HEIGHT_PX
     : // When excluding the wrapped-float footprint, the dual-wrapped block
     // height spans the image; but the rendered paragraph only occupies its
     // text lines while the float overhangs. Use the text-line height so the
@@ -10332,12 +10333,7 @@ function estimateParagraphHeightPx(
     : lineHeightPx * lineCount;
 
   const contentHeightPx = Math.max(
-    collapsibleAbsoluteFloatingAnchorOnlyParagraph ||
-      decorativeBehindTextAnchorOnlyParagraph
-      ? 0
-      : paragraphFlowAnchoredAbsoluteFloatingAnchorOnlyParagraph
-      ? MIN_PARAGRAPH_LINE_HEIGHT_PX
-      : lineHeightPx,
+    collapsibleAbsoluteFloatingAnchorOnlyParagraph ? 0 : lineHeightPx,
     textFlowHeightPx,
     inlineImageHeightPx,
     wrappedFloatingImageHeightPx,
@@ -11496,13 +11492,6 @@ function collectDocxEstimatedOverflowBreakStartNodeIndexes(
     if (
       node.type === "paragraph" &&
       paragraphActsAsTrailingRenderedPageBreakSpacer(model, nodeIndex, node)
-    ) {
-      previousParagraphAfterPx = 0;
-      continue;
-    }
-    if (
-      node.type === "paragraph" &&
-      paragraphActsAsDecorativeBehindTextBackgroundOverlay(node)
     ) {
       previousParagraphAfterPx = 0;
       continue;
@@ -12779,14 +12768,6 @@ export function buildDocumentPageNodeSegments(
       node.type === "paragraph" &&
       paragraphActsAsTrailingRenderedPageBreakSpacer(model, nodeIndex, node)
     ) {
-      previousParagraphAfterPx = 0;
-      continue;
-    }
-    if (
-      node.type === "paragraph" &&
-      paragraphActsAsDecorativeBehindTextBackgroundOverlay(node)
-    ) {
-      currentPageSegments.push({ nodeIndex });
       previousParagraphAfterPx = 0;
       continue;
     }
@@ -14793,7 +14774,7 @@ function paragraphLineHeight(
     // Keep the rendered strut in lockstep with estimateParagraphLineHeightPx:
     // text-free paragraphs scale the natural single line by the multiple
     // instead of blending toward bare font-size lines.
-    const lineMultiple = paragraphHasOnlyWhitespaceText(paragraph)
+    const lineMultiple = paragraphRendersTextFreeLine(paragraph)
       ? Math.max(
           MIN_AUTO_LINE_MULTIPLE,
           Number((resolvedAutoMultiple * singleLineScale).toFixed(3))
@@ -15312,18 +15293,13 @@ function paragraphBlockStyle(
     paragraphIsFloatingImageAnchorOnly(paragraph);
   const suppressStackingContextForBehindTextAnchorOnlyParagraph =
     paragraphIsBehindTextAbsoluteFloatingImageAnchorOnly(paragraph);
-  const suppressFlowFootprintForBehindTextAnchorOnlyParagraph =
-    paragraphActsAsDecorativeBehindTextBackgroundOverlay(paragraph);
-  const reservedMinHeightPx =
-    suppressFlowFootprintForBehindTextAnchorOnlyParagraph
-      ? undefined
-      : paragraphIsEffectivelyEmpty(paragraph)
-      ? estimateParagraphLineHeightPx(
-          paragraph,
-          docGridLinePitchPx,
-          disableDocGridSnap
-        ) + EMPTY_PARAGRAPH_EXTRA_HEIGHT_PX
-      : undefined;
+  const reservedMinHeightPx = paragraphIsEffectivelyEmpty(paragraph)
+    ? estimateParagraphLineHeightPx(
+        paragraph,
+        docGridLinePitchPx,
+        disableDocGridSnap
+      ) + EMPTY_PARAGRAPH_EXTRA_HEIGHT_PX
+    : undefined;
   const headingLevel = paragraph.style?.headingLevel;
   const applyWordLikeHeadingFallback = !paragraph.sourceXml;
   const hasSoftLineBreak = paragraphText(paragraph).includes("\n");
@@ -15349,19 +15325,13 @@ function paragraphBlockStyle(
     // line-box strut tracks the actual content instead of the browser's
     // 16px default, which inflates lines for sub-12pt paragraphs.
     fontSize: `${paragraphBaseFontSizePx(paragraph)}px`,
-    lineHeight: suppressFlowFootprintForBehindTextAnchorOnlyParagraph
-      ? 0
-      : paragraphLineHeight(paragraph, docGridLinePitchPx, disableDocGridSnap),
-    ...(suppressFlowFootprintForBehindTextAnchorOnlyParagraph
-      ? {
-          height: 0,
-          marginTop: 0,
-          marginBottom: 0,
-        }
-      : {
-          marginTop: beforeSpacing,
-          marginBottom: afterSpacing,
-        }),
+    lineHeight: paragraphLineHeight(
+      paragraph,
+      docGridLinePitchPx,
+      disableDocGridSnap
+    ),
+    marginTop: beforeSpacing,
+    marginBottom: afterSpacing,
     marginLeft: suppressIndentForFloatingAnchorOnlyParagraph ? 0 : leftIndent,
     marginRight: suppressIndentForFloatingAnchorOnlyParagraph ? 0 : rightIndent,
     backgroundColor: paragraph.style?.backgroundColor,
@@ -33150,6 +33120,20 @@ export function DocxEditorViewer({
   const internalPageVirtualizer = internalVirtualScrollUsesWindow
     ? internalWindowPageVirtualizer
     : internalElementPageVirtualizer;
+  // The virtualizer consults estimateSize only while (re)building its internal
+  // measurement cache, which it does only when `count` changes. Page heights
+  // also change with the effective CSS zoom and with per-section layouts, so
+  // without an explicit re-measure the cached offsets stay denominated in the
+  // old scale — at zoom < 1 that overestimates total height and makes the
+  // trailing pages unreachable at any scroll position.
+  React.useLayoutEffect(() => {
+    internalElementPageVirtualizer.measure();
+    internalWindowPageVirtualizer.measure();
+  }, [
+    estimateVirtualPageSize,
+    internalElementPageVirtualizer,
+    internalWindowPageVirtualizer,
+  ]);
   const internalVirtualItems = internalPageVirtualizer.getVirtualItems();
   const internalVisiblePageRange = React.useMemo(() => {
     if (!internalPageVirtualizationEnabled) {
@@ -33199,9 +33183,10 @@ export function DocxEditorViewer({
       return internalVisiblePageRange;
     }
 
+    // Pre-render in the direction of travel; when idle, cover both neighbors.
     const scrollDirection = internalPageVirtualizer.scrollDirection;
-    const renderPreviousPage = scrollDirection !== "backward";
-    const renderNextPage = scrollDirection === "backward";
+    const renderPreviousPage = scrollDirection !== "forward";
+    const renderNextPage = scrollDirection !== "backward";
     const startPageIndex = clampNumber(
       internalVisiblePageRange.startPageIndex -
         (renderPreviousPage ? LARGE_TABLE_PAGE_ADJACENT_RENDER_COUNT : 0),
@@ -43428,8 +43413,16 @@ export function DocxEditorViewer({
       const bodyParagraphOriginLeftPx = interactiveBodyFloatingPageOriginPx
         ? paragraphPageLayout.marginsPx.left
         : undefined;
+      // The host box is only remapped to the page-surface top for cover
+      // overlay hosts; ordinary anchor hosts keep their flow position, so a
+      // paragraph-relative offset is already in the host's own frame.
       const bodyParagraphOriginTopPx = interactiveBodyFloatingPageOriginPx
-        ? paragraphPageLayout.marginsPx.top + paragraphPageFlowTopPx
+        ? paragraphActsAsPageAnchoredCoverOverlayHost(
+            paragraph,
+            paragraphPageLayout
+          )
+          ? paragraphPageLayout.marginsPx.top + paragraphPageFlowTopPx
+          : 0
         : undefined;
       const resizedWidthPxByImageIndex = new Map<number, number>();
       const resizedHeightPxByImageIndex = new Map<number, number>();
@@ -47140,9 +47133,12 @@ export function DocxEditorViewer({
                   : 0),
               marginLeft: -resolvedPageLayout.marginsPx.left,
               marginRight: -resolvedPageLayout.marginsPx.right,
-              minHeight: 0,
-              height: 0,
-              lineHeight: 0,
+              // A cover-overlay host is remapped to the page surface and must
+              // not displace flow; an ordinary anchor host still occupies its
+              // one-line paragraph box (Word semantics).
+              ...(pageAnchoredCoverOverlayParagraph
+                ? { minHeight: 0, height: 0, lineHeight: 0 }
+                : undefined),
               overflow: "visible",
             }
           : requiresPageAbsoluteContext

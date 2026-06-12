@@ -7,7 +7,7 @@ use crate::model::{
 use crate::parse::context::ParseContext;
 use crate::parse::re;
 use crate::parse::images::parse_run_images;
-use crate::parse::style::{parse_paragraph_style, parse_run_style};
+use crate::parse::style::{parse_paragraph_style_in_table, parse_run_style};
 use crate::parse::util::{
     decode_hex_code_point, decode_xml_attribute, normalize_legacy_form_display_value,
     on_off_value_to_boolean, parse_on_off_tag_value, parse_relationships_from_parts, prefer_alternate_content_choice,
@@ -1052,8 +1052,17 @@ fn parse_paragraph_mark_run_style(
 }
 
 pub fn parse_paragraph(paragraph_xml: &str, context: &ParseContext<'_>) -> ParagraphNode {
+    parse_paragraph_in_table(paragraph_xml, context, None)
+}
+
+pub fn parse_paragraph_in_table(
+    paragraph_xml: &str,
+    context: &ParseContext<'_>,
+    table_paragraph_spacing: Option<&crate::model::ParagraphSpacing>,
+) -> ParagraphNode {
     let mut children: Vec<ParagraphChildNode> = Vec::new();
-    let paragraph_style = parse_paragraph_style(paragraph_xml, context);
+    let paragraph_style =
+        parse_paragraph_style_in_table(paragraph_xml, context, table_paragraph_spacing);
     let paragraph_mark_deleted = re::get_unchecked(r"(?is)<w:pPr\b[\s\S]*?<w:rPr\b[\s\S]*?<w:del\b").is_match(paragraph_xml);
     let runs = parse_paragraph_runs(paragraph_xml, context);
     let form_field_tokens = parse_paragraph_form_field_tokens(

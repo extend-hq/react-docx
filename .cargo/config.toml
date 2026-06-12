@@ -1,0 +1,4 @@
+# SIMD128 is baseline in all evergreen browsers (Chrome 91+, Firefox 89+, Safari 16.4+).
+# Lets LLVM autovectorize the DEFLATE / UTF-8 / JSON hot paths in the wasm build.
+[target.wasm32-unknown-unknown]
+rustflags = ["-Ctarget-feature=+simd128"]

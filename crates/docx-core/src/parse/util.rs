@@ -563,6 +563,13 @@ pub fn rasterize_windows_metafile_to_png_data_uri(_bytes: &[u8], _part_name: Opt
     None
 }
 
+/// Converts vector EMF assets to an SVG data URI. WMF and EMFs containing
+/// unsupported records (text, raster blits, ...) return `None` so the caller
+/// keeps the unsupported-image placeholder.
+pub fn windows_metafile_to_svg_data_uri(bytes: &[u8]) -> Option<String> {
+    crate::emf::emf_to_svg(bytes).map(|svg| svg_data_uri(&svg))
+}
+
 pub fn resolve_theme_font(theme_token: Option<&str>, theme_fonts: &ThemeFontMap) -> Option<String> {
     let theme_token = theme_token?;
     let normalized = theme_token.to_ascii_lowercase();

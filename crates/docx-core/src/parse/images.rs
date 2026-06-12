@@ -18,6 +18,7 @@ use crate::parse::util::{
     clamp, clamp_i64, emu_to_pixels, escape_xml_text, is_windows_metafile_content_type,
     prefer_alternate_content_choice, rasterize_windows_metafile_to_png_data_uri, regex_capture,
     regex_capture_tag, svg_data_uri, to_image_horizontal_align, to_image_vertical_align,
+    windows_metafile_to_svg_data_uri,
 };
 use crate::xml::{
     decode_xml_entities, extract_balanced_tag_blocks, extract_balanced_tag_blocks_in_order,
@@ -1205,10 +1206,16 @@ pub fn parse_run_image_block(run_xml: &str, context: &ParseContext<'_>) -> Optio
             .or(content_type.clone())
             .unwrap_or_else(|| "application/octet-stream".to_string());
         if is_windows_metafile_content_type(Some(&mime_type), part_name.as_deref()) {
-            src = rasterize_windows_metafile_to_png_data_uri(binary, part_name.as_deref());
+            src = windows_metafile_to_svg_data_uri(binary);
             if src.is_some() {
-                resolved_content_type = Some("image/png".to_string());
+                resolved_content_type = Some("image/svg+xml".to_string());
                 resolved_css_opacity = None;
+            } else {
+                src = rasterize_windows_metafile_to_png_data_uri(binary, part_name.as_deref());
+                if src.is_some() {
+                    resolved_content_type = Some("image/png".to_string());
+                    resolved_css_opacity = None;
+                }
             }
         }
 

@@ -10,7 +10,7 @@ use crate::parse::context::{
     default_table_look, ParsedTableLook, ParsedTableProperties, ParsedTableStyleCondition,
     ParsedTableStyleDefinition, TableConditionalStyleType,
 };
-use crate::parse::paragraph::parse_paragraph;
+use crate::parse::paragraph::parse_paragraph_in_table;
 use crate::parse::style::parse_paragraph_align_from_xml;
 use crate::parse::styles::parse_table_box_spacing;
 use crate::parse::util::{
@@ -24,6 +24,7 @@ use crate::xml::{
 pub fn parse_table_cell_content(
     cell_xml: &str,
     context: &crate::parse::context::ParseContext<'_>,
+    table_paragraph_spacing: Option<&crate::model::ParagraphSpacing>,
 ) -> Vec<TableCellContentNode> {
     let block_ranges = extract_balanced_tag_blocks_in_order(cell_xml, &["w:p", "w:tbl"]);
     let parsed: Vec<TableCellContentNode> = block_ranges
@@ -31,7 +32,11 @@ pub fn parse_table_cell_content(
         .filter_map(|block| {
             let block_xml = &cell_xml[block.start..block.end];
             if block_xml.starts_with("<w:p") || block_xml.starts_with("<W:p") {
-                return Some(TableCellContentNode::Paragraph(parse_paragraph(block_xml, context)));
+                return Some(TableCellContentNode::Paragraph(parse_paragraph_in_table(
+                    block_xml,
+                    context,
+                    table_paragraph_spacing,
+                )));
             }
             if block_xml.starts_with("<w:tbl") || block_xml.starts_with("<W:tbl") {
                 return Some(TableCellContentNode::Table(Box::new(parse_table(block_xml, context))));
@@ -42,9 +47,10 @@ pub fn parse_table_cell_content(
     if !parsed.is_empty() {
         return parsed;
     }
-    vec![TableCellContentNode::Paragraph(parse_paragraph(
+    vec![TableCellContentNode::Paragraph(parse_paragraph_in_table(
         "<w:p><w:r><w:t/></w:r></w:p>",
         context,
+        table_paragraph_spacing,
     ))]
 }
 
@@ -57,8 +63,9 @@ pub struct ParsedTableCellResult {
 pub fn parse_table_cell(
     cell_xml: &str,
     context: &crate::parse::context::ParseContext<'_>,
+    table_paragraph_spacing: Option<&crate::model::ParagraphSpacing>,
 ) -> ParsedTableCellResult {
-    let nodes = parse_table_cell_content(cell_xml, context);
+    let nodes = parse_table_cell_content(cell_xml, context, table_paragraph_spacing);
     let cell_properties_xml = extract_balanced_tag_blocks(cell_xml, "w:tcPr")
         .into_iter()
         .next()
@@ -172,6 +179,9 @@ pub fn parse_table(
     let table_style = table_style_id
         .as_deref()
         .and_then(|id| context.style_sheet.table_style_by_id.get(id));
+    let table_paragraph_spacing = table_style_id
+        .as_deref()
+        .and_then(|id| context.style_sheet.table_paragraph_spacing_by_style_id.get(id));
     let style_table_properties = table_style
         .and_then(|style| style.conditions.get(&TableConditionalStyleType::WholeTable))
         .and_then(|condition| condition.table_properties.clone());
@@ -249,7 +259,7 @@ pub fn parse_table(
             .and_then(|xml| parse_on_off_attribute(xml, "tblHeader"));
         let parsed_cells: Vec<ParsedTableCellResult> = extract_balanced_tag_blocks(&row_xml, "w:tc")
             .into_iter()
-            .map(|cell_xml| parse_table_cell(&cell_xml, context))
+            .map(|cell_xml| parse_table_cell(&cell_xml, context, table_paragraph_spacing))
             .collect();
         if parsed_cells.is_empty() {
             continue;

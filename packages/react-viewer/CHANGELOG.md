@@ -1,5 +1,13 @@
 # @extend-ai/react-docx
 
+## 0.7.0-alpha.4
+
+### Patch Changes
+
+- The bundled WebAssembly binary now requires WebAssembly SIMD (Chrome 91+, Firefox 89+, Safari 16.4+, Node 16.4+). `initWasm` reports a descriptive error on runtimes without it.
+- Binary assets cross the wasm boundary as `Uint8Array` instead of `number[]` inside JSON, making import/export of image-heavy documents several times faster. `WasmOoxmlPackage.binaryAssets` is now `Record<string, Uint8Array>`; the previous shape is still accepted on input and exported as `LegacyWasmOoxmlPackage`.
+- Fixed page virtualization at zoom levels below 100%: page-size estimates are re-measured when the effective zoom changes, so the trailing pages render after fast scrolls instead of staying blank. Large-table documents now pre-render the next page in the scroll direction rather than the one behind it.
+
 ## 0.6.4
 
 ### Patch Changes

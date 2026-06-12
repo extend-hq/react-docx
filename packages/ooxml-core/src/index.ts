@@ -3,6 +3,7 @@ import {
   wasmPackageToArrayBuffer,
   wasmPackageToMaps,
   wasmParseDocx,
+  type LegacyWasmOoxmlPackage,
   type WasmOoxmlPackage
 } from "@extend-ai/react-docx-wasm";
 
@@ -84,4 +85,4 @@ const DEFAULT_ROOT_RELS_XML = `<?xml version="1.0" encoding="UTF-8" standalone="
 const DEFAULT_DOCUMENT_RELS_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"/>`;
 
-export type { WasmOoxmlPackage };
+export type { LegacyWasmOoxmlPackage, WasmOoxmlPackage };

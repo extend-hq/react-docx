@@ -1,7 +1,7 @@
 /* tslint:disable */
 /* eslint-disable */
 
-export function build_doc_model_from_bytes(bytes: Uint8Array): string;
+export function build_doc_model_from_bytes(bytes: Uint8Array): any;
 
 export function build_doc_model_from_package(_package: any): string;
 

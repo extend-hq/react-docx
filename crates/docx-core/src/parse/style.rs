@@ -1,5 +1,6 @@
 use crate::model::{
-    ParagraphDropCap, ParagraphDropCapType, ParagraphStyle, TextStyle, VerticalAlign,
+    ParagraphDropCap, ParagraphDropCapType, ParagraphSpacing, ParagraphStyle, TextStyle,
+    VerticalAlign,
 };
 use crate::parse::context::{ParseContext, ThemeFontMap};
 use crate::parse::re;
@@ -340,6 +341,14 @@ pub fn parse_paragraph_style(
     paragraph_xml: &str,
     context: &ParseContext<'_>,
 ) -> Option<ParagraphStyle> {
+    parse_paragraph_style_in_table(paragraph_xml, context, None)
+}
+
+pub fn parse_paragraph_style_in_table(
+    paragraph_xml: &str,
+    context: &ParseContext<'_>,
+    table_paragraph_spacing: Option<&ParagraphSpacing>,
+) -> Option<ParagraphStyle> {
     let paragraph_properties_xml = extract_balanced_tag_blocks(paragraph_xml, "w:pPr")
         .into_iter()
         .next()
@@ -391,10 +400,24 @@ pub fn parse_paragraph_style(
             .or_else(|| inherited.and_then(|s| s.numbering.clone()))
             .or_else(|| default_paragraph_style.and_then(|s| s.numbering.clone()))
     };
+    // ECMA-376 style cascade: docDefaults < table style pPr < paragraph style
+    // < direct pPr. The implicit default paragraph style (no explicit pStyle)
+    // sits below the table-style layer; an explicit pStyle overrides it.
+    let style_layer_spacing = if explicit_style_id.is_some() {
+        merge_paragraph_spacing(
+            table_paragraph_spacing,
+            inherited.and_then(|s| s.spacing.as_ref()),
+        )
+    } else {
+        merge_paragraph_spacing(
+            inherited.and_then(|s| s.spacing.as_ref()),
+            table_paragraph_spacing,
+        )
+    };
     let spacing = merge_paragraph_spacing(
         merge_paragraph_spacing(
             default_paragraph_style.and_then(|s| s.spacing.as_ref()),
-            inherited.and_then(|s| s.spacing.as_ref()),
+            style_layer_spacing.as_ref(),
         )
         .as_ref(),
         direct_spacing.as_ref(),

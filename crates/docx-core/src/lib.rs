@@ -1,4 +1,5 @@
 pub mod doc;
+pub mod emf;
 pub mod model;
 pub mod package;
 pub mod parse;

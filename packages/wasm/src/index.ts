@@ -59,9 +59,19 @@ async function defaultWasmSource(): Promise<WasmSource> {
 export async function initWasm(source?: WasmSource): Promise<InitOutput> {
   if (!initPromise) {
     const chosen = source ?? overrideSource;
-    initPromise = (chosen !== undefined ? Promise.resolve(chosen) : defaultWasmSource()).then(
-      (module_or_path) => wasmInit({ module_or_path })
-    );
+    initPromise = (chosen !== undefined ? Promise.resolve(chosen) : defaultWasmSource())
+      .then((module_or_path) => wasmInit({ module_or_path }))
+      .catch((error: unknown) => {
+        if (error instanceof WebAssembly.CompileError) {
+          throw new Error(
+            "react-docx: the bundled WebAssembly binary failed to compile. It requires " +
+              "WebAssembly SIMD support (Chrome 91+, Firefox 89+, Safari 16.4+, Node 16.4+). " +
+              `Original error: ${error.message}`,
+            { cause: error }
+          );
+        }
+        throw error;
+      });
   }
   return initPromise;
 }
@@ -72,6 +82,12 @@ export interface WasmOoxmlPart {
 }
 
 export interface WasmOoxmlPackage {
+  parts: Record<string, WasmOoxmlPart>;
+  binaryAssets: Record<string, Uint8Array>;
+}
+
+/** Package shape produced by pre-Uint8Array versions of this library. */
+export interface LegacyWasmOoxmlPackage {
   parts: Record<string, WasmOoxmlPart>;
   binaryAssets: Record<string, number[]>;
 }
@@ -89,7 +105,7 @@ export function docModelToWasmJson(model: unknown): string {
   });
 }
 
-export function wasmPackageToMaps(raw: WasmOoxmlPackage): {
+export function wasmPackageToMaps(raw: WasmOoxmlPackage | LegacyWasmOoxmlPackage): {
   parts: Map<string, WasmOoxmlPart>;
   binaryAssets: Map<string, Uint8Array>;
 } {
@@ -121,9 +137,11 @@ export function mapsToWasmPackage(input: {
     };
   }
 
-  const binaryAssets: Record<string, number[]> = {};
+  // Buffers are shared, not copied; the wasm boundary copies on read and JS
+  // callers already treat package asset buffers as immutable.
+  const binaryAssets: Record<string, Uint8Array> = {};
   for (const [name, asset] of input.binaryAssets.entries()) {
-    binaryAssets[name] = Array.from(asset);
+    binaryAssets[name] = asset;
   }
 
   return { parts, binaryAssets };
@@ -147,8 +165,7 @@ export async function wasmBuildDocModelFromBytes(bytes: ArrayBuffer | Uint8Array
 }> {
   await initWasm();
   const payload = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
-  const json = build_doc_model_from_bytes(payload);
-  return JSON.parse(json) as { package: WasmOoxmlPackage; model: unknown };
+  return build_doc_model_from_bytes(payload) as { package: WasmOoxmlPackage; model: unknown };
 }
 
 export async function wasmSerializeDocx(

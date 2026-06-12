@@ -2,8 +2,8 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 
 use crate::model::{
-    ParagraphStyle, ParagraphStyleDefinition, TableBoxSpacing, TableBorderSet, TableFloating,
-    TableLayout, TextStyle,
+    ParagraphSpacing, ParagraphStyle, ParagraphStyleDefinition, TableBoxSpacing, TableBorderSet,
+    TableFloating, TableLayout, TextStyle,
 };
 use crate::package::OoxmlPart;
 
@@ -119,6 +119,10 @@ pub struct ParsedStyleSheet {
     pub paragraph_style_by_id: HashMap<String, ParagraphStyleDefinition>,
     pub run_style_by_id: HashMap<String, TextStyle>,
     pub table_style_by_id: HashMap<String, ParsedTableStyleDefinition>,
+    /// Table styles' own `w:pPr` spacing (basedOn-resolved). ECMA-376 layers
+    /// table-style paragraph properties between document defaults and
+    /// paragraph styles for every paragraph inside a styled table.
+    pub table_paragraph_spacing_by_style_id: HashMap<String, ParagraphSpacing>,
     pub default_paragraph_style: Option<ParagraphStyle>,
     pub default_paragraph_style_id: Option<String>,
     pub default_run_style: Option<TextStyle>,
@@ -139,6 +143,7 @@ pub fn empty_style_sheet() -> ParsedStyleSheet {
         paragraph_style_by_id: HashMap::new(),
         run_style_by_id: HashMap::new(),
         table_style_by_id: HashMap::new(),
+        table_paragraph_spacing_by_style_id: HashMap::new(),
         default_paragraph_style: None,
         default_paragraph_style_id: None,
         default_run_style: None,

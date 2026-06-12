@@ -2300,11 +2300,45 @@ pub fn parse_style_sheet(pkg: &OoxmlPackage) -> ParsedStyleSheet {
         }
     });
 
+    let mut table_paragraph_spacing_by_style_id = HashMap::new();
+    for (style_id, style) in raw_styles_by_id
+        .iter()
+        .filter(|(_, style)| style.style_type == RawStyleType::Table)
+    {
+        let mut chain = Vec::new();
+        let mut cursor = Some(style_id.clone());
+        let mut seen = HashSet::new();
+        while let Some(id) = cursor {
+            if !seen.insert(id.clone()) {
+                break;
+            }
+            let Some(chain_style) = raw_styles_by_id.get(&id) else {
+                break;
+            };
+            if chain_style.style_type != RawStyleType::Table {
+                break;
+            }
+            chain.push(chain_style);
+            cursor = chain_style.based_on_id.clone();
+        }
+        let mut merged_spacing: Option<crate::model::ParagraphSpacing> = None;
+        for chain_style in chain.iter().rev() {
+            merged_spacing = crate::parse::util::merge_paragraph_spacing(
+                merged_spacing.as_ref(),
+                chain_style.spacing.as_ref(),
+            );
+        }
+        if let Some(spacing) = merged_spacing {
+            table_paragraph_spacing_by_style_id.insert(style_id.clone(), spacing);
+        }
+    }
+
     ParsedStyleSheet {
         paragraph_styles,
         paragraph_style_by_id,
         run_style_by_id,
         table_style_by_id,
+        table_paragraph_spacing_by_style_id,
         default_paragraph_style: merged_default_paragraph_style,
         default_paragraph_style_id,
         default_run_style: merge_text_styles(
