@@ -29283,6 +29283,11 @@ export function useDocxEditor(
   };
 }
 
+interface DocxViewerPageSurfaceSize {
+  widthPx: number;
+  heightPx: number;
+}
+
 interface DocxViewerPageSurfaceRegistry {
   pageElements: Map<number, HTMLDivElement>;
   /**
@@ -29291,6 +29296,11 @@ interface DocxViewerPageSurfaceRegistry {
    * pages whose rendered content is unchanged.
    */
   pageContentKeys: Map<number, string>;
+  /**
+   * Layout-derived page sizes are available even when a page is not currently
+   * mounted in the main viewport.
+   */
+  pageSizes: Map<number, DocxViewerPageSurfaceSize>;
   listeners: Set<() => void>;
 }
 
@@ -29314,6 +29324,7 @@ function ensureDocxViewerPageSurfaceRegistry(
     registry = {
       pageElements: new Map<number, HTMLDivElement>(),
       pageContentKeys: new Map<number, string>(),
+      pageSizes: new Map<number, DocxViewerPageSurfaceSize>(),
       listeners: new Set<() => void>(),
     };
     docxViewerPageSurfaceRegistryByEditor.set(owner, registry);
@@ -29323,7 +29334,8 @@ function ensureDocxViewerPageSurfaceRegistry(
 
 function syncDocxViewerPageSurfaceContentKeys(
   editor: Pick<DocxEditorController, "syncPaginationInfo">,
-  contentKeysByPage: ReadonlyArray<string>
+  contentKeysByPage: ReadonlyArray<string>,
+  pageSizesByPage: ReadonlyArray<DocxViewerPageSurfaceSize> = []
 ): void {
   const registry = ensureDocxViewerPageSurfaceRegistry(editor);
   let changed = false;
@@ -29333,9 +29345,24 @@ function syncDocxViewerPageSurfaceContentKeys(
       changed = true;
     }
   });
+  pageSizesByPage.forEach((pageSize, pageIndex) => {
+    const widthPx = Math.max(1, Math.round(pageSize.widthPx));
+    const heightPx = Math.max(1, Math.round(pageSize.heightPx));
+    const previous = registry.pageSizes.get(pageIndex);
+    if (previous?.widthPx !== widthPx || previous?.heightPx !== heightPx) {
+      registry.pageSizes.set(pageIndex, { widthPx, heightPx });
+      changed = true;
+    }
+  });
   registry.pageContentKeys.forEach((_, pageIndex) => {
     if (pageIndex >= contentKeysByPage.length) {
       registry.pageContentKeys.delete(pageIndex);
+      changed = true;
+    }
+  });
+  registry.pageSizes.forEach((_, pageIndex) => {
+    if (pageIndex >= pageSizesByPage.length) {
+      registry.pageSizes.delete(pageIndex);
       changed = true;
     }
   });
@@ -29367,7 +29394,8 @@ function notifyDocxViewerPageSurfaceSubscribers(
 function registerDocxViewerPageSurface(
   editor: Pick<DocxEditorController, "syncPaginationInfo">,
   pageIndex: number,
-  element?: HTMLDivElement | null
+  element?: HTMLDivElement | null,
+  previousElement?: HTMLDivElement | null
 ): void {
   const registry = ensureDocxViewerPageSurfaceRegistry(editor);
   const normalizedPageIndex = Math.max(0, Math.round(pageIndex));
@@ -29385,9 +29413,29 @@ function registerDocxViewerPageSurface(
   if (!currentElement) {
     return;
   }
+  if (previousElement && currentElement !== previousElement) {
+    return;
+  }
 
   registry.pageElements.delete(normalizedPageIndex);
   notifyDocxViewerPageSurfaceSubscribers(registry);
+}
+
+function resolveDocxViewerRegisteredPageSurfaceSize(
+  registry: DocxViewerPageSurfaceRegistry,
+  pageIndex: number,
+  fallbackWidthPx: number,
+  fallbackHeightPx: number
+): DocxViewerPageSurfaceSize {
+  const registeredSize = registry.pageSizes.get(pageIndex);
+  if (registeredSize) {
+    return registeredSize;
+  }
+
+  return {
+    widthPx: Math.max(1, Math.round(fallbackWidthPx)),
+    heightPx: Math.max(1, Math.round(fallbackHeightPx)),
+  };
 }
 
 function resolveDocxViewerPageSurfaceSize(
@@ -29439,6 +29487,127 @@ function resolveDocxViewerPageSurfaceSize(
     widthPx: Math.max(1, Math.round(fallbackWidthPx)),
     heightPx: Math.max(1, Math.round(fallbackHeightPx)),
   };
+}
+
+interface DocxDetachedThumbnailSurfaceRendererRoot {
+  render(children: React.ReactNode): void;
+  unmount(): void;
+}
+
+function DocxDetachedThumbnailPageSurface({
+  editor,
+  pageIndex,
+}: {
+  editor: DocxEditorController;
+  pageIndex: number;
+}): React.JSX.Element {
+  return (
+    <DocxEditorViewer
+      editor={editor}
+      mode="read-only"
+      visiblePageRange={{ startPageIndex: pageIndex, endPageIndex: pageIndex }}
+      pageVirtualization={{ enabled: false }}
+      showTrackedChanges={editor.showTrackedChanges}
+      showComments={editor.showComments}
+      style={{
+        background: "transparent",
+        padding: 0,
+        margin: 0,
+      }}
+    />
+  );
+}
+
+class DocxDetachedThumbnailSurfaceRenderer {
+  private host: HTMLDivElement | undefined;
+  private root: DocxDetachedThumbnailSurfaceRendererRoot | undefined;
+  private activePageIndex: number | undefined;
+
+  async renderPageSurface(params: {
+    editor: DocxEditorController;
+    registry: DocxViewerPageSurfaceRegistry;
+    pageIndex: number;
+  }): Promise<HTMLDivElement | undefined> {
+    if (typeof document === "undefined" || typeof window === "undefined") {
+      return undefined;
+    }
+
+    const { editor, registry, pageIndex } = params;
+    await this.ensureRoot();
+    if (!this.root) {
+      return undefined;
+    }
+
+    if (this.activePageIndex !== pageIndex) {
+      this.activePageIndex = pageIndex;
+      this.root.render(
+        <DocxDetachedThumbnailPageSurface
+          editor={editor}
+          pageIndex={pageIndex}
+        />
+      );
+    }
+
+    return this.waitForPageSurface(registry, pageIndex);
+  }
+
+  clear(): void {
+    if (this.root) {
+      this.root.unmount();
+      this.root = undefined;
+    }
+    if (this.host?.parentNode) {
+      this.host.parentNode.removeChild(this.host);
+    }
+    this.host = undefined;
+    this.activePageIndex = undefined;
+  }
+
+  private async ensureRoot(): Promise<void> {
+    if (this.root) {
+      return;
+    }
+    if (typeof document === "undefined") {
+      return;
+    }
+
+    const host = document.createElement("div");
+    host.setAttribute("data-docx-thumbnail-detached-renderer", "true");
+    Object.assign(host.style, {
+      position: "fixed",
+      left: "-100000px",
+      top: "0",
+      width: "1px",
+      height: "1px",
+      overflow: "visible",
+      opacity: "0",
+      pointerEvents: "none",
+      zIndex: "-1",
+    });
+    document.body.appendChild(host);
+    this.host = host;
+
+    const { createRoot } = await import("react-dom/client");
+    this.root = createRoot(host);
+  }
+
+  private async waitForPageSurface(
+    registry: DocxViewerPageSurfaceRegistry,
+    pageIndex: number
+  ): Promise<HTMLDivElement | undefined> {
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      const pageElement = registry.pageElements.get(pageIndex);
+      if (pageElement?.isConnected) {
+        return pageElement;
+      }
+      await new Promise<void>((resolve) => {
+        window.requestAnimationFrame(() => resolve());
+      });
+    }
+
+    const pageElement = registry.pageElements.get(pageIndex);
+    return pageElement?.isConnected ? pageElement : undefined;
+  }
 }
 
 const DOCX_THUMBNAIL_SURFACE_CACHE_MAX_ENTRIES = 32;
@@ -29573,6 +29742,9 @@ export function useDocxPageThumbnails(
   const thumbnailRasterQueueRef = React.useRef<
     SerialIdleTaskQueue<HTMLCanvasElement> | undefined
   >(undefined);
+  const detachedThumbnailSurfaceRendererRef = React.useRef<
+    DocxDetachedThumbnailSurfaceRenderer | undefined
+  >(undefined);
   const lastPaintedThumbnailKeyByCanvasRef = React.useRef(
     new WeakMap<HTMLCanvasElement, string>()
   );
@@ -29595,8 +29767,17 @@ export function useDocxPageThumbnails(
   React.useEffect(() => {
     thumbnailSurfaceCacheRef.current?.clear();
     thumbnailRasterQueueRef.current?.clear();
+    detachedThumbnailSurfaceRendererRef.current?.clear();
+    detachedThumbnailSurfaceRendererRef.current = undefined;
     lastPaintedThumbnailKeyByCanvasRef.current = new WeakMap();
   }, [editor.documentLoadNonce, pageSurfaceRegistryOwner]);
+  React.useEffect(
+    () => () => {
+      detachedThumbnailSurfaceRendererRef.current?.clear();
+      detachedThumbnailSurfaceRendererRef.current = undefined;
+    },
+    []
+  );
 
   const thumbnailResolutionOptionsKey = React.useMemo(() => {
     const bounds = options.resolution;
@@ -29646,12 +29827,6 @@ export function useDocxPageThumbnails(
       }
       const requiresAttachedTarget = canvas === undefined;
 
-      const pageElement = pageSurfaceRegistry.pageElements.get(pageIndex);
-      if (!pageElement || !pageElement.isConnected) {
-        updatePageThumbnailState(pageIndex, "unavailable");
-        return;
-      }
-
       const force = renderOptions?.force === true;
       const lastPaintedKey =
         lastPaintedThumbnailKeyByCanvasRef.current.get(targetCanvas);
@@ -29673,22 +29848,16 @@ export function useDocxPageThumbnails(
           return;
         }
 
-        const livePageElement =
-          pageSurfaceRegistry.pageElements.get(pageIndex);
-        if (!livePageElement || !livePageElement.isConnected) {
-          updatePageThumbnailState(pageIndex, "unavailable");
-          return;
-        }
-
         const runSkipKey = thumbnailSkipKeyForPage(pageIndex);
-        const sourceSize = resolveDocxViewerPageSurfaceSize(
-          livePageElement,
+        const fallbackSourceSize = resolveDocxViewerRegisteredPageSurfaceSize(
+          pageSurfaceRegistry,
+          pageIndex,
           fallbackLayout.pageWidthPx,
           fallbackLayout.pageHeightPx
         );
         const resolution = resolveDocxPageThumbnailResolution({
-          sourceWidthPx: sourceSize.widthPx,
-          sourceHeightPx: sourceSize.heightPx,
+          sourceWidthPx: fallbackSourceSize.widthPx,
+          sourceHeightPx: fallbackSourceSize.heightPx,
           resolution: options.resolution,
           maxWidthPx: options.maxWidthPx,
           maxHeightPx: options.maxHeightPx,
@@ -29697,7 +29866,7 @@ export function useDocxPageThumbnails(
         const surfaceKey =
           runSkipKey === undefined
             ? undefined
-            : `${runSkipKey}|${sourceSize.widthPx}x${sourceSize.heightPx}|${resolution.pixelWidthPx}x${resolution.pixelHeightPx}`;
+            : `${runSkipKey}|${fallbackSourceSize.widthPx}x${fallbackSourceSize.heightPx}|${resolution.pixelWidthPx}x${resolution.pixelHeightPx}`;
         const surfaceCache = ensureThumbnailSurfaceCache();
 
         try {
@@ -29706,17 +29875,51 @@ export function useDocxPageThumbnails(
               ? surfaceCache.get(surfaceKey)
               : undefined;
           if (!surface) {
-            surface = await rasterizeDocxThumbnailSurface({
-              pageElement: livePageElement,
-              sourceWidthPx: sourceSize.widthPx,
-              sourceHeightPx: sourceSize.heightPx,
-              widthPx: resolution.widthPx,
-              heightPx: resolution.heightPx,
-              pixelWidthPx: resolution.pixelWidthPx,
-              pixelHeightPx: resolution.pixelHeightPx,
-            });
-            if (surfaceKey !== undefined) {
-              surfaceCache.set(surfaceKey, surface);
+            let livePageElement =
+              pageSurfaceRegistry.pageElements.get(pageIndex);
+            let renderedDetachedSurface = false;
+            try {
+              if (!livePageElement || !livePageElement.isConnected) {
+                if (!detachedThumbnailSurfaceRendererRef.current) {
+                  detachedThumbnailSurfaceRendererRef.current =
+                    new DocxDetachedThumbnailSurfaceRenderer();
+                }
+                livePageElement =
+                  await detachedThumbnailSurfaceRendererRef.current.renderPageSurface(
+                    {
+                      editor,
+                      registry: pageSurfaceRegistry,
+                      pageIndex,
+                    }
+                  );
+                renderedDetachedSurface = true;
+              }
+              if (!livePageElement || !livePageElement.isConnected) {
+                updatePageThumbnailState(pageIndex, "unavailable");
+                return;
+              }
+
+              const sourceSize = resolveDocxViewerPageSurfaceSize(
+                livePageElement,
+                fallbackSourceSize.widthPx,
+                fallbackSourceSize.heightPx
+              );
+              surface = await rasterizeDocxThumbnailSurface({
+                pageElement: livePageElement,
+                sourceWidthPx: sourceSize.widthPx,
+                sourceHeightPx: sourceSize.heightPx,
+                widthPx: resolution.widthPx,
+                heightPx: resolution.heightPx,
+                pixelWidthPx: resolution.pixelWidthPx,
+                pixelHeightPx: resolution.pixelHeightPx,
+              });
+              if (surfaceKey !== undefined) {
+                surfaceCache.set(surfaceKey, surface);
+              }
+            } finally {
+              if (renderedDetachedSurface) {
+                detachedThumbnailSurfaceRendererRef.current?.clear();
+              }
             }
           }
 
@@ -29752,6 +29955,7 @@ export function useDocxPageThumbnails(
       pageSurfaceRegistry,
       thumbnailSkipKeyForPage,
       updatePageThumbnailState,
+      editor,
     ]
   );
 
@@ -29806,11 +30010,19 @@ export function useDocxPageThumbnails(
     const totalPages = Math.max(1, editor.totalPages);
     return Array.from({ length: totalPages }, (_, pageIndex) => {
       const pageElement = mountedPageElements.get(pageIndex);
-      const sourceSize = resolveDocxViewerPageSurfaceSize(
-        pageElement,
-        fallbackLayout.pageWidthPx,
-        fallbackLayout.pageHeightPx
-      );
+      const sourceSize =
+        pageElement && pageElement.isConnected
+          ? resolveDocxViewerPageSurfaceSize(
+              pageElement,
+              fallbackLayout.pageWidthPx,
+              fallbackLayout.pageHeightPx
+            )
+          : resolveDocxViewerRegisteredPageSurfaceSize(
+              pageSurfaceRegistry,
+              pageIndex,
+              fallbackLayout.pageWidthPx,
+              fallbackLayout.pageHeightPx
+            );
       const resolution = resolveDocxPageThumbnailResolution({
         sourceWidthPx: sourceSize.widthPx,
         sourceHeightPx: sourceSize.heightPx,
@@ -29889,6 +30101,7 @@ export function useDocxPageThumbnails(
     options.maxHeightPx,
     options.maxWidthPx,
     options.pixelRatio,
+    pageSurfaceRegistry,
     pageThumbnailStates,
   ]);
 
@@ -31768,13 +31981,23 @@ export function DocxEditorViewer({
         return cached;
       }
 
+      let registeredElement: HTMLDivElement | null = null;
       const nextRef: React.RefCallback<HTMLDivElement> = (element) => {
         if (element) {
+          registeredElement = element;
           pageElementsRef.current.set(normalizedPageIndex, element);
         } else {
           pageElementsRef.current.delete(normalizedPageIndex);
         }
-        registerDocxViewerPageSurface(editor, normalizedPageIndex, element);
+        registerDocxViewerPageSurface(
+          editor,
+          normalizedPageIndex,
+          element,
+          registeredElement
+        );
+        if (!element) {
+          registeredElement = null;
+        }
       };
       pageSurfaceRefCallbacksRef.current.set(normalizedPageIndex, nextRef);
       return nextRef;
@@ -33352,12 +33575,29 @@ export function DocxEditorViewer({
     pageSectionInfoByIndex,
     trackedChangesEnabled,
   ]);
+  const pageThumbnailSurfaceSizesByPage = React.useMemo(
+    () =>
+      pageNodeSegmentsByPage.map((_, pageIndex) => {
+        const pageLayout =
+          pageSectionInfoByIndex[pageIndex]?.layout ?? documentLayout;
+        return {
+          widthPx: pageLayout.pageWidthPx,
+          heightPx: pageLayout.pageHeightPx,
+        };
+      }),
+    [documentLayout, pageNodeSegmentsByPage, pageSectionInfoByIndex]
+  );
   React.useEffect(() => {
     syncDocxViewerPageSurfaceContentKeys(
       editor,
-      pageThumbnailContentKeysByPage
+      pageThumbnailContentKeysByPage,
+      pageThumbnailSurfaceSizesByPage
     );
-  }, [pageSurfaceRegistryOwner, pageThumbnailContentKeysByPage]);
+  }, [
+    pageSurfaceRegistryOwner,
+    pageThumbnailContentKeysByPage,
+    pageThumbnailSurfaceSizesByPage,
+  ]);
   const resolveStyleRefFieldValueForPage = React.useMemo(() => {
     const valueCache = new Map<string, string | undefined>();
     const nodes = editor.model.nodes;

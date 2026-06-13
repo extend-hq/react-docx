@@ -2963,7 +2963,7 @@ export function App(): React.JSX.Element {
             <SheetHeader className="pb-3">
               <SheetTitle>Page Thumbnails</SheetTitle>
               <SheetDescription>
-                Jump to any page from the live viewer surface.
+                Jump to any page from independent thumbnail renders.
               </SheetDescription>
             </SheetHeader>
 
@@ -3030,7 +3030,7 @@ export function App(): React.JSX.Element {
                             {Math.round(thumbnail.sourceHeightPx)}
                           </span>
                           {!thumbnail.isMounted ? (
-                            <span>Not mounted</span>
+                            <span>Offscreen render</span>
                           ) : thumbnail.error ? (
                             <span>{thumbnail.error.message}</span>
                           ) : null}

@@ -158,7 +158,7 @@ export function EditorExample() {
 
 ## Thumbnail Hook
 
-The library can expose page thumbnails from mounted viewer surfaces so you can build your own page strip, mini-map, or navigation UI.
+The library can expose page thumbnails so you can build your own page strip, mini-map, or navigation UI. Thumbnail painting can render from the live page surface when it is mounted, or from an offscreen one-page surface when viewer virtualization has unmounted that page.
 
 ```tsx
 import * as React from "react";
@@ -194,10 +194,7 @@ export function ThumbnailExample() {
         ))}
       </div>
 
-      <DocxEditorViewer
-        editor={editor}
-        pageVirtualization={{ enabled: false }}
-      />
+      <DocxEditorViewer editor={editor} />
     </div>
   );
 }
@@ -205,10 +202,9 @@ export function ThumbnailExample() {
 
 Notes:
 
-- Thumbnails are produced from mounted page DOM.
+- Thumbnail canvases can stay attached in a virtualized sidebar; only canvases you mount request paint work.
 - Thumbnail sizing is bounded by `maxWidthPx` and `maxHeightPx`, so downstream UIs can bias toward portrait thumbnail rails.
-- If page virtualization is enabled, offscreen pages can report `status: "unavailable"`.
-- For a full thumbnail rail, disable virtualization or manage the visible page range yourself.
+- If the main viewer has virtualized a page away, thumbnail rendering mounts an isolated offscreen page surface long enough to rasterize that page.
 
 ## Useful Hooks
 
