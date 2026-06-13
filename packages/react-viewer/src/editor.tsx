@@ -877,6 +877,13 @@ function resolveEffectiveZoomScale(element: HTMLElement): number {
   return Number.isFinite(scale) && scale > 0 ? scale : 1;
 }
 
+function normalizePageVirtualizationZoomScale(
+  value: unknown
+): number | undefined {
+  const scale = Number(value);
+  return Number.isFinite(scale) && scale > 0 ? scale : undefined;
+}
+
 const DOC_SURFACE_STYLE_BY_THEME: Record<
   DocxDocumentTheme,
   React.CSSProperties
@@ -4027,6 +4034,22 @@ export interface DocxPageVirtualizationOptions {
    * @defaultValue `0`
    */
   settleDelayMs?: number;
+  /**
+   * Explicit scroll container for internal page virtualization.
+   *
+   * Omit this to let the viewer discover the nearest scrollable ancestor.
+   * Provide it when the host app owns scrolling, such as when the viewer is
+   * mounted inside a custom scroll-area viewport.
+   */
+  scrollElement?: HTMLElement | null;
+  /**
+   * Effective visual scale applied around the viewer.
+   *
+   * Omit this to let the viewer infer CSS `zoom` from its ancestor chain.
+   * Provide it when toolbar zoom is controlled outside the viewer so virtual
+   * page offsets update synchronously with the selected zoom.
+   */
+  zoomScale?: number;
 }
 
 /**
@@ -33586,6 +33609,20 @@ export function DocxEditorViewer({
     !deferInternalPageVirtualization &&
     !webdriverActive &&
     pageCount > 1;
+  const explicitPageVirtualizationScrollElement =
+    pageVirtualization?.scrollElement ?? null;
+  const explicitPageVirtualizationZoomScale =
+    normalizePageVirtualizationZoomScale(pageVirtualization?.zoomScale);
+  const resolveViewerMeasurementZoomScale = React.useCallback(
+    (rootElement: HTMLElement | null, fallback = 1): number => {
+      if (explicitPageVirtualizationZoomScale !== undefined) {
+        return explicitPageVirtualizationZoomScale;
+      }
+
+      return rootElement ? resolveEffectiveZoomScale(rootElement) : fallback;
+    },
+    [explicitPageVirtualizationZoomScale]
+  );
   React.useEffect(() => {
     setDeferInternalPageVirtualization(!hasLargeTableLayoutSurface);
   }, [editor.documentLoadNonce, hasLargeTableLayoutSurface]);
@@ -33620,9 +33657,16 @@ export function DocxEditorViewer({
     }
 
     setInternalVirtualScrollElement(
-      nearestScrollableAncestor(viewerRootRef.current)
+      explicitPageVirtualizationScrollElement instanceof HTMLElement
+        ? explicitPageVirtualizationScrollElement
+        : nearestScrollableAncestor(viewerRootRef.current)
     );
-  }, [editor.documentLoadNonce, pageCount, trackedChangesEnabled]);
+  }, [
+    editor.documentLoadNonce,
+    explicitPageVirtualizationScrollElement,
+    pageCount,
+    trackedChangesEnabled,
+  ]);
   // Ancestor zoom changes are rare (toolbar zoom, window resize); probing the
   // ancestor chain with getComputedStyle on every render forces style work in
   // the scroll hot path, so re-probe only on resize/zoom-shaped events.
@@ -33660,11 +33704,22 @@ export function DocxEditorViewer({
     }
 
     const nextScale =
-      Math.round(resolveEffectiveZoomScale(rootElement) * 100) / 100;
+      Math.round(
+        resolveViewerMeasurementZoomScale(
+          rootElement,
+          virtualizerMeasurementScale
+        ) * 100
+      ) / 100;
     setVirtualizerMeasurementScale((current) =>
       Math.abs(current - nextScale) < 0.005 ? current : nextScale
     );
-  }, [editor.documentLoadNonce, pageCount, zoomProbeNonce]);
+  }, [
+    editor.documentLoadNonce,
+    pageCount,
+    resolveViewerMeasurementZoomScale,
+    virtualizerMeasurementScale,
+    zoomProbeNonce,
+  ]);
   const internalPageVirtualizationEnabled =
     internalPageVirtualizationRequested &&
     internalVirtualScrollElement !== null;
@@ -34231,9 +34286,7 @@ export function DocxEditorViewer({
       // change rewrites measurements and re-paginates (laggy zoom, blank
       // virtualized pages).
       const rootElement = viewerRootRef.current;
-      const zoomScale = rootElement
-        ? resolveEffectiveZoomScale(rootElement)
-        : 1;
+      const zoomScale = resolveViewerMeasurementZoomScale(rootElement, 1);
 
       paragraphElementsRef.current.forEach((element, nodeIndex) => {
         if (
@@ -34278,6 +34331,7 @@ export function DocxEditorViewer({
   }, [
     editor.documentLoadNonce,
     pageNodeSegmentIdentityKeysByPage,
+    resolveViewerMeasurementZoomScale,
     visiblePageEndIndex,
     visiblePageStartIndex,
   ]);
@@ -34929,7 +34983,7 @@ export function DocxEditorViewer({
       return;
     }
 
-    const zoomScale = resolveEffectiveZoomScale(rootElement);
+    const zoomScale = resolveViewerMeasurementZoomScale(rootElement, 1);
     const next: Record<number, number> = {};
     for (let pageIndex = 0; pageIndex < pageCount; pageIndex += 1) {
       if (!isPageVisible(pageIndex)) {
@@ -35030,6 +35084,7 @@ export function DocxEditorViewer({
     pageCount,
     pageHeaderAndFooterNodes,
     pageSectionInfoByIndex,
+    resolveViewerMeasurementZoomScale,
     visiblePageEndIndex,
     visiblePageStartIndex,
   ]);
@@ -35063,7 +35118,7 @@ export function DocxEditorViewer({
       return;
     }
 
-    const zoomScale = resolveEffectiveZoomScale(rootElement);
+    const zoomScale = resolveViewerMeasurementZoomScale(rootElement, 1);
     const nextMeasuredPageIdentityKeys = pageNodeSegmentIdentityKeysByPage;
     const nextMeasuredPageDiagnostics = pageNodeSegmentsByPage.map(
       (_, pageIndex) => {
@@ -35343,6 +35398,7 @@ export function DocxEditorViewer({
     pageNodeSegmentIdentityKeysByPage,
     pageSectionInfoByIndex,
     pageHeaderAndFooterNodes,
+    resolveViewerMeasurementZoomScale,
     visiblePageEndIndex,
     visiblePageStartIndex,
   ]);
@@ -41209,9 +41265,10 @@ export function DocxEditorViewer({
     }
 
     const rootElement = viewerRootRef.current;
-    const zoomScale = rootElement
-      ? resolveEffectiveZoomScale(rootElement)
-      : virtualizerMeasurementScale;
+    const zoomScale = resolveViewerMeasurementZoomScale(
+      rootElement,
+      virtualizerMeasurementScale
+    );
     const nextMeasuredHeights: Record<number, number[]> = {};
     editor.model.nodes.forEach((node, nodeIndex) => {
       if (node.type !== "table") {
@@ -41387,6 +41444,7 @@ export function DocxEditorViewer({
     pageContentWidthPxByNodeIndex,
     paginationMeasurementEnabled,
     paginationMeasurementEpoch,
+    resolveViewerMeasurementZoomScale,
     tableMeasuredRowHeights,
     tableColumnWidths,
     tableRowHeights,

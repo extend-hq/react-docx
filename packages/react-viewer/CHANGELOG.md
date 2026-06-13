@@ -7,6 +7,7 @@
 - Remove leftover DOCX table-layout and section-group debug logging from the published viewer bundle.
 - Move DOCX parse and document-model construction for viewer/editor imports into a browser worker when available, with main-thread fallback for unsupported environments.
 - Fix TOC pagination estimates for right-tab dot leaders so right tab stops are not treated as leading title indentation.
+- Allow `pageVirtualization` to receive an explicit scroll element and zoom scale so custom scroll-area shells keep low-zoom page virtualization in sync.
 
 ## 0.7.0-alpha.4
 
