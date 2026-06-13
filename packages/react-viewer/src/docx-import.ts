@@ -1,5 +1,10 @@
 import type { DocModel } from "@extend-ai/react-docx-doc-model";
 import type { OoxmlPackage } from "@extend-ai/react-docx-ooxml-core";
+import {
+  canUseConfiguredWasmSourceInWorker,
+  getConfiguredWorkerWasmSource,
+  type WorkerWasmSource
+} from "./wasm-source";
 
 export interface DocxImportResult {
   package: OoxmlPackage;
@@ -24,6 +29,7 @@ export interface DocxImportWorkerRequest {
   id: number;
   type: "import-docx";
   buffer: ArrayBuffer;
+  wasmSource?: WorkerWasmSource;
 }
 
 export interface DocxImportWorkerSuccessResponse {
@@ -71,7 +77,11 @@ function errorFromWorkerResponse(
 }
 
 function canUseDocxImportWorker(options: DocxImportOptions): boolean {
-  return options.useWorker !== false && typeof Worker !== "undefined";
+  return (
+    options.useWorker !== false &&
+    typeof Worker !== "undefined" &&
+    canUseConfiguredWasmSourceInWorker()
+  );
 }
 
 function createDocxImportWorker(): Worker {
@@ -215,6 +225,7 @@ export async function importDocxBuffer(
         id: requestId,
         type: "import-docx",
         buffer,
+        wasmSource: getConfiguredWorkerWasmSource(),
       };
       const transfer = options.transferBuffer ? [buffer] : [];
       worker.postMessage(request, transfer);

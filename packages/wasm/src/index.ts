@@ -53,7 +53,15 @@ async function defaultWasmSource(): Promise<WasmSource> {
     const fs = await nodeFsPromises();
     return fs.readFile(wasmUrl);
   }
-  return wasmUrl;
+  const response = await fetch(wasmUrl);
+  if (!response.ok) {
+    throw new Error(
+      `react-docx: failed to load the bundled WebAssembly binary from ${wasmUrl.href} ` +
+        `(${response.status} ${response.statusText}). If your bundler did not emit this asset, ` +
+        "import @extend-ai/react-docx/docx_wasm_bg.wasm?url and pass it to setWasmSource() before importing a document."
+    );
+  }
+  return response;
 }
 
 export async function initWasm(source?: WasmSource): Promise<InitOutput> {

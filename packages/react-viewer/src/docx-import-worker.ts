@@ -1,5 +1,6 @@
 import { buildDocModel } from "@extend-ai/react-docx-doc-model";
 import { parseDocx } from "@extend-ai/react-docx-ooxml-core";
+import { setWasmSource } from "@extend-ai/react-docx-wasm";
 
 import type {
   DocxImportWorkerRequest,
@@ -41,6 +42,9 @@ self.addEventListener(
     }
 
     try {
+      if (request.wasmSource !== undefined) {
+        setWasmSource(request.wasmSource);
+      }
       const startedAt = performanceNow();
       const pkg = await parseDocx(request.buffer);
       const parsedAt = performanceNow();
@@ -69,4 +73,3 @@ self.addEventListener(
     }
   }
 );
-
