@@ -3,7 +3,6 @@ import { flushSync } from "react-dom";
 import { renderToStaticMarkup } from "react-dom/server";
 import { useVirtualizer, useWindowVirtualizer } from "@tanstack/react-virtual";
 import {
-  buildDocModel,
   cloneDocModel,
   type DocModel,
   type DocumentNoteDefinition,
@@ -35,8 +34,9 @@ import {
   updateTableCellParagraphText,
   updateTableCellText,
 } from "@extend-ai/react-docx-editor-ops";
-import { type OoxmlPackage, parseDocx } from "@extend-ai/react-docx-ooxml-core";
+import { type OoxmlPackage } from "@extend-ai/react-docx-ooxml-core";
 import { serializeDocx } from "@extend-ai/react-docx-serializer";
+import { importDocxBuffer } from "./docx-import";
 import {
   collectTableExplicitPageBreakInfo,
   collectTopLevelExplicitPageBreakStartNodeIndexes,
@@ -218,6 +218,46 @@ const MEASURED_BODY_FOOTER_OVERLAP_STABILITY_THRESHOLD = 1;
 const WORD_TABLE_CELL_PARAGRAPH_AUTO_LINE_TWIPS = 240;
 const WORD_TABLE_CELL_PARAGRAPH_BEFORE_TWIPS = 0;
 const WORD_TABLE_CELL_PARAGRAPH_AFTER_TWIPS = 0;
+const DOCX_IMPORT_PERFORMANCE_PREFIX = "react-docx.import";
+
+function markDocxImportPerformance(name: string): void {
+  if (
+    typeof performance === "undefined" ||
+    typeof performance.mark !== "function"
+  ) {
+    return;
+  }
+
+  try {
+    performance.mark(name);
+  } catch {
+    // Performance marks are diagnostic-only.
+  }
+}
+
+function measureDocxImportPerformance(
+  name: string,
+  startMark: string,
+  endMark: string
+): void {
+  if (
+    typeof performance === "undefined" ||
+    typeof performance.measure !== "function"
+  ) {
+    return;
+  }
+
+  try {
+    performance.measure(name, startMark, endMark);
+  } catch {
+    // A missing mark should not affect import.
+  }
+}
+
+function createDocxImportPerformanceTraceName(fileName: string): string {
+  const normalizedName = fileName.replace(/[^a-z0-9._-]+/gi, "_").slice(0, 80);
+  return `${DOCX_IMPORT_PERFORMANCE_PREFIX}.${Date.now()}.${normalizedName}`;
+}
 const TABLE_ROW_SLICE_VISUAL_BLEED_PX = 1;
 const TABLE_CELL_SLICE_FULLY_VISIBLE_BOTTOM_BUFFER_PX = 4;
 const DEFAULT_SPLIT_PARAGRAPH_LINE_TWIPS = 259;
@@ -9468,13 +9508,7 @@ function estimateTabLeaderWrappedLineCountForParagraph(
     leadingSegments,
     paragraphBaseFontPx
   );
-  const tabStopPositionsPx = (paragraph.style?.tabStops ?? [])
-    .map((tabStop) => twipsToPixels(tabStop.positionTwips))
-    .filter(
-      (positionPx): positionPx is number =>
-        Number.isFinite(positionPx) && (positionPx as number) > 0
-    )
-    .sort((left, right) => left - right);
+  const tabStopPositionsPx = resolveParagraphFirstLineLeftTabStopsPx(paragraph);
   const explicitLeadingTabStopPx =
     tableOfContentsLeadingLeftTabStopPx(paragraph);
   const leadingReservationWidthPx =
@@ -15857,15 +15891,7 @@ function tableOfContentsLeadingLeftTabStopPx(
     return undefined;
   }
 
-  const leftTabStopPositionsPx = (paragraph.style?.tabStops ?? [])
-    .filter((tabStop) => tabStop.alignment === "left")
-    .map((tabStop) => twipsToPixels(tabStop.positionTwips))
-    .filter(
-      (positionPx): positionPx is number =>
-        Number.isFinite(positionPx) && (positionPx as number) > 0
-    )
-    .sort((left, right) => left - right);
-  return leftTabStopPositionsPx[0];
+  return resolveParagraphFirstLineLeftTabStopsPx(paragraph)[0];
 }
 
 function paragraphContainsTabCharacter(paragraph: ParagraphNode): boolean {
@@ -17625,12 +17651,22 @@ function paragraphPageFieldSequence(paragraph: ParagraphNode): PageFieldKind[] {
   return fields;
 }
 
+const pageFieldValueSequenceBySourceXml = new Map<
+  string,
+  PageFieldValueToken[]
+>();
+
 function paragraphPageFieldValueSequence(
   paragraph: ParagraphNode
 ): PageFieldValueToken[] {
   const xml = paragraph.sourceXml ?? "";
   if (!xml) {
     return [];
+  }
+
+  const cached = pageFieldValueSequenceBySourceXml.get(xml);
+  if (cached) {
+    return cached;
   }
 
   const values: PageFieldValueToken[] = [];
@@ -17742,8 +17778,14 @@ function paragraphPageFieldValueSequence(
     }
   }
 
+  setCacheEntry(pageFieldValueSequenceBySourceXml, xml, values);
   return values;
 }
+
+const styleRefFieldValueSequenceBySourceXml = new Map<
+  string,
+  StyleRefFieldValueToken[]
+>();
 
 function paragraphStyleRefFieldValueSequence(
   paragraph: ParagraphNode
@@ -17751,6 +17793,11 @@ function paragraphStyleRefFieldValueSequence(
   const xml = paragraph.sourceXml ?? "";
   if (!xml) {
     return [];
+  }
+
+  const cached = styleRefFieldValueSequenceBySourceXml.get(xml);
+  if (cached) {
+    return cached;
   }
 
   const values: StyleRefFieldValueToken[] = [];
@@ -17862,6 +17909,7 @@ function paragraphStyleRefFieldValueSequence(
     }
   }
 
+  setCacheEntry(styleRefFieldValueSequenceBySourceXml, xml, values);
   return values;
 }
 
@@ -20523,7 +20571,28 @@ function parseEmbeddedTableRuntimeKey(
   };
 }
 
+const columnWidthsByTable = new WeakMap<
+  TableNode,
+  Map<number, number[] | undefined>
+>();
+
 function columnWidthsFromTableDefinition(
+  table: TableNode,
+  columnCount: number
+): number[] | undefined {
+  const cachedByCount = columnWidthsByTable.get(table);
+  if (cachedByCount?.has(columnCount)) {
+    return cachedByCount.get(columnCount);
+  }
+
+  const resolved = computeColumnWidthsFromTableDefinition(table, columnCount);
+  const cache = cachedByCount ?? new Map<number, number[] | undefined>();
+  cache.set(columnCount, resolved);
+  columnWidthsByTable.set(table, cache);
+  return resolved;
+}
+
+function computeColumnWidthsFromTableDefinition(
   table: TableNode,
   columnCount: number
 ): number[] | undefined {
@@ -20535,7 +20604,6 @@ function columnWidthsFromTableDefinition(
     // geometry lives in per-cell tcW. Word's fixed-layout algorithm trusts
     // cell widths over the grid, so when the two disagree on most measured
     // cells, prefer the row-derived widths.
-    console.log("[colw]", columnCount, gridWidths.length, !!rowDerivedWidths, gridConflictsWithRowWidths(table, gridWidths));
     if (
       rowDerivedWidths &&
       rowDerivedWidths.length > 0 &&
@@ -24604,6 +24672,8 @@ export function useDocxEditor(
       currentPage: 1,
       totalPages: 1,
     });
+  const activeImportAbortControllerRef =
+    React.useRef<AbortController | undefined>(undefined);
   const [history, setHistory] = React.useState<{
     past: DocxHistorySnapshot[];
     future: DocxHistorySnapshot[];
@@ -25148,6 +25218,7 @@ export function useDocxEditor(
 
   React.useEffect(() => {
     return () => {
+      activeImportAbortControllerRef.current?.abort();
       unloadEmbeddedFonts();
     };
   }, [unloadEmbeddedFonts]);
@@ -25328,6 +25399,9 @@ export function useDocxEditor(
 
   const importDocxFile = React.useCallback(
     async (file: File): Promise<void> => {
+      activeImportAbortControllerRef.current?.abort();
+      activeImportAbortControllerRef.current = undefined;
+
       if (!/\.docx?$/i.test(file.name)) {
         replaceDocumentWithImportError(
           file.name,
@@ -25339,12 +25413,53 @@ export function useDocxEditor(
       setIsImporting(true);
       setImportError(undefined);
       setStatus(`Loading ${file.name}...`);
+      const importAbortController = new AbortController();
+      activeImportAbortControllerRef.current = importAbortController;
+      const traceName = createDocxImportPerformanceTraceName(file.name);
+      const startMark = `${traceName}:start`;
+      const bufferStartMark = `${traceName}:arrayBuffer:start`;
+      const bufferEndMark = `${traceName}:arrayBuffer:end`;
+      const workerStartMark = `${traceName}:worker:start`;
+      const workerEndMark = `${traceName}:worker:end`;
+      const fontsStartMark = `${traceName}:fonts:start`;
+      const fontsEndMark = `${traceName}:fonts:end`;
+      const stateStartMark = `${traceName}:state:start`;
+      const stateEndMark = `${traceName}:state:end`;
+      markDocxImportPerformance(startMark);
       try {
+        markDocxImportPerformance(bufferStartMark);
         const buffer = await file.arrayBuffer();
-        const pkg = await parseDocx(buffer);
-        await loadEmbeddedFontsFromPackage(pkg);
-        const nextModel = await buildDocModel(pkg);
+        markDocxImportPerformance(bufferEndMark);
+        measureDocxImportPerformance(
+          `${traceName}:arrayBuffer`,
+          bufferStartMark,
+          bufferEndMark
+        );
 
+        markDocxImportPerformance(workerStartMark);
+        const importResult = await importDocxBuffer(buffer, {
+          signal: importAbortController.signal,
+          transferBuffer: true,
+        });
+        markDocxImportPerformance(workerEndMark);
+        measureDocxImportPerformance(
+          `${traceName}:${importResult.source}`,
+          workerStartMark,
+          workerEndMark
+        );
+        const pkg = importResult.package;
+        const nextModel = importResult.model;
+
+        markDocxImportPerformance(fontsStartMark);
+        await loadEmbeddedFontsFromPackage(pkg);
+        markDocxImportPerformance(fontsEndMark);
+        measureDocxImportPerformance(
+          `${traceName}:fonts`,
+          fontsStartMark,
+          fontsEndMark
+        );
+
+        markDocxImportPerformance(stateStartMark);
         setModel(nextModel);
         setDocumentLoadNonce((current) => current + 1);
         setHistory({ past: [], future: [] });
@@ -25357,18 +25472,37 @@ export function useDocxEditor(
         setSelectedFormFieldLocation(undefined);
         setImportError(undefined);
         setStatus(`Loaded ${file.name}`);
+        markDocxImportPerformance(stateEndMark);
+        measureDocxImportPerformance(
+          `${traceName}:state-dispatch`,
+          stateStartMark,
+          stateEndMark
+        );
+        measureDocxImportPerformance(`${traceName}:total`, startMark, stateEndMark);
       } catch (error) {
+        if (
+          error instanceof Error &&
+          error.name === "AbortError" &&
+          activeImportAbortControllerRef.current !== importAbortController
+        ) {
+          return;
+        }
         const nextError =
           error instanceof Error ? error : new Error("Unknown error");
         replaceDocumentWithImportError(file.name, nextError);
       } finally {
-        setIsImporting(false);
+        if (activeImportAbortControllerRef.current === importAbortController) {
+          activeImportAbortControllerRef.current = undefined;
+          setIsImporting(false);
+        }
       }
     },
     [loadEmbeddedFontsFromPackage, replaceDocumentWithImportError]
   );
 
   const newDocument = React.useCallback((): void => {
+    activeImportAbortControllerRef.current?.abort();
+    activeImportAbortControllerRef.current = undefined;
     unloadEmbeddedFonts();
     setModel(cloneDocModel(starterTemplateRef.current));
     setDocumentLoadNonce((current) => current + 1);
@@ -29487,6 +29621,7 @@ export function useDocxPageThumbnails(
       if (!targetCanvas) {
         return;
       }
+      const requiresAttachedTarget = canvas === undefined;
 
       const pageElement = pageSurfaceRegistry.pageElements.get(pageIndex);
       if (!pageElement || !pageElement.isConnected) {
@@ -29508,6 +29643,13 @@ export function useDocxPageThumbnails(
 
       updatePageThumbnailState(pageIndex, "rendering");
       await ensureThumbnailRasterQueue().enqueue(targetCanvas, async () => {
+        if (
+          requiresAttachedTarget &&
+          attachedCanvasByPageRef.current.get(pageIndex) !== targetCanvas
+        ) {
+          return;
+        }
+
         const livePageElement =
           pageSurfaceRegistry.pageElements.get(pageIndex);
         if (!livePageElement || !livePageElement.isConnected) {
@@ -29681,6 +29823,11 @@ export function useDocxPageThumbnails(
                 attachedCanvasByPageRef.current.set(pageIndex, canvas);
                 void renderPageThumbnailToCanvasRef.current(pageIndex, canvas);
                 return;
+              }
+              const previousCanvas =
+                attachedCanvasByPageRef.current.get(pageIndex);
+              if (previousCanvas) {
+                thumbnailRasterQueueRef.current?.cancel(previousCanvas);
               }
               attachedCanvasByPageRef.current.delete(pageIndex);
             };
@@ -31414,9 +31561,6 @@ export function DocxEditorViewer({
     new Map()
   );
   const pageElementsRef = React.useRef<Map<number, HTMLDivElement>>(new Map());
-  const pagePlaceholderRefCallbacksRef = React.useRef<
-    Map<number, React.RefCallback<HTMLDivElement>>
-  >(new Map());
   const pageSurfaceRefCallbacksRef = React.useRef<
     Map<number, React.RefCallback<HTMLDivElement>>
   >(new Map());
@@ -31592,28 +31736,6 @@ export function DocxEditorViewer({
     measuredPageContentHeightByIndex,
     setMeasuredPageContentHeightByIndex,
   ] = React.useState<number[]>([]);
-  const pagePlaceholderRefForIndex = React.useCallback(
-    (pageIndex: number): React.RefCallback<HTMLDivElement> => {
-      const normalizedPageIndex = Math.max(0, Math.round(pageIndex));
-      const cached =
-        pagePlaceholderRefCallbacksRef.current.get(normalizedPageIndex);
-      if (cached) {
-        return cached;
-      }
-
-      const nextRef: React.RefCallback<HTMLDivElement> = (element) => {
-        if (element) {
-          pageElementsRef.current.set(normalizedPageIndex, element);
-        } else {
-          pageElementsRef.current.delete(normalizedPageIndex);
-        }
-        registerDocxViewerPageSurface(editor, normalizedPageIndex, undefined);
-      };
-      pagePlaceholderRefCallbacksRef.current.set(normalizedPageIndex, nextRef);
-      return nextRef;
-    },
-    [pageSurfaceRegistryOwner]
-  );
   const pageSurfaceRefForIndex = React.useCallback(
     (pageIndex: number): React.RefCallback<HTMLDivElement> => {
       const normalizedPageIndex = Math.max(0, Math.round(pageIndex));
@@ -31637,7 +31759,6 @@ export function DocxEditorViewer({
     [pageSurfaceRegistryOwner]
   );
   React.useEffect(() => {
-    pagePlaceholderRefCallbacksRef.current.clear();
     pageSurfaceRefCallbacksRef.current.clear();
   }, [pageSurfaceRegistryOwner]);
   const [
@@ -33502,6 +33623,32 @@ export function DocxEditorViewer({
       nearestScrollableAncestor(viewerRootRef.current)
     );
   }, [editor.documentLoadNonce, pageCount, trackedChangesEnabled]);
+  // Ancestor zoom changes are rare (toolbar zoom, window resize); probing the
+  // ancestor chain with getComputedStyle on every render forces style work in
+  // the scroll hot path, so re-probe only on resize/zoom-shaped events.
+  const [zoomProbeNonce, setZoomProbeNonce] = React.useState(0);
+  React.useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    const rootElement = viewerRootRef.current;
+    if (!rootElement) {
+      return;
+    }
+    const bumpZoomProbe = (): void => {
+      setZoomProbeNonce((nonce) => nonce + 1);
+    };
+    const resizeObserver =
+      typeof ResizeObserver === "function"
+        ? new ResizeObserver(bumpZoomProbe)
+        : undefined;
+    resizeObserver?.observe(rootElement);
+    window.addEventListener("resize", bumpZoomProbe);
+    return () => {
+      resizeObserver?.disconnect();
+      window.removeEventListener("resize", bumpZoomProbe);
+    };
+  }, [editor.documentLoadNonce]);
   React.useLayoutEffect(() => {
     if (typeof window === "undefined") {
       return;
@@ -33517,7 +33664,7 @@ export function DocxEditorViewer({
     setVirtualizerMeasurementScale((current) =>
       Math.abs(current - nextScale) < 0.005 ? current : nextScale
     );
-  });
+  }, [editor.documentLoadNonce, pageCount, zoomProbeNonce]);
   const internalPageVirtualizationEnabled =
     internalPageVirtualizationRequested &&
     internalVirtualScrollElement !== null;
@@ -33589,6 +33736,48 @@ export function DocxEditorViewer({
     internalWindowPageVirtualizer,
   ]);
   const internalVirtualItems = internalPageVirtualizer.getVirtualItems();
+  const internalMostVisiblePageIndex = React.useMemo(() => {
+    if (
+      !internalPageVirtualizationEnabled ||
+      internalVirtualItems.length === 0
+    ) {
+      return undefined;
+    }
+
+    const virtualizerMetrics = internalPageVirtualizer as {
+      scrollOffset?: number | null;
+      scrollRect?: { height?: number; width?: number };
+    };
+    const viewportStart = Number.isFinite(virtualizerMetrics.scrollOffset)
+      ? (virtualizerMetrics.scrollOffset as number)
+      : internalVirtualItems[0]?.start ?? 0;
+    const viewportSize = virtualizerMetrics.scrollRect?.height;
+    const viewportEnd =
+      viewportStart +
+      (Number.isFinite(viewportSize) && (viewportSize as number) > 0
+        ? (viewportSize as number)
+        : internalVirtualItems[0]?.size ?? 0);
+
+    let bestPageIndex: number | undefined;
+    let bestVisibleSize = -1;
+    internalVirtualItems.forEach((item) => {
+      const visibleSize =
+        Math.min(item.end, viewportEnd) - Math.max(item.start, viewportStart);
+      if (visibleSize > bestVisibleSize) {
+        bestVisibleSize = visibleSize;
+        bestPageIndex = item.index;
+      }
+    });
+
+    return bestPageIndex === undefined
+      ? undefined
+      : clampNumber(bestPageIndex, 0, pageCount - 1);
+  }, [
+    internalPageVirtualizationEnabled,
+    internalPageVirtualizer,
+    internalVirtualItems,
+    pageCount,
+  ]);
   const internalVisiblePageRange = React.useMemo(() => {
     if (!internalPageVirtualizationEnabled) {
       return undefined;
@@ -33975,6 +34164,55 @@ export function DocxEditorViewer({
     }
     return indexes;
   }, [pageCount, visiblePageEndIndex, visiblePageStartIndex]);
+  const pageStackVirtualSpacers = React.useMemo(() => {
+    const pageWrapperWidthPxForIndex = (pageIndex: number): number => {
+      const pageLayout =
+        pageSectionInfoByIndex[pageIndex]?.layout ?? documentLayout;
+      return showTrackedChangeGutter
+        ? pageLayout.pageWidthPx + TRACKED_CHANGE_GUTTER_WIDTH_PX
+        : pageLayout.pageWidthPx;
+    };
+    const summarizeSkippedPages = (
+      startPageIndex: number,
+      endPageIndex: number
+    ): { heightPx: number; widthPx: number } => {
+      if (
+        pageCount <= 0 ||
+        endPageIndex < startPageIndex ||
+        startPageIndex >= pageCount ||
+        endPageIndex < 0
+      ) {
+        return { heightPx: 0, widthPx: 0 };
+      }
+
+      const start = clampNumber(startPageIndex, 0, pageCount - 1);
+      const end = clampNumber(endPageIndex, start, pageCount - 1);
+      let heightPx = 0;
+      let widthPx = 0;
+      for (let pageIndex = start; pageIndex <= end; pageIndex += 1) {
+        const pageLayout =
+          pageSectionInfoByIndex[pageIndex]?.layout ?? documentLayout;
+        heightPx += Math.max(1, Math.round(pageLayout.pageHeightPx));
+        widthPx = Math.max(widthPx, pageWrapperWidthPxForIndex(pageIndex));
+      }
+
+      const skippedPageCount = end - start + 1;
+      heightPx += Math.max(0, skippedPageCount - 1) * DOC_PAGE_BREAK_GAP;
+      return { heightPx, widthPx };
+    };
+
+    return {
+      before: summarizeSkippedPages(0, visiblePageStartIndex - 1),
+      after: summarizeSkippedPages(visiblePageEndIndex + 1, pageCount - 1),
+    };
+  }, [
+    documentLayout,
+    pageCount,
+    pageSectionInfoByIndex,
+    showTrackedChangeGutter,
+    visiblePageEndIndex,
+    visiblePageStartIndex,
+  ]);
   React.useLayoutEffect(() => {
     if (typeof window === "undefined") {
       return;
@@ -34203,7 +34441,7 @@ export function DocxEditorViewer({
   }, [onPageCountChange, stableReportedPageCount]);
   React.useEffect(() => {
     const nextCurrentPage = clampNumber(
-      visiblePageStartIndex + 1,
+      (internalMostVisiblePageIndex ?? visiblePageStartIndex) + 1,
       1,
       Math.max(1, stableReportedPageCount)
     );
@@ -34213,6 +34451,7 @@ export function DocxEditorViewer({
     });
   }, [
     editor.syncPaginationInfo,
+    internalMostVisiblePageIndex,
     stableReportedPageCount,
     visiblePageStartIndex,
   ]);
@@ -52203,49 +52442,29 @@ export function DocxEditorViewer({
         />
       ) : null}
 
-      {pageNodeSegmentsByPage.map((pageNodeSegments, pageIndex) => {
+      {pageStackVirtualSpacers.before.heightPx > 0 ? (
+        <div
+          aria-hidden="true"
+          data-docx-page-window-spacer="before"
+          style={{
+            height: pageStackVirtualSpacers.before.heightPx,
+            width: pageStackVirtualSpacers.before.widthPx,
+            margin: "0 auto",
+            pointerEvents: "none",
+            visibility: hideDocumentUntilPaginationSettled
+              ? "hidden"
+              : undefined,
+          }}
+        />
+      ) : null}
+
+      {visiblePageIndexes.map((pageIndex) => {
+        const pageNodeSegments = pageNodeSegmentsByPage[pageIndex] ?? [];
         const pageInfo = pageSectionInfoByIndex[pageIndex];
         const pageLayout = pageInfo?.layout ?? documentLayout;
-        const pageVisible = isPageVisible(pageIndex);
         const pageWrapperWidthPx = showTrackedChangeGutter
           ? pageLayout.pageWidthPx + TRACKED_CHANGE_GUTTER_WIDTH_PX
           : pageLayout.pageWidthPx;
-
-        if (!pageVisible) {
-          const placeholderBackgroundColor =
-            pageBackgroundColor ??
-            editor.model.metadata.documentBackgroundColor ??
-            pageSurfaceBaseStyle.backgroundColor;
-          return (
-            <div
-              key={`page-${pageIndex}`}
-              data-docx-page-wrapper="true"
-              data-docx-page-index={pageIndex}
-              data-index={pageIndex}
-              style={{
-                width: pageWrapperWidthPx,
-                margin: "0 auto",
-                visibility: hideDocumentUntilPaginationSettled
-                  ? "hidden"
-                  : undefined,
-              }}
-            >
-              <div
-                data-docx-page-placeholder="true"
-                ref={pagePlaceholderRefForIndex(pageIndex)}
-                style={{
-                  ...pageSurfaceBaseStyle,
-                  ...pageMarginPaddingStyle(pageLayout.marginsPx),
-                  height: pageLayout.pageHeightPx,
-                  minHeight: pageLayout.pageHeightPx,
-                  width: pageLayout.pageWidthPx,
-                  backgroundColor: placeholderBackgroundColor,
-                  pointerEvents: "none",
-                }}
-              />
-            </div>
-          );
-        }
 
         const pageContentWidthPx = Math.max(
           120,
@@ -52489,6 +52708,10 @@ export function DocxEditorViewer({
               width: pageWrapperWidthPx,
               minHeight: pageLayout.pageHeightPx,
               margin: "0 auto",
+              // Isolate per-page layout/style recalculation so scrolling and
+              // edits on one page don't force whole-document layout passes.
+              // (No paint containment: floats and gutter cards may overhang.)
+              contain: "layout style",
               visibility: hideDocumentUntilPaginationSettled
                 ? "hidden"
                 : undefined,
@@ -52802,9 +53025,6 @@ export function DocxEditorViewer({
                       });
                     });
 
-                    if (typeof window !== "undefined" && (window as any).__docxDebugGroups) {
-                      console.log("[groups]", pageIndex, JSON.stringify(sectionGroups.map((g) => ({ s: g.sectionIndex, n: g.segments.map((x) => x.nodeIndex) }))));
-                    }
                     return sectionGroups.map((group, groupIndex) => {
                       const sectionColumns =
                         sectionColumnsBySectionIndex[group.sectionIndex];
@@ -54236,6 +54456,21 @@ export function DocxEditorViewer({
           </div>
         );
       })}
+      {pageStackVirtualSpacers.after.heightPx > 0 ? (
+        <div
+          aria-hidden="true"
+          data-docx-page-window-spacer="after"
+          style={{
+            height: pageStackVirtualSpacers.after.heightPx,
+            width: pageStackVirtualSpacers.after.widthPx,
+            margin: "0 auto",
+            pointerEvents: "none",
+            visibility: hideDocumentUntilPaginationSettled
+              ? "hidden"
+              : undefined,
+          }}
+        />
+      ) : null}
       {!isReadOnly
         ? (() => {
             const hasCustomContextMenuState = Boolean(contextMenuState);

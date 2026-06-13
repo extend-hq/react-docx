@@ -402,6 +402,22 @@ export class SerialIdleTaskQueue<K> {
     });
   }
 
+  /** Drops queued work for a single key, resolving its waiters. */
+  cancel(key: K): void {
+    const remaining: SerialIdleTaskQueueEntry<K>[] = [];
+    this.pending.forEach((entry) => {
+      if (entry.key === key) {
+        entry.resolvers.forEach((resolveEntry) => {
+          resolveEntry();
+        });
+        return;
+      }
+
+      remaining.push(entry);
+    });
+    this.pending.splice(0, this.pending.length, ...remaining);
+  }
+
   /** Drops all queued tasks, resolving their waiters without running them. */
   clear(): void {
     const dropped = this.pending.splice(0, this.pending.length);

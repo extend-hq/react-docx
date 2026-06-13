@@ -8,8 +8,7 @@ import {
   type LayoutRun,
   type LayoutTableBlock
 } from "@extend-ai/react-docx-layout-engine";
-import { buildDocModel } from "@extend-ai/react-docx-doc-model";
-import { parseDocx } from "@extend-ai/react-docx-ooxml-core";
+import { importDocxBuffer } from "./docx-import";
 import { DEFAULT_DOCUMENT_LAYOUT, parseSectionLayout, resolveDocumentLayout } from "./section-layout";
 import {
   imageUsesPlaceholderFallback,
@@ -147,17 +146,21 @@ export function useDocxModel(file?: ArrayBuffer): UseDocxModelState {
 
     const docxFile = file;
     let isCurrent = true;
+    const abortController = new AbortController();
 
     async function load(): Promise<void> {
       setState({ isLoading: true });
       try {
-        const pkg = await parseDocx(docxFile);
+        const { model } = await importDocxBuffer(docxFile, {
+          signal: abortController.signal,
+          transferBuffer: false
+        });
         if (!isCurrent) {
           return;
         }
         setState({
           isLoading: false,
-          model: await buildDocModel(pkg)
+          model
         });
       } catch (error) {
         if (!isCurrent) {
@@ -174,6 +177,7 @@ export function useDocxModel(file?: ArrayBuffer): UseDocxModelState {
 
     return () => {
       isCurrent = false;
+      abortController.abort();
     };
   }, [file]);
 
