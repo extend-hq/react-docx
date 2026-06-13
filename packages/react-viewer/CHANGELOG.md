@@ -1,5 +1,14 @@
 # @extend-ai/react-docx
 
+## 0.7.0
+
+### Minor Changes
+
+- Ship DOCX parsing and serialization through a Rust/WebAssembly runtime that lazy-loads the bundled `docx_wasm_bg.wasm` asset on first use, keeping the binary out of the JavaScript bundle.
+- Add WASM loading controls with `setWasmSource` and `initWasm` so consumers can host the binary from a custom URL/CDN or prewarm the module before opening a document.
+- Expose the bundled WASM binary as a package asset for bundlers that prefer explicit URL imports, while preserving Node, SSR, test, and script loading from disk.
+- Move viewer/editor DOCX import work into a browser worker when available, with a main-thread fallback for unsupported environments.
+
 ## 0.7.0-alpha.5
 
 ### Patch Changes
