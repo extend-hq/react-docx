@@ -85,8 +85,13 @@ import {
 import {
   blitDocxThumbnailSurface,
   DOCX_THUMBNAIL_EXCLUDE_ATTRIBUTE,
+  type DocxPageThumbnailRenderSnapshot,
+  type DocxPageThumbnailSnapshotElement,
+  type DocxPageThumbnailTableCellSnapshot,
+  type DocxPageThumbnailTextRunSnapshot,
   DocxThumbnailSurfaceCache,
   rasterizeDocxThumbnailSurface,
+  renderDocxThumbnailSnapshotSurface,
   SerialIdleTaskQueue,
 } from "./thumbnail-raster";
 
@@ -4424,6 +4429,20 @@ export interface DocxPageThumbnailResolution {
   scale: number;
 }
 
+export interface DocxPageThumbnailRenderWindow {
+  /**
+   * Page indexes whose attached thumbnail canvases should render first.
+   *
+   * Use this for the thumbnails currently visible in a virtualized sidebar.
+   */
+  visiblePageIndexes?: readonly number[];
+  /**
+   * Page indexes to rasterize into the thumbnail surface cache after visible
+   * thumbnails. Prefetched pages paint quickly once their canvases mount.
+   */
+  prefetchPageIndexes?: readonly number[];
+}
+
 /**
  * Options for `useDocxPageThumbnails`.
  */
@@ -4444,6 +4463,19 @@ export interface UseDocxPageThumbnailsOptions {
    * @defaultValue `window.devicePixelRatio`, capped internally.
    */
   pixelRatio?: number;
+  /**
+   * Minimum interval between repeat raster jobs for the same thumbnail canvas.
+   *
+   * Lower this when the consumer already limits work to a small visible
+   * thumbnail window.
+   *
+   * @defaultValue `200`
+   */
+  minRasterIntervalMs?: number;
+  /**
+   * Prioritizes thumbnails for consumer-owned virtualized thumbnail rails.
+   */
+  renderWindow?: DocxPageThumbnailRenderWindow;
   /**
    * Prevents thumbnail rendering while keeping stable item metadata.
    *
@@ -29288,6 +29320,11 @@ interface DocxViewerPageSurfaceSize {
   heightPx: number;
 }
 
+interface DocxViewerPageThumbnailSnapshotEntry {
+  key: string;
+  getSnapshot: () => DocxPageThumbnailRenderSnapshot;
+}
+
 interface DocxViewerPageSurfaceRegistry {
   pageElements: Map<number, HTMLDivElement>;
   /**
@@ -29301,6 +29338,12 @@ interface DocxViewerPageSurfaceRegistry {
    * mounted in the main viewport.
    */
   pageSizes: Map<number, DocxViewerPageSurfaceSize>;
+  /**
+   * Compact layout/model draw snapshots used by the fast thumbnail renderer.
+   * These are available for virtualized/offscreen pages without mounting a page
+   * surface into a hidden React root.
+   */
+  pageThumbnailSnapshots: Map<number, DocxViewerPageThumbnailSnapshotEntry>;
   listeners: Set<() => void>;
 }
 
@@ -29325,6 +29368,10 @@ function ensureDocxViewerPageSurfaceRegistry(
       pageElements: new Map<number, HTMLDivElement>(),
       pageContentKeys: new Map<number, string>(),
       pageSizes: new Map<number, DocxViewerPageSurfaceSize>(),
+      pageThumbnailSnapshots: new Map<
+        number,
+        DocxViewerPageThumbnailSnapshotEntry
+      >(),
       listeners: new Set<() => void>(),
     };
     docxViewerPageSurfaceRegistryByEditor.set(owner, registry);
@@ -29335,7 +29382,10 @@ function ensureDocxViewerPageSurfaceRegistry(
 function syncDocxViewerPageSurfaceContentKeys(
   editor: Pick<DocxEditorController, "syncPaginationInfo">,
   contentKeysByPage: ReadonlyArray<string>,
-  pageSizesByPage: ReadonlyArray<DocxViewerPageSurfaceSize> = []
+  pageSizesByPage: ReadonlyArray<DocxViewerPageSurfaceSize> = [],
+  thumbnailSnapshotsByPage: ReadonlyArray<
+    DocxViewerPageThumbnailSnapshotEntry | undefined
+  > = []
 ): void {
   const registry = ensureDocxViewerPageSurfaceRegistry(editor);
   let changed = false;
@@ -29354,6 +29404,20 @@ function syncDocxViewerPageSurfaceContentKeys(
       changed = true;
     }
   });
+  thumbnailSnapshotsByPage.forEach((snapshot, pageIndex) => {
+    const previous = registry.pageThumbnailSnapshots.get(pageIndex);
+    if (!snapshot) {
+      if (previous) {
+        registry.pageThumbnailSnapshots.delete(pageIndex);
+        changed = true;
+      }
+      return;
+    }
+    if (previous?.key !== snapshot.key) {
+      registry.pageThumbnailSnapshots.set(pageIndex, snapshot);
+      changed = true;
+    }
+  });
   registry.pageContentKeys.forEach((_, pageIndex) => {
     if (pageIndex >= contentKeysByPage.length) {
       registry.pageContentKeys.delete(pageIndex);
@@ -29363,6 +29427,12 @@ function syncDocxViewerPageSurfaceContentKeys(
   registry.pageSizes.forEach((_, pageIndex) => {
     if (pageIndex >= pageSizesByPage.length) {
       registry.pageSizes.delete(pageIndex);
+      changed = true;
+    }
+  });
+  registry.pageThumbnailSnapshots.forEach((_, pageIndex) => {
+    if (pageIndex >= thumbnailSnapshotsByPage.length) {
+      registry.pageThumbnailSnapshots.delete(pageIndex);
       changed = true;
     }
   });
@@ -29489,6 +29559,500 @@ function resolveDocxViewerPageSurfaceSize(
   };
 }
 
+const DOCX_DIRECT_THUMBNAIL_MAX_ELEMENTS_PER_PAGE = 260;
+const DOCX_DIRECT_THUMBNAIL_MAX_TEXT_RUNS = 28;
+const DOCX_DIRECT_THUMBNAIL_MAX_TEXT_CHARS = 900;
+const DOCX_DIRECT_THUMBNAIL_MAX_TABLE_CELLS = 220;
+const DOCX_DIRECT_THUMBNAIL_MAX_CELL_TEXT_CHARS = 120;
+
+function docxThumbnailCssNumber(value: React.CSSProperties[keyof React.CSSProperties]): number {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string") {
+    const parsed = Number.parseFloat(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  return 0;
+}
+
+function normalizeDocxThumbnailColor(value?: string): string | undefined {
+  const normalized = value?.trim();
+  if (!normalized || normalized.toLowerCase() === "auto") {
+    return undefined;
+  }
+  if (/^[0-9a-fA-F]{6}$/.test(normalized)) {
+    return `#${normalized}`;
+  }
+  return normalized;
+}
+
+function docxThumbnailTextRunStylesMatch(
+  left: DocxPageThumbnailTextRunSnapshot,
+  right: DocxPageThumbnailTextRunSnapshot
+): boolean {
+  return (
+    left.bold === right.bold &&
+    left.italic === right.italic &&
+    left.color === right.color &&
+    left.backgroundColor === right.backgroundColor &&
+    left.fontSizePx === right.fontSizePx &&
+    left.fontFamily === right.fontFamily
+  );
+}
+
+function appendDocxThumbnailTextRun(
+  runs: DocxPageThumbnailTextRunSnapshot[],
+  run: DocxPageThumbnailTextRunSnapshot,
+  remaining: { chars: number }
+): void {
+  if (remaining.chars <= 0 || runs.length >= DOCX_DIRECT_THUMBNAIL_MAX_TEXT_RUNS) {
+    return;
+  }
+
+  const text = run.text.slice(0, remaining.chars);
+  if (!text) {
+    return;
+  }
+  remaining.chars -= text.length;
+
+  const nextRun = { ...run, text };
+  const previous = runs[runs.length - 1];
+  if (previous && docxThumbnailTextRunStylesMatch(previous, nextRun)) {
+    previous.text += nextRun.text;
+    return;
+  }
+
+  runs.push(nextRun);
+}
+
+function docxThumbnailFallbackHeadingRunStyle(
+  paragraph: ParagraphNode
+): TextRunNode["style"] | undefined {
+  const headingLevel = paragraph.style?.headingLevel;
+  return headingLevel && headingLevel >= 1 && headingLevel <= 6
+    ? DEFAULT_WORD_HEADING_RUN_STYLES[headingLevel]
+    : undefined;
+}
+
+function docxThumbnailTextRunsFromParagraph(
+  paragraph: ParagraphNode,
+  documentTheme: DocxDocumentTheme,
+  maxChars = DOCX_DIRECT_THUMBNAIL_MAX_TEXT_CHARS
+): DocxPageThumbnailTextRunSnapshot[] {
+  const runs: DocxPageThumbnailTextRunSnapshot[] = [];
+  const remaining = { chars: maxChars };
+  const fallbackHeadingStyle = docxThumbnailFallbackHeadingRunStyle(paragraph);
+  const fallbackFontFamily =
+    cssFontFamily(fallbackHeadingStyle?.fontFamily) ??
+    cssFontFamily(paragraphDominantFontFamily(paragraph));
+
+  paragraph.children.forEach((child) => {
+    if (remaining.chars <= 0) {
+      return;
+    }
+
+    const style =
+      child.type === "text" || child.type === "form-field"
+        ? child.style
+        : undefined;
+    const text =
+      child.type === "text"
+        ? child.text
+        : child.type === "form-field"
+        ? formFieldDisplayValue(child)
+        : child.type === "image"
+        ? child.alt || "[image]"
+        : "";
+    appendDocxThumbnailTextRun(
+      runs,
+      {
+        text,
+        bold: style?.bold ?? fallbackHeadingStyle?.bold,
+        italic: style?.italic ?? fallbackHeadingStyle?.italic,
+        color: normalizeDocxThumbnailColor(
+          themedRunColor(style?.color ?? fallbackHeadingStyle?.color, documentTheme)
+        ),
+        backgroundColor: normalizeDocxThumbnailColor(
+          style?.backgroundColor ?? resolveHighlightColor(style?.highlight)
+        ),
+        fontSizePx:
+          style?.fontSizePt && style.fontSizePt > 0
+            ? Math.max(6, (style.fontSizePt * 96) / 72)
+            : fallbackHeadingStyle?.fontSizePt
+            ? Math.max(6, (fallbackHeadingStyle.fontSizePt * 96) / 72)
+            : paragraphBaseFontSizePx(paragraph),
+        fontFamily: cssFontFamily(style?.fontFamily) ?? fallbackFontFamily,
+      },
+      remaining
+    );
+  });
+
+  return runs;
+}
+
+function docxThumbnailCellTextRuns(
+  cell: TableNode["rows"][number]["cells"][number],
+  documentTheme: DocxDocumentTheme
+): DocxPageThumbnailTextRunSnapshot[] | undefined {
+  const paragraph = tableCellParagraphsRecursively(cell.nodes).find(
+    (candidate) => paragraphText(candidate).trim().length > 0
+  );
+  if (!paragraph) {
+    return undefined;
+  }
+  const runs = docxThumbnailTextRunsFromParagraph(
+    paragraph,
+    documentTheme,
+    DOCX_DIRECT_THUMBNAIL_MAX_CELL_TEXT_CHARS
+  );
+  return runs.length > 0 ? runs : undefined;
+}
+
+function buildDocxThumbnailParagraphElements(params: {
+  paragraph: ParagraphNode;
+  segment: DocumentPageNodeSegment;
+  contentLeftPx: number;
+  contentTopPx: number;
+  contentWidthPx: number;
+  yPx: number;
+  heightPx: number;
+  numberingDefinitions?: NumberingDefinitionSet;
+  docGridLinePitchPx?: number;
+  documentTheme: DocxDocumentTheme;
+}): DocxPageThumbnailSnapshotElement[] {
+  const {
+    paragraph,
+    segment,
+    contentLeftPx,
+    contentWidthPx,
+    yPx,
+    heightPx,
+    numberingDefinitions,
+    docGridLinePitchPx,
+    documentTheme,
+  } = params;
+  const blockStyle = paragraphBlockStyle(
+    paragraph,
+    numberingDefinitions,
+    undefined,
+    docGridLinePitchPx
+  );
+  const paragraphLineRange = segment.paragraphLineRange;
+  const marginTopPx =
+    paragraphLineRange && paragraphLineRange.startLineIndex > 0
+      ? 0
+      : Math.max(0, docxThumbnailCssNumber(blockStyle.marginTop));
+  const marginBottomPx =
+    paragraphLineRange &&
+    paragraphLineRange.endLineIndex < paragraphLineRange.totalLineCount
+      ? 0
+      : Math.max(0, docxThumbnailCssNumber(blockStyle.marginBottom));
+  const marginLeftPx = docxThumbnailCssNumber(blockStyle.marginLeft);
+  const marginRightPx = Math.max(0, docxThumbnailCssNumber(blockStyle.marginRight));
+  const xPx = contentLeftPx + marginLeftPx;
+  const widthPx = Math.max(8, contentWidthPx - marginLeftPx - marginRightPx);
+  const bodyYPx = yPx + marginTopPx;
+  const bodyHeightPx = Math.max(1, heightPx - marginTopPx - marginBottomPx);
+  const runs = docxThumbnailTextRunsFromParagraph(paragraph, documentTheme);
+  const elements: DocxPageThumbnailSnapshotElement[] = [];
+
+  elements.push({
+    kind: "paragraph",
+    xPx,
+    yPx: bodyYPx,
+    widthPx,
+    heightPx: bodyHeightPx,
+    align: paragraph.style?.align,
+    backgroundColor: normalizeDocxThumbnailColor(
+      paragraph.style?.backgroundColor
+    ),
+    lineHeightPx:
+      paragraphLineRange?.lineHeightPx ??
+      estimateParagraphLineHeightPx(paragraph, docGridLinePitchPx),
+    startLineIndex: paragraphLineRange?.startLineIndex,
+    runs,
+  });
+
+  const hasVisibleText = runs.some((run) => run.text.trim().length > 0);
+  if (!hasVisibleText) {
+    const imageRuns = paragraph.children.filter(
+      (child): child is ImageRunNode => child.type === "image"
+    );
+    imageRuns.slice(0, 4).forEach((imageRun) => {
+      const imageWidthPx = Math.max(18, imageRun.widthPx ?? widthPx * 0.5);
+      const imageHeightPx = Math.max(18, imageRun.heightPx ?? bodyHeightPx * 0.5);
+      const scale = Math.min(
+        1,
+        (widthPx - 4) / imageWidthPx,
+        (bodyHeightPx - 4) / imageHeightPx
+      );
+      elements.push({
+        kind: "image-placeholder",
+        xPx: xPx + 2,
+        yPx: bodyYPx + 2,
+        widthPx: Math.max(12, imageWidthPx * scale),
+        heightPx: Math.max(12, imageHeightPx * scale),
+      });
+    });
+  }
+
+  return elements;
+}
+
+function buildDocxThumbnailTableElement(params: {
+  table: TableNode;
+  segment: DocumentPageNodeSegment;
+  contentLeftPx: number;
+  contentWidthPx: number;
+  contentHeightPx: number;
+  yPx: number;
+  heightPx: number;
+  numberingDefinitions?: NumberingDefinitionSet;
+  docGridLinePitchPx?: number;
+  documentTheme: DocxDocumentTheme;
+}): DocxPageThumbnailSnapshotElement | undefined {
+  const {
+    table,
+    segment,
+    contentLeftPx,
+    contentWidthPx,
+    contentHeightPx,
+    yPx,
+    heightPx,
+    numberingDefinitions,
+    docGridLinePitchPx,
+    documentTheme,
+  } = params;
+  const columnCount = tableColumnCount(table);
+  const tableIndentPx = twipsToSignedPixels(table.style?.indentTwips) ?? 0;
+  const tableWidthPx = twipsToPixels(table.style?.widthTwips);
+  const definedWidthsTwips = columnWidthsFromTableDefinition(table, columnCount);
+  const rawTableColumnWidthsPx =
+    definedWidthsTwips && definedWidthsTwips.length > 0
+      ? normalizeColumnWidthsPx(
+          definedWidthsTwips.map((widthTwips) => twipsToPixels(widthTwips) ?? 0),
+          columnCount,
+          tableWidthPx,
+          1
+        )
+      : defaultColumnWidthsPx(columnCount, tableWidthPx);
+  const rawResolvedTableWidthPx =
+    tableWidthPx ??
+    rawTableColumnWidthsPx.reduce((sum, widthPx) => sum + widthPx, 0);
+  const maxTableWidthPx = Math.max(
+    24,
+    contentWidthPx -
+      tableIndentPx -
+      resolveCollapsedTableHorizontalOuterBleedPx(table, columnCount)
+  );
+  const resolvedTableWidthPx = clampTableWidthPx(
+    rawResolvedTableWidthPx,
+    maxTableWidthPx
+  );
+  const { columnWidthsPx } = resolveFittedTableColumnWidths(
+    table,
+    rawTableColumnWidthsPx,
+    resolvedTableWidthPx
+  );
+  const rowHeightsPx = estimateTableRowHeightsPx(
+    table,
+    contentWidthPx,
+    numberingDefinitions,
+    docGridLinePitchPx,
+    contentHeightPx
+  );
+  const startRowIndex = Math.max(
+    0,
+    segment.tableRowSlice?.rowIndex ?? segment.tableRowRange?.startRowIndex ?? 0
+  );
+  const endRowIndex = Math.min(
+    table.rows.length,
+    segment.tableRowSlice
+      ? startRowIndex + 1
+      : segment.tableRowRange?.endRowIndex ?? table.rows.length
+  );
+  const cells: DocxPageThumbnailTableCellSnapshot[] = [];
+  let rowYPx = segment.tableRowSlice
+    ? -Math.max(0, segment.tableRowSlice.startOffsetPx)
+    : 0;
+
+  for (
+    let rowIndex = startRowIndex;
+    rowIndex < endRowIndex && cells.length < DOCX_DIRECT_THUMBNAIL_MAX_TABLE_CELLS;
+    rowIndex += 1
+  ) {
+    const row = table.rows[rowIndex];
+    if (!row) {
+      continue;
+    }
+    const rowHeightPx =
+      segment.tableRowSlice && rowIndex === segment.tableRowSlice.rowIndex
+        ? Math.max(1, segment.tableRowSlice.totalRowHeightPx)
+        : Math.max(1, rowHeightsPx[rowIndex] ?? MIN_PARAGRAPH_LINE_HEIGHT_PX);
+    let columnCursor = 0;
+    row.cells.forEach((cell) => {
+      if (cells.length >= DOCX_DIRECT_THUMBNAIL_MAX_TABLE_CELLS) {
+        return;
+      }
+      const span =
+        cell.style?.gridSpan && cell.style.gridSpan > 1 ? cell.style.gridSpan : 1;
+      const xPx = columnWidthsPx
+        .slice(0, columnCursor)
+        .reduce((sum, widthPx) => sum + widthPx, 0);
+      const widthPx = columnWidthsPx
+        .slice(columnCursor, columnCursor + span)
+        .reduce((sum, widthPx) => sum + widthPx, 0);
+      columnCursor += span;
+      cells.push({
+        xPx,
+        yPx: rowYPx,
+        widthPx: Math.max(1, widthPx),
+        heightPx: rowHeightPx,
+        backgroundColor: normalizeDocxThumbnailColor(
+          cell.style?.backgroundColor ?? row.style?.backgroundColor
+        ),
+        runs: docxThumbnailCellTextRuns(cell, documentTheme),
+      });
+    });
+    rowYPx += rowHeightPx;
+  }
+
+  if (cells.length === 0) {
+    return undefined;
+  }
+
+  return {
+    kind: "table",
+    xPx: contentLeftPx + tableIndentPx,
+    yPx,
+    widthPx: Math.max(1, resolvedTableWidthPx),
+    heightPx: Math.max(1, heightPx),
+    cells,
+  };
+}
+
+function buildDocxPageThumbnailRenderSnapshotEntries(params: {
+  model: DocModel;
+  pageNodeSegmentsByPage: ReadonlyArray<ReadonlyArray<DocumentPageNodeSegment>>;
+  pageSectionInfoByIndex: ReadonlyArray<{ layout: DocumentLayoutMetrics }>;
+  contentKeysByPage: ReadonlyArray<string>;
+  fallbackLayout: DocumentLayoutMetrics;
+  documentTheme: DocxDocumentTheme;
+  docGridLinePitchPxByNodeIndex: Map<number, number | undefined>;
+  numberingDefinitions?: NumberingDefinitionSet;
+}): DocxViewerPageThumbnailSnapshotEntry[] {
+  const {
+    model,
+    pageNodeSegmentsByPage,
+    pageSectionInfoByIndex,
+    contentKeysByPage,
+    fallbackLayout,
+    documentTheme,
+    docGridLinePitchPxByNodeIndex,
+    numberingDefinitions,
+  } = params;
+
+  return pageNodeSegmentsByPage.map((pageSegments, pageIndex) => {
+    const key = `${contentKeysByPage[pageIndex] ?? ""}|theme:${documentTheme}`;
+    let cachedSnapshot: DocxPageThumbnailRenderSnapshot | undefined;
+
+    return {
+      key,
+      getSnapshot: () => {
+        if (cachedSnapshot) {
+          return cachedSnapshot;
+        }
+
+        const pageLayout =
+          pageSectionInfoByIndex[pageIndex]?.layout ?? fallbackLayout;
+        const contentLeftPx = pageLayout.marginsPx.left;
+        const contentTopPx = pageLayout.marginsPx.top;
+        const contentWidthPx = Math.max(
+          1,
+          pageLayout.pageWidthPx -
+            pageLayout.marginsPx.left -
+            pageLayout.marginsPx.right
+        );
+        const contentHeightPx = Math.max(
+          1,
+          pageLayout.pageHeightPx -
+            pageLayout.marginsPx.top -
+            pageLayout.marginsPx.bottom
+        );
+        const elements: DocxPageThumbnailSnapshotElement[] = [];
+        let yPx = contentTopPx;
+
+        for (const segment of pageSegments) {
+          if (elements.length >= DOCX_DIRECT_THUMBNAIL_MAX_ELEMENTS_PER_PAGE) {
+            break;
+          }
+
+          const node = model.nodes[segment.nodeIndex];
+          if (!node) {
+            continue;
+          }
+          const docGridLinePitchPx = docGridLinePitchPxByNodeIndex.get(
+            segment.nodeIndex
+          );
+          const segmentHeightPx = estimateRenderedPageSegmentHeightPx(
+            node,
+            segment,
+            model,
+            contentWidthPx,
+            numberingDefinitions,
+            docGridLinePitchPx
+          );
+
+          if (node.type === "paragraph" && !segment.tableRowRange) {
+            elements.push(
+              ...buildDocxThumbnailParagraphElements({
+                paragraph: node,
+                segment,
+                contentLeftPx,
+                contentTopPx,
+                contentWidthPx,
+                yPx,
+                heightPx: segmentHeightPx,
+                numberingDefinitions,
+                docGridLinePitchPx,
+                documentTheme,
+              })
+            );
+          } else if (node.type === "table") {
+            const tableElement = buildDocxThumbnailTableElement({
+              table: node,
+              segment,
+              contentLeftPx,
+              contentWidthPx,
+              contentHeightPx,
+              yPx,
+              heightPx: segmentHeightPx,
+              numberingDefinitions,
+              docGridLinePitchPx,
+              documentTheme,
+            });
+            if (tableElement) {
+              elements.push(tableElement);
+            }
+          }
+
+          yPx += Math.max(1, segmentHeightPx);
+        }
+
+        cachedSnapshot = {
+          key,
+          sourceWidthPx: pageLayout.pageWidthPx,
+          sourceHeightPx: pageLayout.pageHeightPx,
+          pageBackgroundColor: documentTheme === "dark" ? "#111827" : "#ffffff",
+          elements,
+        };
+        return cachedSnapshot;
+      },
+    };
+  });
+}
+
 interface DocxDetachedThumbnailSurfaceRendererRoot {
   render(children: React.ReactNode): void;
   unmount(): void;
@@ -29522,24 +30086,30 @@ class DocxDetachedThumbnailSurfaceRenderer {
   private host: HTMLDivElement | undefined;
   private root: DocxDetachedThumbnailSurfaceRendererRoot | undefined;
   private activePageIndex: number | undefined;
+  private activeRenderKey: string | undefined;
 
   async renderPageSurface(params: {
     editor: DocxEditorController;
     registry: DocxViewerPageSurfaceRegistry;
     pageIndex: number;
+    renderKey: string;
   }): Promise<HTMLDivElement | undefined> {
     if (typeof document === "undefined" || typeof window === "undefined") {
       return undefined;
     }
 
-    const { editor, registry, pageIndex } = params;
+    const { editor, registry, pageIndex, renderKey } = params;
     await this.ensureRoot();
     if (!this.root) {
       return undefined;
     }
 
-    if (this.activePageIndex !== pageIndex) {
+    if (
+      this.activePageIndex !== pageIndex ||
+      this.activeRenderKey !== renderKey
+    ) {
       this.activePageIndex = pageIndex;
+      this.activeRenderKey = renderKey;
       this.root.render(
         <DocxDetachedThumbnailPageSurface
           editor={editor}
@@ -29561,6 +30131,7 @@ class DocxDetachedThumbnailSurfaceRenderer {
     }
     this.host = undefined;
     this.activePageIndex = undefined;
+    this.activeRenderKey = undefined;
   }
 
   private async ensureRoot(): Promise<void> {
@@ -29610,8 +30181,61 @@ class DocxDetachedThumbnailSurfaceRenderer {
   }
 }
 
-const DOCX_THUMBNAIL_SURFACE_CACHE_MAX_ENTRIES = 32;
+// Sized for a virtualized rail: comfortably larger than the live
+// visible+overscan+prefetch window so scrolling back over recently-seen pages
+// hits the cache (an instant blit) instead of re-rasterizing. Each entry is a
+// thumbnail-scale canvas (~0.1-0.2 MB), so 64 stays well under a few MB.
+const DOCX_THUMBNAIL_SURFACE_CACHE_MAX_ENTRIES = 64;
 const DOCX_THUMBNAIL_MIN_RASTER_INTERVAL_MS = 200;
+const DOCX_THUMBNAIL_RENDER_PRIORITY_VISIBLE = 0;
+const DOCX_THUMBNAIL_RENDER_PRIORITY_ATTACHED = 1;
+const DOCX_THUMBNAIL_RENDER_PRIORITY_PREFETCH = 2;
+
+function normalizeDocxThumbnailMinRasterIntervalMs(value: unknown): number {
+  return Number.isFinite(value) && Number(value) >= 0
+    ? Number(value)
+    : DOCX_THUMBNAIL_MIN_RASTER_INTERVAL_MS;
+}
+
+function normalizeDocxThumbnailPageIndexes(
+  indexes: readonly number[] | undefined,
+  totalPages: number
+): number[] {
+  if (!indexes?.length || totalPages <= 0) {
+    return [];
+  }
+
+  const seen = new Set<number>();
+  const normalized: number[] = [];
+  indexes.forEach((pageIndex) => {
+    if (!Number.isFinite(pageIndex)) {
+      return;
+    }
+    const roundedPageIndex = Math.trunc(pageIndex);
+    if (
+      roundedPageIndex < 0 ||
+      roundedPageIndex >= totalPages ||
+      seen.has(roundedPageIndex)
+    ) {
+      return;
+    }
+    seen.add(roundedPageIndex);
+    normalized.push(roundedPageIndex);
+  });
+  return normalized;
+}
+
+function docxThumbnailPageIndexesKey(pageIndexes: readonly number[]): string {
+  return pageIndexes.join(",");
+}
+
+function docxThumbnailCanvasQueueKey(canvasId: number): string {
+  return `canvas:${canvasId}`;
+}
+
+function docxThumbnailPrefetchQueueKey(pageIndex: number): string {
+  return `prefetch:${pageIndex}`;
+}
 
 export function resolveDocxPageThumbnailResolution(
   options: DocxPageThumbnailResolutionOptions
@@ -29740,7 +30364,7 @@ export function useDocxPageThumbnails(
     DocxThumbnailSurfaceCache<HTMLCanvasElement> | undefined
   >(undefined);
   const thumbnailRasterQueueRef = React.useRef<
-    SerialIdleTaskQueue<HTMLCanvasElement> | undefined
+    SerialIdleTaskQueue<string> | undefined
   >(undefined);
   const detachedThumbnailSurfaceRendererRef = React.useRef<
     DocxDetachedThumbnailSurfaceRenderer | undefined
@@ -29748,6 +30372,13 @@ export function useDocxPageThumbnails(
   const lastPaintedThumbnailKeyByCanvasRef = React.useRef(
     new WeakMap<HTMLCanvasElement, string>()
   );
+  const thumbnailQueueKeyByCanvasRef = React.useRef(
+    new WeakMap<HTMLCanvasElement, string>()
+  );
+  const nextThumbnailCanvasQueueIdRef = React.useRef(0);
+  const queuedPrefetchThumbnailKeysRef = React.useRef<Set<string>>(new Set());
+  const thumbnailMinRasterIntervalMs =
+    normalizeDocxThumbnailMinRasterIntervalMs(options.minRasterIntervalMs);
   const ensureThumbnailSurfaceCache = React.useCallback(() => {
     if (!thumbnailSurfaceCacheRef.current) {
       thumbnailSurfaceCacheRef.current = new DocxThumbnailSurfaceCache(
@@ -29759,18 +30390,51 @@ export function useDocxPageThumbnails(
   const ensureThumbnailRasterQueue = React.useCallback(() => {
     if (!thumbnailRasterQueueRef.current) {
       thumbnailRasterQueueRef.current = new SerialIdleTaskQueue({
-        minTaskIntervalMs: DOCX_THUMBNAIL_MIN_RASTER_INTERVAL_MS,
+        minTaskIntervalMs: thumbnailMinRasterIntervalMs,
       });
     }
     return thumbnailRasterQueueRef.current;
-  }, []);
+  }, [thumbnailMinRasterIntervalMs]);
+  const thumbnailQueueKeyForCanvas = React.useCallback(
+    (canvas: HTMLCanvasElement): string => {
+      const existing = thumbnailQueueKeyByCanvasRef.current.get(canvas);
+      if (existing) {
+        return existing;
+      }
+
+      const nextKey = docxThumbnailCanvasQueueKey(
+        nextThumbnailCanvasQueueIdRef.current
+      );
+      nextThumbnailCanvasQueueIdRef.current += 1;
+      thumbnailQueueKeyByCanvasRef.current.set(canvas, nextKey);
+      return nextKey;
+    },
+    []
+  );
+  React.useEffect(() => {
+    thumbnailRasterQueueRef.current?.clear();
+    thumbnailRasterQueueRef.current = undefined;
+    queuedPrefetchThumbnailKeysRef.current.clear();
+  }, [thumbnailMinRasterIntervalMs]);
   React.useEffect(() => {
     thumbnailSurfaceCacheRef.current?.clear();
     thumbnailRasterQueueRef.current?.clear();
     detachedThumbnailSurfaceRendererRef.current?.clear();
     detachedThumbnailSurfaceRendererRef.current = undefined;
     lastPaintedThumbnailKeyByCanvasRef.current = new WeakMap();
+    thumbnailQueueKeyByCanvasRef.current = new WeakMap();
+    nextThumbnailCanvasQueueIdRef.current = 0;
+    queuedPrefetchThumbnailKeysRef.current.clear();
   }, [editor.documentLoadNonce, pageSurfaceRegistryOwner]);
+  React.useEffect(() => {
+    detachedThumbnailSurfaceRendererRef.current?.clear();
+    detachedThumbnailSurfaceRendererRef.current = undefined;
+  }, [
+    editor.documentTheme,
+    editor.model,
+    editor.showComments,
+    editor.showTrackedChanges,
+  ]);
   React.useEffect(
     () => () => {
       detachedThumbnailSurfaceRendererRef.current?.clear();
@@ -29809,12 +30473,163 @@ export function useDocxPageThumbnails(
     },
     [editor.documentTheme, pageSurfaceRegistry, thumbnailResolutionOptionsKey]
   );
+  const totalThumbnailPages = Math.max(1, editor.totalPages);
+  const visibleThumbnailPageIndexes = React.useMemo(
+    () =>
+      normalizeDocxThumbnailPageIndexes(
+        options.renderWindow?.visiblePageIndexes,
+        totalThumbnailPages
+      ),
+    [options.renderWindow?.visiblePageIndexes, totalThumbnailPages]
+  );
+  const prefetchThumbnailPageIndexes = React.useMemo(
+    () =>
+      normalizeDocxThumbnailPageIndexes(
+        options.renderWindow?.prefetchPageIndexes,
+        totalThumbnailPages
+      ),
+    [options.renderWindow?.prefetchPageIndexes, totalThumbnailPages]
+  );
+  const visibleThumbnailPageIndexesKey = docxThumbnailPageIndexesKey(
+    visibleThumbnailPageIndexes
+  );
+  const prefetchThumbnailPageIndexesKey = docxThumbnailPageIndexesKey(
+    prefetchThumbnailPageIndexes
+  );
+  const visibleThumbnailPageIndexSet = React.useMemo(
+    () => new Set(visibleThumbnailPageIndexes),
+    [visibleThumbnailPageIndexesKey]
+  );
+  const thumbnailRenderPriorityForPage = React.useCallback(
+    (
+      pageIndex: number,
+      fallbackPriority = DOCX_THUMBNAIL_RENDER_PRIORITY_ATTACHED
+    ): number =>
+      visibleThumbnailPageIndexSet.has(pageIndex)
+        ? DOCX_THUMBNAIL_RENDER_PRIORITY_VISIBLE
+        : fallbackPriority,
+    [visibleThumbnailPageIndexSet]
+  );
+
+  const renderPageThumbnailSurface = React.useCallback(
+    async (
+      pageIndex: number,
+      renderOptions?: { force?: boolean }
+    ): Promise<
+      | {
+          surface: HTMLCanvasElement;
+          resolution: DocxPageThumbnailResolution;
+          runSkipKey: string | undefined;
+        }
+      | undefined
+    > => {
+      const force = renderOptions?.force === true;
+      const runSkipKey = thumbnailSkipKeyForPage(pageIndex);
+      const detachedRenderKey = [
+        runSkipKey ?? `load:${editor.documentLoadNonce}`,
+        editor.showComments ? "comments:1" : "comments:0",
+        editor.showTrackedChanges ? "tracked:1" : "tracked:0",
+      ].join("|");
+      const thumbnailSnapshotEntry =
+        pageSurfaceRegistry.pageThumbnailSnapshots.get(pageIndex);
+      const fallbackSourceSize = resolveDocxViewerRegisteredPageSurfaceSize(
+        pageSurfaceRegistry,
+        pageIndex,
+        fallbackLayout.pageWidthPx,
+        fallbackLayout.pageHeightPx
+      );
+      const resolution = resolveDocxPageThumbnailResolution({
+        sourceWidthPx: fallbackSourceSize.widthPx,
+        sourceHeightPx: fallbackSourceSize.heightPx,
+        resolution: options.resolution,
+        maxWidthPx: options.maxWidthPx,
+        maxHeightPx: options.maxHeightPx,
+        pixelRatio: options.pixelRatio,
+      });
+      const surfaceKey =
+        runSkipKey === undefined
+          ? undefined
+          : `${runSkipKey}|${fallbackSourceSize.widthPx}x${fallbackSourceSize.heightPx}|${resolution.pixelWidthPx}x${resolution.pixelHeightPx}`;
+      const surfaceCache = ensureThumbnailSurfaceCache();
+      let surface =
+        !force && surfaceKey !== undefined
+          ? surfaceCache.get(surfaceKey)
+          : undefined;
+
+      if (!surface) {
+        const thumbnailSnapshot = thumbnailSnapshotEntry?.getSnapshot();
+        if (thumbnailSnapshot) {
+          surface = renderDocxThumbnailSnapshotSurface({
+            snapshot: thumbnailSnapshot,
+            widthPx: resolution.widthPx,
+            heightPx: resolution.heightPx,
+            pixelWidthPx: resolution.pixelWidthPx,
+            pixelHeightPx: resolution.pixelHeightPx,
+          });
+          if (surfaceKey !== undefined) {
+            surfaceCache.set(surfaceKey, surface);
+          }
+          return { surface, resolution, runSkipKey };
+        }
+
+        let livePageElement = pageSurfaceRegistry.pageElements.get(pageIndex);
+        if (!livePageElement || !livePageElement.isConnected) {
+          if (!detachedThumbnailSurfaceRendererRef.current) {
+            detachedThumbnailSurfaceRendererRef.current =
+              new DocxDetachedThumbnailSurfaceRenderer();
+          }
+          livePageElement =
+            await detachedThumbnailSurfaceRendererRef.current.renderPageSurface({
+              editor,
+              registry: pageSurfaceRegistry,
+              pageIndex,
+              renderKey: detachedRenderKey,
+            });
+        }
+        if (!livePageElement || !livePageElement.isConnected) {
+          return undefined;
+        }
+
+        const sourceSize = resolveDocxViewerPageSurfaceSize(
+          livePageElement,
+          fallbackSourceSize.widthPx,
+          fallbackSourceSize.heightPx
+        );
+        surface = await rasterizeDocxThumbnailSurface({
+          pageElement: livePageElement,
+          sourceWidthPx: sourceSize.widthPx,
+          sourceHeightPx: sourceSize.heightPx,
+          widthPx: resolution.widthPx,
+          heightPx: resolution.heightPx,
+          pixelWidthPx: resolution.pixelWidthPx,
+          pixelHeightPx: resolution.pixelHeightPx,
+        });
+        if (surfaceKey !== undefined) {
+          surfaceCache.set(surfaceKey, surface);
+        }
+      }
+
+      return { surface, resolution, runSkipKey };
+    },
+    [
+      ensureThumbnailSurfaceCache,
+      fallbackLayout.pageHeightPx,
+      fallbackLayout.pageWidthPx,
+      options.resolution,
+      options.maxHeightPx,
+      options.maxWidthPx,
+      options.pixelRatio,
+      pageSurfaceRegistry,
+      thumbnailSkipKeyForPage,
+      editor,
+    ]
+  );
 
   const renderPageThumbnailToCanvas = React.useCallback(
     async (
       pageIndex: number,
       canvas?: HTMLCanvasElement,
-      renderOptions?: { force?: boolean }
+      renderOptions?: { force?: boolean; priority?: number }
     ): Promise<void> => {
       if (options.disabled) {
         return;
@@ -29839,8 +30654,7 @@ export function useDocxPageThumbnails(
         return;
       }
 
-      updatePageThumbnailState(pageIndex, "rendering");
-      await ensureThumbnailRasterQueue().enqueue(targetCanvas, async () => {
+      const paintIntoTarget = async (): Promise<void> => {
         if (
           requiresAttachedTarget &&
           attachedCanvasByPageRef.current.get(pageIndex) !== targetCanvas
@@ -29848,81 +30662,16 @@ export function useDocxPageThumbnails(
           return;
         }
 
-        const runSkipKey = thumbnailSkipKeyForPage(pageIndex);
-        const fallbackSourceSize = resolveDocxViewerRegisteredPageSurfaceSize(
-          pageSurfaceRegistry,
-          pageIndex,
-          fallbackLayout.pageWidthPx,
-          fallbackLayout.pageHeightPx
-        );
-        const resolution = resolveDocxPageThumbnailResolution({
-          sourceWidthPx: fallbackSourceSize.widthPx,
-          sourceHeightPx: fallbackSourceSize.heightPx,
-          resolution: options.resolution,
-          maxWidthPx: options.maxWidthPx,
-          maxHeightPx: options.maxHeightPx,
-          pixelRatio: options.pixelRatio,
-        });
-        const surfaceKey =
-          runSkipKey === undefined
-            ? undefined
-            : `${runSkipKey}|${fallbackSourceSize.widthPx}x${fallbackSourceSize.heightPx}|${resolution.pixelWidthPx}x${resolution.pixelHeightPx}`;
-        const surfaceCache = ensureThumbnailSurfaceCache();
-
         try {
-          let surface =
-            !force && surfaceKey !== undefined
-              ? surfaceCache.get(surfaceKey)
-              : undefined;
-          if (!surface) {
-            let livePageElement =
-              pageSurfaceRegistry.pageElements.get(pageIndex);
-            let renderedDetachedSurface = false;
-            try {
-              if (!livePageElement || !livePageElement.isConnected) {
-                if (!detachedThumbnailSurfaceRendererRef.current) {
-                  detachedThumbnailSurfaceRendererRef.current =
-                    new DocxDetachedThumbnailSurfaceRenderer();
-                }
-                livePageElement =
-                  await detachedThumbnailSurfaceRendererRef.current.renderPageSurface(
-                    {
-                      editor,
-                      registry: pageSurfaceRegistry,
-                      pageIndex,
-                    }
-                  );
-                renderedDetachedSurface = true;
-              }
-              if (!livePageElement || !livePageElement.isConnected) {
-                updatePageThumbnailState(pageIndex, "unavailable");
-                return;
-              }
-
-              const sourceSize = resolveDocxViewerPageSurfaceSize(
-                livePageElement,
-                fallbackSourceSize.widthPx,
-                fallbackSourceSize.heightPx
-              );
-              surface = await rasterizeDocxThumbnailSurface({
-                pageElement: livePageElement,
-                sourceWidthPx: sourceSize.widthPx,
-                sourceHeightPx: sourceSize.heightPx,
-                widthPx: resolution.widthPx,
-                heightPx: resolution.heightPx,
-                pixelWidthPx: resolution.pixelWidthPx,
-                pixelHeightPx: resolution.pixelHeightPx,
-              });
-              if (surfaceKey !== undefined) {
-                surfaceCache.set(surfaceKey, surface);
-              }
-            } finally {
-              if (renderedDetachedSurface) {
-                detachedThumbnailSurfaceRendererRef.current?.clear();
-              }
-            }
+          const rendered = await renderPageThumbnailSurface(pageIndex, {
+            force,
+          });
+          if (!rendered) {
+            updatePageThumbnailState(pageIndex, "unavailable");
+            return;
           }
 
+          const { surface, resolution, runSkipKey } = rendered;
           blitDocxThumbnailSurface(surface, targetCanvas, resolution);
           if (runSkipKey !== undefined) {
             lastPaintedThumbnailKeyByCanvasRef.current.set(
@@ -29940,35 +30689,136 @@ export function useDocxPageThumbnails(
               : new Error("Failed to render DOCX page thumbnail.")
           );
         }
-      });
+      };
+
+      updatePageThumbnailState(pageIndex, "rendering");
+
+      // Fast path: when a draw snapshot exists, renderPageThumbnailSurface paints
+      // synchronously (no DOM clone, no SVG image decode), so paint it on the
+      // current microtask instead of deferring to the idle queue + per-canvas
+      // throttle. Those exist to pace the expensive async DOM/detached-render
+      // path; routing instant snapshot paints through them only adds latency.
+      // Attached canvases are bounded by the rail's visible+overscan window, so
+      // the synchronous burst stays small; off-screen prefetch stays queued.
+      if (pageSurfaceRegistry.pageThumbnailSnapshots.has(pageIndex)) {
+        await paintIntoTarget();
+        return;
+      }
+
+      await ensureThumbnailRasterQueue().enqueue(
+        thumbnailQueueKeyForCanvas(targetCanvas),
+        paintIntoTarget,
+        {
+          priority:
+            renderOptions?.priority ??
+            thumbnailRenderPriorityForPage(
+              pageIndex,
+              DOCX_THUMBNAIL_RENDER_PRIORITY_ATTACHED
+            ),
+        }
+      );
     },
     [
       ensureThumbnailRasterQueue,
-      ensureThumbnailSurfaceCache,
-      fallbackLayout.pageHeightPx,
-      fallbackLayout.pageWidthPx,
       options.disabled,
-      options.resolution,
-      options.maxHeightPx,
-      options.maxWidthPx,
-      options.pixelRatio,
       pageSurfaceRegistry,
+      renderPageThumbnailSurface,
       thumbnailSkipKeyForPage,
+      thumbnailQueueKeyForCanvas,
+      thumbnailRenderPriorityForPage,
       updatePageThumbnailState,
-      editor,
     ]
+  );
+
+  const prefetchPageThumbnailSurface = React.useCallback(
+    async (pageIndex: number): Promise<void> => {
+      if (options.disabled) {
+        return;
+      }
+
+      const queueKey = docxThumbnailPrefetchQueueKey(pageIndex);
+      queuedPrefetchThumbnailKeysRef.current.add(queueKey);
+      await ensureThumbnailRasterQueue().enqueue(
+        queueKey,
+        async () => {
+          try {
+            await renderPageThumbnailSurface(pageIndex);
+          } catch {
+            // Prefetch is opportunistic; attached thumbnail renders report errors.
+          }
+        },
+        { priority: DOCX_THUMBNAIL_RENDER_PRIORITY_PREFETCH }
+      );
+      queuedPrefetchThumbnailKeysRef.current.delete(queueKey);
+    },
+    [ensureThumbnailRasterQueue, options.disabled, renderPageThumbnailSurface]
   );
 
   const requestAttachedThumbnailRenders = React.useCallback(
     async (renderOptions?: { force?: boolean }): Promise<void> => {
-      const tasks = [...attachedCanvasByPageRef.current.keys()].map(
-        (pageIndex) =>
-          renderPageThumbnailToCanvas(pageIndex, undefined, renderOptions)
+      const attachedPageIndexes = [
+        ...attachedCanvasByPageRef.current.keys(),
+      ].sort((leftPageIndex, rightPageIndex) => {
+        const leftPriority = thumbnailRenderPriorityForPage(leftPageIndex);
+        const rightPriority = thumbnailRenderPriorityForPage(rightPageIndex);
+        return leftPriority - rightPriority || leftPageIndex - rightPageIndex;
+      });
+      const tasks = attachedPageIndexes.map((pageIndex) =>
+        renderPageThumbnailToCanvas(pageIndex, undefined, {
+          ...renderOptions,
+          priority: thumbnailRenderPriorityForPage(pageIndex),
+        })
       );
       await Promise.all(tasks);
     },
-    [renderPageThumbnailToCanvas]
+    [renderPageThumbnailToCanvas, thumbnailRenderPriorityForPage]
   );
+  const requestPrefetchThumbnailRenders = React.useCallback(async (): Promise<
+    void
+  > => {
+    if (options.disabled) {
+      queuedPrefetchThumbnailKeysRef.current.forEach((queueKey) => {
+        thumbnailRasterQueueRef.current?.cancel(queueKey);
+      });
+      queuedPrefetchThumbnailKeysRef.current.clear();
+      return;
+    }
+
+    const requestedPrefetchKeys = new Set(
+      prefetchThumbnailPageIndexes.map((pageIndex) =>
+        docxThumbnailPrefetchQueueKey(pageIndex)
+      )
+    );
+    queuedPrefetchThumbnailKeysRef.current.forEach((queueKey) => {
+      if (!requestedPrefetchKeys.has(queueKey)) {
+        thumbnailRasterQueueRef.current?.cancel(queueKey);
+        queuedPrefetchThumbnailKeysRef.current.delete(queueKey);
+      }
+    });
+    const tasks = prefetchThumbnailPageIndexes.map((pageIndex) =>
+      prefetchPageThumbnailSurface(pageIndex)
+    );
+    await Promise.all(tasks);
+  }, [
+    options.disabled,
+    prefetchPageThumbnailSurface,
+    prefetchThumbnailPageIndexes,
+  ]);
+
+  React.useEffect(() => {
+    void requestPrefetchThumbnailRenders();
+  }, [
+    editor.documentLoadNonce,
+    editor.documentTheme,
+    editor.model,
+    mountedPageElements,
+    options.maxHeightPx,
+    options.maxWidthPx,
+    options.pixelRatio,
+    options.resolution,
+    prefetchThumbnailPageIndexesKey,
+    requestPrefetchThumbnailRenders,
+  ]);
 
   // Public API: a forced refresh, bypassing the unchanged-content skip and the
   // surface cache (callers reach for this after out-of-band changes such as
@@ -30006,7 +30856,12 @@ export function useDocxPageThumbnails(
     requestAttachedThumbnailRenders,
   ]);
 
-  const thumbnails = React.useMemo<DocxPageThumbnailItem[]>(() => {
+  // Geometry/paint metadata for every page, independent of render status. This
+  // is the expensive part — each mounted page calls resolveDocxViewerPageSurfaceSize
+  // (a getBoundingClientRect, i.e. a forced layout). Keeping it out of the
+  // status-dependent memo means the ~2-3 status transitions per page during load
+  // no longer re-measure every page (which was O(pages^2) of forced layout).
+  const thumbnailGeometryItems = React.useMemo(() => {
     const totalPages = Math.max(1, editor.totalPages);
     return Array.from({ length: totalPages }, (_, pageIndex) => {
       const pageElement = mountedPageElements.get(pageIndex);
@@ -30031,16 +30886,15 @@ export function useDocxPageThumbnails(
         maxHeightPx: options.maxHeightPx,
         pixelRatio: options.pixelRatio,
       });
-      const state = pageThumbnailStates.get(pageIndex);
 
       return {
+        // Internal: drives the default status below; stripped before exposure.
+        hasElement: Boolean(pageElement),
         pageIndex,
         pageNumber: pageIndex + 1,
         sourceWidthPx: sourceSize.widthPx,
         sourceHeightPx: sourceSize.heightPx,
         isMounted: Boolean(pageElement && pageElement.isConnected),
-        status: state?.status ?? (pageElement ? "idle" : "unavailable"),
-        error: state?.error,
         paint: (canvas: HTMLCanvasElement | null): boolean => {
           if (!canvas || options.disabled) {
             return false;
@@ -30062,7 +30916,9 @@ export function useDocxPageThumbnails(
               const previousCanvas =
                 attachedCanvasByPageRef.current.get(pageIndex);
               if (previousCanvas) {
-                thumbnailRasterQueueRef.current?.cancel(previousCanvas);
+                thumbnailRasterQueueRef.current?.cancel(
+                  thumbnailQueueKeyForCanvas(previousCanvas)
+                );
               }
               attachedCanvasByPageRef.current.delete(pageIndex);
             };
@@ -30102,8 +30958,24 @@ export function useDocxPageThumbnails(
     options.maxWidthPx,
     options.pixelRatio,
     pageSurfaceRegistry,
-    pageThumbnailStates,
+    thumbnailQueueKeyForCanvas,
   ]);
+
+  // Cheap status merge: a status change only re-maps the (already-measured)
+  // geometry items, never re-touching the DOM.
+  const thumbnails = React.useMemo<DocxPageThumbnailItem[]>(
+    () =>
+      thumbnailGeometryItems.map((geometryItem) => {
+        const { hasElement, ...item } = geometryItem;
+        const state = pageThumbnailStates.get(item.pageIndex);
+        return {
+          ...item,
+          status: state?.status ?? (hasElement ? "idle" : "unavailable"),
+          error: state?.error,
+        };
+      }),
+    [thumbnailGeometryItems, pageThumbnailStates]
+  );
 
   const paintThumbnail = React.useCallback(
     (pageIndex: number, canvas: HTMLCanvasElement | null): boolean => {
@@ -33587,15 +34459,40 @@ export function DocxEditorViewer({
       }),
     [documentLayout, pageNodeSegmentsByPage, pageSectionInfoByIndex]
   );
+  const pageThumbnailSnapshotEntriesByPage = React.useMemo(
+    () =>
+      buildDocxPageThumbnailRenderSnapshotEntries({
+        model: editor.model,
+        pageNodeSegmentsByPage,
+        pageSectionInfoByIndex,
+        contentKeysByPage: pageThumbnailContentKeysByPage,
+        fallbackLayout: documentLayout,
+        documentTheme: editor.documentTheme,
+        docGridLinePitchPxByNodeIndex,
+        numberingDefinitions: editor.model.metadata.numberingDefinitions,
+      }),
+    [
+      docGridLinePitchPxByNodeIndex,
+      documentLayout,
+      editor.documentTheme,
+      editor.model,
+      editor.model.metadata.numberingDefinitions,
+      pageNodeSegmentsByPage,
+      pageSectionInfoByIndex,
+      pageThumbnailContentKeysByPage,
+    ]
+  );
   React.useEffect(() => {
     syncDocxViewerPageSurfaceContentKeys(
       editor,
       pageThumbnailContentKeysByPage,
-      pageThumbnailSurfaceSizesByPage
+      pageThumbnailSurfaceSizesByPage,
+      pageThumbnailSnapshotEntriesByPage
     );
   }, [
     pageSurfaceRegistryOwner,
     pageThumbnailContentKeysByPage,
+    pageThumbnailSnapshotEntriesByPage,
     pageThumbnailSurfaceSizesByPage,
   ]);
   const resolveStyleRefFieldValueForPage = React.useMemo(() => {

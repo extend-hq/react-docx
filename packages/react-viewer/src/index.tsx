@@ -549,6 +549,7 @@ export {
   type UseDocxPageLayoutResult,
   type DocxPageThumbnailItem,
   type DocxPageThumbnailBounds,
+  type DocxPageThumbnailRenderWindow,
   type DocxPageThumbnailResolution,
   type DocxPageThumbnailResolutionOptions,
   type DocxPageThumbnailStatus,

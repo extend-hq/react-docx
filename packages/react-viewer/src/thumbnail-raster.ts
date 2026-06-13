@@ -27,6 +27,85 @@ const THUMBNAIL_EXCLUDED_CLONE_SELECTOR = [
 const THUMBNAIL_IMAGE_DOWNSCALE_MIN_DATA_URI_LENGTH = 32_768;
 const THUMBNAIL_IMAGE_DOWNSCALE_MAX_DIMENSION_PX = 512;
 const THUMBNAIL_IMAGE_JPEG_QUALITY = 0.78;
+const THUMBNAIL_DIRECT_DEFAULT_FONT_FAMILY = "Calibri, Arial, sans-serif";
+const THUMBNAIL_DIRECT_DEFAULT_TEXT_COLOR = "#111827";
+const THUMBNAIL_DIRECT_TABLE_BORDER_COLOR = "#d1d5db";
+const THUMBNAIL_DIRECT_IMAGE_BACKGROUND = "#f3f4f6";
+const THUMBNAIL_DIRECT_MAX_ELEMENTS = 320;
+const THUMBNAIL_DIRECT_MAX_TEXT_CHARS = 640;
+const THUMBNAIL_DIRECT_MAX_LINES = 14;
+const THUMBNAIL_DIRECT_MAX_LAYOUT_LINES = 80;
+
+export type DocxPageThumbnailSnapshotTextAlign =
+  | "left"
+  | "center"
+  | "right"
+  | "justify";
+
+export interface DocxPageThumbnailTextRunSnapshot {
+  text: string;
+  bold?: boolean;
+  italic?: boolean;
+  color?: string;
+  backgroundColor?: string;
+  fontSizePx?: number;
+  fontFamily?: string;
+}
+
+export interface DocxPageThumbnailParagraphSnapshot {
+  kind: "paragraph";
+  xPx: number;
+  yPx: number;
+  widthPx: number;
+  heightPx: number;
+  align?: DocxPageThumbnailSnapshotTextAlign;
+  backgroundColor?: string;
+  lineHeightPx?: number;
+  startLineIndex?: number;
+  runs: readonly DocxPageThumbnailTextRunSnapshot[];
+}
+
+export interface DocxPageThumbnailImagePlaceholderSnapshot {
+  kind: "image-placeholder";
+  xPx: number;
+  yPx: number;
+  widthPx: number;
+  heightPx: number;
+  backgroundColor?: string;
+  borderColor?: string;
+}
+
+export interface DocxPageThumbnailTableCellSnapshot {
+  xPx: number;
+  yPx: number;
+  widthPx: number;
+  heightPx: number;
+  backgroundColor?: string;
+  runs?: readonly DocxPageThumbnailTextRunSnapshot[];
+}
+
+export interface DocxPageThumbnailTableSnapshot {
+  kind: "table";
+  xPx: number;
+  yPx: number;
+  widthPx: number;
+  heightPx: number;
+  borderColor?: string;
+  cells: readonly DocxPageThumbnailTableCellSnapshot[];
+}
+
+export type DocxPageThumbnailSnapshotElement =
+  | DocxPageThumbnailParagraphSnapshot
+  | DocxPageThumbnailImagePlaceholderSnapshot
+  | DocxPageThumbnailTableSnapshot;
+
+export interface DocxPageThumbnailRenderSnapshot {
+  key: string;
+  sourceWidthPx: number;
+  sourceHeightPx: number;
+  pageBackgroundColor?: string;
+  elements: readonly DocxPageThumbnailSnapshotElement[];
+}
 
 function thumbnailSvgDataUri(svg: string): string {
   return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
@@ -130,6 +209,483 @@ export function getDownscaledThumbnailImageDataUri(
   const pending = downscaleThumbnailImageDataUri(src).catch(() => undefined);
   downscaledThumbnailImageCache.set(src, pending);
   return pending;
+}
+
+function directThumbnailPositivePx(value: number | undefined, fallback = 1): number {
+  return Number.isFinite(value) && (value as number) > 0
+    ? Math.max(1, Number(value))
+    : fallback;
+}
+
+function setCanvasFillStyle(
+  context: CanvasRenderingContext2D,
+  color: string | undefined,
+  fallback: string
+): void {
+  try {
+    context.fillStyle = color || fallback;
+  } catch {
+    context.fillStyle = fallback;
+  }
+}
+
+function setCanvasStrokeStyle(
+  context: CanvasRenderingContext2D,
+  color: string | undefined,
+  fallback: string
+): void {
+  try {
+    context.strokeStyle = color || fallback;
+  } catch {
+    context.strokeStyle = fallback;
+  }
+}
+
+function directThumbnailFont(
+  run: DocxPageThumbnailTextRunSnapshot | undefined,
+  fallbackFontSizePx: number
+): string {
+  const fontSizePx = Math.max(
+    6,
+    Math.min(
+      36,
+      Math.round(
+        directThumbnailPositivePx(run?.fontSizePx, fallbackFontSizePx)
+      )
+    )
+  );
+  const fontStyle = run?.italic ? "italic " : "";
+  const fontWeight = run?.bold ? "700 " : "";
+  return `${fontStyle}${fontWeight}${fontSizePx}px ${
+    run?.fontFamily || THUMBNAIL_DIRECT_DEFAULT_FONT_FAMILY
+  }`;
+}
+
+/**
+ * Tokenizer for thumbnail text layout. A token is a hard break, a run of
+ * whitespace, or a run of non-whitespace — the classes never mix, so a token's
+ * kind is decided by its first character. Hoisted to module scope so the hot
+ * layout loop does not allocate a fresh RegExp per run.
+ */
+const THUMBNAIL_DIRECT_TOKEN_REGEX =
+  /(\r\n|\n|\t|[^\S\r\n\t]+|[^\s\r\n\t]+)/g;
+const THUMBNAIL_DIRECT_LEADING_WHITESPACE_REGEX = /^\s/;
+const THUMBNAIL_DIRECT_TEXT_MEASURE_CACHE_MAX_ENTRIES = 4096;
+const directThumbnailTextMeasureCache = new Map<string, number>();
+
+/**
+ * Measures a token's advance width, memoizing by `font|text`. Tokens (spaces,
+ * common words) repeat heavily across a page, so the cache turns most measures
+ * into Map lookups. The caller must have already assigned `context.font` to
+ * `font` so a cache miss measures with the matching face.
+ */
+function measureDirectThumbnailToken(
+  context: CanvasRenderingContext2D,
+  font: string,
+  text: string
+): number {
+  if (!text) {
+    return 0;
+  }
+  const cacheKey = `${font}\u0000${text}`;
+  const cached = directThumbnailTextMeasureCache.get(cacheKey);
+  if (cached !== undefined) {
+    return cached;
+  }
+  const width = context.measureText(text).width;
+  if (
+    directThumbnailTextMeasureCache.size >=
+    THUMBNAIL_DIRECT_TEXT_MEASURE_CACHE_MAX_ENTRIES
+  ) {
+    const oldestKey = directThumbnailTextMeasureCache.keys().next().value;
+    if (oldestKey !== undefined) {
+      directThumbnailTextMeasureCache.delete(oldestKey);
+    }
+  }
+  directThumbnailTextMeasureCache.set(cacheKey, width);
+  return width;
+}
+
+interface DirectThumbnailTextSegment {
+  run: DocxPageThumbnailTextRunSnapshot;
+  text: string;
+  widthPx: number;
+  /** The run's resolved canvas font shorthand, reused by the draw pass. */
+  font: string;
+}
+
+interface DirectThumbnailTextLine {
+  segments: DirectThumbnailTextSegment[];
+  widthPx: number;
+}
+
+function appendDirectThumbnailTextLine(
+  lines: DirectThumbnailTextLine[],
+  currentSegments: DirectThumbnailTextSegment[],
+  currentWidthPx: number
+): DirectThumbnailTextLine {
+  const line = {
+    segments: currentSegments,
+    widthPx: currentWidthPx,
+  };
+  lines.push(line);
+  return line;
+}
+
+function layoutDirectThumbnailTextRuns(params: {
+  context: CanvasRenderingContext2D;
+  runs: readonly DocxPageThumbnailTextRunSnapshot[];
+  widthPx: number;
+  fallbackFontSizePx: number;
+  maxLineCount: number;
+}): DirectThumbnailTextLine[] {
+  const { context, runs, fallbackFontSizePx } = params;
+  const widthPx = Math.max(1, params.widthPx);
+  const maxLineCount = Math.max(
+    1,
+    Math.min(THUMBNAIL_DIRECT_MAX_LAYOUT_LINES, params.maxLineCount)
+  );
+  const lines: DirectThumbnailTextLine[] = [];
+  let currentSegments: DirectThumbnailTextSegment[] = [];
+  let currentWidthPx = 0;
+  let remainingChars = THUMBNAIL_DIRECT_MAX_TEXT_CHARS;
+
+  const flushLine = (): void => {
+    appendDirectThumbnailTextLine(lines, currentSegments, currentWidthPx);
+    currentSegments = [];
+    currentWidthPx = 0;
+  };
+
+  for (const run of runs) {
+    if (lines.length >= maxLineCount || remainingChars <= 0) {
+      break;
+    }
+
+    const text = run.text.slice(0, remainingChars);
+    remainingChars -= text.length;
+    // Set the run's font once for the whole run; every token below measures
+    // against it (the cache and the wrap test assume context.font === runFont).
+    const runFont = directThumbnailFont(run, fallbackFontSizePx);
+    context.font = runFont;
+    const tokens = text.match(THUMBNAIL_DIRECT_TOKEN_REGEX) ?? [];
+    for (const token of tokens) {
+      if (lines.length >= maxLineCount) {
+        break;
+      }
+      if (token === "\n" || token === "\r\n") {
+        flushLine();
+        continue;
+      }
+
+      const drawableToken = token === "\t" ? "    " : token;
+      const tokenWidthPx = measureDirectThumbnailToken(
+        context,
+        runFont,
+        drawableToken
+      );
+      const tokenIsWhitespace =
+        THUMBNAIL_DIRECT_LEADING_WHITESPACE_REGEX.test(drawableToken);
+      if (
+        currentSegments.length > 0 &&
+        currentWidthPx + tokenWidthPx > widthPx &&
+        !tokenIsWhitespace
+      ) {
+        flushLine();
+      }
+      if (currentSegments.length === 0 && tokenIsWhitespace) {
+        continue;
+      }
+      currentSegments.push({
+        run,
+        text: drawableToken,
+        widthPx: tokenWidthPx,
+        font: runFont,
+      });
+      currentWidthPx += tokenWidthPx;
+    }
+  }
+
+  if (currentSegments.length > 0 || lines.length === 0) {
+    flushLine();
+  }
+
+  return lines;
+}
+
+function directThumbnailAlignedX(params: {
+  xPx: number;
+  widthPx: number;
+  lineWidthPx: number;
+  align?: DocxPageThumbnailSnapshotTextAlign;
+}): number {
+  const { xPx, widthPx, lineWidthPx, align } = params;
+  if (align === "center") {
+    return xPx + Math.max(0, (widthPx - lineWidthPx) / 2);
+  }
+  if (align === "right") {
+    return xPx + Math.max(0, widthPx - lineWidthPx);
+  }
+  return xPx;
+}
+
+function drawDirectThumbnailTextRuns(params: {
+  context: CanvasRenderingContext2D;
+  runs: readonly DocxPageThumbnailTextRunSnapshot[];
+  xPx: number;
+  yPx: number;
+  widthPx: number;
+  heightPx: number;
+  align?: DocxPageThumbnailSnapshotTextAlign;
+  lineHeightPx?: number;
+  startLineIndex?: number;
+}): void {
+  const {
+    context,
+    runs,
+    xPx,
+    yPx,
+    widthPx,
+    heightPx,
+    align,
+    startLineIndex,
+  } = params;
+  const safeWidthPx = Math.max(1, widthPx);
+  const safeHeightPx = Math.max(1, heightPx);
+  const fallbackFontSizePx = Math.max(
+    7,
+    Math.min(
+      20,
+      Math.round(
+        runs.find((run) => Number.isFinite(run.fontSizePx))?.fontSizePx ?? 12
+      )
+    )
+  );
+  const lineHeightPx = Math.max(
+    fallbackFontSizePx + 1,
+    Math.round(params.lineHeightPx ?? fallbackFontSizePx * 1.25)
+  );
+  const skippedLineCount = Math.max(
+    0,
+    Math.min(THUMBNAIL_DIRECT_MAX_LAYOUT_LINES - 1, Math.trunc(startLineIndex ?? 0))
+  );
+  const visibleLineCount = Math.max(
+    1,
+    Math.min(
+      THUMBNAIL_DIRECT_MAX_LINES,
+      Math.ceil(safeHeightPx / Math.max(1, lineHeightPx)) + 1
+    )
+  );
+  const lines = layoutDirectThumbnailTextRuns({
+    context,
+    runs,
+    widthPx: safeWidthPx,
+    fallbackFontSizePx,
+    maxLineCount: skippedLineCount + visibleLineCount,
+  }).slice(skippedLineCount, skippedLineCount + visibleLineCount);
+
+  context.save();
+  context.beginPath();
+  context.rect(xPx, yPx, safeWidthPx, safeHeightPx);
+  context.clip();
+  context.textBaseline = "alphabetic";
+
+  // The layout pass already resolved each segment's font and width; only write
+  // context.font when it actually changes (one assignment per run, not token).
+  let lastAppliedFont: string | undefined;
+  lines.forEach((line, lineIndex) => {
+    const lineTopPx = yPx + lineIndex * lineHeightPx;
+    if (lineTopPx > yPx + safeHeightPx) {
+      return;
+    }
+    let cursorXPx = directThumbnailAlignedX({
+      xPx,
+      widthPx: safeWidthPx,
+      lineWidthPx: line.widthPx,
+      align,
+    });
+    const baselineYPx =
+      lineTopPx + Math.max(1, Math.round(lineHeightPx * 0.78));
+    line.segments.forEach((segment) => {
+      const segmentWidthPx = segment.widthPx;
+      if (segment.run.backgroundColor) {
+        setCanvasFillStyle(context, segment.run.backgroundColor, "transparent");
+        context.fillRect(cursorXPx, lineTopPx + 1, segmentWidthPx, lineHeightPx);
+      }
+      if (segment.font !== lastAppliedFont) {
+        context.font = segment.font;
+        lastAppliedFont = segment.font;
+      }
+      setCanvasFillStyle(
+        context,
+        segment.run.color,
+        THUMBNAIL_DIRECT_DEFAULT_TEXT_COLOR
+      );
+      context.fillText(segment.text, cursorXPx, baselineYPx);
+      cursorXPx += segmentWidthPx;
+    });
+  });
+
+  context.restore();
+}
+
+function drawDirectThumbnailParagraph(
+  context: CanvasRenderingContext2D,
+  paragraph: DocxPageThumbnailParagraphSnapshot
+): void {
+  const xPx = Math.round(paragraph.xPx);
+  const yPx = Math.round(paragraph.yPx);
+  const widthPx = Math.max(1, Math.round(paragraph.widthPx));
+  const heightPx = Math.max(1, Math.round(paragraph.heightPx));
+  if (paragraph.backgroundColor) {
+    setCanvasFillStyle(context, paragraph.backgroundColor, "transparent");
+    context.fillRect(xPx, yPx, widthPx, heightPx);
+  }
+  drawDirectThumbnailTextRuns({
+    context,
+    runs: paragraph.runs,
+    xPx: xPx + 1,
+    yPx,
+    widthPx: Math.max(1, widthPx - 2),
+    heightPx,
+    align: paragraph.align,
+    lineHeightPx: paragraph.lineHeightPx,
+    startLineIndex: paragraph.startLineIndex,
+  });
+}
+
+function drawDirectThumbnailImagePlaceholder(
+  context: CanvasRenderingContext2D,
+  image: DocxPageThumbnailImagePlaceholderSnapshot,
+  hairlineSourcePx: number
+): void {
+  const xPx = Math.round(image.xPx);
+  const yPx = Math.round(image.yPx);
+  const widthPx = Math.max(1, Math.round(image.widthPx));
+  const heightPx = Math.max(1, Math.round(image.heightPx));
+  setCanvasFillStyle(
+    context,
+    image.backgroundColor,
+    THUMBNAIL_DIRECT_IMAGE_BACKGROUND
+  );
+  context.fillRect(xPx, yPx, widthPx, heightPx);
+  setCanvasStrokeStyle(
+    context,
+    image.borderColor,
+    THUMBNAIL_DIRECT_TABLE_BORDER_COLOR
+  );
+  context.lineWidth = hairlineSourcePx;
+  context.strokeRect(xPx, yPx, widthPx, heightPx);
+}
+
+function drawDirectThumbnailTable(
+  context: CanvasRenderingContext2D,
+  table: DocxPageThumbnailTableSnapshot,
+  hairlineSourcePx: number
+): void {
+  const tableXPx = Math.round(table.xPx);
+  const tableYPx = Math.round(table.yPx);
+  const tableWidthPx = Math.max(1, Math.round(table.widthPx));
+  const tableHeightPx = Math.max(1, Math.round(table.heightPx));
+
+  context.save();
+  context.beginPath();
+  context.rect(tableXPx, tableYPx, tableWidthPx, tableHeightPx);
+  context.clip();
+  setCanvasStrokeStyle(
+    context,
+    table.borderColor,
+    THUMBNAIL_DIRECT_TABLE_BORDER_COLOR
+  );
+  context.lineWidth = hairlineSourcePx;
+
+  table.cells.forEach((cell) => {
+    const xPx = tableXPx + Math.round(cell.xPx);
+    const yPx = tableYPx + Math.round(cell.yPx);
+    const widthPx = Math.max(1, Math.round(cell.widthPx));
+    const heightPx = Math.max(1, Math.round(cell.heightPx));
+    if (cell.backgroundColor) {
+      setCanvasFillStyle(context, cell.backgroundColor, "transparent");
+      context.fillRect(xPx, yPx, widthPx, heightPx);
+    }
+    context.strokeRect(xPx, yPx, widthPx, heightPx);
+    if (cell.runs?.length) {
+      drawDirectThumbnailTextRuns({
+        context,
+        runs: cell.runs,
+        xPx: xPx + 3,
+        yPx: yPx + 2,
+        widthPx: Math.max(1, widthPx - 6),
+        heightPx: Math.max(1, heightPx - 4),
+        lineHeightPx: 13,
+      });
+    }
+  });
+
+  context.restore();
+}
+
+/**
+ * Paints a thumbnail directly from a layout/model snapshot. This skips the
+ * expensive DOM clone -> SVG foreignObject -> image decode path and is intended
+ * as the default fast path for virtualized thumbnail rails.
+ */
+export function renderDocxThumbnailSnapshotSurface(params: {
+  snapshot: DocxPageThumbnailRenderSnapshot;
+  widthPx: number;
+  heightPx: number;
+  pixelWidthPx: number;
+  pixelHeightPx: number;
+}): HTMLCanvasElement {
+  if (typeof document === "undefined") {
+    throw new Error("DOCX thumbnails require a browser environment.");
+  }
+
+  const sourceWidthPx = directThumbnailPositivePx(params.snapshot.sourceWidthPx);
+  const sourceHeightPx = directThumbnailPositivePx(params.snapshot.sourceHeightPx);
+  const pixelWidthPx = Math.max(1, Math.round(params.pixelWidthPx));
+  const pixelHeightPx = Math.max(1, Math.round(params.pixelHeightPx));
+  const surface = document.createElement("canvas");
+  surface.width = pixelWidthPx;
+  surface.height = pixelHeightPx;
+  const context = surface.getContext("2d");
+  if (!context) {
+    throw new Error("2D canvas context is unavailable for DOCX thumbnails.");
+  }
+
+  const scaleX = pixelWidthPx / sourceWidthPx;
+  const scaleY = pixelHeightPx / sourceHeightPx;
+  const hairlineSourcePx = Math.max(0.75, 1 / Math.max(scaleX, scaleY));
+  context.setTransform(scaleX, 0, 0, scaleY, 0, 0);
+  context.imageSmoothingEnabled = true;
+  context.imageSmoothingQuality = "high";
+  setCanvasFillStyle(
+    context,
+    params.snapshot.pageBackgroundColor,
+    "#ffffff"
+  );
+  context.fillRect(0, 0, sourceWidthPx, sourceHeightPx);
+
+  params.snapshot.elements
+    .slice(0, THUMBNAIL_DIRECT_MAX_ELEMENTS)
+    .forEach((element) => {
+      switch (element.kind) {
+        case "paragraph":
+          drawDirectThumbnailParagraph(context, element);
+          break;
+        case "image-placeholder":
+          drawDirectThumbnailImagePlaceholder(
+            context,
+            element,
+            hairlineSourcePx
+          );
+          break;
+        case "table":
+          drawDirectThumbnailTable(context, element, hairlineSourcePx);
+          break;
+      }
+    });
+
+  return surface;
 }
 
 async function buildDocxThumbnailSvgMarkup(params: {
@@ -238,10 +794,28 @@ export function blitDocxThumbnailSurface(
     pixelHeightPx: number;
   }
 ): void {
-  canvas.width = Math.max(1, Math.round(resolution.pixelWidthPx));
-  canvas.height = Math.max(1, Math.round(resolution.pixelHeightPx));
-  canvas.style.width = `${Math.max(1, Math.round(resolution.widthPx))}px`;
-  canvas.style.height = `${Math.max(1, Math.round(resolution.heightPx))}px`;
+  const pixelWidth = Math.max(1, Math.round(resolution.pixelWidthPx));
+  const pixelHeight = Math.max(1, Math.round(resolution.pixelHeightPx));
+  const cssWidth = `${Math.max(1, Math.round(resolution.widthPx))}px`;
+  const cssHeight = `${Math.max(1, Math.round(resolution.heightPx))}px`;
+
+  // Writing canvas.width/height resets (and clears) the backing store even when
+  // the value is unchanged, so only do it on an actual size change.
+  let bufferResized = false;
+  if (canvas.width !== pixelWidth) {
+    canvas.width = pixelWidth;
+    bufferResized = true;
+  }
+  if (canvas.height !== pixelHeight) {
+    canvas.height = pixelHeight;
+    bufferResized = true;
+  }
+  if (canvas.style.width !== cssWidth) {
+    canvas.style.width = cssWidth;
+  }
+  if (canvas.style.height !== cssHeight) {
+    canvas.style.height = cssHeight;
+  }
 
   const context = canvas.getContext("2d");
   if (!context) {
@@ -249,7 +823,10 @@ export function blitDocxThumbnailSurface(
   }
 
   context.setTransform(1, 0, 0, 1, 0, 0);
-  context.clearRect(0, 0, canvas.width, canvas.height);
+  // A resize already cleared the buffer; otherwise clear stale pixels first.
+  if (!bufferResized) {
+    context.clearRect(0, 0, canvas.width, canvas.height);
+  }
   context.drawImage(surface, 0, 0, canvas.width, canvas.height);
 }
 
@@ -297,6 +874,8 @@ interface SerialIdleTaskQueueEntry<K> {
   key: K;
   run: () => Promise<void>;
   resolvers: Array<() => void>;
+  priority: number;
+  sequence: number;
 }
 
 export interface SerialIdleTaskQueueOptions {
@@ -310,6 +889,15 @@ export interface SerialIdleTaskQueueOptions {
   /** Minimum interval between runs that share the same key. */
   minTaskIntervalMs?: number;
   now?: () => number;
+}
+
+export interface SerialIdleTaskQueueEnqueueOptions {
+  /**
+   * Lower values run first. Entries with the same priority keep FIFO order.
+   *
+   * @defaultValue `0`
+   */
+  priority?: number;
 }
 
 const IDLE_TASK_TIMEOUT_MS = 300;
@@ -377,6 +965,7 @@ export class SerialIdleTaskQueue<K> {
   private readonly now: () => number;
   private pumpScheduled = false;
   private running = false;
+  private nextSequence = 0;
 
   constructor(options?: SerialIdleTaskQueueOptions) {
     this.scheduleTask = options?.scheduleTask ?? defaultScheduleTask;
@@ -389,14 +978,29 @@ export class SerialIdleTaskQueue<K> {
     return this.pending.length;
   }
 
-  enqueue(key: K, run: () => Promise<void>): Promise<void> {
+  enqueue(
+    key: K,
+    run: () => Promise<void>,
+    options?: SerialIdleTaskQueueEnqueueOptions
+  ): Promise<void> {
+    const priority = Number.isFinite(options?.priority)
+      ? Number(options?.priority)
+      : 0;
     return new Promise<void>((resolve) => {
       const existing = this.pending.find((entry) => entry.key === key);
       if (existing) {
         existing.run = run;
         existing.resolvers.push(resolve);
+        existing.priority = Math.min(existing.priority, priority);
       } else {
-        this.pending.push({ key, run, resolvers: [resolve] });
+        this.pending.push({
+          key,
+          run,
+          resolvers: [resolve],
+          priority,
+          sequence: this.nextSequence,
+        });
+        this.nextSequence += 1;
       }
       this.schedulePump();
     });
@@ -450,6 +1054,8 @@ export class SerialIdleTaskQueue<K> {
 
     const now = this.now();
     let earliestWaitMs: number | undefined;
+    let bestIndex = -1;
+    let bestEntry: SerialIdleTaskQueueEntry<K> | undefined;
     for (let index = 0; index < this.pending.length; index += 1) {
       const candidate = this.pending[index];
       if (!candidate) {
@@ -461,13 +1067,26 @@ export class SerialIdleTaskQueue<K> {
           ? 0
           : lastRunAt + this.minTaskIntervalMs - now;
       if (waitMs <= 0) {
-        this.pending.splice(index, 1);
-        return { entry: candidate };
+        if (
+          !bestEntry ||
+          candidate.priority < bestEntry.priority ||
+          (candidate.priority === bestEntry.priority &&
+            candidate.sequence < bestEntry.sequence)
+        ) {
+          bestEntry = candidate;
+          bestIndex = index;
+        }
+        continue;
       }
       earliestWaitMs =
         earliestWaitMs === undefined
           ? waitMs
           : Math.min(earliestWaitMs, waitMs);
+    }
+
+    if (bestEntry && bestIndex >= 0) {
+      this.pending.splice(bestIndex, 1);
+      return { entry: bestEntry };
     }
 
     return earliestWaitMs === undefined

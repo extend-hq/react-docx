@@ -7,6 +7,7 @@ import {
 } from "../../packages/react-viewer/src/content-signature";
 import {
   DocxThumbnailSurfaceCache,
+  renderDocxThumbnailSnapshotSurface,
   SerialIdleTaskQueue,
   thumbnailImageSourceQualifiesForDownscale,
 } from "../../packages/react-viewer/src/thumbnail-raster";
@@ -178,6 +179,25 @@ describe("thumbnailImageSourceQualifiesForDownscale", () => {
   });
 });
 
+describe("renderDocxThumbnailSnapshotSurface", () => {
+  it("keeps the direct renderer browser-only", () => {
+    expect(() =>
+      renderDocxThumbnailSnapshotSurface({
+        snapshot: {
+          key: "page",
+          sourceWidthPx: 100,
+          sourceHeightPx: 140,
+          elements: [],
+        },
+        widthPx: 50,
+        heightPx: 70,
+        pixelWidthPx: 50,
+        pixelHeightPx: 70,
+      })
+    ).toThrow(/browser environment/);
+  });
+});
+
 interface ManualScheduler {
   flushIdle: () => void;
   flushDelayed: (advanceMs?: number) => void;
@@ -281,6 +301,49 @@ describe("SerialIdleTaskQueue", () => {
 
     expect(runs).toEqual(["fresh"]);
     await Promise.all([first, second]);
+  });
+
+  it("runs eligible higher-priority tasks before lower-priority work", async () => {
+    const scheduler = createManualScheduler();
+    const queue = new SerialIdleTaskQueue<string>(scheduler.queueOptions);
+    const runs: string[] = [];
+
+    const low = queue.enqueue(
+      "low",
+      async () => {
+        runs.push("low");
+      },
+      { priority: 2 }
+    );
+    const high = queue.enqueue(
+      "high",
+      async () => {
+        runs.push("high");
+      },
+      { priority: 0 }
+    );
+    const middle = queue.enqueue(
+      "middle",
+      async () => {
+        runs.push("middle");
+      },
+      { priority: 1 }
+    );
+
+    scheduler.flushIdle();
+    await settleMicrotasks();
+    expect(runs).toEqual(["high"]);
+    await high;
+
+    scheduler.flushIdle();
+    await settleMicrotasks();
+    expect(runs).toEqual(["high", "middle"]);
+    await middle;
+
+    scheduler.flushIdle();
+    await settleMicrotasks();
+    expect(runs).toEqual(["high", "middle", "low"]);
+    await low;
   });
 
   it("throttles repeat runs for the same key to the minimum interval", async () => {

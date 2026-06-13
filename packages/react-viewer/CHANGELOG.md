@@ -8,6 +8,8 @@
 - Move DOCX parse and document-model construction for viewer/editor imports into a browser worker when available, with main-thread fallback for unsupported environments.
 - Fix TOC pagination estimates for right-tab dot leaders so right tab stops are not treated as leading title indentation.
 - Allow `pageVirtualization` to receive an explicit scroll element and zoom scale so custom scroll-area shells keep low-zoom page virtualization in sync.
+- Keep the detached thumbnail renderer warm between offscreen page renders, and expose `minRasterIntervalMs` plus `renderWindow` thumbnail priority/prefetch options.
+- Render DOCX thumbnails from lazy layout/model snapshots by default, avoiding hidden page mounts and DOM serialization for virtualized thumbnail rails.
 
 ## 0.7.0-alpha.4
 

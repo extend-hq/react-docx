@@ -36,4 +36,24 @@ describe("docx viewer thumbnails", () => {
       (thumbnail?.sourceWidthPx ?? 1) / Math.max(1, thumbnail?.sourceHeightPx ?? 1)
     );
   });
+
+  it("accepts thumbnail queue and render-window options", () => {
+    let result: DocxViewerThumbnails | undefined;
+
+    function Probe(): React.JSX.Element {
+      const editor = useDocxEditor();
+      result = useDocxViewerThumbnails(editor, {
+        minRasterIntervalMs: 0,
+        renderWindow: {
+          visiblePageIndexes: [0],
+          prefetchPageIndexes: [0],
+        },
+      });
+      return React.createElement("div");
+    }
+
+    renderToStaticMarkup(React.createElement(Probe));
+
+    expect(result?.thumbnails).toHaveLength(1);
+  });
 });

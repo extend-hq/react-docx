@@ -174,6 +174,11 @@ export function ThumbnailExample() {
     maxWidthPx: 160,
     maxHeightPx: 220,
     pixelRatio: 2,
+    minRasterIntervalMs: 40,
+    renderWindow: {
+      visiblePageIndexes: [0, 1, 2],
+      prefetchPageIndexes: [3, 4, 5],
+    },
   });
 
   return (
@@ -203,8 +208,10 @@ export function ThumbnailExample() {
 Notes:
 
 - Thumbnail canvases can stay attached in a virtualized sidebar; only canvases you mount request paint work.
+- Use `renderWindow.visiblePageIndexes` for thumbnails currently visible in your sidebar, and `renderWindow.prefetchPageIndexes` to warm nearby pages after visible work.
+- `minRasterIntervalMs` controls repeat renders for the same canvas. Lower values are useful when the consumer already limits thumbnail work to a small visible window.
 - Thumbnail sizing is bounded by `maxWidthPx` and `maxHeightPx`, so downstream UIs can bias toward portrait thumbnail rails.
-- If the main viewer has virtualized a page away, thumbnail rendering mounts an isolated offscreen page surface long enough to rasterize that page.
+- Thumbnails use a direct layout/model canvas renderer first; if a page has no usable snapshot, the hook falls back to an isolated offscreen page surface.
 
 ## Useful Hooks
 

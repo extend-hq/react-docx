@@ -24,6 +24,7 @@ import {
   useDocxTrackChanges,
   useDocxComments,
 } from "@extend-ai/react-docx";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   ArrowDown,
   ArrowLeft,
@@ -171,6 +172,78 @@ const FONT_SIZE_OPTIONS = [
 ] as const;
 
 const LINE_SPACING_OPTIONS = [1, 1.15, 1.2, 1.5, 2, 2.5, 3] as const;
+const THUMBNAIL_ROW_ESTIMATE_PX = 236;
+// Rows mounted (and painted) just outside the viewport, both directions, so a
+// thumbnail is already on screen by the time it scrolls into view.
+const THUMBNAIL_OVERSCAN = 4;
+// Surfaces warmed into the cache beyond the overscan band, symmetric so
+// scrolling up is as instant as scrolling down.
+const THUMBNAIL_PREFETCH_BEFORE = 4;
+const THUMBNAIL_PREFETCH_AFTER = 4;
+const THUMBNAIL_RENDER_IDLE_MS = 240;
+const THUMBNAIL_PIXEL_RATIO = 1.25;
+
+interface ThumbnailRenderWindowState {
+  visiblePageIndexes: number[];
+  prefetchPageIndexes: number[];
+  key: string;
+}
+
+const EMPTY_THUMBNAIL_RENDER_WINDOW: ThumbnailRenderWindowState = {
+  visiblePageIndexes: [],
+  prefetchPageIndexes: [],
+  key: "",
+};
+
+function buildThumbnailRenderWindowState(
+  visiblePageIndexes: readonly number[],
+  totalPages: number
+): ThumbnailRenderWindowState {
+  if (!visiblePageIndexes.length || totalPages <= 0) {
+    return EMPTY_THUMBNAIL_RENDER_WINDOW;
+  }
+
+  const normalizedVisiblePageIndexes = Array.from(
+    new Set(
+      visiblePageIndexes
+        .map((pageIndex) => Math.trunc(pageIndex))
+        .filter((pageIndex) => pageIndex >= 0 && pageIndex < totalPages)
+    )
+  ).sort((leftPageIndex, rightPageIndex) => leftPageIndex - rightPageIndex);
+
+  if (!normalizedVisiblePageIndexes.length) {
+    return EMPTY_THUMBNAIL_RENDER_WINDOW;
+  }
+
+  const firstVisiblePageIndex = normalizedVisiblePageIndexes[0] ?? 0;
+  const lastVisiblePageIndex =
+    normalizedVisiblePageIndexes[normalizedVisiblePageIndexes.length - 1] ??
+    firstVisiblePageIndex;
+  const prefetchStartPageIndex = Math.max(
+    0,
+    firstVisiblePageIndex - THUMBNAIL_PREFETCH_BEFORE
+  );
+  const prefetchEndPageIndex = Math.min(
+    totalPages - 1,
+    lastVisiblePageIndex + THUMBNAIL_PREFETCH_AFTER
+  );
+  const prefetchPageIndexes: number[] = [];
+  for (
+    let pageIndex = prefetchStartPageIndex;
+    pageIndex <= prefetchEndPageIndex;
+    pageIndex += 1
+  ) {
+    prefetchPageIndexes.push(pageIndex);
+  }
+
+  return {
+    visiblePageIndexes: normalizedVisiblePageIndexes,
+    prefetchPageIndexes,
+    key: `${normalizedVisiblePageIndexes.join(",")}|${prefetchPageIndexes.join(
+      ","
+    )}`,
+  };
+}
 
 type BorderControlOption = {
   id: DocxBorderPreset;
@@ -1389,10 +1462,76 @@ export function App(): React.JSX.Element {
   const editor = useDocxEditor();
   const { documentTheme, setDocumentTheme } = useDocxDocumentTheme(editor);
   const { layout: pageLayout } = useDocxPageLayout(editor);
+  const [thumbnailsSheetOpen, setThumbnailsSheetOpen] = React.useState(false);
+  const thumbnailScrollRef = React.useRef<HTMLDivElement | null>(null);
+  const thumbnailPageCount = Math.max(1, editor.totalPages);
+  const [thumbnailRenderWindow, setThumbnailRenderWindow] =
+    React.useState<ThumbnailRenderWindowState>(EMPTY_THUMBNAIL_RENDER_WINDOW);
+  const updateThumbnailRenderWindow = React.useCallback(
+    (visiblePageIndexes: readonly number[]) => {
+      const nextRenderWindow = buildThumbnailRenderWindowState(
+        visiblePageIndexes,
+        thumbnailPageCount
+      );
+      setThumbnailRenderWindow((currentRenderWindow) =>
+        currentRenderWindow.key === nextRenderWindow.key
+          ? currentRenderWindow
+          : nextRenderWindow
+      );
+    },
+    [thumbnailPageCount]
+  );
+  const thumbnailVirtualizer = useVirtualizer({
+    count: thumbnailPageCount,
+    enabled: thumbnailsSheetOpen,
+    estimateSize: () => THUMBNAIL_ROW_ESTIMATE_PX,
+    getScrollElement: () => thumbnailScrollRef.current,
+    initialRect: {
+      height: 640,
+      width: 384,
+    },
+    isScrollingResetDelay: THUMBNAIL_RENDER_IDLE_MS,
+    // Snapshot thumbnails paint synchronously (sub-millisecond), so we keep a
+    // generous overscan and render continuously — including mid-scroll — rather
+    // than blanking the rail while the user scrolls.
+    overscan: THUMBNAIL_OVERSCAN,
+    onChange: (instance) => {
+      updateThumbnailRenderWindow(
+        instance.getVirtualItems().map((item) => item.index)
+      );
+    },
+  });
+  const thumbnailVirtualItems = thumbnailVirtualizer.getVirtualItems();
   const { thumbnails } = useDocxPageThumbnails(editor, {
     maxWidthPx: 148,
-    pixelRatio: 2,
+    pixelRatio: THUMBNAIL_PIXEL_RATIO,
+    minRasterIntervalMs: 80,
+    renderWindow: thumbnailsSheetOpen
+      ? {
+          visiblePageIndexes: thumbnailRenderWindow.visiblePageIndexes,
+          prefetchPageIndexes: thumbnailRenderWindow.prefetchPageIndexes,
+        }
+      : undefined,
   });
+  React.useEffect(() => {
+    if (!thumbnailsSheetOpen) {
+      updateThumbnailRenderWindow([]);
+      return;
+    }
+
+    updateThumbnailRenderWindow(
+      thumbnailVirtualItems.map((virtualItem) => virtualItem.index)
+    );
+  }, [
+    thumbnailVirtualItems,
+    thumbnailsSheetOpen,
+    updateThumbnailRenderWindow,
+  ]);
+  React.useEffect(() => {
+    if (thumbnailsSheetOpen) {
+      thumbnailVirtualizer.measure();
+    }
+  }, [thumbnailPageCount, thumbnailVirtualizer, thumbnailsSheetOpen]);
   const { paragraphStyles, selectedParagraphStyleId, setParagraphStyle } =
     useDocxParagraphStyles(editor);
   const { lineSpacing, setLineSpacing } = useDocxLineSpacing(editor);
@@ -1460,7 +1599,6 @@ export function App(): React.JSX.Element {
   );
   const [isReadOnly, setIsReadOnly] = React.useState(false);
   const [isImportDragOver, setIsImportDragOver] = React.useState(false);
-  const [thumbnailsSheetOpen, setThumbnailsSheetOpen] = React.useState(false);
   const [isParagraphStyleMenuOpen, setIsParagraphStyleMenuOpen] =
     React.useState(false);
   const [formWidgetDialogOpen, setFormWidgetDialogOpen] = React.useState(false);
@@ -2967,9 +3105,23 @@ export function App(): React.JSX.Element {
               </SheetDescription>
             </SheetHeader>
 
-            <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-4">
-              <div className="grid gap-3">
-                {thumbnails.map((thumbnail) => {
+            <div
+              ref={thumbnailScrollRef}
+              className="min-h-0 flex-1 overflow-y-auto px-4 pb-4"
+            >
+              <div
+                style={{
+                  height: `${thumbnailVirtualizer.getTotalSize()}px`,
+                  position: "relative",
+                  width: "100%",
+                }}
+              >
+                {thumbnailVirtualItems.map((virtualItem) => {
+                  const thumbnail = thumbnails[virtualItem.index];
+                  if (!thumbnail) {
+                    return null;
+                  }
+
                   const rotatePreview = thumbnail.widthPx > thumbnail.heightPx;
                   const previewWidthPx = rotatePreview
                     ? thumbnail.heightPx
@@ -2979,64 +3131,76 @@ export function App(): React.JSX.Element {
                     : thumbnail.heightPx;
 
                   return (
-                    <button
-                      key={thumbnail.pageIndex}
-                      type="button"
-                      onClick={() => {
-                        scrollToPage(thumbnail.pageIndex);
-                        setThumbnailsSheetOpen(false);
+                    <div
+                      key={virtualItem.key}
+                      data-index={virtualItem.index}
+                      style={{
+                        left: 0,
+                        paddingBottom: "0.75rem",
+                        position: "absolute",
+                        top: 0,
+                        transform: `translateY(${virtualItem.start}px)`,
+                        width: "100%",
                       }}
-                      className="bg-card hover:bg-accent/60 border-border flex w-full items-start gap-3 rounded-xl border p-3 text-left transition-colors"
                     >
-                      <div className="flex min-w-10 flex-col items-center gap-1 pt-1">
-                        <span className="text-xs font-medium text-foreground">
-                          {thumbnail.pageNumber}
-                        </span>
-                        <span className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
-                          {thumbnail.status}
-                        </span>
-                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          scrollToPage(thumbnail.pageIndex);
+                          setThumbnailsSheetOpen(false);
+                        }}
+                        className="bg-card hover:bg-accent/60 border-border flex w-full items-start gap-3 rounded-xl border p-3 text-left transition-colors"
+                      >
+                        <div className="flex min-w-10 flex-col items-center gap-1 pt-1">
+                          <span className="text-xs font-medium text-foreground">
+                            {thumbnail.pageNumber}
+                          </span>
+                          <span className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
+                            {thumbnail.status}
+                          </span>
+                        </div>
 
-                      <div className="flex min-w-0 flex-1 flex-col gap-2">
-                        <div className="bg-muted/60 ring-border/70 flex min-h-[10rem] items-center justify-center overflow-hidden rounded-md p-3 ring-1">
-                          <div
-                            style={{
-                              width: `${previewWidthPx}px`,
-                              height: `${previewHeightPx}px`,
-                              display: "flex",
-                              alignItems: "center",
-                              justifyContent: "center",
-                            }}
-                          >
-                            <canvas
-                              ref={thumbnail.canvasRef}
-                              width={thumbnail.pixelWidthPx}
-                              height={thumbnail.pixelHeightPx}
+                        <div className="flex min-w-0 flex-1 flex-col gap-2">
+                          <div className="bg-muted/60 ring-border/70 flex min-h-[10rem] items-center justify-center overflow-hidden rounded-md p-3 ring-1">
+                            <div
                               style={{
-                                width: `${thumbnail.widthPx}px`,
-                                height: `${thumbnail.heightPx}px`,
-                                display: "block",
-                                transform: rotatePreview
-                                  ? "rotate(90deg)"
-                                  : undefined,
-                                transformOrigin: "center center",
+                                width: `${previewWidthPx}px`,
+                                height: `${previewHeightPx}px`,
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "center",
                               }}
-                            />
+                            >
+                              <canvas
+                                ref={thumbnail.canvasRef}
+                                width={thumbnail.pixelWidthPx}
+                                height={thumbnail.pixelHeightPx}
+                                style={{
+                                  width: `${thumbnail.widthPx}px`,
+                                  height: `${thumbnail.heightPx}px`,
+                                  display: "block",
+                                  transform: rotatePreview
+                                    ? "rotate(90deg)"
+                                    : undefined,
+                                  transformOrigin: "center center",
+                                }}
+                              />
+                            </div>
+                          </div>
+                          <div className="flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
+                            <span>
+                              {Math.round(thumbnail.sourceWidthPx)} x{" "}
+                              {Math.round(thumbnail.sourceHeightPx)}
+                            </span>
+                            {!thumbnail.isMounted ? (
+                              <span>Offscreen render</span>
+                            ) : thumbnail.error ? (
+                              <span>{thumbnail.error.message}</span>
+                            ) : null}
                           </div>
                         </div>
-                        <div className="flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
-                          <span>
-                            {Math.round(thumbnail.sourceWidthPx)} x{" "}
-                            {Math.round(thumbnail.sourceHeightPx)}
-                          </span>
-                          {!thumbnail.isMounted ? (
-                            <span>Offscreen render</span>
-                          ) : thumbnail.error ? (
-                            <span>{thumbnail.error.message}</span>
-                          ) : null}
-                        </div>
-                      </div>
-                    </button>
+                      </button>
+                    </div>
                   );
                 })}
               </div>

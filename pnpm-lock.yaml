@@ -79,6 +79,9 @@ importers:
       '@tailwindcss/vite':
         specifier: ^4.2.1
         version: 4.2.1(vite@6.4.2(@types/node@22.19.11)(jiti@2.6.1)(lightningcss@1.31.1))
+      '@tanstack/react-virtual':
+        specifier: ^3.13.19
+        version: 3.13.19(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       '@vercel/analytics':
         specifier: ^1.5.0
         version: 1.6.1(react@19.2.4)
