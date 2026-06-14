@@ -75,6 +75,19 @@ export interface DocxPageThumbnailImagePlaceholderSnapshot {
   borderColor?: string;
 }
 
+export interface DocxPageThumbnailImageSnapshot {
+  kind: "image";
+  xPx: number;
+  yPx: number;
+  widthPx: number;
+  heightPx: number;
+  /** Renderable image source (data URI or URL) drawn into the thumbnail. */
+  src: string;
+  /** Painted if the image cannot be decoded/drawn (falls back to a box). */
+  backgroundColor?: string;
+  borderColor?: string;
+}
+
 export interface DocxPageThumbnailTableCellSnapshot {
   xPx: number;
   yPx: number;
@@ -97,6 +110,7 @@ export interface DocxPageThumbnailTableSnapshot {
 export type DocxPageThumbnailSnapshotElement =
   | DocxPageThumbnailParagraphSnapshot
   | DocxPageThumbnailImagePlaceholderSnapshot
+  | DocxPageThumbnailImageSnapshot
   | DocxPageThumbnailTableSnapshot;
 
 export interface DocxPageThumbnailRenderSnapshot {
@@ -208,6 +222,41 @@ export function getDownscaledThumbnailImageDataUri(
 
   const pending = downscaleThumbnailImageDataUri(src).catch(() => undefined);
   downscaledThumbnailImageCache.set(src, pending);
+  return pending;
+}
+
+const THUMBNAIL_DECODED_IMAGE_CACHE_MAX_ENTRIES = 48;
+const decodedThumbnailImageCache = new Map<
+  string,
+  Promise<HTMLImageElement | undefined>
+>();
+
+/**
+ * Decodes (and caches) an image source for the direct snapshot painter.
+ * Bounded LRU so a long scanned-image document does not retain every decoded
+ * page bitmap. Failures cache as `undefined` so a broken source is tried once.
+ */
+function getDecodedThumbnailImage(
+  src: string
+): Promise<HTMLImageElement | undefined> {
+  const cached = decodedThumbnailImageCache.get(src);
+  if (cached) {
+    decodedThumbnailImageCache.delete(src);
+    decodedThumbnailImageCache.set(src, cached);
+    return cached;
+  }
+
+  const pending = loadThumbnailImage(src).catch(() => undefined);
+  decodedThumbnailImageCache.set(src, pending);
+  while (
+    decodedThumbnailImageCache.size > THUMBNAIL_DECODED_IMAGE_CACHE_MAX_ENTRIES
+  ) {
+    const oldestKey = decodedThumbnailImageCache.keys().next().value;
+    if (oldestKey === undefined) {
+      break;
+    }
+    decodedThumbnailImageCache.delete(oldestKey);
+  }
   return pending;
 }
 
@@ -577,6 +626,40 @@ function drawDirectThumbnailImagePlaceholder(
   context.strokeRect(xPx, yPx, widthPx, heightPx);
 }
 
+function drawDirectThumbnailImage(
+  context: CanvasRenderingContext2D,
+  image: DocxPageThumbnailImageSnapshot,
+  decoded: HTMLImageElement | undefined,
+  hairlineSourcePx: number
+): void {
+  const xPx = Math.round(image.xPx);
+  const yPx = Math.round(image.yPx);
+  const widthPx = Math.max(1, Math.round(image.widthPx));
+  const heightPx = Math.max(1, Math.round(image.heightPx));
+  if (decoded && decoded.naturalWidth > 0 && decoded.naturalHeight > 0) {
+    try {
+      context.drawImage(decoded, xPx, yPx, widthPx, heightPx);
+      return;
+    } catch {
+      // Drawing can throw for sources the decoder accepted but the canvas
+      // refuses (e.g. cross-origin taint); fall back to the placeholder box.
+    }
+  }
+  setCanvasFillStyle(
+    context,
+    image.backgroundColor,
+    THUMBNAIL_DIRECT_IMAGE_BACKGROUND
+  );
+  context.fillRect(xPx, yPx, widthPx, heightPx);
+  setCanvasStrokeStyle(
+    context,
+    image.borderColor,
+    THUMBNAIL_DIRECT_TABLE_BORDER_COLOR
+  );
+  context.lineWidth = hairlineSourcePx;
+  context.strokeRect(xPx, yPx, widthPx, heightPx);
+}
+
 function drawDirectThumbnailTable(
   context: CanvasRenderingContext2D,
   table: DocxPageThumbnailTableSnapshot,
@@ -628,14 +711,20 @@ function drawDirectThumbnailTable(
  * Paints a thumbnail directly from a layout/model snapshot. This skips the
  * expensive DOM clone -> SVG foreignObject -> image decode path and is intended
  * as the default fast path for virtualized thumbnail rails.
+ *
+ * Embedded images are decoded (and cached) before painting so image-dominated
+ * pages — e.g. scanned `.doc` documents where every page is a single full-page
+ * bitmap — render their real content instead of an empty placeholder box.
+ * Pages with no images resolve without awaiting, keeping the text fast path
+ * effectively synchronous.
  */
-export function renderDocxThumbnailSnapshotSurface(params: {
+export async function renderDocxThumbnailSnapshotSurface(params: {
   snapshot: DocxPageThumbnailRenderSnapshot;
   widthPx: number;
   heightPx: number;
   pixelWidthPx: number;
   pixelHeightPx: number;
-}): HTMLCanvasElement {
+}): Promise<HTMLCanvasElement> {
   if (typeof document === "undefined") {
     throw new Error("DOCX thumbnails require a browser environment.");
   }
@@ -652,6 +741,22 @@ export function renderDocxThumbnailSnapshotSurface(params: {
     throw new Error("2D canvas context is unavailable for DOCX thumbnails.");
   }
 
+  const elements = params.snapshot.elements.slice(0, THUMBNAIL_DIRECT_MAX_ELEMENTS);
+  const decodedImagesBySrc = new Map<string, HTMLImageElement | undefined>();
+  const imageSrcs = new Set<string>();
+  for (const element of elements) {
+    if (element.kind === "image" && element.src) {
+      imageSrcs.add(element.src);
+    }
+  }
+  if (imageSrcs.size > 0) {
+    await Promise.all(
+      Array.from(imageSrcs, async (src) => {
+        decodedImagesBySrc.set(src, await getDecodedThumbnailImage(src));
+      })
+    );
+  }
+
   const scaleX = pixelWidthPx / sourceWidthPx;
   const scaleY = pixelHeightPx / sourceHeightPx;
   const hairlineSourcePx = Math.max(0.75, 1 / Math.max(scaleX, scaleY));
@@ -665,25 +770,31 @@ export function renderDocxThumbnailSnapshotSurface(params: {
   );
   context.fillRect(0, 0, sourceWidthPx, sourceHeightPx);
 
-  params.snapshot.elements
-    .slice(0, THUMBNAIL_DIRECT_MAX_ELEMENTS)
-    .forEach((element) => {
-      switch (element.kind) {
-        case "paragraph":
-          drawDirectThumbnailParagraph(context, element);
-          break;
-        case "image-placeholder":
-          drawDirectThumbnailImagePlaceholder(
-            context,
-            element,
-            hairlineSourcePx
-          );
-          break;
-        case "table":
-          drawDirectThumbnailTable(context, element, hairlineSourcePx);
-          break;
-      }
-    });
+  elements.forEach((element) => {
+    switch (element.kind) {
+      case "paragraph":
+        drawDirectThumbnailParagraph(context, element);
+        break;
+      case "image-placeholder":
+        drawDirectThumbnailImagePlaceholder(
+          context,
+          element,
+          hairlineSourcePx
+        );
+        break;
+      case "image":
+        drawDirectThumbnailImage(
+          context,
+          element,
+          decodedImagesBySrc.get(element.src),
+          hairlineSourcePx
+        );
+        break;
+      case "table":
+        drawDirectThumbnailTable(context, element, hairlineSourcePx);
+        break;
+    }
+  });
 
   return surface;
 }

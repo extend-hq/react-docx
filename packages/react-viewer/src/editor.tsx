@@ -29656,13 +29656,14 @@ function docxThumbnailTextRunsFromParagraph(
       child.type === "text" || child.type === "form-field"
         ? child.style
         : undefined;
+    // Images contribute no text: their alt/name would otherwise be painted as
+    // a caption and (worse) count as "visible text", suppressing the image
+    // element itself. They are rendered as image elements instead.
     const text =
       child.type === "text"
         ? child.text
         : child.type === "form-field"
         ? formFieldDisplayValue(child)
-        : child.type === "image"
-        ? child.alt || "[image]"
         : "";
     appendDocxThumbnailTextRun(
       runs,
@@ -29787,13 +29788,32 @@ function buildDocxThumbnailParagraphElements(params: {
         (widthPx - 4) / imageWidthPx,
         (bodyHeightPx - 4) / imageHeightPx
       );
-      elements.push({
-        kind: "image-placeholder",
-        xPx: xPx + 2,
-        yPx: bodyYPx + 2,
-        widthPx: Math.max(12, imageWidthPx * scale),
-        heightPx: Math.max(12, imageHeightPx * scale),
-      });
+      const elementXPx = xPx + 2;
+      const elementYPx = bodyYPx + 2;
+      const elementWidthPx = Math.max(12, imageWidthPx * scale);
+      const elementHeightPx = Math.max(12, imageHeightPx * scale);
+      // Paint the real bitmap when one is renderable (the live page does the
+      // same via resolveRenderableImageSource); metafiles with no raster
+      // fall back to the placeholder box the page shows a badge for.
+      const renderableSrc = resolveRenderableImageSource(imageRun);
+      if (renderableSrc) {
+        elements.push({
+          kind: "image",
+          xPx: elementXPx,
+          yPx: elementYPx,
+          widthPx: elementWidthPx,
+          heightPx: elementHeightPx,
+          src: renderableSrc,
+        });
+      } else {
+        elements.push({
+          kind: "image-placeholder",
+          xPx: elementXPx,
+          yPx: elementYPx,
+          widthPx: elementWidthPx,
+          heightPx: elementHeightPx,
+        });
+      }
     });
   }
 
@@ -29932,6 +29952,33 @@ function buildDocxThumbnailTableElement(params: {
   };
 }
 
+function docxThumbnailNodeRequiresDomRaster(
+  node: DocModel["nodes"][number] | TableCellContentNode | undefined
+): boolean {
+  if (!node) {
+    return false;
+  }
+
+  if (node.type === "paragraph") {
+    return node.children.some((child) => child.type === "image");
+  }
+
+  return node.rows.some((row) =>
+    row.cells.some((cell) =>
+      cell.nodes.some((cellNode) => docxThumbnailNodeRequiresDomRaster(cellNode))
+    )
+  );
+}
+
+function docxThumbnailPageRequiresDomRaster(
+  model: DocModel,
+  pageSegments: ReadonlyArray<DocumentPageNodeSegment>
+): boolean {
+  return pageSegments.some((segment) =>
+    docxThumbnailNodeRequiresDomRaster(model.nodes[segment.nodeIndex])
+  );
+}
+
 function buildDocxPageThumbnailRenderSnapshotEntries(params: {
   model: DocModel;
   pageNodeSegmentsByPage: ReadonlyArray<ReadonlyArray<DocumentPageNodeSegment>>;
@@ -29941,7 +29988,7 @@ function buildDocxPageThumbnailRenderSnapshotEntries(params: {
   documentTheme: DocxDocumentTheme;
   docGridLinePitchPxByNodeIndex: Map<number, number | undefined>;
   numberingDefinitions?: NumberingDefinitionSet;
-}): DocxViewerPageThumbnailSnapshotEntry[] {
+}): Array<DocxViewerPageThumbnailSnapshotEntry | undefined> {
   const {
     model,
     pageNodeSegmentsByPage,
@@ -29954,6 +30001,10 @@ function buildDocxPageThumbnailRenderSnapshotEntries(params: {
   } = params;
 
   return pageNodeSegmentsByPage.map((pageSegments, pageIndex) => {
+    if (docxThumbnailPageRequiresDomRaster(model, pageSegments)) {
+      return undefined;
+    }
+
     const key = `${contentKeysByPage[pageIndex] ?? ""}|theme:${documentTheme}`;
     let cachedSnapshot: DocxPageThumbnailRenderSnapshot | undefined;
 
@@ -30559,7 +30610,7 @@ export function useDocxPageThumbnails(
       if (!surface) {
         const thumbnailSnapshot = thumbnailSnapshotEntry?.getSnapshot();
         if (thumbnailSnapshot) {
-          surface = renderDocxThumbnailSnapshotSurface({
+          surface = await renderDocxThumbnailSnapshotSurface({
             snapshot: thumbnailSnapshot,
             widthPx: resolution.widthPx,
             heightPx: resolution.heightPx,

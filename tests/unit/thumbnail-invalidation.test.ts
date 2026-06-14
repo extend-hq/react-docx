@@ -180,8 +180,8 @@ describe("thumbnailImageSourceQualifiesForDownscale", () => {
 });
 
 describe("renderDocxThumbnailSnapshotSurface", () => {
-  it("keeps the direct renderer browser-only", () => {
-    expect(() =>
+  it("keeps the direct renderer browser-only", async () => {
+    await expect(
       renderDocxThumbnailSnapshotSurface({
         snapshot: {
           key: "page",
@@ -194,7 +194,7 @@ describe("renderDocxThumbnailSnapshotSurface", () => {
         pixelWidthPx: 50,
         pixelHeightPx: 70,
       })
-    ).toThrow(/browser environment/);
+    ).rejects.toThrow(/browser environment/);
   });
 });
 

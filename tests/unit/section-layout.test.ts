@@ -60,6 +60,26 @@ describe("section layout parsing", () => {
     expect(parseSectionLayout(withDefaultGrid).docGridLinePitchPx).toBeUndefined();
   });
 
+  it("normalizes page size dimensions from explicit orientation", () => {
+    const landscapeSectionPropertiesXml = SECTION_PROPERTIES_XML.replace(
+      '<w:pgSz w:w="11906" w:h="16838"/>',
+      '<w:pgSz w:w="11906" w:h="16838" w:orient="landscape"/>'
+    );
+    expect(parseSectionLayout(landscapeSectionPropertiesXml)).toMatchObject({
+      pageWidthPx: 1123,
+      pageHeightPx: 794
+    });
+
+    const alreadyLandscapeSectionPropertiesXml = SECTION_PROPERTIES_XML.replace(
+      '<w:pgSz w:w="11906" w:h="16838"/>',
+      '<w:pgSz w:w="16838" w:h="11906" w:orient="landscape"/>'
+    );
+    expect(parseSectionLayout(alreadyLandscapeSectionPropertiesXml)).toMatchObject({
+      pageWidthPx: 1123,
+      pageHeightPx: 794
+    });
+  });
+
   it("resolves document layout from model metadata", () => {
     expect(resolveDocumentLayout(createModel(SECTION_PROPERTIES_XML))).toMatchObject({
       pageWidthPx: 794,

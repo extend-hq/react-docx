@@ -95,6 +95,26 @@ function readStringAttribute(
   return tagXml.match(new RegExp(`${attribute}="([^"]+)"`, "i"))?.[1];
 }
 
+function resolvePageSizeForOrientation(params: {
+  widthPx: number;
+  heightPx: number;
+  orientation?: string;
+}): { widthPx: number; heightPx: number } {
+  const normalizedOrientation = params.orientation?.trim().toLowerCase();
+  const widthPx = Math.max(1, params.widthPx);
+  const heightPx = Math.max(1, params.heightPx);
+
+  if (normalizedOrientation === "landscape" && widthPx < heightPx) {
+    return { widthPx: heightPx, heightPx: widthPx };
+  }
+
+  if (normalizedOrientation === "portrait" && widthPx > heightPx) {
+    return { widthPx: heightPx, heightPx: widthPx };
+  }
+
+  return { widthPx, heightPx };
+}
+
 function normalizeHexColor(value?: string): string | undefined {
   if (!value) {
     return undefined;
@@ -221,10 +241,15 @@ export function parseSectionLayout(sectionPropertiesXml?: string): DocumentLayou
   const pageMarginTag = sectionPropertiesXml.match(/<w:pgMar\b[^>]*>/i)?.[0];
   const docGridTag = sectionPropertiesXml.match(/<w:docGrid\b[^>]*\/?>/i)?.[0];
 
-  const pageWidthPx =
+  const rawPageWidthPx =
     twipsToPixels(readTwipsAttribute(pageSizeTag, "w:w")) ?? DEFAULT_DOCUMENT_LAYOUT.pageWidthPx;
-  const pageHeightPx =
+  const rawPageHeightPx =
     twipsToPixels(readTwipsAttribute(pageSizeTag, "w:h")) ?? DEFAULT_DOCUMENT_LAYOUT.pageHeightPx;
+  const pageSize = resolvePageSizeForOrientation({
+    widthPx: rawPageWidthPx,
+    heightPx: rawPageHeightPx,
+    orientation: readStringAttribute(pageSizeTag, "w:orient"),
+  });
   const topMarginPx =
     twipsToPixels(readTwipsAttribute(pageMarginTag, "w:top")) ?? DEFAULT_DOCUMENT_LAYOUT.marginsPx.top;
   const rightMarginPx =
@@ -250,8 +275,8 @@ export function parseSectionLayout(sectionPropertiesXml?: string): DocumentLayou
       : DEFAULT_DOCUMENT_LAYOUT.docGridLinePitchPx;
 
   return {
-    pageWidthPx,
-    pageHeightPx,
+    pageWidthPx: pageSize.widthPx,
+    pageHeightPx: pageSize.heightPx,
     marginsPx: {
       top: topMarginPx,
       right: rightMarginPx,

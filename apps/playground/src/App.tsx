@@ -3076,11 +3076,12 @@ export function App(): React.JSX.Element {
               </div>
             </div>
           ) : null}
-          <div className="mx-auto flex min-h-full justify-center">
+          <div className="flex min-h-full min-w-full w-max justify-center">
             <div style={{ zoom: zoomScale }}>
               <DocxEditorViewer
                 editor={editor}
                 pageGapBackgroundColor={pageGapBackgroundColor}
+                pageVirtualization={{ zoomScale }}
                 mode={isReadOnly ? "read-only" : "edit"}
                 showTrackedChanges={showTrackedChanges}
                 renderTrackedChangeCard={renderTrackedChangeCard}
@@ -3122,14 +3123,6 @@ export function App(): React.JSX.Element {
                     return null;
                   }
 
-                  const rotatePreview = thumbnail.widthPx > thumbnail.heightPx;
-                  const previewWidthPx = rotatePreview
-                    ? thumbnail.heightPx
-                    : thumbnail.widthPx;
-                  const previewHeightPx = rotatePreview
-                    ? thumbnail.widthPx
-                    : thumbnail.heightPx;
-
                   return (
                     <div
                       key={virtualItem.key}
@@ -3164,8 +3157,8 @@ export function App(): React.JSX.Element {
                           <div className="bg-muted/60 ring-border/70 flex min-h-[10rem] items-center justify-center overflow-hidden rounded-md p-3 ring-1">
                             <div
                               style={{
-                                width: `${previewWidthPx}px`,
-                                height: `${previewHeightPx}px`,
+                                width: `${thumbnail.widthPx}px`,
+                                height: `${thumbnail.heightPx}px`,
                                 display: "flex",
                                 alignItems: "center",
                                 justifyContent: "center",
@@ -3179,10 +3172,6 @@ export function App(): React.JSX.Element {
                                   width: `${thumbnail.widthPx}px`,
                                   height: `${thumbnail.heightPx}px`,
                                   display: "block",
-                                  transform: rotatePreview
-                                    ? "rotate(90deg)"
-                                    : undefined,
-                                  transformOrigin: "center center",
                                 }}
                               />
                             </div>

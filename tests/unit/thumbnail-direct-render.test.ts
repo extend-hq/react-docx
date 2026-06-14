@@ -112,7 +112,7 @@ afterEach(() => {
 });
 
 describe("renderDocxThumbnailSnapshotSurface (direct paint path)", () => {
-  it("draws run text and reuses font/measurements across a run's tokens", () => {
+  it("draws run text and reuses font/measurements across a run's tokens", async () => {
     const created = createRecordingCanvas();
     stubCanvasDocument(() => created.canvas);
 
@@ -133,7 +133,7 @@ describe("renderDocxThumbnailSnapshotSurface (direct paint path)", () => {
       ],
     };
 
-    renderDocxThumbnailSnapshotSurface({
+    await renderDocxThumbnailSnapshotSurface({
       snapshot,
       widthPx: 300,
       heightPx: 400,
@@ -163,7 +163,7 @@ describe("renderDocxThumbnailSnapshotSurface (direct paint path)", () => {
     );
   });
 
-  it("only switches font at run boundaries in the draw pass", () => {
+  it("only switches font at run boundaries in the draw pass", async () => {
     const created = createRecordingCanvas();
     stubCanvasDocument(() => created.canvas);
 
@@ -186,7 +186,7 @@ describe("renderDocxThumbnailSnapshotSurface (direct paint path)", () => {
       ],
     };
 
-    renderDocxThumbnailSnapshotSurface({
+    await renderDocxThumbnailSnapshotSurface({
       snapshot,
       widthPx: 300,
       heightPx: 400,
@@ -202,7 +202,7 @@ describe("renderDocxThumbnailSnapshotSurface (direct paint path)", () => {
     expect(created.recorder.filledTexts.join(" ")).toContain("plain");
   });
 
-  it("renders tables and image placeholders without error", () => {
+  it("renders tables and image placeholders without error", async () => {
     const created = createRecordingCanvas();
     stubCanvasDocument(() => created.canvas);
 
@@ -237,7 +237,7 @@ describe("renderDocxThumbnailSnapshotSurface (direct paint path)", () => {
       ],
     };
 
-    const surface = renderDocxThumbnailSnapshotSurface({
+    const surface = await renderDocxThumbnailSnapshotSurface({
       snapshot,
       widthPx: 300,
       heightPx: 400,
