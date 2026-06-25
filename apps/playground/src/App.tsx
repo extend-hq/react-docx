@@ -5,6 +5,7 @@ import {
   type DocxBorderPreset,
   type DocxContextMenuActionId,
   type DocxContextMenuRenderProps,
+  type DocxCommentCardRenderProps,
   type DocxEditorController,
   DocxEditorViewer,
   type DocxSelectedFormField,
@@ -85,13 +86,7 @@ import { useTheme } from "next-themes";
 import { Badge } from "./components/ui/badge";
 import { Button } from "./components/ui/button";
 import { ButtonGroup } from "./components/ui/button-group";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "./components/ui/card";
+import { Card, CardContent } from "./components/ui/card";
 import { ColorPicker } from "./components/ui/color-picker";
 import {
   ContextMenu,
@@ -1078,18 +1073,6 @@ function themedPreviewColor(
   }
 
   return color;
-}
-
-function withAlpha(color: string, alpha: number): string {
-  const normalized = normalizeHexColor(color);
-  if (!normalized) {
-    return color;
-  }
-
-  const red = Number.parseInt(normalized.slice(1, 3), 16);
-  const green = Number.parseInt(normalized.slice(3, 5), 16);
-  const blue = Number.parseInt(normalized.slice(5, 7), 16);
-  return `rgba(${red}, ${green}, ${blue}, ${alpha})`;
 }
 
 type PlaygroundDocxParagraphTarget = {
@@ -2193,64 +2176,101 @@ export function App(): React.JSX.Element {
   const pageGapBackgroundColor = "hsl(var(--background))";
   const renderTrackedChangeCard = React.useCallback(
     (props: DocxTrackedChangeCardRenderProps): React.ReactNode => {
-      const iconForKind =
-        props.change.kind === "insertion"
-          ? Upload
-          : props.change.kind === "deletion"
-          ? Strikethrough
-          : props.change.kind === "move-from"
-          ? Undo2
-          : props.change.kind === "move-to"
-          ? Redo2
-          : props.change.kind === "paragraph-format-change"
-          ? AlignLeft
-          : FileDiff;
-      const chipBackground = withAlpha(props.accentColor, isDark ? 0.3 : 0.16);
+      const noteBackground = isDark
+        ? "rgba(15, 23, 42, 0.94)"
+        : "rgba(255, 255, 255, 0.9)";
+      const borderColor = isDark
+        ? "rgba(148, 163, 184, 0.22)"
+        : "rgba(15, 23, 42, 0.1)";
+      const secondaryColor = isDark ? "#94a3b8" : "#64748b";
+      const snippetStyle: React.CSSProperties = {
+        color: isDark ? "#cbd5e1" : "#334155",
+        display: "-webkit-box",
+        WebkitBoxOrient: "vertical",
+        WebkitLineClamp: 2,
+        overflow: "hidden",
+      };
 
       return (
-        <Card
-          size="sm"
-          className="pointer-events-none gap-1 py-2"
+        <div
+          className="pointer-events-none overflow-hidden rounded-sm px-1.5 py-1 text-[9px] leading-3"
           style={{
             ...props.style,
-            borderLeft: `3px solid ${props.accentColor}`,
+            border: `1px solid ${borderColor}`,
+            borderLeft: `2px solid ${props.accentColor}`,
+            backgroundColor: noteBackground,
+            color: isDark ? "#f8fafc" : "#111827",
             boxShadow: isDark
-              ? "0 2px 8px rgba(2, 6, 23, 0.7)"
-              : "0 2px 6px rgba(15, 23, 42, 0.16)",
+              ? "0 1px 3px rgba(2, 6, 23, 0.45)"
+              : "0 1px 2px rgba(15, 23, 42, 0.08)",
           }}
         >
-          <CardHeader className="px-3 pb-0">
-            <div className="flex items-start justify-between gap-2">
-              <CardTitle className="min-w-0 text-xs leading-4 text-foreground">
-                <span className="truncate">
-                  {props.change.author?.trim() || "Unknown author"}
-                </span>
-              </CardTitle>
-              {props.formattedDate ? (
-                <span className="shrink-0 text-[10px] leading-4 text-muted-foreground">
-                  {props.formattedDate}
-                </span>
-              ) : null}
-            </div>
-          </CardHeader>
-          <CardContent className="space-y-1 px-3 pt-0">
-            <span
-              className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide"
-              style={{
-                color: props.accentColor,
-                backgroundColor: chipBackground,
-              }}
-            >
-              {React.createElement(iconForKind, {
-                className: "size-3.5 shrink-0",
-              })}
-              {props.kindLabel}
+          <div className="flex items-start justify-between gap-2">
+            <p className="m-0 min-w-0 flex-1 truncate font-semibold">
+              {props.change.author?.trim() || "Unknown author"}
+            </p>
+            {props.formattedDate ? (
+              <span className="shrink-0" style={{ color: secondaryColor }}>
+                {props.formattedDate}
+              </span>
+            ) : null}
+          </div>
+          <p className="m-0 mt-0.5" style={snippetStyle}>
+            <span style={{ color: props.accentColor, fontWeight: 700 }}>
+              {props.kindLabel}:{" "}
             </span>
-            <CardDescription className="text-[11px] leading-4">
-              {props.snippet}
-            </CardDescription>
-          </CardContent>
-        </Card>
+            {props.snippet}
+          </p>
+        </div>
+      );
+    },
+    [isDark]
+  );
+  const renderCommentCard = React.useCallback(
+    (props: DocxCommentCardRenderProps): React.ReactNode => {
+      const noteBackground = isDark
+        ? "rgba(15, 23, 42, 0.94)"
+        : "rgba(255, 255, 255, 0.9)";
+      const borderColor = isDark
+        ? "rgba(148, 163, 184, 0.22)"
+        : "rgba(15, 23, 42, 0.1)";
+      const secondaryColor = isDark ? "#94a3b8" : "#64748b";
+      const snippetStyle: React.CSSProperties = {
+        color: isDark ? "#cbd5e1" : "#334155",
+        display: "-webkit-box",
+        WebkitBoxOrient: "vertical",
+        WebkitLineClamp: 2,
+        overflow: "hidden",
+      };
+
+      return (
+        <div
+          className="pointer-events-none overflow-hidden rounded-sm px-1.5 py-1 text-[9px] leading-3"
+          style={{
+            ...props.style,
+            border: `1px solid ${borderColor}`,
+            borderLeft: `2px solid ${props.accentColor}`,
+            backgroundColor: noteBackground,
+            color: isDark ? "#f8fafc" : "#111827",
+            boxShadow: isDark
+              ? "0 1px 3px rgba(2, 6, 23, 0.45)"
+              : "0 1px 2px rgba(15, 23, 42, 0.08)",
+          }}
+        >
+          <div className="flex items-start justify-between gap-2">
+            <p className="m-0 min-w-0 flex-1 truncate font-semibold">
+              {props.comment.author?.trim() || "Unknown author"}
+            </p>
+            {props.formattedDate ? (
+              <span className="shrink-0" style={{ color: secondaryColor }}>
+                {props.formattedDate}
+              </span>
+            ) : null}
+          </div>
+          <p className="m-0 mt-0.5" style={snippetStyle}>
+            {props.snippet}
+          </p>
+        </div>
       );
     },
     [isDark]
@@ -3086,6 +3106,7 @@ export function App(): React.JSX.Element {
                 showTrackedChanges={showTrackedChanges}
                 renderTrackedChangeCard={renderTrackedChangeCard}
                 showComments={showComments}
+                renderCommentCard={renderCommentCard}
                 renderContextMenu={renderContextMenu}
                 renderTableContextMenu={renderTableContextMenu}
                 onFormFieldDoubleClick={(location) => {

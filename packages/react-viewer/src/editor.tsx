@@ -969,10 +969,11 @@ const BASE_DOC_STYLE: React.CSSProperties = {
 };
 
 const TRACKED_CHANGE_GUTTER_WIDTH_PX = 300;
-const TRACKED_CHANGE_GUTTER_CARD_LEFT_PX = 28;
-const TRACKED_CHANGE_GUTTER_CARD_RIGHT_PX = 10;
-const TRACKED_CHANGE_GUTTER_CARD_GAP_PX = 8;
-const TRACKED_CHANGE_GUTTER_CARD_MIN_HEIGHT_PX = 52;
+const TRACKED_CHANGE_GUTTER_CARD_LEFT_PX = 14;
+const TRACKED_CHANGE_GUTTER_CARD_RIGHT_PX = 12;
+const TRACKED_CHANGE_GUTTER_CARD_GAP_PX = 4;
+const TRACKED_CHANGE_GUTTER_CARD_MIN_HEIGHT_PX = 30;
+const TRACKED_CHANGE_GUTTER_BEND_OFFSET_PX = 8;
 const INITIAL_PAGINATION_STABILITY_IDLE_MS = 240;
 
 function scheduleDomWrite(callback: () => void): void {
@@ -3549,6 +3550,7 @@ export type DocxTrackedChangeKind =
 
 export interface DocxTrackedChange {
   id: string;
+  inlineAnchorId?: string;
   kind: DocxTrackedChangeKind;
   author?: string;
   date?: string;
@@ -15825,9 +15827,10 @@ function trackedInlineStyle(
   }
 
   if (change.kind === "insertion" || change.kind === "move-to") {
+    const accentColor = change.kind === "move-to" ? "#70ad47" : "#dc2626";
     return {
       ...baseStyle,
-      color: "#2563eb",
+      color: accentColor,
       textDecoration: mergeTextDecorations(
         baseStyle.textDecoration,
         "underline"
@@ -18249,22 +18252,33 @@ function renderParagraphRuns(
     | ParagraphTrackedInlineChange
     | undefined =>
     trackedMarkup?.inlineChangeByVisibleChildIndex[trackedVisibleChildCursor];
-  const currentCommentHighlightStyle = ():
-    | React.CSSProperties
-    | undefined => {
+  const currentCommentHighlightStyle = (): React.CSSProperties | undefined => {
     const commentIds =
       commentMarkup?.commentIdsByVisibleChildIndex[trackedVisibleChildCursor];
     if (!commentIds || commentIds.length === 0) {
       return undefined;
     }
-    const accent = commentAccentColor(documentTheme);
-    return {
-      backgroundColor:
-        documentTheme === "dark"
-          ? "rgba(251, 191, 36, 0.24)"
-          : "rgba(251, 191, 36, 0.3)",
-      borderBottom: `2px solid ${accent}`,
-    };
+    return commentHighlightStyle(documentTheme, commentIds[0]);
+  };
+  const currentAnnotationAttributes = (
+    trackedInlineChange: ParagraphTrackedInlineChange | undefined
+  ): Record<string, string> => {
+    const attributes: Record<string, string> = {};
+    if (trackedInlineChange) {
+      attributes["data-docx-tracked-change"] = trackedInlineChange.kind;
+      attributes["data-docx-tracked-change-id"] = trackedInlineChange.id;
+    }
+
+    const commentIds =
+      commentMarkup?.commentIdsByVisibleChildIndex[trackedVisibleChildCursor];
+    if (commentIds && commentIds.length > 0) {
+      attributes["data-docx-comment-ids"] = commentIds.join(" ");
+      if (commentIds.length === 1) {
+        attributes["data-docx-comment-id"] = String(commentIds[0]);
+      }
+    }
+
+    return attributes;
   };
   const consumeTrackedVisibleChild = (
     child: ParagraphNode["children"][number]
@@ -18313,13 +18327,14 @@ function renderParagraphRuns(
     keySeed: string,
     text: string,
     style: React.CSSProperties,
-    measureStyle?: TextRunNode["style"] | FormFieldRunNode["style"]
+    measureStyle?: TextRunNode["style"] | FormFieldRunNode["style"],
+    spanAttributes?: Record<string, string>
   ): void => {
     const shouldControlSoftBreakStretch =
       paragraph.style?.align === "justify" && text.includes("\n");
     if (!shouldControlSoftBreakStretch) {
       target.push(
-        <span key={keySeed} style={style}>
+        <span key={keySeed} {...spanAttributes} style={style}>
           {text}
         </span>
       );
@@ -18338,6 +18353,7 @@ function renderParagraphRuns(
         target.push(
           <span
             key={`${keySeed}-segment-${segmentIndex}`}
+            {...spanAttributes}
             style={
               isLastSegment
                 ? {
@@ -18551,12 +18567,15 @@ function renderParagraphRuns(
         " "
       );
       const text = textOverride ?? textValue;
+      const annotationAttributes =
+        currentAnnotationAttributes(trackedInlineChange);
       if (child.link) {
         const linkHref = child.link;
         const isInternalLink = linkHref.startsWith("#");
         target.push(
           <a
             key={key}
+            {...annotationAttributes}
             href={linkHref}
             target={isInternalLink ? undefined : "_blank"}
             rel={isInternalLink ? undefined : "noreferrer noopener"}
@@ -18595,7 +18614,11 @@ function renderParagraphRuns(
       };
       if (text === "\t" && !useTabLeaderLayout && !useAnchoredTabLayout) {
         target.push(
-          <span key={key} style={tabTextStyle(child.style, trackedStyle)}>
+          <span
+            key={key}
+            {...annotationAttributes}
+            style={tabTextStyle(child.style, trackedStyle)}
+          >
             {"\u00a0"}
           </span>
         );
@@ -18603,7 +18626,7 @@ function renderParagraphRuns(
       }
 
       target.push(
-        <span key={key} style={trackedStyle}>
+        <span key={key} {...annotationAttributes} style={trackedStyle}>
           {text}
         </span>
       );
@@ -18741,7 +18764,10 @@ function renderParagraphRuns(
         trackedInlineChange?.kind === "insertion" ||
         trackedInlineChange?.kind === "move-to"
           ? {
-              outline: "2px solid rgba(37, 99, 235, 0.35)",
+              outline:
+                trackedInlineChange.kind === "move-to"
+                  ? "2px solid rgba(112, 173, 71, 0.35)"
+                  : "2px solid rgba(220, 38, 38, 0.3)",
               outlineOffset: 1,
             }
           : undefined;
@@ -18966,6 +18992,8 @@ function renderParagraphRuns(
       ),
       ...currentCommentHighlightStyle(),
     };
+    const annotationAttributes =
+      currentAnnotationAttributes(trackedInlineChange);
     const noteLabel = noteMarkerLabel(
       child.noteReference,
       safeNoteMarkerIndexes.footnote,
@@ -18975,6 +19003,7 @@ function renderParagraphRuns(
       target.push(
         <span
           key={key}
+          {...annotationAttributes}
           style={{
             ...textStyle,
             verticalAlign: "super",
@@ -18994,7 +19023,11 @@ function renderParagraphRuns(
       !useAnchoredTabLayout
     ) {
       target.push(
-        <span key={key} style={tabTextStyle(child.style, textStyle)}>
+        <span
+          key={key}
+          {...annotationAttributes}
+          style={tabTextStyle(child.style, textStyle)}
+        >
           {"\u00a0"}
         </span>
       );
@@ -19007,6 +19040,7 @@ function renderParagraphRuns(
       target.push(
         <a
           key={key}
+          {...annotationAttributes}
           href={linkHref}
           target={isInternalLink ? undefined : "_blank"}
           rel={isInternalLink ? undefined : "noreferrer noopener"}
@@ -19041,7 +19075,8 @@ function renderParagraphRuns(
       key,
       textOverride ?? child.text,
       textStyle,
-      child.style
+      child.style,
+      annotationAttributes
     );
   };
 
@@ -22746,6 +22781,7 @@ function collectTrackedChangesFromModel(model: DocModel): DocxTrackedChange[] {
     trackedMarkup.changes.forEach((change, changeIndex) => {
       trackedChanges.push({
         id: `${paragraphLocationKey(location)}:${change.id}:${changeIndex}`,
+        inlineAnchorId: change.id,
         kind: change.kind,
         author: change.author,
         date: change.date,
@@ -22964,14 +23000,53 @@ function collectCommentsFromModel(model: DocModel): DocxComment[] {
   return comments;
 }
 
-function commentAccentColor(documentTheme: DocxDocumentTheme): string {
-  return documentTheme === "dark" ? "#fbbf24" : "#d97706";
+function hexColorWithAlpha(color: string, alpha: number): string {
+  const normalized = color.trim().replace(/^#/, "");
+  if (!/^[\da-f]{6}$/i.test(normalized)) {
+    return color;
+  }
+
+  const red = Number.parseInt(normalized.slice(0, 2), 16);
+  const green = Number.parseInt(normalized.slice(2, 4), 16);
+  const blue = Number.parseInt(normalized.slice(4, 6), 16);
+  return `rgba(${red}, ${green}, ${blue}, ${alpha})`;
+}
+
+function commentAccentColor(
+  documentTheme: DocxDocumentTheme,
+  commentId?: number
+): string {
+  const lightPalette = ["#5b9bd5", "#d65f5f", "#8f6ac8", "#70ad47", "#d9872b"];
+  const darkPalette = ["#7dd3fc", "#fca5a5", "#c4b5fd", "#86efac", "#fdba74"];
+  if (Number.isFinite(commentId)) {
+    const palette = documentTheme === "dark" ? darkPalette : lightPalette;
+    return palette[Math.abs(Math.round(commentId as number)) % palette.length];
+  }
+
+  return documentTheme === "dark" ? darkPalette[0] : lightPalette[0];
+}
+
+function commentHighlightStyle(
+  documentTheme: DocxDocumentTheme,
+  commentId?: number
+): React.CSSProperties {
+  const accent = commentAccentColor(documentTheme, commentId);
+  return {
+    backgroundColor: hexColorWithAlpha(
+      accent,
+      documentTheme === "dark" ? 0.3 : 0.22
+    ),
+    boxShadow: `inset 0 -1px 0 ${hexColorWithAlpha(
+      accent,
+      documentTheme === "dark" ? 0.7 : 0.48
+    )}`,
+  };
 }
 
 function estimateCommentCardHeight(comment: DocxComment): number {
   const snippet = comment.text || "Comment";
-  const lines = Math.max(1, Math.ceil(snippet.length / 30));
-  return Math.max(TRACKED_CHANGE_GUTTER_CARD_MIN_HEIGHT_PX, 34 + lines * 14);
+  const lines = Math.min(2, Math.max(1, Math.ceil(snippet.length / 42)));
+  return Math.max(TRACKED_CHANGE_GUTTER_CARD_MIN_HEIGHT_PX, 24 + lines * 11);
 }
 
 function trackedChangeKindLabel(kind: DocxTrackedChangeKind): string {
@@ -23000,17 +23075,17 @@ function trackedChangeAccentColor(
   const palette =
     documentTheme === "dark"
       ? {
-          insertion: "#60a5fa",
+          insertion: "#f87171",
           deletion: "#f87171",
-          moveFrom: "#fbbf24",
-          moveTo: "#22d3ee",
+          moveFrom: "#86efac",
+          moveTo: "#86efac",
           format: "#c084fc",
         }
       : {
-          insertion: "#2563eb",
+          insertion: "#dc2626",
           deletion: "#dc2626",
-          moveFrom: "#d97706",
-          moveTo: "#0891b2",
+          moveFrom: "#70ad47",
+          moveTo: "#70ad47",
           format: "#7c3aed",
         };
 
@@ -23029,6 +23104,12 @@ function trackedChangeAccentColor(
     default:
       return palette.format;
   }
+}
+
+function trackedChangeUsesGutterBalloon(
+  change: DocxTrackedChange
+): boolean {
+  return change.kind !== "insertion" && change.kind !== "move-to";
 }
 
 function gutterAnnotationSortTuple(
@@ -23174,6 +23255,114 @@ interface DocxGutterAnnotation {
   comment?: DocxComment;
 }
 
+function findFirstElementWithSpaceSeparatedDataValue(
+  rootElement: HTMLElement,
+  attributeName: string,
+  value: string
+): HTMLElement | undefined {
+  const candidateElements: HTMLElement[] = [];
+  if (rootElement.hasAttribute(attributeName)) {
+    candidateElements.push(rootElement);
+  }
+  candidateElements.push(
+    ...rootElement.querySelectorAll<HTMLElement>(
+      `[${attributeName}]`
+    )
+  );
+
+  for (const candidate of candidateElements) {
+    const rawValue = candidate.getAttribute(attributeName);
+    if (!rawValue) {
+      continue;
+    }
+
+    if (rawValue.split(/\s+/).includes(value)) {
+      return candidate;
+    }
+  }
+
+  return undefined;
+}
+
+function findGutterAnnotationScopeElementInPage(
+  pageElement: HTMLElement,
+  annotation: DocxGutterAnnotation
+): HTMLElement | undefined {
+  return findTrackedChangeAnchorElementInPage(pageElement, annotation.location);
+}
+
+function findGutterAnnotationDataAnchorInPage(
+  pageElement: HTMLElement,
+  annotation: DocxGutterAnnotation,
+  attributeName: string,
+  value: string
+): HTMLElement | undefined {
+  const scopedRoot = findGutterAnnotationScopeElementInPage(
+    pageElement,
+    annotation
+  );
+  if (scopedRoot) {
+    const scopedAnchor = findFirstElementWithSpaceSeparatedDataValue(
+      scopedRoot,
+      attributeName,
+      value
+    );
+    if (scopedAnchor) {
+      return scopedAnchor;
+    }
+  }
+
+  return findFirstElementWithSpaceSeparatedDataValue(
+    pageElement,
+    attributeName,
+    value
+  );
+}
+
+function findGutterAnnotationAnchorElementInPage(
+  pageElement: HTMLElement,
+  annotation: DocxGutterAnnotation
+): HTMLElement | undefined {
+  if (annotation.trackedChange) {
+    const trackedAnchor = findGutterAnnotationDataAnchorInPage(
+      pageElement,
+      annotation,
+      "data-docx-tracked-change-id",
+      annotation.trackedChange.id
+    );
+    if (trackedAnchor) {
+      return trackedAnchor;
+    }
+
+    const inlineAnchorId = annotation.trackedChange.inlineAnchorId;
+    if (inlineAnchorId && inlineAnchorId !== annotation.trackedChange.id) {
+      const inlineTrackedAnchor = findGutterAnnotationDataAnchorInPage(
+        pageElement,
+        annotation,
+        "data-docx-tracked-change-id",
+        inlineAnchorId
+      );
+      if (inlineTrackedAnchor) {
+        return inlineTrackedAnchor;
+      }
+    }
+  }
+
+  if (annotation.comment) {
+    const commentAnchor = findGutterAnnotationDataAnchorInPage(
+      pageElement,
+      annotation,
+      "data-docx-comment-ids",
+      String(annotation.comment.commentId)
+    );
+    if (commentAnchor) {
+      return commentAnchor;
+    }
+  }
+
+  return findTrackedChangeAnchorElementInPage(pageElement, annotation.location);
+}
+
 interface PositionedGutterAnnotation {
   annotation: DocxGutterAnnotation;
   anchorX: number;
@@ -23186,8 +23375,8 @@ function estimateTrackedChangeCardHeight(change: DocxTrackedChange): number {
   const snippet =
     normalizeTrackedChangeSnippet(change.text) ??
     trackedChangeKindLabel(change.kind);
-  const lines = Math.max(1, Math.ceil(snippet.length / 30));
-  return Math.max(TRACKED_CHANGE_GUTTER_CARD_MIN_HEIGHT_PX, 34 + lines * 14);
+  const lines = Math.min(2, Math.max(1, Math.ceil(snippet.length / 42)));
+  return Math.max(TRACKED_CHANGE_GUTTER_CARD_MIN_HEIGHT_PX, 22 + lines * 11);
 }
 
 function layoutTrackedChangesForPage(
@@ -23243,12 +23432,24 @@ function layoutTrackedChangesForPage(
     };
   });
 
-  withAnchors.sort((left, right) => left.anchorY - right.anchorY);
+  withAnchors.sort((left, right) => {
+    const yDelta = left.anchorY - right.anchorY;
+    if (Math.abs(yDelta) > 2) {
+      return yDelta;
+    }
+
+    const xDelta = left.anchorX - right.anchorX;
+    if (xDelta !== 0) {
+      return xDelta;
+    }
+
+    return left.annotation.id.localeCompare(right.annotation.id);
+  });
 
   const minTopPx = 8;
   let cursorTopPx = minTopPx;
   withAnchors.forEach((entry) => {
-    const desiredTop = entry.anchorY - Math.round(entry.heightPx / 2);
+    const desiredTop = entry.anchorY - 8;
     entry.top = Math.max(desiredTop, cursorTopPx);
     cursorTopPx =
       entry.top + entry.heightPx + TRACKED_CHANGE_GUTTER_CARD_GAP_PX;
@@ -35715,6 +35916,10 @@ export function DocxEditorViewer({
 
     if (trackedChangesEnabled) {
       editor.trackedChanges.forEach((change) => {
+        if (!trackedChangeUsesGutterBalloon(change)) {
+          return;
+        }
+
         placeAnnotation({
           id: change.id,
           location: change.location,
@@ -35771,49 +35976,49 @@ export function DocxEditorViewer({
       return;
     }
 
-    const nextAnchorMaps = trackedChangesByPage.map((annotations, pageIndex) => {
-      const pageElement = pageElementsRef.current.get(pageIndex);
-      const anchorsByChangeId = new Map<string, TrackedChangeAnchorPoint>();
-      if (!pageElement || annotations.length === 0) {
+    const nextAnchorMaps = trackedChangesByPage.map(
+      (annotations, pageIndex) => {
+        const pageElement = pageElementsRef.current.get(pageIndex);
+        const anchorsByChangeId = new Map<string, TrackedChangeAnchorPoint>();
+        if (!pageElement || annotations.length === 0) {
+          return anchorsByChangeId;
+        }
+
+        const pageHeightPx = Math.max(1, pageElement.offsetHeight);
+        const pageWidthPx = Math.max(1, pageElement.offsetWidth);
+        annotations.forEach((annotation) => {
+          const anchorElement = findGutterAnnotationAnchorElementInPage(
+            pageElement,
+            annotation
+          );
+          if (!anchorElement) {
+            return;
+          }
+
+          const anchorRect = elementRectWithinContainer(
+            anchorElement,
+            pageElement
+          );
+          if (!anchorRect) {
+            return;
+          }
+
+          const anchorY = clampNumber(
+            Math.round(anchorRect.top + anchorRect.height / 2),
+            10,
+            Math.max(10, pageHeightPx - 10)
+          );
+          const anchorX = clampNumber(
+            Math.round(anchorRect.right),
+            10,
+            Math.max(10, pageWidthPx - 10)
+          );
+          anchorsByChangeId.set(annotation.id, { x: anchorX, y: anchorY });
+        });
+
         return anchorsByChangeId;
       }
-
-      const pageHeightPx = Math.max(1, pageElement.offsetHeight);
-      const pageWidthPx = Math.max(1, pageElement.offsetWidth);
-      annotations.forEach((annotation) => {
-        const anchorElement = findTrackedChangeAnchorElementInPage(
-          pageElement,
-          annotation.location
-        );
-        if (!anchorElement) {
-          return;
-        }
-
-        const anchorRect = elementRectWithinContainer(
-          anchorElement,
-          pageElement
-        );
-        if (!anchorRect) {
-          return;
-        }
-
-        const anchorY = clampNumber(
-          Math.round(anchorRect.top + anchorRect.height / 2),
-          10,
-          Math.max(10, pageHeightPx - 10)
-        );
-        const anchorX = clampNumber(
-          Math.round(
-            anchorRect.left + Math.min(24, Math.max(8, anchorRect.width * 0.2))
-          ),
-          10,
-          Math.max(10, pageWidthPx - 10)
-        );
-        anchorsByChangeId.set(annotation.id, { x: anchorX, y: anchorY });
-      });
-
-      return anchorsByChangeId;
-    });
+    );
 
     setTrackedChangeAnchorByPage(nextAnchorMaps);
   }, [
@@ -53854,6 +54059,10 @@ export function DocxEditorViewer({
         const headerFooterBodyDimmed = pageHeaderFooterEditActive;
         const documentPageBackgroundColor =
           editor.model.metadata.documentBackgroundColor;
+        const resolvedPageSurfaceBackgroundColor =
+          pageBackgroundColor ??
+          documentPageBackgroundColor ??
+          pageSurfaceBaseStyle.backgroundColor;
         const pageBorders = parseSectionPageBorders(
           pageInfo?.section.sectionPropertiesXml ??
             editor.model.metadata.sectionPropertiesXml
@@ -53880,10 +54089,7 @@ export function DocxEditorViewer({
           width: pageLayout.pageWidthPx,
           height: pageLayout.pageHeightPx,
           minHeight: pageLayout.pageHeightPx,
-          backgroundColor:
-            pageBackgroundColor ??
-            documentPageBackgroundColor ??
-            pageSurfaceBaseStyle.backgroundColor,
+          backgroundColor: resolvedPageSurfaceBackgroundColor,
           position: "relative",
           ...pageMarginPaddingStyle(pageLayout.marginsPx),
         };
@@ -55386,6 +55592,7 @@ export function DocxEditorViewer({
                   top: 0,
                   width: TRACKED_CHANGE_GUTTER_WIDTH_PX,
                   height: pageLayout.pageHeightPx,
+                  backgroundColor: resolvedPageSurfaceBackgroundColor,
                   pointerEvents: "none",
                   overflow: "visible",
                 }}
@@ -55417,17 +55624,17 @@ export function DocxEditorViewer({
                   }}
                 >
                   {pageTrackedChanges.map((entry) => {
-                    const accentColor = entry.annotation.trackedChange
+                    const trackedChange = entry.annotation.trackedChange;
+                    const comment = entry.annotation.comment;
+                    const accentColor = trackedChange
                       ? trackedChangeAccentColor(
-                          entry.annotation.trackedChange.kind,
+                          trackedChange.kind,
                           editor.documentTheme
                         )
-                      : commentAccentColor(editor.documentTheme);
-                    const cardCenterY = clampNumber(
-                      Math.round(entry.top + entry.heightPx / 2),
-                      8,
-                      Math.max(8, pageLayout.pageHeightPx - 8)
-                    );
+                      : commentAccentColor(
+                          editor.documentTheme,
+                          comment?.commentId
+                        );
                     const anchorY = clampNumber(
                       Math.round(entry.anchorY),
                       8,
@@ -55438,46 +55645,57 @@ export function DocxEditorViewer({
                       8,
                       Math.max(8, pageLayout.pageWidthPx - 8)
                     );
-                    const cardLeadX =
+                    const cardAttachX =
                       pageLayout.pageWidthPx +
-                      TRACKED_CHANGE_GUTTER_CARD_LEFT_PX -
-                      6;
-                    const bendX = clampNumber(
-                      Math.round((anchorX + cardLeadX) / 2),
-                      anchorX + 8,
-                      Math.max(anchorX + 8, cardLeadX - 8)
+                      TRACKED_CHANGE_GUTTER_CARD_LEFT_PX;
+                    const gutterBendX =
+                      pageLayout.pageWidthPx +
+                      TRACKED_CHANGE_GUTTER_BEND_OFFSET_PX;
+                    const cardCenterY = clampNumber(
+                      Math.round(entry.top + entry.heightPx / 2),
+                      8,
+                      Math.max(8, pageLayout.pageHeightPx - 8)
+                    );
+                    const connectorPath =
+                      Math.abs(cardCenterY - anchorY) <= 2
+                        ? `M ${anchorX} ${anchorY} H ${cardAttachX}`
+                        : `M ${anchorX} ${anchorY} H ${gutterBendX} V ${cardCenterY} H ${cardAttachX}`;
+                    const revisionBarX = clampNumber(
+                      Math.round(pageLayout.marginsPx.left - 20),
+                      8,
+                      Math.max(8, pageLayout.pageWidthPx - 8)
                     );
                     return (
                       <g
                         key={`tracked-connector-${pageIndex}-${entry.annotation.id}`}
                       >
+                        {trackedChange ? (
+                          <line
+                            x1={revisionBarX}
+                            y1={Math.max(8, anchorY - 16)}
+                            x2={revisionBarX}
+                            y2={Math.min(
+                              pageLayout.pageHeightPx - 8,
+                              anchorY + 16
+                            )}
+                            stroke={
+                              editor.documentTheme === "dark"
+                                ? "#94a3b8"
+                                : "#9ca3af"
+                            }
+                            strokeWidth={1.25}
+                            strokeLinecap="square"
+                          />
+                        ) : null}
                         <path
-                          d={`M ${anchorX} ${anchorY} L ${bendX} ${anchorY} L ${cardLeadX} ${cardCenterY}`}
+                          d={connectorPath}
                           stroke={accentColor}
-                          strokeWidth={1.75}
-                          strokeOpacity={1}
-                          strokeDasharray="5 4"
+                          strokeWidth={1.15}
+                          strokeOpacity={0.78}
+                          strokeDasharray="2 3"
                           strokeLinejoin="round"
                           strokeLinecap="round"
                           fill="none"
-                        />
-                        <circle
-                          cx={anchorX}
-                          cy={anchorY}
-                          r={2.2}
-                          fill={accentColor}
-                          stroke={
-                            editor.documentTheme === "dark"
-                              ? "#020617"
-                              : "#ffffff"
-                          }
-                          strokeWidth={1}
-                        />
-                        <circle
-                          cx={cardLeadX}
-                          cy={cardCenterY}
-                          r={1.8}
-                          fill={accentColor}
                         />
                       </g>
                     );
@@ -55513,7 +55731,10 @@ export function DocxEditorViewer({
                         trackedChange.kind,
                         editor.documentTheme
                       )
-                    : commentAccentColor(editor.documentTheme);
+                    : commentAccentColor(
+                        editor.documentTheme,
+                        comment?.commentId
+                      );
                   const formattedDate = formatTrackedChangeDate(
                     trackedChange?.date ?? comment?.date
                   );
@@ -55553,36 +55774,36 @@ export function DocxEditorViewer({
                     <div
                       style={{
                         ...cardStyle,
-                        padding: "6px 8px",
+                        padding: "4px 6px",
                         boxSizing: "border-box",
-                        borderLeft: `2px solid ${accentColor}`,
+                        borderLeft: `1.5px solid ${accentColor}`,
                         borderTop: `1px solid ${
                           editor.documentTheme === "dark"
-                            ? "rgba(148, 163, 184, 0.28)"
-                            : "rgba(15, 23, 42, 0.12)"
+                            ? "rgba(148, 163, 184, 0.18)"
+                            : "rgba(15, 23, 42, 0.08)"
                         }`,
                         borderRight: `1px solid ${
                           editor.documentTheme === "dark"
-                            ? "rgba(148, 163, 184, 0.28)"
-                            : "rgba(15, 23, 42, 0.12)"
+                            ? "rgba(148, 163, 184, 0.18)"
+                            : "rgba(15, 23, 42, 0.08)"
                         }`,
                         borderBottom: `1px solid ${
                           editor.documentTheme === "dark"
-                            ? "rgba(148, 163, 184, 0.28)"
-                            : "rgba(15, 23, 42, 0.12)"
+                            ? "rgba(148, 163, 184, 0.18)"
+                            : "rgba(15, 23, 42, 0.08)"
                         }`,
                         backgroundColor:
                           editor.documentTheme === "dark"
-                            ? "rgba(2, 6, 23, 0.96)"
-                            : "rgba(255, 255, 255, 0.96)",
+                            ? "rgba(15, 23, 42, 0.92)"
+                            : "rgba(255, 255, 255, 0.72)",
                         color:
                           editor.documentTheme === "dark"
                             ? "#f3f4f6"
                             : "#111827",
                         boxShadow:
                           editor.documentTheme === "dark"
-                            ? "0 2px 6px rgba(2, 6, 23, 0.55)"
-                            : "0 1px 2px rgba(15, 23, 42, 0.14)",
+                            ? "0 1px 2px rgba(2, 6, 23, 0.45)"
+                            : "0 1px 1px rgba(15, 23, 42, 0.08)",
                       }}
                     >
                       <div
@@ -55596,9 +55817,9 @@ export function DocxEditorViewer({
                         <p
                           style={{
                             margin: 0,
-                            fontSize: 12,
+                            fontSize: 10,
                             fontWeight: 700,
-                            lineHeight: 1.25,
+                            lineHeight: 1.2,
                           }}
                         >
                           {(trackedChange?.author ?? comment?.author)?.trim() ||
@@ -55608,8 +55829,8 @@ export function DocxEditorViewer({
                           <p
                             style={{
                               margin: 0,
-                              fontSize: 11,
-                              lineHeight: 1.2,
+                              fontSize: 9,
+                              lineHeight: 1.15,
                               color:
                                 editor.documentTheme === "dark"
                                   ? "#94a3b8"
@@ -55625,8 +55846,8 @@ export function DocxEditorViewer({
                         <p
                           style={{
                             margin: "2px 0 0",
-                            fontSize: 11,
-                            lineHeight: 1.3,
+                            fontSize: 9,
+                            lineHeight: 1.25,
                             fontStyle: "italic",
                             color:
                               editor.documentTheme === "dark"
@@ -55640,8 +55861,8 @@ export function DocxEditorViewer({
                       <p
                         style={{
                           margin: "2px 0 0",
-                          fontSize: 12,
-                          lineHeight: 1.35,
+                          fontSize: 10,
+                          lineHeight: 1.25,
                         }}
                       >
                         <strong>{kindLabel}:</strong> {snippet}
@@ -55678,6 +55899,9 @@ export function DocxEditorViewer({
                       data-docx-gutter-annotation={
                         trackedChange ? "tracked-change" : "comment"
                       }
+                      data-docx-gutter-annotation-id={entry.annotation.id}
+                      data-docx-gutter-anchor-x={Math.round(entry.anchorX)}
+                      data-docx-gutter-anchor-y={Math.round(entry.anchorY)}
                       ref={(element) => {
                         const elementKey = `${pageIndex}:${entry.annotation.id}`;
                         if (element) {
