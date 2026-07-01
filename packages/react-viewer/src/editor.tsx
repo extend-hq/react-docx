@@ -38,6 +38,14 @@ import { type OoxmlPackage } from "@extend-ai/react-docx-ooxml-core";
 import { serializeDocx } from "@extend-ai/react-docx-serializer";
 import { importDocxBuffer } from "./docx-import";
 import {
+  applyTextEditingIntent,
+  editingIntentCoalesceClass,
+  mergeCellParagraphTexts,
+  resolveEditingIntent,
+  shouldCoalesceTextCommit,
+  type TextCommitBurst,
+} from "./editing-intents";
+import {
   collectTableExplicitPageBreakInfo,
   collectTopLevelExplicitPageBreakStartNodeIndexes,
 } from "./pagination-breaks";
@@ -1199,6 +1207,53 @@ function selectionOffsetsWithinElementDom(
     const endRange = document.createRange();
     endRange.setStart(element, 0);
     endRange.setEnd(selectedRange.endContainer, selectedRange.endOffset);
+
+    const startOffset = textLengthWithoutNumberingLabels(startRange);
+    const endOffset = textLengthWithoutNumberingLabels(endRange);
+
+    return {
+      start: Math.min(startOffset, endOffset),
+      end: Math.max(startOffset, endOffset),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function staticRangeOffsetsWithinElementDom(
+  element: HTMLElement,
+  staticRange: {
+    startContainer: Node;
+    startOffset: number;
+    endContainer: Node;
+    endOffset: number;
+  }
+): { start: number; end: number } | undefined {
+  if (
+    !element.contains(staticRange.startContainer) ||
+    !element.contains(staticRange.endContainer)
+  ) {
+    return undefined;
+  }
+
+  try {
+    const textLengthWithoutNumberingLabels = (range: Range): number => {
+      const fragment = range.cloneContents();
+      fragment
+        .querySelectorAll("[data-docx-numbering-label='true']")
+        .forEach((label) => {
+          label.remove();
+        });
+      return fragment.textContent?.length ?? 0;
+    };
+
+    const startRange = document.createRange();
+    startRange.setStart(element, 0);
+    startRange.setEnd(staticRange.startContainer, staticRange.startOffset);
+
+    const endRange = document.createRange();
+    endRange.setStart(element, 0);
+    endRange.setEnd(staticRange.endContainer, staticRange.endOffset);
 
     const startOffset = textLengthWithoutNumberingLabels(startRange);
     const endOffset = textLengthWithoutNumberingLabels(endRange);
@@ -3872,6 +3927,19 @@ export interface DocxEditorController {
     paragraphIndex: number,
     text: string
   ) => void;
+  commitParagraphTextAtRange: (
+    location: ParagraphLocation,
+    text: string,
+    caret: { start: number; end: number },
+    options?: { insertionOffset?: number; coalesceKey?: string }
+  ) => boolean;
+  commitTableCellTextAtRange: (
+    tableIndex: number,
+    rowIndex: number,
+    cellIndex: number,
+    text: string,
+    caret: { paragraphIndex: number; start: number; end: number }
+  ) => boolean;
   commitSectionParagraphText: (
     location: DocxSectionParagraphLocation,
     text: string
@@ -25053,6 +25121,9 @@ export function useDocxEditor(
     pendingRunStyle
   );
   const suppressNextDomSelectionRestoreRef = React.useRef(false);
+  const textCommitBurstRef = React.useRef<TextCommitBurst | undefined>(
+    undefined
+  );
   const domSelectionRestoreModelRef = React.useRef(model);
   const selectionSessionRef = React.useRef<DocxSelectionSessionKind>("idle");
   const selectionSessionTimeoutRef = React.useRef<number | null>(null);
@@ -25901,6 +25972,7 @@ export function useDocxEditor(
   }, [basePackage, fileName]);
 
   const undo = React.useCallback((): void => {
+    textCommitBurstRef.current = undefined;
     setHistory((currentHistory) => {
       const previousSnapshot =
         currentHistory.past[currentHistory.past.length - 1];
@@ -25944,6 +26016,7 @@ export function useDocxEditor(
   }, []);
 
   const redo = React.useCallback((): void => {
+    textCommitBurstRef.current = undefined;
     setHistory((currentHistory) => {
       const nextSnapshot = currentHistory.future[0];
       const next = nextSnapshot?.model;
@@ -29465,6 +29538,136 @@ export function useDocxEditor(
     [applyModelChange]
   );
 
+  // Per-keystroke commit for beforeinput-driven hosts: model text update and
+  // explicit collapsed-range patch in ONE transaction, so the DOM caret is
+  // restored FROM THE MODEL (the explicit range patch forces a
+  // historyRestoreRequest even during an active keyboard session).
+  const commitParagraphTextAtRange = React.useCallback(
+    (
+      location: ParagraphLocation,
+      text: string,
+      caret: { start: number; end: number },
+      options?: { insertionOffset?: number; coalesceKey?: string }
+    ): boolean => {
+      const now = Date.now();
+      return dispatchEditorTransaction((current) => {
+        const paragraph = getParagraphAtLocation(
+          current.model,
+          location
+        ).paragraph;
+        if (!paragraph) {
+          return undefined;
+        }
+
+        const insertionOffset = options?.insertionOffset ?? caret.start;
+        const insertedStyle =
+          cloneTextStyle(current.pendingRunStyle) ??
+          firstTextStyleAtOffset(paragraph, insertionOffset, false);
+        const nextModel =
+          paragraphText(paragraph) === text
+            ? current.model
+            : updateParagraphTextAtLocation(current.model, location, text, {
+                insertedStyle,
+              });
+
+        const coalesce =
+          options?.coalesceKey !== undefined &&
+          shouldCoalesceTextCommit(textCommitBurstRef.current, {
+            key: options.coalesceKey,
+            caretBefore: insertionOffset,
+            at: now,
+          });
+        textCommitBurstRef.current =
+          options?.coalesceKey !== undefined
+            ? { key: options.coalesceKey, caretAfter: caret.end, at: now }
+            : undefined;
+
+        return {
+          model: nextModel,
+          selection: selectionFromTextRangeLocation(location),
+          activeTextRange: {
+            start: {
+              location: cloneTextRangeLocation(location),
+              offset: caret.start,
+            },
+            end: {
+              location: cloneTextRangeLocation(location),
+              offset: caret.end,
+            },
+          },
+          pushHistory: !coalesce,
+          clearSelectedFormField: true,
+        };
+      });
+    },
+    [dispatchEditorTransaction]
+  );
+
+  const commitTableCellTextAtRange = React.useCallback(
+    (
+      tableIndex: number,
+      rowIndex: number,
+      cellIndex: number,
+      text: string,
+      caret: { paragraphIndex: number; start: number; end: number }
+    ): boolean => {
+      textCommitBurstRef.current = undefined;
+      return dispatchEditorTransaction((current) => {
+        const tableNode = current.model.nodes[tableIndex];
+        if (!tableNode || tableNode.type !== "table") {
+          return undefined;
+        }
+        if (!tableNode.rows[rowIndex]?.cells[cellIndex]) {
+          return undefined;
+        }
+
+        const caretLocation: ParagraphLocation = {
+          kind: "table-cell",
+          tableIndex,
+          rowIndex,
+          cellIndex,
+          paragraphIndex: caret.paragraphIndex,
+        };
+        const caretParagraph = getParagraphAtLocation(
+          current.model,
+          caretLocation
+        ).paragraph;
+        const insertedStyle =
+          cloneTextStyle(current.pendingRunStyle) ??
+          (caretParagraph
+            ? firstTextStyleAtOffset(caretParagraph, caret.start, false)
+            : undefined);
+        const nextModel = updateTableCellText(
+          current.model,
+          tableIndex,
+          rowIndex,
+          cellIndex,
+          text,
+          {
+            insertedStyle,
+          }
+        );
+
+        return {
+          model: nextModel,
+          selection: selectionFromTextRangeLocation(caretLocation),
+          activeTextRange: {
+            start: {
+              location: cloneTextRangeLocation(caretLocation),
+              offset: caret.start,
+            },
+            end: {
+              location: cloneTextRangeLocation(caretLocation),
+              offset: caret.end,
+            },
+          },
+          clearSelectedFormField: true,
+        };
+      });
+    },
+    [dispatchEditorTransaction]
+  );
+
   const commitSectionParagraphText = React.useCallback(
     (location: DocxSectionParagraphLocation, text: string): void => {
       applyModelChange(
@@ -29607,6 +29810,8 @@ export function useDocxEditor(
     commitParagraphText,
     commitTableCellText,
     commitTableCellParagraphTextRecursive,
+    commitParagraphTextAtRange,
+    commitTableCellTextAtRange,
     commitSectionParagraphText,
   };
 }
@@ -32968,7 +33173,6 @@ export function DocxEditorViewer({
     ]
   );
   const viewerRootRef = React.useRef<HTMLDivElement>(null);
-  const paragraphDraftsRef = React.useRef<Map<number, string>>(new Map());
   const tableCellDraftsRef = React.useRef<Map<string, string>>(new Map());
   const editableParagraphHtmlPropsRef = React.useRef<
     Map<number, { __html: string }>
@@ -33066,16 +33270,29 @@ export function DocxEditorViewer({
   const tableDraftLayoutRefreshRafRef = React.useRef<number | null>(null);
   const activeRangeFlushFrameRef = React.useRef<number | null>(null);
   // The last known-good DOM selection (collapsed caret or expanded range) within
-  // a single editable paragraph host, captured synchronously before React
-  // re-applies `dangerouslySetInnerHTML` and destroys it. The selection
-  // invariant restores from this (not the debounced model range, which lags),
-  // so freshly typed text isn't reversed and a drag selection isn't erased when
-  // a re-render clobbers the contentEditable.
+  // a single editable paragraph host: captured from selectionchange for pointer
+  // interactions, and set to the post-commit caret by the beforeinput intent
+  // handler. The selection invariant restores from this synchronously (before
+  // paint) when a re-render rewrites the host's innerHTML and destroys the
+  // live selection.
   const pendingEditableCaretRef = React.useRef<{
     nodeIndex: number;
     start: number;
     end: number;
   } | null>(null);
+  // Continuation state for beforeinput-driven hosts: the paragraph text and
+  // caret produced by the most recent intent commit. When the next beforeinput
+  // arrives before React has re-rendered the host (fast typing), the DOM still
+  // shows pre-commit text, so the intent is applied against this state instead
+  // of the stale DOM. Invalidated by every structural or selection-moving edit.
+  const editingIntentContinuationRef = React.useRef<
+    | {
+        key: string;
+        text: string;
+        caret: number;
+      }
+    | undefined
+  >(undefined);
   // Whether a native IME composition is in progress in any editable surface.
   // While true the DOM owns the preedit: drafts stay frozen (so no re-render
   // can rewrite the composing innerHTML), the selection invariant must not
@@ -33354,7 +33571,7 @@ export function DocxEditorViewer({
     setActiveDropTarget(undefined);
     setIsDraggingImage(false);
     setActiveHeaderFooterEdit(undefined);
-    paragraphDraftsRef.current.clear();
+    editingIntentContinuationRef.current = undefined;
     tableCellDraftsRef.current.clear();
     tableCellParagraphDraftsRef.current.clear();
     sectionParagraphDraftsRef.current.clear();
@@ -33718,19 +33935,12 @@ export function DocxEditorViewer({
     const structureChanged = previousNodeCount !== nextNodeCount;
 
     if (structureChanged) {
-      paragraphDraftsRef.current.clear();
+      editingIntentContinuationRef.current = undefined;
       tableCellDraftsRef.current.clear();
       tableCellParagraphDraftsRef.current.clear();
       pendingTableCellFocusRef.current = undefined;
       bumpParagraphStructureEpoch();
     }
-
-    paragraphDraftsRef.current.forEach((_, nodeIndex) => {
-      const node = editor.model.nodes[nodeIndex];
-      if (!node || node.type !== "paragraph") {
-        paragraphDraftsRef.current.delete(nodeIndex);
-      }
-    });
 
     tableCellDraftsRef.current.forEach((_, draftKey) => {
       const [tableIndexRaw, rowIndexRaw, cellIndexRaw] = draftKey.split(":");
@@ -39102,11 +39312,11 @@ export function DocxEditorViewer({
     }
 
     // The selection was destroyed by a re-render that rewrote the editable
-    // host's innerHTML (the per-keystroke draft is fed through
-    // `dangerouslySetInnerHTML`, and React rebuilds the child nodes). Restore
-    // the caret. During active typing the authoritative position is the offset
-    // captured in `onInput` (the model range lags by a debounced flush, so
-    // using it would snap the caret backwards and reverse the typed text).
+    // host's innerHTML (React rebuilds the child nodes on every
+    // `dangerouslySetInnerHTML` change). Restore the caret. During active
+    // typing the authoritative position is the post-commit caret recorded by
+    // the beforeinput intent handler (pendingEditableCaretRef), which this
+    // effect re-applies synchronously before paint.
     const focusedNodeIndexAttr = focusedHost.getAttribute(
       "data-docx-paragraph-node-index"
     );
@@ -39574,7 +39784,7 @@ export function DocxEditorViewer({
     const selectionIntentNonce = beginSelectionIntent();
     editor.beginSelectionSession("history-restore", { settleAfterMs: 180 });
     // History restore must reflect canonical model state, not transient in-DOM drafts.
-    paragraphDraftsRef.current.clear();
+    editingIntentContinuationRef.current = undefined;
     tableCellDraftsRef.current.clear();
     tableCellParagraphDraftsRef.current.clear();
     sectionParagraphDraftsRef.current.clear();
@@ -40490,7 +40700,7 @@ export function DocxEditorViewer({
               normalizedActiveRange
             );
             if (collapsedRange) {
-              paragraphDraftsRef.current.clear();
+              editingIntentContinuationRef.current = undefined;
               tableCellDraftsRef.current.clear();
               tableCellParagraphDraftsRef.current.clear();
               syncSelectionFromDocxRange(collapsedRange);
@@ -40616,7 +40826,7 @@ export function DocxEditorViewer({
         normalizedActiveRange
       );
       if (collapsedRange) {
-        paragraphDraftsRef.current.clear();
+        editingIntentContinuationRef.current = undefined;
         tableCellDraftsRef.current.clear();
         tableCellParagraphDraftsRef.current.clear();
         syncSelectionFromDocxRange(collapsedRange);
@@ -40682,7 +40892,7 @@ export function DocxEditorViewer({
         return false;
       }
 
-      paragraphDraftsRef.current.clear();
+      editingIntentContinuationRef.current = undefined;
       tableCellDraftsRef.current.clear();
       tableCellParagraphDraftsRef.current.clear();
       syncSelectionFromDocxRange(collapsedRange);
@@ -40889,7 +41099,7 @@ export function DocxEditorViewer({
       };
 
       const clearDraftsAndSetSelection = (range: DocxTextRange): void => {
-        paragraphDraftsRef.current.clear();
+        editingIntentContinuationRef.current = undefined;
         tableCellDraftsRef.current.clear();
         tableCellParagraphDraftsRef.current.clear();
         syncSelectionFromDocxRange(range);
@@ -41502,7 +41712,7 @@ export function DocxEditorViewer({
         return;
       }
 
-      paragraphDraftsRef.current.clear();
+      editingIntentContinuationRef.current = undefined;
       tableCellDraftsRef.current.clear();
       tableCellParagraphDraftsRef.current.clear();
       syncSelectionFromDocxRange(collapsedRange);
@@ -42088,29 +42298,6 @@ export function DocxEditorViewer({
     [clearTableCellSelection, editor, selectionOffsetsWithinElement]
   );
 
-  const commitParagraphDraftFromElement = React.useCallback(
-    (
-      nodeIndex: number,
-      paragraph: ParagraphNode,
-      element: HTMLElement
-    ): void => {
-      const nextText = editableTextFromElement(element);
-      const nextHtml = element.innerHTML;
-
-      if (nextText === paragraphText(paragraph)) {
-        paragraphDraftsRef.current.delete(nodeIndex);
-        return;
-      }
-
-      // Keep the draft until model state catches up so immediate export after blur
-      // cannot serialize a stale model snapshot.
-      paragraphDraftsRef.current.set(nodeIndex, nextHtml);
-      editor.suppressNextDomSelectionRestore();
-      editor.commitParagraphText(nodeIndex, nextText);
-    },
-    [editor]
-  );
-
   const commitTableCellDraftFromElement = React.useCallback(
     (
       tableIndex: number,
@@ -42414,7 +42601,6 @@ export function DocxEditorViewer({
   React.useEffect(() => {
     const flushPendingDraftsForExport = (currentModel: DocModel): DocModel => {
       if (
-        paragraphDraftsRef.current.size === 0 &&
         tableCellDraftsRef.current.size === 0 &&
         tableCellParagraphDraftsRef.current.size === 0 &&
         sectionParagraphDraftsRef.current.size === 0
@@ -42424,34 +42610,9 @@ export function DocxEditorViewer({
 
       let nextModel = currentModel;
       const insertedStyle = cloneTextStyle(editor.pendingRunStyle);
-      const consumedParagraphDraftIndexes: number[] = [];
       const consumedTableDraftKeys: string[] = [];
       const consumedTableParagraphDraftKeys: string[] = [];
       const consumedSectionDraftKeys: string[] = [];
-
-      paragraphDraftsRef.current.forEach((draftHtml, nodeIndex) => {
-        const element = paragraphElementsRef.current.get(nodeIndex);
-        if (!element && typeof draftHtml !== "string") {
-          return;
-        }
-
-        consumedParagraphDraftIndexes.push(nodeIndex);
-        const paragraph = nextModel.nodes[nodeIndex];
-        if (!paragraph || paragraph.type !== "paragraph") {
-          return;
-        }
-
-        const nextText = element
-          ? editableTextFromElement(element)
-          : editableTextFromDraftHtml(draftHtml);
-        if (nextText === paragraphText(paragraph)) {
-          return;
-        }
-
-        nextModel = updateParagraphText(nextModel, nodeIndex, nextText, {
-          insertedStyle,
-        });
-      });
 
       tableCellParagraphDraftsRef.current.forEach((draftHtml, draftKey) => {
         const element = tableCellParagraphElementsRef.current.get(draftKey);
@@ -42584,9 +42745,6 @@ export function DocxEditorViewer({
         );
       });
 
-      consumedParagraphDraftIndexes.forEach((nodeIndex) => {
-        paragraphDraftsRef.current.delete(nodeIndex);
-      });
       consumedTableDraftKeys.forEach((draftKey) => {
         tableCellDraftsRef.current.delete(draftKey);
       });
@@ -42643,6 +42801,597 @@ export function DocxEditorViewer({
     },
     [editor]
   );
+
+  // Intent capture for the beforeinput-driven hosts (body paragraph hosts and
+  // table-cell hosts without nested tables). Cancelable input events are
+  // preventDefault-ed and converted into offset-based model commits; the
+  // browser never mutates these hosts outside of IME composition. Header/
+  // footer surfaces and nested-table cells keep the legacy draft path and are
+  // skipped here entirely.
+  const handleEditableHostBeforeInput = React.useCallback(
+    (event: InputEvent): void => {
+      if (isReadOnly) {
+        return;
+      }
+      // During composition the browser owns the DOM; the compositionend
+      // handler is the single commit point.
+      if (event.isComposing || compositionActiveRef.current) {
+        return;
+      }
+
+      const targetElement =
+        event.target instanceof Element
+          ? event.target
+          : event.target instanceof Node
+          ? event.target.parentElement
+          : null;
+      if (!targetElement) {
+        return;
+      }
+      if (
+        targetElement.closest("textarea, input") ||
+        targetElement.closest("[data-docx-header-footer-region]")
+      ) {
+        return;
+      }
+
+      const intent = resolveEditingIntent({
+        inputType: event.inputType,
+        data: event.data,
+        dataTransferText: event.dataTransfer?.getData("text/plain"),
+      });
+      if (!intent) {
+        return;
+      }
+
+      const resolveTargetRangeOffsets = (
+        element: HTMLElement
+      ): { start: number; end: number } | undefined => {
+        const targetRange =
+          typeof event.getTargetRanges === "function"
+            ? event.getTargetRanges()[0]
+            : undefined;
+        return targetRange
+          ? staticRangeOffsetsWithinElementDom(element, targetRange)
+          : undefined;
+      };
+
+      const paragraphHost = targetElement.closest<HTMLElement>(
+        "[data-docx-paragraph-host='true'][data-docx-paragraph-kind='paragraph']"
+      );
+      if (paragraphHost) {
+        if (!paragraphHost.isContentEditable) {
+          return;
+        }
+        const nodeIndexAttr = paragraphHost.getAttribute(
+          "data-docx-paragraph-node-index"
+        );
+        const nodeIndex =
+          nodeIndexAttr != null
+            ? Number.parseInt(nodeIndexAttr, 10)
+            : Number.NaN;
+        const node = Number.isFinite(nodeIndex)
+          ? editor.model.nodes[nodeIndex]
+          : undefined;
+        if (!node || node.type !== "paragraph") {
+          return;
+        }
+
+        event.preventDefault();
+        cancelPendingPointerSelectionReconcile();
+        if (intent.kind === "blocked") {
+          return;
+        }
+        if (intent.kind === "historyUndo") {
+          editor.undo();
+          return;
+        }
+        if (intent.kind === "historyRedo") {
+          editor.redo();
+          return;
+        }
+
+        const location: ParagraphLocation = { kind: "paragraph", nodeIndex };
+        const continuationKey = `p:${nodeIndex}`;
+        const domText = editableTextFromElement(paragraphHost);
+        const continuation = editingIntentContinuationRef.current;
+        const continuationActive = Boolean(
+          continuation &&
+            continuation.key === continuationKey &&
+            continuation.text !== domText
+        );
+        const currentText =
+          continuationActive && continuation ? continuation.text : domText;
+        let selectionOffsets =
+          continuationActive && continuation
+            ? { start: continuation.caret, end: continuation.caret }
+            : selectionOffsetsWithinElement(paragraphHost);
+        if (!selectionOffsets) {
+          const activeRange = editor.activeTextRange
+            ? normalizeTextRange(editor.activeTextRange)
+            : undefined;
+          if (
+            activeRange &&
+            sameParagraphLocation(activeRange.start.location, location) &&
+            sameParagraphLocation(activeRange.end.location, location)
+          ) {
+            const safeStart = Math.max(
+              0,
+              Math.min(
+                Math.round(activeRange.start.offset),
+                currentText.length
+              )
+            );
+            selectionOffsets = {
+              start: safeStart,
+              end: Math.max(
+                safeStart,
+                Math.min(
+                  Math.round(activeRange.end.offset),
+                  currentText.length
+                )
+              ),
+            };
+          }
+        }
+        if (!selectionOffsets) {
+          selectionOffsets = {
+            start: currentText.length,
+            end: currentText.length,
+          };
+        }
+
+        if (intent.kind === "insertParagraph") {
+          editingIntentContinuationRef.current = undefined;
+          const start = Math.max(
+            0,
+            Math.min(selectionOffsets.start, currentText.length)
+          );
+          const end = Math.max(
+            start,
+            Math.min(selectionOffsets.end, currentText.length)
+          );
+          tableCellDraftsRef.current.clear();
+          tableCellParagraphDraftsRef.current.clear();
+          if (paragraphIsList(node, currentText)) {
+            const insertedListItem = editor.insertListItemAfterSelection(
+              currentText,
+              start,
+              end,
+              location
+            );
+            if (insertedListItem !== undefined) {
+              focusParagraphAtOffset(
+                insertedListItem.paragraphIndex,
+                insertedListItem.caretOffset
+              );
+            }
+            return;
+          }
+          const splitParagraph = editor.splitParagraphAtSelection(
+            currentText,
+            start,
+            end,
+            location
+          );
+          if (splitParagraph !== undefined) {
+            focusParagraphAtOffset(
+              splitParagraph.paragraphIndex,
+              splitParagraph.caretOffset
+            );
+          }
+          return;
+        }
+
+        if (intent.kind === "deleteContent" || intent.kind === "deleteRange") {
+          const activeRange = editor.activeTextRange
+            ? normalizeTextRange(editor.activeTextRange)
+            : undefined;
+          const expandedBeyondParagraph = Boolean(
+            activeRange &&
+              compareTextRangeBoundaries(activeRange.start, activeRange.end) <
+                0 &&
+              !(
+                sameParagraphLocation(activeRange.start.location, location) &&
+                sameParagraphLocation(activeRange.end.location, location)
+              )
+          );
+          if (expandedBeyondParagraph && activeRange) {
+            editingIntentContinuationRef.current = undefined;
+            const collapsedRange = editor.deleteExpandedSelection(activeRange);
+            if (collapsedRange) {
+              tableCellDraftsRef.current.clear();
+              tableCellParagraphDraftsRef.current.clear();
+              syncSelectionFromDocxRange(collapsedRange);
+            }
+            return;
+          }
+        }
+
+        const rangeOffsets =
+          !continuationActive &&
+          (intent.kind === "insertText" ||
+            intent.kind === "replaceText" ||
+            intent.kind === "insertLineBreak" ||
+            intent.kind === "deleteContent" ||
+            intent.kind === "deleteRange")
+            ? resolveTargetRangeOffsets(paragraphHost) ?? selectionOffsets
+            : selectionOffsets;
+
+        const applied = applyTextEditingIntent(
+          currentText,
+          rangeOffsets.start,
+          rangeOffsets.end,
+          intent
+        );
+        if (!applied) {
+          if (
+            intent.kind === "deleteContent" &&
+            rangeOffsets.start === rangeOffsets.end
+          ) {
+            if (intent.direction === "backward" && rangeOffsets.start === 0) {
+              editingIntentContinuationRef.current = undefined;
+              let previousLocation: ParagraphLocation | undefined;
+              for (
+                let scanNodeIndex = nodeIndex - 1;
+                scanNodeIndex >= 0;
+                scanNodeIndex -= 1
+              ) {
+                const candidate = lastParagraphLocationInNode(
+                  editor.model,
+                  scanNodeIndex
+                );
+                if (candidate) {
+                  previousLocation = candidate;
+                  break;
+                }
+              }
+              const previousParagraph = previousLocation
+                ? getParagraphAtLocation(editor.model, previousLocation)
+                    .paragraph
+                : undefined;
+              if (previousLocation && previousParagraph) {
+                const collapsedRange = editor.deleteExpandedSelection({
+                  start: {
+                    location: cloneTextRangeLocation(previousLocation),
+                    offset: paragraphText(previousParagraph).length,
+                  },
+                  end: {
+                    location: cloneTextRangeLocation(location),
+                    offset: 0,
+                  },
+                });
+                if (collapsedRange) {
+                  syncSelectionFromDocxRange(collapsedRange);
+                }
+              }
+              return;
+            }
+            if (
+              intent.direction === "forward" &&
+              rangeOffsets.start >= currentText.length
+            ) {
+              editingIntentContinuationRef.current = undefined;
+              const nextLocation = nextParagraphLocation(
+                editor.model,
+                location
+              );
+              const nextParagraph = nextLocation
+                ? getParagraphAtLocation(editor.model, nextLocation).paragraph
+                : undefined;
+              if (nextLocation && nextParagraph) {
+                const collapsedRange = editor.deleteExpandedSelection({
+                  start: {
+                    location: cloneTextRangeLocation(location),
+                    offset: currentText.length,
+                  },
+                  end: {
+                    location: cloneTextRangeLocation(nextLocation),
+                    offset: 0,
+                  },
+                });
+                if (collapsedRange) {
+                  syncSelectionFromDocxRange(collapsedRange);
+                }
+              }
+              return;
+            }
+          }
+          return;
+        }
+
+        const coalesceClass = editingIntentCoalesceClass(intent);
+        editor.commitParagraphTextAtRange(
+          location,
+          applied.text,
+          { start: applied.caret, end: applied.caret },
+          {
+            insertionOffset: rangeOffsets.start,
+            ...(coalesceClass
+              ? { coalesceKey: `p:${nodeIndex}:${coalesceClass}` }
+              : undefined),
+          }
+        );
+        editingIntentContinuationRef.current = {
+          key: continuationKey,
+          text: applied.text,
+          caret: applied.caret,
+        };
+        pendingEditableCaretRef.current = {
+          nodeIndex,
+          start: applied.caret,
+          end: applied.caret,
+        };
+        schedulePaginationMeasurementResume();
+        return;
+      }
+
+      const cellHost = targetElement.closest<HTMLElement>(
+        "[data-docx-cell-key]"
+      );
+      if (!cellHost || !cellHost.isContentEditable) {
+        return;
+      }
+      const cellKeyMatch = /^cell-(\d+)-(\d+)-(\d+)$/.exec(
+        cellHost.getAttribute("data-docx-cell-key") ?? ""
+      );
+      if (!cellKeyMatch) {
+        return;
+      }
+      const tableIndex = Number.parseInt(cellKeyMatch[1], 10);
+      const rowIndex = Number.parseInt(cellKeyMatch[2], 10);
+      const cellIndex = Number.parseInt(cellKeyMatch[3], 10);
+      const tableNode = editor.model.nodes[tableIndex];
+      if (!tableNode || tableNode.type !== "table") {
+        return;
+      }
+      const cell = tableNode.rows[rowIndex]?.cells[cellIndex];
+      if (!cell) {
+        return;
+      }
+      // Cells containing nested tables keep the legacy draft path: their
+      // nested paragraphs carry no host attributes, so intents cannot be
+      // resolved to model offsets.
+      if (cell.nodes.some((cellContent) => cellContent.type === "table")) {
+        return;
+      }
+
+      event.preventDefault();
+      cancelPendingPointerSelectionReconcile();
+      if (intent.kind === "blocked") {
+        return;
+      }
+      if (intent.kind === "historyUndo") {
+        editor.undo();
+        return;
+      }
+      if (intent.kind === "historyRedo") {
+        editor.redo();
+        return;
+      }
+
+      const cellParagraphNodes = tableCellParagraphs(cell.nodes);
+      const context = activeTableCellParagraphContext(cellHost);
+      const continuation = editingIntentContinuationRef.current;
+      const continuationPrefix = `c:${tableIndex}:${rowIndex}:${cellIndex}:`;
+      let continuationActive = false;
+      let paragraphIndex = context?.paragraphIndex;
+      let paragraphElement = context?.paragraphElement;
+      if (continuation && continuation.key.startsWith(continuationPrefix)) {
+        const continuationParagraphIndex = Number.parseInt(
+          continuation.key.slice(continuationPrefix.length),
+          10
+        );
+        const continuationElement = Number.isFinite(continuationParagraphIndex)
+          ? cellHost.querySelector<HTMLElement>(
+              `[data-docx-table-paragraph-index='${continuationParagraphIndex}']`
+            ) ?? undefined
+          : undefined;
+        if (
+          continuationElement &&
+          continuation.text !== editableTextFromElement(continuationElement)
+        ) {
+          continuationActive = true;
+          paragraphIndex = continuationParagraphIndex;
+          paragraphElement = continuationElement;
+        }
+      }
+      let rangeSelectionOffsets: { start: number; end: number } | undefined;
+      if (paragraphIndex === undefined || !paragraphElement) {
+        // The DOM selection can be transiently destroyed by the re-render of a
+        // previous commit; fall back to the model range set by that commit.
+        const activeRange = editor.activeTextRange
+          ? normalizeTextRange(editor.activeTextRange)
+          : undefined;
+        const startLocation = activeRange?.start.location;
+        if (
+          activeRange &&
+          startLocation &&
+          startLocation.kind === "table-cell" &&
+          startLocation.tableIndex === tableIndex &&
+          startLocation.rowIndex === rowIndex &&
+          startLocation.cellIndex === cellIndex &&
+          sameParagraphLocation(startLocation, activeRange.end.location)
+        ) {
+          const rangeParagraphElement =
+            cellHost.querySelector<HTMLElement>(
+              `[data-docx-table-paragraph-index='${startLocation.paragraphIndex}']`
+            ) ?? undefined;
+          if (rangeParagraphElement) {
+            paragraphIndex = startLocation.paragraphIndex;
+            paragraphElement = rangeParagraphElement;
+            rangeSelectionOffsets = {
+              start: Math.max(0, Math.round(activeRange.start.offset)),
+              end: Math.max(0, Math.round(activeRange.end.offset)),
+            };
+          }
+        }
+      }
+      if (
+        paragraphIndex === undefined ||
+        !paragraphElement ||
+        !cellParagraphNodes[paragraphIndex]
+      ) {
+        return;
+      }
+
+      const cellLocation: ParagraphLocation = {
+        kind: "table-cell",
+        tableIndex,
+        rowIndex,
+        cellIndex,
+        paragraphIndex,
+      };
+      const currentText =
+        continuationActive && continuation
+          ? continuation.text
+          : editableTextFromElement(paragraphElement);
+      const selectionOffsets =
+        continuationActive && continuation
+          ? { start: continuation.caret, end: continuation.caret }
+          : rangeSelectionOffsets ??
+            selectionOffsetsWithinElement(paragraphElement) ?? {
+              start: currentText.length,
+              end: currentText.length,
+            };
+
+      if (intent.kind === "deleteContent" || intent.kind === "deleteRange") {
+        const activeRange = editor.activeTextRange
+          ? normalizeTextRange(editor.activeTextRange)
+          : undefined;
+        const expandedBeyondParagraph = Boolean(
+          activeRange &&
+            compareTextRangeBoundaries(activeRange.start, activeRange.end) <
+              0 &&
+            !(
+              sameParagraphLocation(activeRange.start.location, cellLocation) &&
+              sameParagraphLocation(activeRange.end.location, cellLocation)
+            )
+        );
+        if (expandedBeyondParagraph && activeRange) {
+          editingIntentContinuationRef.current = undefined;
+          const collapsedRange = editor.deleteExpandedSelection(activeRange);
+          if (collapsedRange) {
+            tableCellDraftsRef.current.clear();
+            tableCellParagraphDraftsRef.current.clear();
+            syncSelectionFromDocxRange(collapsedRange);
+          }
+          return;
+        }
+      }
+
+      // Enter inside a table cell inserts an in-paragraph line break, matching
+      // the keydown handler's plain-Enter behavior for cells.
+      const effectiveIntent: typeof intent =
+        intent.kind === "insertParagraph"
+          ? { kind: "insertLineBreak" }
+          : intent;
+
+      const rangeOffsets =
+        !continuationActive &&
+        (effectiveIntent.kind === "insertText" ||
+          effectiveIntent.kind === "replaceText" ||
+          effectiveIntent.kind === "insertLineBreak" ||
+          effectiveIntent.kind === "deleteContent" ||
+          effectiveIntent.kind === "deleteRange")
+          ? resolveTargetRangeOffsets(paragraphElement) ?? selectionOffsets
+          : selectionOffsets;
+
+      const applied = applyTextEditingIntent(
+        currentText,
+        rangeOffsets.start,
+        rangeOffsets.end,
+        effectiveIntent
+      );
+      if (!applied) {
+        if (
+          effectiveIntent.kind === "deleteContent" &&
+          rangeOffsets.start === rangeOffsets.end
+        ) {
+          const paragraphTexts = cellParagraphNodes.map(
+            (cellParagraph, cellParagraphIndex) =>
+              cellParagraphIndex === paragraphIndex
+                ? currentText
+                : paragraphText(cellParagraph)
+          );
+          const mergeBoundaryIndex =
+            effectiveIntent.direction === "backward" &&
+            rangeOffsets.start === 0
+              ? paragraphIndex
+              : effectiveIntent.direction === "forward" &&
+                rangeOffsets.start >= currentText.length
+              ? paragraphIndex + 1
+              : undefined;
+          const merged =
+            mergeBoundaryIndex !== undefined
+              ? mergeCellParagraphTexts(paragraphTexts, mergeBoundaryIndex)
+              : undefined;
+          if (merged) {
+            editingIntentContinuationRef.current = undefined;
+            editor.commitTableCellTextAtRange(
+              tableIndex,
+              rowIndex,
+              cellIndex,
+              merged.cellText,
+              {
+                paragraphIndex: merged.caretParagraphIndex,
+                start: merged.caretOffset,
+                end: merged.caretOffset,
+              }
+            );
+            schedulePaginationMeasurementResume();
+          }
+        }
+        return;
+      }
+
+      const coalesceClass = editingIntentCoalesceClass(effectiveIntent);
+      editor.commitParagraphTextAtRange(
+        cellLocation,
+        applied.text,
+        { start: applied.caret, end: applied.caret },
+        {
+          insertionOffset: rangeOffsets.start,
+          ...(coalesceClass
+            ? {
+                coalesceKey: `${continuationPrefix}${paragraphIndex}:${coalesceClass}`,
+              }
+            : undefined),
+        }
+      );
+      editingIntentContinuationRef.current = {
+        key: `${continuationPrefix}${paragraphIndex}`,
+        text: applied.text,
+        caret: applied.caret,
+      };
+      schedulePaginationMeasurementResume();
+    },
+    [
+      activeTableCellParagraphContext,
+      cancelPendingPointerSelectionReconcile,
+      editor,
+      focusParagraphAtOffset,
+      isReadOnly,
+      schedulePaginationMeasurementResume,
+      selectionOffsetsWithinElement,
+      syncSelectionFromDocxRange,
+    ]
+  );
+
+  React.useEffect(() => {
+    const rootElement = viewerRootRef.current;
+    if (!rootElement) {
+      return;
+    }
+
+    const handleBeforeInput = (event: Event): void => {
+      handleEditableHostBeforeInput(event as InputEvent);
+    };
+    rootElement.addEventListener("beforeinput", handleBeforeInput);
+    return () => {
+      rootElement.removeEventListener("beforeinput", handleBeforeInput);
+    };
+  }, [handleEditableHostBeforeInput]);
 
   const resolveTableColumnWidths = React.useCallback(
     (tableIndex: number, table: TableNode, tableWidthPx?: number): number[] => {
@@ -49575,11 +50324,9 @@ export function DocxEditorViewer({
         ) : (
           getFallbackParagraphRuns()
         );
-      const paragraphDraftHtml = paragraphDraftsRef.current.get(nodeIndex);
-      const renderedEditableParagraphHtml =
-        typeof paragraphDraftHtml === "string"
-          ? paragraphDraftHtml
-          : renderStaticHtml(renderedInteractiveParagraphContent);
+      const renderedEditableParagraphHtml = renderStaticHtml(
+        renderedInteractiveParagraphContent
+      );
 
       return (
         <div
@@ -49645,63 +50392,6 @@ export function DocxEditorViewer({
                   placeCaretInsideElement(element, pendingFocus.point);
                 } else {
                   placeCaretInsideElement(element);
-                }
-              });
-            }
-
-            const draft = paragraphDraftsRef.current.get(nodeIndex);
-            if (!compositionActiveRef.current && typeof draft === "string") {
-              const draftHtml = draft;
-              scheduleDomWrite(() => {
-                if (!element.isConnected || compositionActiveRef.current) {
-                  return;
-                }
-                const latestDraft = paragraphDraftsRef.current.get(nodeIndex);
-                if (latestDraft !== draftHtml) {
-                  return;
-                }
-
-                if (element.innerHTML !== draftHtml) {
-                  const activeElement = document.activeElement;
-                  const shouldRestoreSelection =
-                    activeElement === element ||
-                    (activeElement instanceof Element &&
-                      element.contains(activeElement));
-                  const selectionOffsets = shouldRestoreSelection
-                    ? selectionOffsetsWithinElement(element)
-                    : undefined;
-                  element.innerHTML = draftHtml;
-                  if (shouldRestoreSelection) {
-                    if (selectionOffsets) {
-                      const textLength =
-                        editableTextFromElement(element).length;
-                      const safeStart = Math.max(
-                        0,
-                        Math.min(selectionOffsets.start, textLength)
-                      );
-                      const safeEnd = Math.max(
-                        safeStart,
-                        Math.min(selectionOffsets.end, textLength)
-                      );
-                      setSelectionWithinElementByTextOffsets(
-                        element,
-                        safeStart,
-                        safeEnd
-                      );
-                    } else {
-                      placeCaretInsideElement(element);
-                    }
-                  }
-                }
-
-                const latestParagraph = editor.model.nodes[nodeIndex];
-                if (
-                  latestParagraph &&
-                  latestParagraph.type === "paragraph" &&
-                  editableTextFromElement(element) ===
-                    paragraphText(latestParagraph)
-                ) {
-                  paragraphDraftsRef.current.delete(nodeIndex);
                 }
               });
             }
@@ -49846,32 +50536,52 @@ export function DocxEditorViewer({
               | undefined;
             if (nativeInputEvent?.isComposing || compositionActiveRef.current) {
               // Preedit updates fire `input` on every keystroke; keep the
-              // composition session alive (no settle timer) and leave the
-              // draft frozen so no re-render can rewrite the composing DOM.
+              // composition session alive (no settle timer) so no re-render
+              // can rewrite the composing DOM.
               editor.beginSelectionSession("composition");
               return;
             }
-            editor.beginSelectionSession("keyboard", { settleAfterMs: 220 });
-            if (hasPartialLineRange) {
-              activateEditableParagraphSegment(nodeIndex, paragraphLineRange);
+            // beforeinput prevents every cancelable mutation, so a
+            // non-composition input event means the browser mutated the DOM
+            // anyway (non-cancelable edge case). Resync the model from the DOM
+            // once so they cannot drift.
+            const domText = editableTextFromElement(event.currentTarget);
+            const latestParagraph = editor.model.nodes[nodeIndex];
+            if (
+              !latestParagraph ||
+              latestParagraph.type !== "paragraph" ||
+              domText === paragraphText(latestParagraph)
+            ) {
+              return;
             }
+            const continuation = editingIntentContinuationRef.current;
+            if (
+              continuation &&
+              continuation.key === `p:${nodeIndex}` &&
+              continuation.text !== domText
+            ) {
+              // The model is ahead of an unrendered host; leave it alone.
+              return;
+            }
+            editor.beginSelectionSession("keyboard", { settleAfterMs: 220 });
             schedulePaginationMeasurementResume();
-            paragraphDraftsRef.current.set(
-              nodeIndex,
-              event.currentTarget.innerHTML
-            );
-            // Capture the live caret offset now (post-insert, pre-render) so the
-            // selection invariant can restore it after React rewrites innerHTML.
             const typedOffsets = selectionOffsetsWithinElement(
               event.currentTarget
             );
-            pendingEditableCaretRef.current = typedOffsets
-              ? {
-                  nodeIndex,
-                  start: typedOffsets.start,
-                  end: typedOffsets.end,
-                }
-              : null;
+            const caretOffset = typedOffsets?.end ?? domText.length;
+            editor.commitParagraphTextAtRange(
+              { kind: "paragraph", nodeIndex },
+              domText,
+              {
+                start: typedOffsets?.start ?? caretOffset,
+                end: caretOffset,
+              }
+            );
+            editingIntentContinuationRef.current = {
+              key: `p:${nodeIndex}`,
+              text: domText,
+              caret: caretOffset,
+            };
           }}
           onCompositionStart={() => {
             if (!editable) {
@@ -49888,17 +50598,29 @@ export function DocxEditorViewer({
             compositionActiveRef.current = false;
             editor.beginSelectionSession("keyboard", { settleAfterMs: 260 });
             schedulePaginationMeasurementResume();
-            // Commit point: resync the frozen draft from the composed DOM and
-            // capture the caret so the next settle re-render restores it.
-            // Safari fires one more `input` after this event; it re-runs the
-            // same resync harmlessly.
-            paragraphDraftsRef.current.set(
-              nodeIndex,
-              event.currentTarget.innerHTML
-            );
+            // Single commit point for the composition: read the composed DOM
+            // once and commit it with an explicit range so the caret is
+            // restored from the model. Safari fires one more `input` after
+            // this event; the onInput resync sees text already matching the
+            // model and no-ops.
+            const composedText = editableTextFromElement(event.currentTarget);
             const composedOffsets = selectionOffsetsWithinElement(
               event.currentTarget
             );
+            const caretEnd = composedOffsets?.end ?? composedText.length;
+            editor.commitParagraphTextAtRange(
+              { kind: "paragraph", nodeIndex },
+              composedText,
+              {
+                start: composedOffsets?.start ?? caretEnd,
+                end: caretEnd,
+              }
+            );
+            editingIntentContinuationRef.current = {
+              key: `p:${nodeIndex}`,
+              text: composedText,
+              caret: caretEnd,
+            };
             pendingEditableCaretRef.current = composedOffsets
               ? {
                   nodeIndex,
@@ -49920,7 +50642,6 @@ export function DocxEditorViewer({
 
             event.preventDefault();
             event.stopPropagation();
-            paragraphDraftsRef.current.delete(nodeIndex);
           }}
           onKeyDown={(event) => {
             if (!editable) {
@@ -49946,13 +50667,7 @@ export function DocxEditorViewer({
 
             const handledHistoryShortcut = handleEditorHistoryShortcut(
               event,
-              () => {
-                commitParagraphDraftFromElement(
-                  nodeIndex,
-                  node,
-                  event.currentTarget
-                );
-              }
+              () => {}
             );
             if (handledHistoryShortcut) {
               return;
@@ -49968,7 +50683,6 @@ export function DocxEditorViewer({
               if (replaced) {
                 event.preventDefault();
                 event.stopPropagation();
-                paragraphDraftsRef.current.delete(nodeIndex);
                 return;
               }
             }
@@ -49983,7 +50697,6 @@ export function DocxEditorViewer({
               if (replaced) {
                 event.preventDefault();
                 event.stopPropagation();
-                paragraphDraftsRef.current.delete(nodeIndex);
                 return;
               }
             }
@@ -50082,7 +50795,7 @@ export function DocxEditorViewer({
                 if (previousLocation && previousParagraph) {
                   event.preventDefault();
                   event.stopPropagation();
-                  paragraphDraftsRef.current.delete(nodeIndex);
+                  editingIntentContinuationRef.current = undefined;
                   const caretClientPoint =
                     collapsedCaretClientPointWithinElement(event.currentTarget);
                   if (
@@ -50114,7 +50827,7 @@ export function DocxEditorViewer({
                 if (nextLocation && nextParagraph) {
                   event.preventDefault();
                   event.stopPropagation();
-                  paragraphDraftsRef.current.delete(nodeIndex);
+                  editingIntentContinuationRef.current = undefined;
                   const caretClientPoint =
                     collapsedCaretClientPointWithinElement(event.currentTarget);
                   const fallbackOffset = paragraphText(nextParagraph).length;
@@ -50166,7 +50879,7 @@ export function DocxEditorViewer({
                 if (previousLocation && previousParagraph) {
                   event.preventDefault();
                   event.stopPropagation();
-                  paragraphDraftsRef.current.delete(nodeIndex);
+                  editingIntentContinuationRef.current = undefined;
                   const collapsedRange = editor.deleteExpandedSelection({
                     start: {
                       location: cloneTextRangeLocation(previousLocation),
@@ -50198,7 +50911,7 @@ export function DocxEditorViewer({
                 if (nextLocation && nextParagraph) {
                   event.preventDefault();
                   event.stopPropagation();
-                  paragraphDraftsRef.current.delete(nodeIndex);
+                  editingIntentContinuationRef.current = undefined;
                   const collapsedRange = editor.deleteExpandedSelection({
                     start: {
                       location: cloneTextRangeLocation(currentLocation),
@@ -50248,7 +50961,7 @@ export function DocxEditorViewer({
               if (handledBackspace) {
                 event.preventDefault();
                 event.stopPropagation();
-                paragraphDraftsRef.current.delete(nodeIndex);
+                editingIntentContinuationRef.current = undefined;
                 focusParagraphAtOffset(nodeIndex, 0);
                 return;
               }
@@ -50272,7 +50985,7 @@ export function DocxEditorViewer({
                 0,
                 start
               )}\n${currentText.slice(end)}`;
-              paragraphDraftsRef.current.delete(nodeIndex);
+              editingIntentContinuationRef.current = undefined;
               editor.commitParagraphText(nodeIndex, nextText);
               focusParagraphAtOffset(nodeIndex, start + 1);
               return;
@@ -50291,7 +51004,7 @@ export function DocxEditorViewer({
                 currentText
               );
               if (listDepthChanged) {
-                paragraphDraftsRef.current.delete(nodeIndex);
+                editingIntentContinuationRef.current = undefined;
                 const targetOffset =
                   selectionOffsets?.end ?? currentText.length;
                 focusParagraphAtOffset(nodeIndex, targetOffset);
@@ -50304,7 +51017,7 @@ export function DocxEditorViewer({
               event.stopPropagation();
               const start = selectionOffsets?.start ?? currentText.length;
               const end = selectionOffsets?.end ?? start;
-              paragraphDraftsRef.current.clear();
+              editingIntentContinuationRef.current = undefined;
               tableCellDraftsRef.current.clear();
               tableCellParagraphDraftsRef.current.clear();
               const insertedListItem = editor.insertListItemAfterSelection(
@@ -50339,7 +51052,7 @@ export function DocxEditorViewer({
                 start,
                 Math.min(selectionOffsets?.end ?? start, currentText.length)
               );
-              paragraphDraftsRef.current.clear();
+              editingIntentContinuationRef.current = undefined;
               tableCellDraftsRef.current.clear();
               tableCellParagraphDraftsRef.current.clear();
               const splitParagraph = editor.splitParagraphAtSelection(
@@ -50366,24 +51079,17 @@ export function DocxEditorViewer({
             }
 
             if (compositionActiveRef.current) {
-              // Abandoned composition (no `compositionend`): flush the
-              // composed DOM into the draft so it still commits below.
+              // Abandoned composition (no `compositionend`): commit the
+              // composed DOM once so the model cannot lose it.
               compositionActiveRef.current = false;
-              paragraphDraftsRef.current.set(
-                nodeIndex,
-                event.currentTarget.innerHTML
+              const composedText = editableTextFromElement(
+                event.currentTarget
               );
+              if (composedText !== paragraphText(node)) {
+                editor.suppressNextDomSelectionRestore();
+                editor.commitParagraphText(nodeIndex, composedText);
+              }
             }
-
-            if (!paragraphDraftsRef.current.has(nodeIndex)) {
-              return;
-            }
-
-            commitParagraphDraftFromElement(
-              nodeIndex,
-              node,
-              event.currentTarget
-            );
           }}
         >
           {!editable ? renderedInteractiveParagraphContent : null}
@@ -50889,6 +51595,13 @@ export function DocxEditorViewer({
                               : undefined;
                           const cellDraftKey = `${nodeIndex}:${rowIndex}:${cellIndex}`;
                           const cellElementKey = `cell-${nodeIndex}-${rowIndex}-${cellIndex}`;
+                          // Static per-host input routing: cells with nested
+                          // tables keep the legacy draft path (their nested
+                          // paragraphs carry no host attributes for intent
+                          // resolution); all other cells are beforeinput-driven.
+                          const cellUsesLegacyDraftEditing = cell.nodes.some(
+                            (cellContent) => cellContent.type === "table"
+                          );
                           const colSpanValue =
                             cell.style?.gridSpan && cell.style.gridSpan > 1
                               ? cell.style.gridSpan
@@ -51859,50 +52572,6 @@ export function DocxEditorViewer({
                                             boundary,
                                             boundary
                                           );
-                                          // Re-renders can replace the cell's
-                                          // innerHTML right after this restore,
-                                          // silently destroying the selection.
-                                          // Verify for a few frames and re-apply
-                                          // while the caret is degenerate.
-                                          const verifyBoundaryRestore = (
-                                            attempt: number
-                                          ): void => {
-                                            window.requestAnimationFrame(() => {
-                                              if (!element.isConnected) {
-                                                return;
-                                              }
-                                              const selection =
-                                                window.getSelection();
-                                              const range =
-                                                selection &&
-                                                selection.rangeCount > 0
-                                                  ? selection.getRangeAt(0)
-                                                  : null;
-                                              const degenerate =
-                                                !range ||
-                                                (selection?.isCollapsed ===
-                                                  true &&
-                                                  range.startContainer ===
-                                                    element &&
-                                                  range.startOffset === 0);
-                                              if (degenerate) {
-                                                setSelectionFromDocxBoundaries(
-                                                  boundary,
-                                                  boundary
-                                                );
-                                              }
-                                              // Keep watching for the full
-                                              // window: late re-renders can
-                                              // still destroy the selection
-                                              // after a healthy frame.
-                                              if (attempt < 6) {
-                                                verifyBoundaryRestore(
-                                                  attempt + 1
-                                                );
-                                              }
-                                            });
-                                          };
-                                          verifyBoundaryRestore(0);
                                         } else if (paragraphElement) {
                                           placeCaretInsideElement(
                                             paragraphElement,
@@ -51942,15 +52611,81 @@ export function DocxEditorViewer({
                                       );
                                       return;
                                     }
+                                    if (cellUsesLegacyDraftEditing) {
+                                      editor.beginSelectionSession("keyboard", {
+                                        settleAfterMs: 220,
+                                      });
+                                      schedulePaginationMeasurementResume();
+                                      tableCellDraftsRef.current.set(
+                                        cellDraftKey,
+                                        event.currentTarget.innerHTML
+                                      );
+                                      requestTableDraftLayoutRefresh();
+                                      return;
+                                    }
+                                    // beforeinput prevents every cancelable
+                                    // mutation; a non-composition input event
+                                    // means a non-cancelable edge case mutated
+                                    // the DOM. Resync the model once.
+                                    const context =
+                                      activeTableCellParagraphContext(
+                                        event.currentTarget
+                                      );
+                                    const contextParagraph = context
+                                      ? cellParagraphs[context.paragraphIndex]
+                                      : undefined;
+                                    if (!context || !contextParagraph) {
+                                      return;
+                                    }
+                                    const domText = editableTextFromElement(
+                                      context.paragraphElement
+                                    );
+                                    if (
+                                      domText === paragraphText(contextParagraph)
+                                    ) {
+                                      return;
+                                    }
+                                    const continuationKey = `c:${nodeIndex}:${rowIndex}:${cellIndex}:${context.paragraphIndex}`;
+                                    const continuation =
+                                      editingIntentContinuationRef.current;
+                                    if (
+                                      continuation &&
+                                      continuation.key === continuationKey &&
+                                      continuation.text !== domText
+                                    ) {
+                                      // The model is ahead of an unrendered
+                                      // host; leave it alone.
+                                      return;
+                                    }
                                     editor.beginSelectionSession("keyboard", {
                                       settleAfterMs: 220,
                                     });
                                     schedulePaginationMeasurementResume();
-                                    tableCellDraftsRef.current.set(
-                                      cellDraftKey,
-                                      event.currentTarget.innerHTML
+                                    const typedOffsets =
+                                      selectionOffsetsWithinElement(
+                                        context.paragraphElement
+                                      );
+                                    const caretOffset =
+                                      typedOffsets?.end ?? domText.length;
+                                    editor.commitParagraphTextAtRange(
+                                      {
+                                        kind: "table-cell",
+                                        tableIndex: nodeIndex,
+                                        rowIndex,
+                                        cellIndex,
+                                        paragraphIndex: context.paragraphIndex,
+                                      },
+                                      domText,
+                                      {
+                                        start: typedOffsets?.start ?? caretOffset,
+                                        end: caretOffset,
+                                      }
                                     );
-                                    requestTableDraftLayoutRefresh();
+                                    editingIntentContinuationRef.current = {
+                                      key: continuationKey,
+                                      text: domText,
+                                      caret: caretOffset,
+                                    };
                                   }}
                                   onCompositionStart={() => {
                                     cancelPendingPointerSelectionReconcile();
@@ -51963,11 +52698,65 @@ export function DocxEditorViewer({
                                       settleAfterMs: 260,
                                     });
                                     schedulePaginationMeasurementResume();
-                                    tableCellDraftsRef.current.set(
-                                      cellDraftKey,
-                                      event.currentTarget.innerHTML
+                                    if (cellUsesLegacyDraftEditing) {
+                                      tableCellDraftsRef.current.set(
+                                        cellDraftKey,
+                                        event.currentTarget.innerHTML
+                                      );
+                                      requestTableDraftLayoutRefresh();
+                                      return;
+                                    }
+                                    // Single commit point for the composition.
+                                    const context =
+                                      activeTableCellParagraphContext(
+                                        event.currentTarget
+                                      );
+                                    if (
+                                      context &&
+                                      cellParagraphs[context.paragraphIndex]
+                                    ) {
+                                      const composedText =
+                                        editableTextFromElement(
+                                          context.paragraphElement
+                                        );
+                                      const composedOffsets =
+                                        selectionOffsetsWithinElement(
+                                          context.paragraphElement
+                                        );
+                                      const caretEnd =
+                                        composedOffsets?.end ??
+                                        composedText.length;
+                                      editor.commitParagraphTextAtRange(
+                                        {
+                                          kind: "table-cell",
+                                          tableIndex: nodeIndex,
+                                          rowIndex,
+                                          cellIndex,
+                                          paragraphIndex:
+                                            context.paragraphIndex,
+                                        },
+                                        composedText,
+                                        {
+                                          start:
+                                            composedOffsets?.start ?? caretEnd,
+                                          end: caretEnd,
+                                        }
+                                      );
+                                      editingIntentContinuationRef.current = {
+                                        key: `c:${nodeIndex}:${rowIndex}:${cellIndex}:${context.paragraphIndex}`,
+                                        text: composedText,
+                                        caret: caretEnd,
+                                      };
+                                      return;
+                                    }
+                                    editor.commitTableCellText(
+                                      nodeIndex,
+                                      rowIndex,
+                                      cellIndex,
+                                      editableTextFromTableCellElement(
+                                        event.currentTarget
+                                      )
                                     );
-                                    requestTableDraftLayoutRefresh();
                                   }}
                                   onClick={(event) => {
                                     if (
@@ -52233,6 +53022,9 @@ export function DocxEditorViewer({
 
                                     const handledHistoryShortcut =
                                       handleEditorHistoryShortcut(event, () => {
+                                        if (!cellUsesLegacyDraftEditing) {
+                                          return;
+                                        }
                                         commitTableCellDraftFromElement(
                                           nodeIndex,
                                           rowIndex,
@@ -52341,6 +53133,8 @@ export function DocxEditorViewer({
                                         0,
                                         start
                                       )}\n${currentText.slice(end)}`;
+                                      editingIntentContinuationRef.current =
+                                        undefined;
                                       tableCellDraftsRef.current.delete(
                                         cellDraftKey
                                       );
@@ -52398,6 +53192,8 @@ export function DocxEditorViewer({
                                       if (handledBackspace) {
                                         event.preventDefault();
                                         event.stopPropagation();
+                                        editingIntentContinuationRef.current =
+                                          undefined;
                                         tableCellDraftsRef.current.delete(
                                           cellDraftKey
                                         );
@@ -52423,6 +53219,8 @@ export function DocxEditorViewer({
                                           currentText
                                         );
                                       if (listDepthChanged) {
+                                        editingIntentContinuationRef.current =
+                                          undefined;
                                         tableCellDraftsRef.current.delete(
                                           cellDraftKey
                                         );
@@ -52438,6 +53236,32 @@ export function DocxEditorViewer({
                                     }
                                   }}
                                   onBlur={(event) => {
+                                    if (!cellUsesLegacyDraftEditing) {
+                                      if (compositionActiveRef.current) {
+                                        // Abandoned composition: commit the
+                                        // composed DOM once so the model
+                                        // cannot lose it.
+                                        compositionActiveRef.current = false;
+                                        const composedText =
+                                          editableTextFromTableCellElement(
+                                            event.currentTarget
+                                          );
+                                        if (
+                                          composedText !==
+                                          tableCellText(cellParagraphs)
+                                        ) {
+                                          editor.suppressNextDomSelectionRestore();
+                                          editor.commitTableCellText(
+                                            nodeIndex,
+                                            rowIndex,
+                                            cellIndex,
+                                            composedText
+                                          );
+                                        }
+                                      }
+                                      return;
+                                    }
+
                                     if (compositionActiveRef.current) {
                                       compositionActiveRef.current = false;
                                       tableCellDraftsRef.current.set(
