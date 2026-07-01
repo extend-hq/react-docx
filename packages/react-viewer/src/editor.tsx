@@ -24176,6 +24176,38 @@ export function shouldReissueDomSelectionRestore(options: {
   return options.modelChanged;
 }
 
+// React re-applies `dangerouslySetInnerHTML` whenever the prop OBJECT identity
+// changes, even if the `__html` string is identical — and every reassignment
+// rebuilds the host's child nodes, destroying the live selection (and any
+// in-progress IME preedit). Reusing the same object while the string is
+// unchanged makes those commits a no-op on the editable DOM.
+export function stableInnerHtmlProp<K>(
+  cache: Map<K, { __html: string }>,
+  key: K,
+  html: string
+): { __html: string } {
+  const cached = cache.get(key);
+  if (cached && cached.__html === html) {
+    return cached;
+  }
+  const next = { __html: html };
+  cache.set(key, next);
+  return next;
+}
+
+export function isCompositionKeyboardEvent(
+  event: React.KeyboardEvent<HTMLElement>
+): boolean {
+  const nativeKeyboardEvent = event.nativeEvent as KeyboardEvent | undefined;
+  if (nativeKeyboardEvent?.isComposing) {
+    return true;
+  }
+
+  // The keydown that initiates a composition fires before `compositionstart`
+  // (so `isComposing` is still false); IMEs report it as keyCode 229.
+  return event.keyCode === 229;
+}
+
 function shouldSyncActiveRangeOnKeyUp(
   event: React.KeyboardEvent<HTMLElement>
 ): boolean {
@@ -32938,6 +32970,12 @@ export function DocxEditorViewer({
   const viewerRootRef = React.useRef<HTMLDivElement>(null);
   const paragraphDraftsRef = React.useRef<Map<number, string>>(new Map());
   const tableCellDraftsRef = React.useRef<Map<string, string>>(new Map());
+  const editableParagraphHtmlPropsRef = React.useRef<
+    Map<number, { __html: string }>
+  >(new Map());
+  const editableTableCellHtmlPropsRef = React.useRef<
+    Map<string, { __html: string }>
+  >(new Map());
   const tableCellParagraphDraftsRef = React.useRef<Map<string, string>>(
     new Map()
   );
@@ -33038,6 +33076,12 @@ export function DocxEditorViewer({
     start: number;
     end: number;
   } | null>(null);
+  // Whether a native IME composition is in progress in any editable surface.
+  // While true the DOM owns the preedit: drafts stay frozen (so no re-render
+  // can rewrite the composing innerHTML), the selection invariant must not
+  // touch the DOM, and model commits are deferred to `compositionend` (or
+  // blur, for abandoned compositions).
+  const compositionActiveRef = React.useRef(false);
   // Whether a pointer-driven selection drag is currently in progress (button
   // down and moved). While true, the DOM selection is authoritative and the
   // invariant must not touch it; once the pointer is released we may restore.
@@ -38906,7 +38950,11 @@ export function DocxEditorViewer({
       // forcing the (stale) model caret here is what makes a freshly typed
       // character appear without the cursor advancing. Leave the DOM alone and
       // let the draft / selection-preservation path own the caret.
-      if (session === "keyboard" || session === "composition") {
+      if (
+        session === "keyboard" ||
+        session === "composition" ||
+        compositionActiveRef.current
+      ) {
         return;
       }
       const anchorElement =
@@ -39003,7 +39051,11 @@ export function DocxEditorViewer({
     // session lingers ~320ms after release — long enough for the mouseup
     // re-render to clobber and "erase" the just-made selection before we could
     // restore it.
-    if (pointerSelectionDragRef.current.moved || session === "composition") {
+    if (
+      pointerSelectionDragRef.current.moved ||
+      session === "composition" ||
+      compositionActiveRef.current
+    ) {
       return;
     }
     const rootElement = viewerRootRef.current;
@@ -45202,9 +45254,6 @@ export function DocxEditorViewer({
               aria-label="Wrapped paragraph text"
               onChange={(event) => {
                 cancelPendingPointerSelectionReconcile();
-                editor.beginSelectionSession("keyboard", {
-                  settleAfterMs: 220,
-                });
                 const nextText = event.currentTarget.value.replace(
                   /\r\n?/g,
                   "\n"
@@ -45212,6 +45261,25 @@ export function DocxEditorViewer({
                 const nextStart =
                   event.currentTarget.selectionStart ?? nextText.length;
                 const nextEnd = event.currentTarget.selectionEnd ?? nextStart;
+                const nativeInputEvent = event.nativeEvent as
+                  | InputEvent
+                  | undefined;
+                if (
+                  nativeInputEvent?.isComposing ||
+                  compositionActiveRef.current
+                ) {
+                  // Keep the controlled value in sync with the preedit, but
+                  // defer the model commit to `compositionend`.
+                  editor.beginSelectionSession("composition");
+                  syncWrappedParagraphRange(location, nextStart, nextEnd, {
+                    textOverride: nextText,
+                    textLength: nextText.length,
+                  });
+                  return;
+                }
+                editor.beginSelectionSession("keyboard", {
+                  settleAfterMs: 220,
+                });
                 syncWrappedParagraphRange(location, nextStart, nextEnd, {
                   textOverride: nextText,
                   textLength: nextText.length,
@@ -45229,6 +45297,7 @@ export function DocxEditorViewer({
                 });
               }}
               onCompositionStart={() => {
+                compositionActiveRef.current = true;
                 editor.beginSelectionSession("composition");
                 setActiveWrappedParagraphSession((current) =>
                   current && current.locationKey === locationKey
@@ -45237,6 +45306,7 @@ export function DocxEditorViewer({
                 );
               }}
               onCompositionEnd={(event) => {
+                compositionActiveRef.current = false;
                 editor.beginSelectionSession("keyboard", {
                   settleAfterMs: 260,
                 });
@@ -45247,20 +45317,20 @@ export function DocxEditorViewer({
                 const nextStart =
                   event.currentTarget.selectionStart ?? nextText.length;
                 const nextEnd = event.currentTarget.selectionEnd ?? nextStart;
-                setActiveWrappedParagraphSession((current) =>
-                  current && current.locationKey === locationKey
-                    ? {
-                        ...current,
-                        isComposing: false,
-                        text: nextText,
-                        selectionStart: nextStart,
-                        selectionEnd: nextEnd,
-                      }
-                    : current
-                );
+                syncWrappedParagraphRange(location, nextStart, nextEnd, {
+                  textOverride: nextText,
+                  textLength: nextText.length,
+                  isComposing: false,
+                });
+                commitWrappedParagraphTextAtLocation(location, nextText);
+                schedulePaginationMeasurementResume();
               }}
               onKeyDown={(event) => {
                 cancelPendingPointerSelectionReconcile();
+                if (isCompositionKeyboardEvent(event)) {
+                  editor.beginSelectionSession("composition");
+                  return;
+                }
                 editor.beginSelectionSession("keyboard", {
                   settleAfterMs: 220,
                 });
@@ -45460,6 +45530,13 @@ export function DocxEditorViewer({
                 }
               }}
               onBlur={(event) => {
+                if (compositionActiveRef.current) {
+                  compositionActiveRef.current = false;
+                  commitWrappedParagraphTextAtLocation(
+                    location,
+                    event.currentTarget.value.replace(/\r\n?/g, "\n")
+                  );
+                }
                 const currentTarget = event.currentTarget;
                 const wrappedParagraphRoot = currentTarget.closest<HTMLElement>(
                   "[data-docx-wrapped-paragraph-root='true']"
@@ -49530,9 +49607,11 @@ export function DocxEditorViewer({
           style={paragraphStyle}
           dangerouslySetInnerHTML={
             editable
-              ? {
-                  __html: renderedEditableParagraphHtml,
-                }
+              ? stableInnerHtmlProp(
+                  editableParagraphHtmlPropsRef.current,
+                  nodeIndex,
+                  renderedEditableParagraphHtml
+                )
               : undefined
           }
           ref={(element) => {
@@ -49571,10 +49650,10 @@ export function DocxEditorViewer({
             }
 
             const draft = paragraphDraftsRef.current.get(nodeIndex);
-            if (typeof draft === "string") {
+            if (!compositionActiveRef.current && typeof draft === "string") {
               const draftHtml = draft;
               scheduleDomWrite(() => {
-                if (!element.isConnected) {
+                if (!element.isConnected || compositionActiveRef.current) {
                   return;
                 }
                 const latestDraft = paragraphDraftsRef.current.get(nodeIndex);
@@ -49762,6 +49841,16 @@ export function DocxEditorViewer({
             }
 
             cancelPendingPointerSelectionReconcile();
+            const nativeInputEvent = event.nativeEvent as
+              | InputEvent
+              | undefined;
+            if (nativeInputEvent?.isComposing || compositionActiveRef.current) {
+              // Preedit updates fire `input` on every keystroke; keep the
+              // composition session alive (no settle timer) and leave the
+              // draft frozen so no re-render can rewrite the composing DOM.
+              editor.beginSelectionSession("composition");
+              return;
+            }
             editor.beginSelectionSession("keyboard", { settleAfterMs: 220 });
             if (hasPartialLineRange) {
               activateEditableParagraphSegment(nodeIndex, paragraphLineRange);
@@ -49789,13 +49878,34 @@ export function DocxEditorViewer({
               return;
             }
             cancelPendingPointerSelectionReconcile();
+            compositionActiveRef.current = true;
             editor.beginSelectionSession("composition");
           }}
-          onCompositionEnd={() => {
+          onCompositionEnd={(event) => {
             if (!editable) {
               return;
             }
+            compositionActiveRef.current = false;
             editor.beginSelectionSession("keyboard", { settleAfterMs: 260 });
+            schedulePaginationMeasurementResume();
+            // Commit point: resync the frozen draft from the composed DOM and
+            // capture the caret so the next settle re-render restores it.
+            // Safari fires one more `input` after this event; it re-runs the
+            // same resync harmlessly.
+            paragraphDraftsRef.current.set(
+              nodeIndex,
+              event.currentTarget.innerHTML
+            );
+            const composedOffsets = selectionOffsetsWithinElement(
+              event.currentTarget
+            );
+            pendingEditableCaretRef.current = composedOffsets
+              ? {
+                  nodeIndex,
+                  start: composedOffsets.start,
+                  end: composedOffsets.end,
+                }
+              : null;
           }}
           onPaste={(event) => {
             const pastedText = event.clipboardData.getData("text/plain");
@@ -49818,6 +49928,10 @@ export function DocxEditorViewer({
             }
 
             cancelPendingPointerSelectionReconcile();
+            if (isCompositionKeyboardEvent(event)) {
+              editor.beginSelectionSession("composition");
+              return;
+            }
             editor.beginSelectionSession("keyboard", { settleAfterMs: 220 });
             if (hasPartialLineRange) {
               activateEditableParagraphSegment(nodeIndex, paragraphLineRange);
@@ -50249,6 +50363,16 @@ export function DocxEditorViewer({
           onBlur={(event) => {
             if (!editable) {
               return;
+            }
+
+            if (compositionActiveRef.current) {
+              // Abandoned composition (no `compositionend`): flush the
+              // composed DOM into the draft so it still commits below.
+              compositionActiveRef.current = false;
+              paragraphDraftsRef.current.set(
+                nodeIndex,
+                event.currentTarget.innerHTML
+              );
             }
 
             if (!paragraphDraftsRef.current.has(nodeIndex)) {
@@ -51487,9 +51611,11 @@ export function DocxEditorViewer({
                                   }}
                                   dangerouslySetInnerHTML={
                                     renderedEditableCellHtml
-                                      ? {
-                                          __html: renderedEditableCellHtml,
-                                        }
+                                      ? stableInnerHtmlProp(
+                                          editableTableCellHtmlPropsRef.current,
+                                          cellDraftKey,
+                                          renderedEditableCellHtml
+                                        )
                                       : undefined
                                   }
                                   ref={(element) => {
@@ -51512,10 +51638,16 @@ export function DocxEditorViewer({
                                       tableCellDraftsRef.current.get(
                                         cellDraftKey
                                       );
-                                    if (typeof draft === "string") {
+                                    if (
+                                      !compositionActiveRef.current &&
+                                      typeof draft === "string"
+                                    ) {
                                       const draftHtml = draft;
                                       scheduleDomWrite(() => {
-                                        if (!element.isConnected) {
+                                        if (
+                                          !element.isConnected ||
+                                          compositionActiveRef.current
+                                        ) {
                                           return;
                                         }
 
@@ -51798,6 +51930,18 @@ export function DocxEditorViewer({
                                   }}
                                   onInput={(event) => {
                                     cancelPendingPointerSelectionReconcile();
+                                    const nativeInputEvent = event.nativeEvent as
+                                      | InputEvent
+                                      | undefined;
+                                    if (
+                                      nativeInputEvent?.isComposing ||
+                                      compositionActiveRef.current
+                                    ) {
+                                      editor.beginSelectionSession(
+                                        "composition"
+                                      );
+                                      return;
+                                    }
                                     editor.beginSelectionSession("keyboard", {
                                       settleAfterMs: 220,
                                     });
@@ -51810,12 +51954,20 @@ export function DocxEditorViewer({
                                   }}
                                   onCompositionStart={() => {
                                     cancelPendingPointerSelectionReconcile();
+                                    compositionActiveRef.current = true;
                                     editor.beginSelectionSession("composition");
                                   }}
-                                  onCompositionEnd={() => {
+                                  onCompositionEnd={(event) => {
+                                    compositionActiveRef.current = false;
                                     editor.beginSelectionSession("keyboard", {
                                       settleAfterMs: 260,
                                     });
+                                    schedulePaginationMeasurementResume();
+                                    tableCellDraftsRef.current.set(
+                                      cellDraftKey,
+                                      event.currentTarget.innerHTML
+                                    );
+                                    requestTableDraftLayoutRefresh();
                                   }}
                                   onClick={(event) => {
                                     if (
@@ -52058,6 +52210,12 @@ export function DocxEditorViewer({
                                   }}
                                   onKeyDown={(event) => {
                                     cancelPendingPointerSelectionReconcile();
+                                    if (isCompositionKeyboardEvent(event)) {
+                                      editor.beginSelectionSession(
+                                        "composition"
+                                      );
+                                      return;
+                                    }
                                     editor.beginSelectionSession("keyboard", {
                                       settleAfterMs: 220,
                                     });
@@ -52280,6 +52438,14 @@ export function DocxEditorViewer({
                                     }
                                   }}
                                   onBlur={(event) => {
+                                    if (compositionActiveRef.current) {
+                                      compositionActiveRef.current = false;
+                                      tableCellDraftsRef.current.set(
+                                        cellDraftKey,
+                                        event.currentTarget.innerHTML
+                                      );
+                                    }
+
                                     if (
                                       !tableCellDraftsRef.current.has(
                                         cellDraftKey

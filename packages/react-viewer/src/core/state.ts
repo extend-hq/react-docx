@@ -21,11 +21,6 @@ export interface EditorHistoryState {
   maxEntries: number;
 }
 
-export interface EditorCompositionState {
-  isComposing: boolean;
-  buffer: string;
-}
-
 export interface EditorLayoutCacheState {
   version: number;
   lastMeasuredAt: number;
@@ -37,7 +32,6 @@ export interface EditorStateV2 {
   activeTextRange?: DocxTextRange;
   pendingTypingStyle?: TextRunNode["style"];
   history: EditorHistoryState;
-  composition: EditorCompositionState;
   layoutCache: EditorLayoutCacheState;
 }
 
@@ -70,10 +64,6 @@ export function createEditorStateV2(options: {
       past: [],
       future: [],
       maxEntries
-    },
-    composition: {
-      isComposing: false,
-      buffer: ""
     },
     layoutCache: {
       version: 1,
