@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 use crate::model::*;
 use crate::package::{with_part, OoxmlPackage, OoxmlPart};
+use crate::xml::decode_xml_entities;
 use crate::zip::{create_minimal_docx_package, package_to_bytes};
 
 const REL_TYPE_IMAGE: &str =
@@ -485,6 +486,34 @@ fn paragraph_line_rule_str(rule: ParagraphLineRule) -> &'static str {
     }
 }
 
+fn tab_stop_alignment_str(alignment: ParagraphTabStopAlignment) -> &'static str {
+    match alignment {
+        ParagraphTabStopAlignment::Left => "left",
+        ParagraphTabStopAlignment::Center => "center",
+        ParagraphTabStopAlignment::Right => "right",
+        ParagraphTabStopAlignment::Decimal => "decimal",
+        ParagraphTabStopAlignment::Bar => "bar",
+    }
+}
+
+fn tab_stop_leader_str(leader: ParagraphTabStopLeader) -> &'static str {
+    match leader {
+        ParagraphTabStopLeader::LeaderNone => "none",
+        ParagraphTabStopLeader::Dot => "dot",
+        ParagraphTabStopLeader::Hyphen => "hyphen",
+        ParagraphTabStopLeader::Underscore => "underscore",
+        ParagraphTabStopLeader::MiddleDot => "middleDot",
+    }
+}
+
+fn on_off_element_xml(tag_name: &str, value: Option<bool>) -> String {
+    match value {
+        Some(true) => format!("<w:{tag_name}/>"),
+        Some(false) => format!(r#"<w:{tag_name} w:val="0"/>"#),
+        None => String::new(),
+    }
+}
+
 fn paragraph_properties_xml(style: Option<&ParagraphStyle>) -> String {
     let Some(style) = style else {
         return String::new();
@@ -502,62 +531,15 @@ fn paragraph_properties_xml(style: Option<&ParagraphStyle>) -> String {
             escape_xml(&paragraph_style_id)
         ));
     }
-    if let Some(align) = style.align {
-        fragments.push(format!(
-            r#"<w:jc w:val="{}"/>"#,
-            paragraph_alignment_str(align)
-        ));
-    }
-    if let Some(numbering) = &style.numbering {
-        if numbering.num_id > 0 {
-            let ilvl = numbering.ilvl.max(0);
-            let num_id = numbering.num_id;
-            fragments.push(format!(
-                r#"<w:numPr><w:ilvl w:val="{ilvl}"/><w:numId w:val="{num_id}"/></w:numPr>"#
-            ));
+
+    for fragment in [
+        on_off_element_xml("keepNext", style.keep_next),
+        on_off_element_xml("keepLines", style.keep_lines),
+        on_off_element_xml("pageBreakBefore", style.page_break_before),
+    ] {
+        if !fragment.is_empty() {
+            fragments.push(fragment);
         }
-    }
-
-    let mut spacing_fragments: Vec<String> = Vec::new();
-    if let Some(before) = twips_to_xml_non_negative(style.spacing.as_ref().and_then(|s| s.before_twips)) {
-        spacing_fragments.push(format!(r#"w:before="{before}""#));
-    }
-    if let Some(after) = twips_to_xml_non_negative(style.spacing.as_ref().and_then(|s| s.after_twips)) {
-        spacing_fragments.push(format!(r#"w:after="{after}""#));
-    }
-    if let Some(line) = twips_to_xml_non_negative(style.spacing.as_ref().and_then(|s| s.line_twips)) {
-        spacing_fragments.push(format!(r#"w:line="{line}""#));
-    }
-    if let Some(line_rule) = style.spacing.as_ref().and_then(|s| s.line_rule) {
-        let line_rule = match line_rule {
-            ParagraphLineRule::AtLeast => "atLeast",
-            other => paragraph_line_rule_str(other),
-        };
-        spacing_fragments.push(format!(r#"w:lineRule="{line_rule}""#));
-    }
-    if !spacing_fragments.is_empty() {
-        fragments.push(format!("<w:spacing {}/>", spacing_fragments.join(" ")));
-    }
-
-    let mut indent_fragments: Vec<String> = Vec::new();
-    if let Some(left) = twips_to_xml_non_negative(style.indent.as_ref().and_then(|i| i.left_twips)) {
-        indent_fragments.push(format!(r#"w:left="{left}""#));
-    }
-    if let Some(right) = twips_to_xml_non_negative(style.indent.as_ref().and_then(|i| i.right_twips)) {
-        indent_fragments.push(format!(r#"w:right="{right}""#));
-    }
-    if let Some(first_line) =
-        twips_to_xml_non_negative(style.indent.as_ref().and_then(|i| i.first_line_twips))
-    {
-        indent_fragments.push(format!(r#"w:firstLine="{first_line}""#));
-    }
-    if let Some(hanging) =
-        twips_to_xml_non_negative(style.indent.as_ref().and_then(|i| i.hanging_twips))
-    {
-        indent_fragments.push(format!(r#"w:hanging="{hanging}""#));
-    }
-    if !indent_fragments.is_empty() {
-        fragments.push(format!("<w:ind {}/>", indent_fragments.join(" ")));
     }
 
     if let Some(drop_cap) = &style.drop_cap {
@@ -603,9 +585,112 @@ fn paragraph_properties_xml(style: Option<&ParagraphStyle>) -> String {
         fragments.push(format!("<w:framePr {}/>", frame_fragments.join(" ")));
     }
 
+    let widow_control_xml = on_off_element_xml("widowControl", style.widow_control);
+    if !widow_control_xml.is_empty() {
+        fragments.push(widow_control_xml);
+    }
+
+    if let Some(numbering) = &style.numbering {
+        if numbering.num_id > 0 {
+            let ilvl = numbering.ilvl.max(0);
+            let num_id = numbering.num_id;
+            fragments.push(format!(
+                r#"<w:numPr><w:ilvl w:val="{ilvl}"/><w:numId w:val="{num_id}"/></w:numPr>"#
+            ));
+        }
+    }
+
     let paragraph_border_xml = paragraph_borders_xml(style.borders.as_ref());
     if !paragraph_border_xml.is_empty() {
         fragments.push(paragraph_border_xml);
+    }
+
+    if let Some(background_color) = &style.background_color {
+        let fill = background_color.replace('#', "").to_ascii_uppercase();
+        if !fill.is_empty() {
+            fragments.push(format!(
+                r#"<w:shd w:val="clear" w:color="auto" w:fill="{}"/>"#,
+                escape_xml(&fill)
+            ));
+        }
+    }
+
+    if let Some(tab_stops) = &style.tab_stops {
+        let tabs = tab_stops
+            .iter()
+            .filter_map(|tab_stop| {
+                let position = tab_stop.position_twips?;
+                let alignment = tab_stop_alignment_str(
+                    tab_stop.alignment.unwrap_or(ParagraphTabStopAlignment::Left),
+                );
+                let leader = tab_stop
+                    .leader
+                    .filter(|leader| *leader != ParagraphTabStopLeader::LeaderNone)
+                    .map(|leader| format!(r#" w:leader="{}""#, tab_stop_leader_str(leader)))
+                    .unwrap_or_default();
+                Some(format!(
+                    r#"<w:tab w:val="{alignment}"{leader} w:pos="{position}"/>"#
+                ))
+            })
+            .collect::<Vec<_>>();
+        if !tabs.is_empty() {
+            fragments.push(format!("<w:tabs>{}</w:tabs>", tabs.join("")));
+        }
+    }
+
+    let mut spacing_fragments: Vec<String> = Vec::new();
+    if let Some(before) = twips_to_xml_non_negative(style.spacing.as_ref().and_then(|s| s.before_twips)) {
+        spacing_fragments.push(format!(r#"w:before="{before}""#));
+    }
+    if let Some(after) = twips_to_xml_non_negative(style.spacing.as_ref().and_then(|s| s.after_twips)) {
+        spacing_fragments.push(format!(r#"w:after="{after}""#));
+    }
+    if let Some(line) = twips_to_xml_non_negative(style.spacing.as_ref().and_then(|s| s.line_twips)) {
+        spacing_fragments.push(format!(r#"w:line="{line}""#));
+    }
+    if let Some(line_rule) = style.spacing.as_ref().and_then(|s| s.line_rule) {
+        let line_rule = match line_rule {
+            ParagraphLineRule::AtLeast => "atLeast",
+            other => paragraph_line_rule_str(other),
+        };
+        spacing_fragments.push(format!(r#"w:lineRule="{line_rule}""#));
+    }
+    if !spacing_fragments.is_empty() {
+        fragments.push(format!("<w:spacing {}/>", spacing_fragments.join(" ")));
+    }
+
+    let mut indent_fragments: Vec<String> = Vec::new();
+    if let Some(left) = twips_to_xml_non_negative(style.indent.as_ref().and_then(|i| i.left_twips)) {
+        indent_fragments.push(format!(r#"w:left="{left}""#));
+    }
+    if let Some(right) = twips_to_xml_non_negative(style.indent.as_ref().and_then(|i| i.right_twips)) {
+        indent_fragments.push(format!(r#"w:right="{right}""#));
+    }
+    if let Some(first_line) =
+        twips_to_xml_non_negative(style.indent.as_ref().and_then(|i| i.first_line_twips))
+    {
+        indent_fragments.push(format!(r#"w:firstLine="{first_line}""#));
+    }
+    if let Some(hanging) =
+        twips_to_xml_non_negative(style.indent.as_ref().and_then(|i| i.hanging_twips))
+    {
+        indent_fragments.push(format!(r#"w:hanging="{hanging}""#));
+    }
+    if !indent_fragments.is_empty() {
+        fragments.push(format!("<w:ind {}/>", indent_fragments.join(" ")));
+    }
+
+    let contextual_spacing_xml =
+        on_off_element_xml("contextualSpacing", style.contextual_spacing);
+    if !contextual_spacing_xml.is_empty() {
+        fragments.push(contextual_spacing_xml);
+    }
+
+    if let Some(align) = style.align {
+        fragments.push(format!(
+            r#"<w:jc w:val="{}"/>"#,
+            paragraph_alignment_str(align)
+        ));
     }
 
     if fragments.is_empty() {
@@ -736,10 +821,11 @@ fn parse_relationships_xml(xml: &str) -> Vec<Relationship> {
         let tag = &xml[abs_start..abs_start + end_rel + 1];
         search_from = abs_start + end_rel + 1;
 
-        let id = extract_attribute(tag, "Id");
-        let rel_type = extract_attribute(tag, "Type");
-        let target = extract_attribute(tag, "Target");
-        let target_mode = extract_attribute(tag, "TargetMode");
+        let id = extract_attribute(tag, "Id").map(|value| decode_xml_entities(&value));
+        let rel_type = extract_attribute(tag, "Type").map(|value| decode_xml_entities(&value));
+        let target = extract_attribute(tag, "Target").map(|value| decode_xml_entities(&value));
+        let target_mode =
+            extract_attribute(tag, "TargetMode").map(|value| decode_xml_entities(&value));
 
         if let (Some(id), Some(rel_type), Some(target)) = (id, rel_type, target) {
             relationships.push(Relationship {
