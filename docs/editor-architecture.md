@@ -17,7 +17,7 @@ across many independent React states. That creates invalid state windows where:
 
 ## Target Architecture
 
-Move toward a ProseMirror-style state machine:
+Move toward a single transactional state machine:
 
 - single canonical editor state
   - `model`
