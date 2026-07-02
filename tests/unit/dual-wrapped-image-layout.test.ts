@@ -600,7 +600,7 @@ describe("dual wrapped image layout", () => {
     expect(style.marginLeft).toBe(36);
   });
 
-  it("ignores tiny vertical jitter when dropping top-and-bottom wrapped images", async () => {
+  it("commits small vertical drops of top-and-bottom wrapped images exactly", async () => {
     const { resolveWrappedFloatingImageDropPatch } = await import(
       "../../packages/react-viewer/src/editor"
     );
@@ -632,7 +632,7 @@ describe("dual wrapped image layout", () => {
       }
     );
 
-    expect(patch.yPx).toBe(30);
+    expect(patch.yPx).toBe(35);
   });
 
   it("lets full-width top-and-bottom exclusions overflow the anchor paragraph box", async () => {

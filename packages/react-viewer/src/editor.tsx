@@ -321,7 +321,6 @@ const TABLE_ROW_HEIGHT_PAGINATION_ESTIMATE_PADDING_MIN_ROWS = 15;
 const MIN_TABLE_ROW_SLICE_REMAINING_HEIGHT_PX =
   MIN_PARAGRAPH_LINE_HEIGHT_PX * 2;
 const TABLE_ROW_SLICE_BOUNDARY_TOLERANCE_PX = 2;
-const TOP_AND_BOTTOM_VERTICAL_DRAG_SNAP_PX = 10;
 const HEADER_FOOTER_INACTIVE_OPACITY = 0.5;
 const LETTERHEAD_INDENT_MIN_TWIPS = 900;
 const LETTERHEAD_INDENT_MAX_TWIPS = 4200;
@@ -14764,16 +14763,9 @@ export function resolveWrappedFloatingImageDropPatch(
     previewGeometry === undefined ||
     previewGeometry.exclusion.left <= 0 ||
     previewGeometry.exclusion.right >= hostWidth;
-  const rawExplicitTopPx = Math.round(
+  const explicitTopPx = Math.round(
     movedTop - Math.round(baseFloating.distTPx ?? 0)
   );
-  const currentTopPx = Math.round(baseFloating.yPx ?? 0);
-  const explicitTopPx =
-    wrapType.trim().toLowerCase() === "topandbottom" &&
-    Math.abs(rawExplicitTopPx - currentTopPx) <
-      TOP_AND_BOTTOM_VERTICAL_DRAG_SNAP_PX
-      ? currentTopPx
-      : rawExplicitTopPx;
 
   return {
     wrapType,
