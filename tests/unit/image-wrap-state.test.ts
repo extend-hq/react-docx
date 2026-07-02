@@ -151,6 +151,51 @@ describe("image wrap state", () => {
     expect(zoomedPatch).toEqual(logicalPatch);
   });
 
+  it("compensates absolute drops for page-surface drift measured at drop time", async () => {
+    const { resolveAbsoluteFloatingImageDropPatch } = await import(
+      "../../packages/react-viewer/src/editor"
+    );
+
+    const layout = {
+      marginsPx: { top: 72, right: 72, bottom: 72, left: 72 },
+      pageWidthPx: 612,
+      pageHeightPx: 792
+    };
+    const floating = {
+      wrapType: "none" as const,
+      behindDocument: true,
+      horizontalRelativeTo: "column",
+      verticalRelativeTo: "paragraph"
+    };
+    const wrapperRect = { left: 240, top: 310, width: 26, height: 26 };
+    const settledPatch = resolveAbsoluteFloatingImageDropPatch(
+      floating,
+      layout,
+      {
+        wrapperRect,
+        pageSurfaceRect: { left: 100, top: 120, width: 612, height: 792 },
+        deltaX: 90,
+        deltaY: -40
+      }
+    );
+    // The page drifted mid-drag; re-measuring the surface at drop keeps the
+    // committed page-local position under the cursor instead of offset by
+    // the drift.
+    const driftedPatch = resolveAbsoluteFloatingImageDropPatch(
+      floating,
+      layout,
+      {
+        wrapperRect,
+        pageSurfaceRect: { left: 112, top: 90, width: 612, height: 792 },
+        deltaX: 90,
+        deltaY: -40
+      }
+    );
+
+    expect(driftedPatch.xPx).toBe((settledPatch.xPx as number) - 12);
+    expect(driftedPatch.yPx).toBe((settledPatch.yPx as number) + 30);
+  });
+
   it("drops absolute floating images in page coordinates instead of paragraph coordinates", async () => {
     const { resolveAbsoluteFloatingImageDropPatch } = await import(
       "../../packages/react-viewer/src/editor"

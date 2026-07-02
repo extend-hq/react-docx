@@ -43775,6 +43775,13 @@ export function DocxEditorViewer({
         }
 
         if (isAbsoluteFloatingImage) {
+          // The page can shift mid-drag (reflow from preview exclusions,
+          // virtualizer remeasure, scroll), so re-measure the page surface at
+          // drop; the pointerdown capture only serves as a detached fallback.
+          const dropPageSurfaceRect =
+            pageSurface && pageSurface.isConnected
+              ? pageSurface.getBoundingClientRect()
+              : pageSurfaceRect;
           editor.moveFloatingImage(
             location,
             resolveAbsoluteFloatingImageDropPatch(
@@ -43785,8 +43792,11 @@ export function DocxEditorViewer({
                   wrapperRect,
                   zoomScale
                 ),
-                pageSurfaceRect: pageSurfaceRect
-                  ? normalizeFloatingDropRectForZoom(pageSurfaceRect, zoomScale)
+                pageSurfaceRect: dropPageSurfaceRect
+                  ? normalizeFloatingDropRectForZoom(
+                      dropPageSurfaceRect,
+                      zoomScale
+                    )
                   : undefined,
                 deltaX: latestDeltaX,
                 deltaY: latestDeltaY,
@@ -44096,6 +44106,10 @@ export function DocxEditorViewer({
         }
 
         if (isAbsoluteFloatingImage) {
+          const dropPageSurfaceRect =
+            pageSurface && pageSurface.isConnected
+              ? pageSurface.getBoundingClientRect()
+              : pageSurfaceRect;
           editor.moveSectionFloatingImage(
             location,
             resolveAbsoluteFloatingImageDropPatch(
@@ -44106,8 +44120,11 @@ export function DocxEditorViewer({
                   wrapperRect,
                   zoomScale
                 ),
-                pageSurfaceRect: pageSurfaceRect
-                  ? normalizeFloatingDropRectForZoom(pageSurfaceRect, zoomScale)
+                pageSurfaceRect: dropPageSurfaceRect
+                  ? normalizeFloatingDropRectForZoom(
+                      dropPageSurfaceRect,
+                      zoomScale
+                    )
                   : undefined,
                 deltaX: latestDeltaX,
                 deltaY: latestDeltaY,
