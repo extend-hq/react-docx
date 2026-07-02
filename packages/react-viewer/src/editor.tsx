@@ -3802,7 +3802,8 @@ export interface DocxEditorController {
   ) => void;
   moveFloatingImage: (
     location: DocxImageLocation,
-    patch: Partial<NonNullable<ImageRunNode["floating"]>>
+    patch: Partial<NonNullable<ImageRunNode["floating"]>>,
+    options?: { reparentToParagraphNodeIndex?: number }
   ) => void;
   moveSectionFloatingImage: (
     location: DocxSectionImageLocation,
@@ -14791,6 +14792,86 @@ export function resolveWrappedFloatingImageDropPatch(
       : baseFloating.verticalRelativeTo ?? "paragraph",
     behindDocument: false,
   };
+}
+
+// Word re-anchors a dragged floating image to the paragraph its drop
+// position lands in. Pick the body paragraph host whose band contains the
+// dropped image origin, falling back to the nearest one; horizontal distance
+// only breaks ties between side-by-side column hosts.
+function resolveWrappedDropAnchorParagraphHost(
+  wrapperElement: HTMLElement,
+  droppedTopScreenPx: number,
+  droppedLeftScreenPx: number
+): { host: HTMLElement; nodeIndex: number; rect: DOMRect } | undefined {
+  const viewerRoot =
+    wrapperElement.closest("[data-testid='docx-editor-viewer']") ??
+    wrapperElement.ownerDocument;
+  if (!viewerRoot) {
+    return undefined;
+  }
+
+  const hosts = Array.from(
+    viewerRoot.querySelectorAll(
+      "[data-docx-paragraph-host='true'][data-docx-paragraph-kind='paragraph'][data-docx-paragraph-node-index]"
+    )
+  ) as HTMLElement[];
+
+  let best:
+    | { host: HTMLElement; nodeIndex: number; rect: DOMRect }
+    | undefined;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  for (const host of hosts) {
+    const nodeIndex = Number.parseInt(
+      host.getAttribute("data-docx-paragraph-node-index") ?? "",
+      10
+    );
+    if (!Number.isFinite(nodeIndex)) {
+      continue;
+    }
+
+    const rect = host.getBoundingClientRect();
+    if (rect.width <= 0 && rect.height <= 0) {
+      continue;
+    }
+
+    const verticalDistance =
+      droppedTopScreenPx < rect.top
+        ? rect.top - droppedTopScreenPx
+        : droppedTopScreenPx >= rect.bottom
+        ? droppedTopScreenPx - rect.bottom
+        : 0;
+    const horizontalDistance =
+      droppedLeftScreenPx < rect.left
+        ? rect.left - droppedLeftScreenPx
+        : droppedLeftScreenPx > rect.right
+        ? droppedLeftScreenPx - rect.right
+        : 0;
+    const distance = verticalDistance * 4 + horizontalDistance;
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      best = { host, nodeIndex, rect };
+    }
+  }
+
+  return best;
+}
+
+// A wrapped drag only re-anchors when the drop patch will express the
+// vertical offset in paragraph-local coordinates.
+function wrappedDragCanReanchorToParagraph(
+  floating: Partial<NonNullable<ImageRunNode["floating"]>>
+): boolean {
+  if (!floatingImageMovesWithText(floating)) {
+    return true;
+  }
+
+  const verticalRelativeTo =
+    floating.verticalRelativeTo?.trim().toLowerCase() ?? "";
+  return (
+    verticalRelativeTo === "" ||
+    verticalRelativeTo === "paragraph" ||
+    verticalRelativeTo === "line"
+  );
 }
 
 function resolvePageSpanningAbsoluteFloatingDimensions(
@@ -28453,7 +28534,8 @@ export function useDocxEditor(
   const moveFloatingImage = React.useCallback(
     (
       location: DocxImageLocation,
-      patch: Partial<NonNullable<ImageRunNode["floating"]>>
+      patch: Partial<NonNullable<ImageRunNode["floating"]>>,
+      options?: { reparentToParagraphNodeIndex?: number }
     ): void => {
       applyModelChange((current) => {
         const next = cloneDocModel(current);
@@ -28474,6 +28556,25 @@ export function useDocxEditor(
           ...(child.floating ?? {}),
           ...patch,
         };
+
+        const reparentNodeIndex = options?.reparentToParagraphNodeIndex;
+        const reparentTarget =
+          reparentNodeIndex !== undefined
+            ? next.nodes[reparentNodeIndex]
+            : undefined;
+        if (
+          reparentTarget &&
+          reparentTarget.type === "paragraph" &&
+          reparentTarget !== paragraph
+        ) {
+          paragraph.children.splice(location.childIndex, 1);
+          if (paragraph.children.length === 0) {
+            paragraph.children.push({ type: "text", text: "" });
+          }
+          reparentTarget.children.unshift(child);
+          reparentTarget.sourceXml = undefined;
+        }
+
         paragraph.sourceXml = undefined;
         if (tableNode) {
           tableNode.sourceXml = undefined;
@@ -43713,6 +43814,17 @@ export function DocxEditorViewer({
       const paragraphRect = paragraphHost?.getBoundingClientRect();
       const zoomScale = resolveViewerMeasurementZoomScale(wrapperElement, 1);
       const baseFloating = image.floating ? { ...image.floating } : {};
+      // The band the image visually starts in; re-anchoring only happens
+      // when the drop lands in a different band than both this and the
+      // current anchor paragraph.
+      const dragStartAnchor =
+        isWrappedFloatingImage && location.kind === "paragraph"
+          ? resolveWrappedDropAnchorParagraphHost(
+              wrapperElement,
+              wrapperRect.top,
+              wrapperRect.left
+            )
+          : undefined;
 
       let latestDeltaX = 0;
       let latestDeltaY = 0;
@@ -43888,6 +44000,59 @@ export function DocxEditorViewer({
           const movedTop = Math.round(
             (baseGeometry?.imageTopPx ?? 0) + latestDeltaY
           );
+          const droppedTopScreenPx = wrapperRect.top + latestDeltaY * zoomScale;
+          const droppedLeftScreenPx =
+            wrapperRect.left + latestDeltaX * zoomScale;
+          const dropAnchor =
+            location.kind === "paragraph" &&
+            wrappedDragCanReanchorToParagraph(baseFloating)
+              ? resolveWrappedDropAnchorParagraphHost(
+                  wrapperElement,
+                  droppedTopScreenPx,
+                  droppedLeftScreenPx
+                )
+              : undefined;
+          if (
+            dropAnchor &&
+            location.kind === "paragraph" &&
+            dropAnchor.nodeIndex !== location.nodeIndex &&
+            dropAnchor.nodeIndex !== dragStartAnchor?.nodeIndex
+          ) {
+            // Crossing a paragraph boundary re-anchors the image to the
+            // paragraph the drop landed in, with offsets recomputed against
+            // the new anchor so the visual position is preserved.
+            const targetHostWidth = dropAnchor.rect.width / zoomScale;
+            const targetMovedLeft = clampNumber(
+              Math.round(
+                (droppedLeftScreenPx - dropAnchor.rect.left) / zoomScale
+              ),
+              0,
+              Math.max(0, targetHostWidth - imageWidth)
+            );
+            const targetMovedTop = Math.round(
+              (droppedTopScreenPx - dropAnchor.rect.top) / zoomScale
+            );
+            editor.moveFloatingImage(
+              location,
+              resolveWrappedFloatingImageDropPatch(
+                image,
+                targetHostWidth,
+                targetMovedLeft,
+                targetMovedTop,
+                {
+                  widthPx: imageWidth,
+                  heightPx: imageHeight,
+                }
+              ),
+              { reparentToParagraphNodeIndex: dropAnchor.nodeIndex }
+            );
+            setSelectedImage({
+              kind: "paragraph",
+              nodeIndex: dropAnchor.nodeIndex,
+              childIndex: 0,
+            });
+            return;
+          }
           editor.moveFloatingImage(
             location,
             resolveWrappedFloatingImageDropPatch(
