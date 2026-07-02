@@ -113,6 +113,7 @@ function cloneParagraphStyle(
 function cloneParagraph(paragraph: ParagraphNode): ParagraphNode {
   return {
     type: "paragraph",
+    blockId: paragraph.blockId,
     style: cloneParagraphStyle(paragraph.style),
     paragraphMarkDeleted: paragraph.paragraphMarkDeleted,
     sourceXml: paragraph.sourceXml,
@@ -269,6 +270,7 @@ function cloneTableFloatingStyle(
 function cloneTable(table: TableNode): TableNode {
   return {
     type: "table",
+    blockId: table.blockId,
     sourceXml: table.sourceXml,
     style: table.style
       ? {

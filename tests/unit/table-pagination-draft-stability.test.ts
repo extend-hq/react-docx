@@ -17,6 +17,7 @@ function createParagraph(text: string): ParagraphNode {
 function createTable(rowCount: number): TableNode {
   return {
     type: "table",
+    blockId: "table-0",
     rows: Array.from({ length: rowCount }, (_, rowIndex) => ({
       type: "table-row" as const,
       cells: [
@@ -32,6 +33,7 @@ function createTable(rowCount: number): TableNode {
 function createCantSplitTable(): TableNode {
   return {
     type: "table",
+    blockId: "table-0",
     rows: [
       {
         type: "table-row",
@@ -57,7 +59,7 @@ describe("table pagination draft stability", () => {
       resolveTableMeasuredRowHeightsForPagination(
         nodes,
         {
-          0: [24, 32]
+          "table-0": { rowHeightsPx: [24, 32], contentSignature: "" }
         },
         {
           allowMeasuredImportPagination: true
@@ -72,6 +74,7 @@ describe("table pagination draft stability", () => {
     const nodes: DocModel["nodes"] = [
       {
         type: "table",
+        blockId: "table-0",
         rows: [
           {
             type: "table-row",
@@ -99,7 +102,7 @@ describe("table pagination draft stability", () => {
       resolveTableMeasuredRowHeightsForPagination(
         nodes,
         {
-          0: [120, 96]
+          "table-0": { rowHeightsPx: [120, 96], contentSignature: "" }
         },
         {
           allowMeasuredImportPagination: true,
@@ -118,7 +121,7 @@ describe("table pagination draft stability", () => {
       resolveTableMeasuredRowHeightsForPagination(
         nodes,
         {
-          0: [96]
+          "table-0": { rowHeightsPx: [96], contentSignature: "" }
         },
         {
           allowMeasuredImportPagination: true,
@@ -138,7 +141,7 @@ describe("table pagination draft stability", () => {
       resolveTableMeasuredRowHeightsForPagination(
         nodes,
         {
-          0: [260]
+          "table-0": { rowHeightsPx: [260], contentSignature: "" }
         },
         {
           allowMeasuredImportPagination: true,
@@ -158,7 +161,7 @@ describe("table pagination draft stability", () => {
       resolveTableMeasuredRowHeightsForPagination(
         nodes,
         {
-          0: [24, 48]
+          "table-0": { rowHeightsPx: [24, 48], contentSignature: "" }
         },
         {
           allowMeasuredImportPagination: true,

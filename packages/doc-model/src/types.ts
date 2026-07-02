@@ -211,6 +211,8 @@ export interface ParagraphStyle {
 
 export interface ParagraphNode {
   type: "paragraph";
+  /** Stable identity for measurement caches; survives edits via cloneParagraph. */
+  blockId?: string;
   children: ParagraphChildNode[];
   style?: ParagraphStyle;
   paragraphMarkDeleted?: boolean;
@@ -298,6 +300,8 @@ export interface TableStyle {
 
 export interface TableNode {
   type: "table";
+  /** Stable identity for measurement caches; survives edits via cloneTable. */
+  blockId?: string;
   rows: TableRowNode[];
   style?: TableStyle;
   sourceXml?: string;

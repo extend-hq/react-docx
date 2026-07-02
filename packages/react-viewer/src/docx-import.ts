@@ -100,17 +100,18 @@ async function importDocxOnMainThread(
   }
 
   const startedAt = performanceNow();
-  const [{ parseDocx }, { buildDocModel }] = await Promise.all([
-    import("@extend-ai/react-docx-ooxml-core"),
-    import("@extend-ai/react-docx-doc-model"),
-  ]);
+  const [{ parseDocx }, { buildDocModel, ensureDocModelBlockIds }] =
+    await Promise.all([
+      import("@extend-ai/react-docx-ooxml-core"),
+      import("@extend-ai/react-docx-doc-model"),
+    ]);
   const pkg = await parseDocx(buffer);
   const parsedAt = performanceNow();
   if (signal?.aborted) {
     throw createAbortError();
   }
 
-  const model = await buildDocModel(pkg);
+  const model = ensureDocModelBlockIds(await buildDocModel(pkg));
   const finishedAt = performanceNow();
   if (signal?.aborted) {
     throw createAbortError();
@@ -157,7 +158,7 @@ export async function importDocxBuffer(
   const requestId = nextImportWorkerRequestId;
   nextImportWorkerRequestId += 1;
 
-  return new Promise<DocxImportResult>((resolve, reject) => {
+  const workerResult = new Promise<DocxImportResult>((resolve, reject) => {
     let settled = false;
 
     const cleanup = (): void => {
@@ -235,4 +236,13 @@ export async function importDocxBuffer(
       );
     }
   });
+
+  const result = await workerResult;
+  // Block ids are assigned on the main thread so the allocation counter is
+  // shared with editor ops that create nodes later.
+  const { ensureDocModelBlockIds } = await import(
+    "@extend-ai/react-docx-doc-model"
+  );
+  ensureDocModelBlockIds(result.model);
+  return result;
 }

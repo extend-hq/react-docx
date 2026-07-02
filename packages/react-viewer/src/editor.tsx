@@ -3,7 +3,10 @@ import { flushSync } from "react-dom";
 import { renderToStaticMarkup } from "react-dom/server";
 import { useVirtualizer, useWindowVirtualizer } from "@tanstack/react-virtual";
 import {
+  allocateBlockId,
   cloneDocModel,
+  collectDuplicateDocModelBlockIds,
+  ensureDocModelBlockIds,
   type DocModel,
   type DocumentNoteDefinition,
   type FooterSection,
@@ -1088,11 +1091,17 @@ function reconcileMeasuredTableRowHeightsForImportPagination(
   });
 }
 
+export interface MeasuredTableRowHeightsEntry {
+  rowHeightsPx: number[];
+  contentSignature: string;
+}
+
 export function resolveTableMeasuredRowHeightsForPagination(
   nodes: DocModel["nodes"],
-  tableMeasuredRowHeights: Record<number, number[]>,
+  tableMeasuredRowHeightsByBlockId: Record<string, MeasuredTableRowHeightsEntry>,
   options?: {
     allowMeasuredImportPagination?: boolean;
+    allowContentSignatureValidatedTables?: boolean;
     activeDraftKeys?: string[];
     numberingDefinitions?: NumberingDefinitionSet;
     pageContentWidthPxByNodeIndex?: Map<number, number | undefined>;
@@ -1113,51 +1122,194 @@ export function resolveTableMeasuredRowHeightsForPagination(
   const includeOnlyActiveTables = activeTableIndexes.size > 0;
   if (
     includeOnlyActiveTables === false &&
-    options?.allowMeasuredImportPagination !== true
+    options?.allowMeasuredImportPagination !== true &&
+    options?.allowContentSignatureValidatedTables !== true
   ) {
     return undefined;
   }
 
   const next: Record<number, number[]> = {};
-  Object.entries(tableMeasuredRowHeights).forEach(
-    ([tableIndexText, measuredRowHeights]) => {
-      const tableIndex = Number.parseInt(tableIndexText, 10);
-      const tableNode = nodes[tableIndex];
-      if (
-        !Number.isFinite(tableIndex) ||
-        !tableNode ||
-        tableNode.type !== "table" ||
-        !Array.isArray(measuredRowHeights) ||
-        measuredRowHeights.length !== tableNode.rows.length
-      ) {
-        return;
-      }
-
-      if (includeOnlyActiveTables && !activeTableIndexes.has(tableIndex)) {
-        return;
-      }
-
-      const nextHeights = includeOnlyActiveTables
-        ? measuredRowHeights.map((heightPx) =>
-            normalizeMeasuredTableRowHeightPx(heightPx)
-          )
-        : reconcileMeasuredTableRowHeightsForImportPagination(
-            tableNode,
-            measuredRowHeights,
-            options?.pageContentWidthPxByNodeIndex?.get(tableIndex),
-            options?.pageContentHeightPxByNodeIndex?.get(tableIndex),
-            options?.numberingDefinitions,
-            options?.docGridLinePitchPxByNodeIndex?.get(tableIndex)
-          ) ??
-          measuredRowHeights.map((heightPx) =>
-            normalizeMeasuredTableRowHeightPx(heightPx)
-          );
-
-      next[tableIndex] = nextHeights;
+  nodes.forEach((tableNode, tableIndex) => {
+    if (tableNode.type !== "table" || !tableNode.blockId) {
+      return;
     }
-  );
+
+    const entry = tableMeasuredRowHeightsByBlockId[tableNode.blockId];
+    if (
+      !entry ||
+      !Array.isArray(entry.rowHeightsPx) ||
+      entry.rowHeightsPx.length !== tableNode.rows.length
+    ) {
+      return;
+    }
+    const measuredRowHeights = entry.rowHeightsPx;
+
+    if (includeOnlyActiveTables) {
+      if (!activeTableIndexes.has(tableIndex)) {
+        return;
+      }
+      next[tableIndex] = measuredRowHeights.map((heightPx) =>
+        normalizeMeasuredTableRowHeightPx(heightPx)
+      );
+      return;
+    }
+
+    // Post-edit, a table's measured heights stay usable only while its
+    // content is unchanged since measurement (the import path skips this:
+    // nothing can have changed on a pristine document).
+    if (
+      options?.allowMeasuredImportPagination !== true &&
+      entry.contentSignature !== docNodeContentSignature(tableNode)
+    ) {
+      return;
+    }
+
+    next[tableIndex] =
+      reconcileMeasuredTableRowHeightsForImportPagination(
+        tableNode,
+        measuredRowHeights,
+        options?.pageContentWidthPxByNodeIndex?.get(tableIndex),
+        options?.pageContentHeightPxByNodeIndex?.get(tableIndex),
+        options?.numberingDefinitions,
+        options?.docGridLinePitchPxByNodeIndex?.get(tableIndex)
+      ) ??
+      measuredRowHeights.map((heightPx) =>
+        normalizeMeasuredTableRowHeightPx(heightPx)
+      );
+  });
 
   return Object.keys(next).length > 0 ? next : undefined;
+}
+
+export interface MeasuredPageContentValidation {
+  contextSignature: string;
+  blocks: Array<{ blockId?: string; contentSignature: string }>;
+}
+
+export function buildMeasuredPageContentValidationForPageSegments(
+  pageSegments: DocumentPageNodeSegment[],
+  nodes: DocModel["nodes"],
+  contextSignature: string
+): MeasuredPageContentValidation {
+  const blocks: MeasuredPageContentValidation["blocks"] = [];
+  let previousNodeIndex: number | undefined;
+  for (const segment of pageSegments) {
+    if (segment.nodeIndex === previousNodeIndex) {
+      continue;
+    }
+    previousNodeIndex = segment.nodeIndex;
+    const node = nodes[segment.nodeIndex];
+    blocks.push({
+      blockId: node?.blockId,
+      contentSignature: node ? docNodeContentSignature(node) : "",
+    });
+  }
+  return { contextSignature, blocks };
+}
+
+export function measuredPageContentValidationsEqual(
+  left: MeasuredPageContentValidation | undefined,
+  right: MeasuredPageContentValidation | undefined
+): boolean {
+  if (left === right) {
+    return true;
+  }
+  if (!left || !right) {
+    return false;
+  }
+  if (
+    left.contextSignature !== right.contextSignature ||
+    left.blocks.length !== right.blocks.length
+  ) {
+    return false;
+  }
+  for (let index = 0; index < left.blocks.length; index += 1) {
+    if (
+      left.blocks[index].blockId !== right.blocks[index].blockId ||
+      left.blocks[index].contentSignature !==
+        right.blocks[index].contentSignature
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Measured page-content heights are keyed by page index, so a per-block
+ * signature check alone cannot validate them: page N's measurement holds only
+ * while the page still receives the same blocks with the same content, which
+ * is guaranteed only when every block on pages 0..N is unchanged. Walks pages
+ * in order against the current body nodes and keeps the clean prefix.
+ */
+export function resolveMeasuredPageContentHeightsPxForEditedModel(
+  nodes: DocModel["nodes"],
+  measuredPageContentHeightsPxByPageIndex: number[],
+  validationByPageIndex: Array<MeasuredPageContentValidation | undefined>,
+  contextSignature: string
+): number[] | undefined {
+  let cursor = 0;
+  let previousPageLastBlockId: string | undefined;
+  let validPageCount = 0;
+
+  for (
+    let pageIndex = 0;
+    pageIndex < measuredPageContentHeightsPxByPageIndex.length;
+    pageIndex += 1
+  ) {
+    const validation = validationByPageIndex[pageIndex];
+    if (
+      !validation ||
+      validation.contextSignature !== contextSignature ||
+      validation.blocks.length === 0
+    ) {
+      break;
+    }
+
+    let pageIsValid = true;
+    for (
+      let blockIndex = 0;
+      blockIndex < validation.blocks.length;
+      blockIndex += 1
+    ) {
+      const block = validation.blocks[blockIndex];
+      if (!block.blockId) {
+        pageIsValid = false;
+        break;
+      }
+      if (blockIndex === 0 && block.blockId === previousPageLastBlockId) {
+        // Continuation of the block that ended the previous page; it was
+        // already matched against the cursor there.
+        continue;
+      }
+      const node = nodes[cursor];
+      if (
+        !node ||
+        node.blockId !== block.blockId ||
+        docNodeContentSignature(node) !== block.contentSignature
+      ) {
+        pageIsValid = false;
+        break;
+      }
+      cursor += 1;
+    }
+
+    if (!pageIsValid) {
+      break;
+    }
+
+    previousPageLastBlockId =
+      validation.blocks[validation.blocks.length - 1]?.blockId;
+    validPageCount += 1;
+  }
+
+  if (validPageCount === 0) {
+    return undefined;
+  }
+
+  return validPageCount >= measuredPageContentHeightsPxByPageIndex.length
+    ? measuredPageContentHeightsPxByPageIndex
+    : measuredPageContentHeightsPxByPageIndex.slice(0, validPageCount);
 }
 
 function placeCaretInsideElementDom(element: HTMLElement): void {
@@ -4707,8 +4859,12 @@ export const defaultStarterModel: DocModel = {
   },
 };
 
+function cloneDocModelWithBlockIds(model: DocModel): DocModel {
+  return ensureDocModelBlockIds(cloneDocModel(model));
+}
+
 function createBlankDocumentModel(): DocModel {
-  return cloneDocModel(defaultStarterModel);
+  return cloneDocModelWithBlockIds(defaultStarterModel);
 }
 
 function textRuns(paragraph: ParagraphNode): TextRunNode[] {
@@ -20411,6 +20567,7 @@ function createEmptyParagraphFromTemplate(
 
   return {
     type: "paragraph",
+    blockId: allocateBlockId(),
     style: cloneParagraphStyle(template?.style),
     children: [
       {
@@ -25055,11 +25212,11 @@ export function useDocxEditor(
   options: UseDocxEditorOptions = {}
 ): DocxEditorController {
   const starterTemplateRef = React.useRef<DocModel>(
-    cloneDocModel(options.starterModel ?? defaultStarterModel)
+    cloneDocModelWithBlockIds(options.starterModel ?? defaultStarterModel)
   );
 
   const [model, setModel] = React.useState<DocModel>(() =>
-    cloneDocModel(starterTemplateRef.current)
+    cloneDocModelWithBlockIds(starterTemplateRef.current)
   );
   const [basePackage, setBasePackage] = React.useState<
     OoxmlPackage | undefined
@@ -25137,6 +25294,20 @@ export function useDocxEditor(
 
   React.useEffect(() => {
     modelRef.current = model;
+  }, [model]);
+
+  React.useEffect(() => {
+    if (typeof process === "undefined" || process.env?.NODE_ENV === "production") {
+      return;
+    }
+
+    const duplicateBlockIds = collectDuplicateDocModelBlockIds(model);
+    if (duplicateBlockIds.length > 0) {
+      // eslint-disable-next-line no-console
+      console.error(
+        `Duplicate doc-model block ids detected (an op copied a node without allocating a fresh id): ${duplicateBlockIds.join(", ")}`
+      );
+    }
   }, [model]);
 
   React.useEffect(() => {
@@ -25926,7 +26097,7 @@ export function useDocxEditor(
     activeImportAbortControllerRef.current?.abort();
     activeImportAbortControllerRef.current = undefined;
     unloadEmbeddedFonts();
-    setModel(cloneDocModel(starterTemplateRef.current));
+    setModel(cloneDocModelWithBlockIds(starterTemplateRef.current));
     setDocumentLoadNonce((current) => current + 1);
     setBasePackage(undefined);
     setFileName("(new document)");
@@ -26699,6 +26870,7 @@ export function useDocxEditor(
             next.nodes = [
               {
                 type: "paragraph",
+                blockId: allocateBlockId(),
                 children: [
                   {
                     type: "text",
@@ -26966,6 +27138,7 @@ export function useDocxEditor(
                   next.nodes = [
                     {
                       type: "paragraph",
+                      blockId: allocateBlockId(),
                       children: [{ type: "text", text: "" }],
                     },
                   ];
@@ -27009,6 +27182,7 @@ export function useDocxEditor(
               next.nodes = [
                 {
                   type: "paragraph",
+                  blockId: allocateBlockId(),
                   children: [{ type: "text", text: "" }],
                 },
               ];
@@ -27933,6 +28107,7 @@ export function useDocxEditor(
 
         next.nodes.splice(insertionIndex, 0, {
           type: "paragraph",
+          blockId: allocateBlockId(),
           style: cloneParagraphStyle(paragraphNode.style),
           children: [
             {
@@ -28058,8 +28233,11 @@ export function useDocxEditor(
         paragraphNode.children = splitChildren.beforeChildren;
         paragraphNode.sourceXml = undefined;
 
+        // The before-half keeps the paragraph's block id; the after-half is a
+        // new block and gets a fresh one.
         next.nodes.splice(insertionIndex, 0, {
           type: "paragraph",
+          blockId: allocateBlockId(),
           style: cloneParagraphStyle(splitParagraphStyle),
           children: splitChildren.afterChildren,
         });
@@ -28116,6 +28294,7 @@ export function useDocxEditor(
         0,
         {
           type: "table",
+          blockId: allocateBlockId(),
           style: {
             borders: createDefaultEditorTableBorders(),
           },
@@ -28129,6 +28308,7 @@ export function useDocxEditor(
                   nodes: [
                     {
                       type: "paragraph",
+                      blockId: allocateBlockId(),
                       children: [
                         {
                           type: "text",
@@ -28144,6 +28324,7 @@ export function useDocxEditor(
                   nodes: [
                     {
                       type: "paragraph",
+                      blockId: allocateBlockId(),
                       children: [
                         {
                           type: "text",
@@ -28164,6 +28345,7 @@ export function useDocxEditor(
                   nodes: [
                     {
                       type: "paragraph",
+                      blockId: allocateBlockId(),
                       children: [{ type: "text", text: "Value 1" }],
                     },
                   ],
@@ -28173,6 +28355,7 @@ export function useDocxEditor(
                   nodes: [
                     {
                       type: "paragraph",
+                      blockId: allocateBlockId(),
                       children: [{ type: "text", text: "Value 2" }],
                     },
                   ],
@@ -28253,6 +28436,7 @@ export function useDocxEditor(
         const next = cloneDocModel(current);
         next.nodes.push({
           type: "paragraph",
+          blockId: allocateBlockId(),
           children: [{ type: "text", text }],
         });
         return next;
@@ -28746,6 +28930,7 @@ export function useDocxEditor(
           const firstParagraph = paragraphs[0];
           const nextParagraph: ParagraphNode = {
             type: "paragraph",
+            blockId: allocateBlockId(),
             style: cloneParagraphStyle(firstParagraph?.style),
             children: [
               {
@@ -28848,6 +29033,7 @@ export function useDocxEditor(
         if (next.nodes.length === 0) {
           next.nodes.push({
             type: "paragraph",
+            blockId: allocateBlockId(),
             children: [{ type: "text", text: "" }],
           });
           nextSelection = { kind: "paragraph", nodeIndex: 0 };
@@ -33203,9 +33389,29 @@ export function DocxEditorViewer({
     new Map()
   );
   const [
-    measuredParagraphOuterHeightsPxByNodeIndex,
-    setMeasuredParagraphOuterHeightsPxByNodeIndex,
-  ] = React.useState<Map<number, number>>(() => new Map());
+    measuredParagraphOuterHeightsPxByBlockId,
+    setMeasuredParagraphOuterHeightsPxByBlockId,
+  ] = React.useState<Map<string, number>>(() => new Map());
+  // Pagination consumes paragraph heights by node index; the store is keyed
+  // by block id so measurements survive structural edits that shift indexes.
+  const measuredParagraphOuterHeightsPxByNodeIndex = React.useMemo(() => {
+    const byNodeIndex = new Map<number, number>();
+    if (measuredParagraphOuterHeightsPxByBlockId.size === 0) {
+      return byNodeIndex;
+    }
+    editor.model.nodes.forEach((node, nodeIndex) => {
+      if (node.type !== "paragraph" || !node.blockId) {
+        return;
+      }
+      const outerHeightPx = measuredParagraphOuterHeightsPxByBlockId.get(
+        node.blockId
+      );
+      if (outerHeightPx !== undefined) {
+        byNodeIndex.set(nodeIndex, outerHeightPx);
+      }
+    });
+    return byNodeIndex;
+  }, [editor.model.nodes, measuredParagraphOuterHeightsPxByBlockId]);
   const tableCellEditorElementsRef = React.useRef<Map<string, HTMLDivElement>>(
     new Map()
   );
@@ -33414,7 +33620,7 @@ export function DocxEditorViewer({
     Record<string, number[]>
   >({});
   const [tableMeasuredRowHeights, setTableMeasuredRowHeights] = React.useState<
-    Record<number, number[]>
+    Record<string, MeasuredTableRowHeightsEntry>
   >({});
   const [
     measuredPageContentHeightByIndex,
@@ -33459,6 +33665,10 @@ export function DocxEditorViewer({
     measuredPageContentIdentityKeysByIndex,
     setMeasuredPageContentIdentityKeysByIndex,
   ] = React.useState<string[]>([]);
+  const [
+    measuredPageContentValidationByIndex,
+    setMeasuredPageContentValidationByIndex,
+  ] = React.useState<Array<MeasuredPageContentValidation | undefined>>([]);
   const [hasMeasuredBodyFooterOverlap, setHasMeasuredBodyFooterOverlap] =
     React.useState(false);
   const measuredBodyFooterOverlapCandidateRef = React.useRef<{
@@ -33549,6 +33759,7 @@ export function DocxEditorViewer({
     // otherwise leak into pagination and footer placement.
     setMeasuredPageContentHeightByIndex([]);
     setMeasuredPageContentIdentityKeysByIndex([]);
+    setMeasuredPageContentValidationByIndex([]);
     setHasMeasuredBodyFooterOverlap(false);
     measuredBodyFooterOverlapCandidateRef.current = {
       signature: undefined,
@@ -33725,8 +33936,30 @@ export function DocxEditorViewer({
     null
   );
   React.useLayoutEffect(() => {
-    setMeasuredParagraphOuterHeightsPxByNodeIndex(new Map());
-  }, [editor.documentLoadNonce, paragraphStructureEpoch]);
+    setMeasuredParagraphOuterHeightsPxByBlockId(new Map());
+  }, [editor.documentLoadNonce]);
+  React.useEffect(() => {
+    // Prune measurements for blocks no longer in the document; surviving
+    // blocks keep their measured heights across structural edits.
+    setMeasuredParagraphOuterHeightsPxByBlockId((current) => {
+      if (current.size === 0) {
+        return current;
+      }
+      const liveBlockIds = new Set<string>();
+      for (const node of editor.model.nodes) {
+        if (node.blockId) {
+          liveBlockIds.add(node.blockId);
+        }
+      }
+      let next: Map<string, number> | undefined;
+      current.forEach((_, blockId) => {
+        if (!liveBlockIds.has(blockId)) {
+          (next ??= new Map(current)).delete(blockId);
+        }
+      });
+      return next ?? current;
+    });
+  }, [editor.model.nodes]);
 
   const schedulePaginationMeasurementResume = React.useCallback(
     (delayMs?: number): void => {
@@ -34017,6 +34250,33 @@ export function DocxEditorViewer({
     () => buildPaginationSectionMetrics(documentSections, documentLayout),
     [documentLayout, documentSections]
   );
+  // Content signatures cover content only; measurement validity also depends
+  // on the geometry the measurement was taken under (page size, margins,
+  // section content widths, docGrid pitch) and on tracked-change visibility.
+  const paginationMeasurementContextSignature = React.useMemo(
+    () =>
+      [
+        Math.round(documentLayout.pageWidthPx),
+        Math.round(documentLayout.pageHeightPx),
+        Math.round(documentLayout.marginsPx.top),
+        Math.round(documentLayout.marginsPx.bottom),
+        Math.round(documentLayout.marginsPx.left),
+        Math.round(documentLayout.marginsPx.right),
+        trackedChangesEnabled ? "tc1" : "tc0",
+        docNodeContentSignature(paginationSectionMetrics),
+      ].join("|"),
+    [documentLayout, paginationSectionMetrics, trackedChangesEnabled]
+  );
+  React.useEffect(() => {
+    // Block-keyed measurements were taken under the previous geometry; drop
+    // them wholesale when it changes so stale widths cannot steer pagination.
+    setMeasuredParagraphOuterHeightsPxByBlockId((current) =>
+      current.size === 0 ? current : new Map()
+    );
+    setTableMeasuredRowHeights((current) =>
+      Object.keys(current).length === 0 ? current : {}
+    );
+  }, [paginationMeasurementContextSignature]);
   const {
     docGridLinePitchPxByNodeIndex,
     pageContentWidthPxByNodeIndex,
@@ -34136,6 +34396,7 @@ export function DocxEditorViewer({
       tableMeasuredRowHeights,
       {
         allowMeasuredImportPagination,
+        allowContentSignatureValidatedTables: !disableMeasuredImportPagination,
         activeDraftKeys,
         numberingDefinitions: editor.model.metadata.numberingDefinitions,
         pageContentWidthPxByNodeIndex,
@@ -34178,13 +34439,25 @@ export function DocxEditorViewer({
         ?.suppressSpacingBeforeAfterPageBreak === true;
     const preferLastRenderedParagraphStartBreaks =
       !editor.canUndo && !editor.canRedo;
+    // Pristine documents keep the import-calibrated heights wholesale; after
+    // an edit, per-page staleness keeps the clean prefix of pages whose
+    // blocks (and measurement context) are unchanged since measurement.
+    const measuredPageContentHeightsPxForPagination =
+      (measuredPageContentHeightByIndex?.length ?? 0) === 0
+        ? undefined
+        : !editor.canUndo && !editor.canRedo
+          ? measuredPageContentHeightByIndex
+          : resolveMeasuredPageContentHeightsPxForEditedModel(
+              editor.model.nodes,
+              measuredPageContentHeightByIndex,
+              measuredPageContentValidationByIndex,
+              paginationMeasurementContextSignature
+            );
     const canUseMeasuredPageContentHeights =
-      !editor.canUndo &&
-      !editor.canRedo &&
       !disableMeasuredImportPagination &&
       !floatingMovePreview &&
       !dropCapMovePreview &&
-      (measuredPageContentHeightByIndex?.length ?? 0) > 0;
+      (measuredPageContentHeightsPxForPagination?.length ?? 0) > 0;
     const buildEstimatedPages = (
       measuredTableRowHeightsByNodeIndex?: Record<number, number[]>,
       measuredPageContentHeightsOverride?: number[] | null,
@@ -34193,8 +34466,6 @@ export function DocxEditorViewer({
       }
     ): DocumentPageNodeSegment[][] => {
       const allowMeasuredPageContentHeights =
-        !editor.canUndo &&
-        !editor.canRedo &&
         !disableMeasuredImportPagination &&
         !floatingMovePreview &&
         !dropCapMovePreview;
@@ -34203,7 +34474,7 @@ export function DocxEditorViewer({
         measuredPageContentHeightsOverride === null
           ? undefined
           : measuredPageContentHeightsOverride ??
-            measuredPageContentHeightByIndex;
+            measuredPageContentHeightsPxForPagination;
       const buildPagesWithHeights = (
         resolvedPageContentHeights?: number[]
       ): DocumentPageNodeSegment[][] =>
@@ -34301,7 +34572,7 @@ export function DocxEditorViewer({
       canUseMeasuredPageContentHeights;
     let estimatedRenderMeasuredPageContentHeightsPxByPageIndex =
       canUseMeasuredPageContentHeights
-        ? measuredPageContentHeightByIndex
+        ? measuredPageContentHeightsPxForPagination
         : undefined;
     let estimatedRenderPageContentHeightScale: number | undefined = undefined;
     const deferExpensiveInitialPaginationReconciliation =
@@ -34318,8 +34589,8 @@ export function DocxEditorViewer({
       };
     }
     if (
-      measuredPageContentHeightByIndex &&
-      measuredPageContentHeightByIndex.length > 0
+      measuredPageContentHeightsPxForPagination &&
+      measuredPageContentHeightsPxForPagination.length > 0
     ) {
       const pureEstimatedPages = buildEstimatedPages(
         tableMeasuredRowHeightsForPagination,
@@ -34368,7 +34639,7 @@ export function DocxEditorViewer({
             canUseMeasuredPageContentHeights,
           renderMeasuredPageContentHeightsPxByPageIndex:
             canUseMeasuredPageContentHeights
-              ? measuredPageContentHeightByIndex
+              ? measuredPageContentHeightsPxForPagination
               : undefined,
           renderPageContentHeightScale: undefined,
         },
@@ -34416,7 +34687,8 @@ export function DocxEditorViewer({
       !floatingMovePreview &&
       !dropCapMovePreview &&
       estimatedPages.some((segments, pageIndex) => {
-        const measuredHeightPx = measuredPageContentHeightByIndex?.[pageIndex];
+        const measuredHeightPx =
+          measuredPageContentHeightsPxForPagination?.[pageIndex];
         if (!Number.isFinite(measuredHeightPx)) {
           return false;
         }
@@ -34600,7 +34872,7 @@ export function DocxEditorViewer({
             canUseMeasuredPageContentHeights,
           renderMeasuredPageContentHeightsPxByPageIndex:
             canUseMeasuredPageContentHeights
-              ? measuredPageContentHeightByIndex
+              ? measuredPageContentHeightsPxForPagination
               : undefined,
           renderPageContentHeightScale: undefined,
         };
@@ -34644,7 +34916,7 @@ export function DocxEditorViewer({
                   ? undefined
                   : scaleMeasuredPageContentHeights(
                       measuredPageContentHeightsOverride ??
-                        measuredPageContentHeightByIndex,
+                        measuredPageContentHeightsPxForPagination,
                       heightScale
                     ),
               measuredParagraphOuterHeightsPxByNodeIndex,
@@ -34656,7 +34928,7 @@ export function DocxEditorViewer({
       estimatedPages,
       tableMeasuredRowHeightsForPagination,
       estimatedPagesUseMeasuredPageContentHeightsForRender
-        ? measuredPageContentHeightByIndex
+        ? measuredPageContentHeightsPxForPagination
         : null
     );
     let reconciledPages = reconciledCandidate.pages;
@@ -34665,7 +34937,7 @@ export function DocxEditorViewer({
     let reconciledRenderMeasuredPageContentHeightsPxByPageIndex =
       reconciledPagesUseMeasuredPageContentHeightsForRender
         ? scaleMeasuredPageContentHeights(
-            measuredPageContentHeightByIndex,
+            measuredPageContentHeightsPxForPagination,
             reconciledCandidate.scale
           )
         : undefined;
@@ -34743,7 +35015,9 @@ export function DocxEditorViewer({
     hasMeasuredBodyFooterOverlap,
     initialPaginationBackgroundRefinementUnlocked,
     measuredPageContentHeightByIndex,
+    measuredPageContentValidationByIndex,
     measuredParagraphOuterHeightsPxByNodeIndex,
+    paginationMeasurementContextSignature,
     tableMeasuredRowHeightsForPagination,
   ]);
   const pageNodeSegmentsByPage = pageSegmentationPlan.pages;
@@ -35983,7 +36257,7 @@ export function DocxEditorViewer({
       return;
     }
 
-    setMeasuredParagraphOuterHeightsPxByNodeIndex((current) => {
+    setMeasuredParagraphOuterHeightsPxByBlockId((current) => {
       const next = new Map(current);
       let changed = false;
 
@@ -35995,6 +36269,11 @@ export function DocxEditorViewer({
       const zoomScale = resolveViewerMeasurementZoomScale(rootElement, 1);
 
       paragraphElementsRef.current.forEach((element, nodeIndex) => {
+        const node = editor.model.nodes[nodeIndex];
+        if (node?.type !== "paragraph" || !node.blockId) {
+          return;
+        }
+
         if (
           !element.isConnected ||
           element.dataset.docxParagraphPartialLineRange === "true" ||
@@ -36020,14 +36299,14 @@ export function DocxEditorViewer({
               (Number.isFinite(marginBottom) ? marginBottom : 0)
           )
         );
-        const previousHeightPx = next.get(nodeIndex);
+        const previousHeightPx = next.get(node.blockId);
         // 1px hysteresis: zoom-division rounding must not oscillate
         // measurements and churn pagination.
         if (
           previousHeightPx === undefined ||
           Math.abs(previousHeightPx - outerHeightPx) > 1
         ) {
-          next.set(nodeIndex, outerHeightPx);
+          next.set(node.blockId, outerHeightPx);
           changed = true;
         }
       });
@@ -36036,7 +36315,9 @@ export function DocxEditorViewer({
     });
   }, [
     editor.documentLoadNonce,
+    editor.model.nodes,
     pageNodeSegmentIdentityKeysByPage,
+    paginationMeasurementEpoch,
     resolveViewerMeasurementZoomScale,
     visiblePageEndIndex,
     visiblePageStartIndex,
@@ -36127,7 +36408,9 @@ export function DocxEditorViewer({
           continue;
         }
 
-        const measuredHeights = tableMeasuredRowHeights[segment.nodeIndex];
+        const measuredHeights = tableNode.blockId
+          ? tableMeasuredRowHeights[tableNode.blockId]?.rowHeightsPx
+          : undefined;
         if (
           !measuredHeights ||
           measuredHeights.length !== tableNode.rows.length
@@ -36808,6 +37091,9 @@ export function DocxEditorViewer({
       setMeasuredPageContentIdentityKeysByIndex((current) =>
         current.length === 0 ? current : []
       );
+      setMeasuredPageContentValidationByIndex((current) =>
+        current.length === 0 ? current : []
+      );
       return;
     }
 
@@ -36821,6 +37107,9 @@ export function DocxEditorViewer({
         current.length === 0 ? current : []
       );
       setMeasuredPageContentIdentityKeysByIndex((current) =>
+        current.length === 0 ? current : []
+      );
+      setMeasuredPageContentValidationByIndex((current) =>
         current.length === 0 ? current : []
       );
       return;
@@ -36999,6 +37288,24 @@ export function DocxEditorViewer({
     const nextMeasuredHeights = nextMeasuredPageDiagnostics.map(
       (diagnostics) => diagnostics.heightPx
     );
+    // Validation entries are only stamped for pages actually measured this
+    // pass; carried-forward heights keep their previous validation so a stale
+    // height can never be re-blessed with fresh content signatures.
+    const nextMeasuredPageValidation = pageNodeSegmentsByPage.map(
+      (pageSegments, pageIndex) => {
+        const pageIsVisible =
+          pageIndex >= visiblePageStartIndex &&
+          pageIndex <= visiblePageEndIndex;
+        if (!pageIsVisible || !pageElementsRef.current.get(pageIndex)) {
+          return undefined;
+        }
+        return buildMeasuredPageContentValidationForPageSegments(
+          pageSegments,
+          editor.model.nodes,
+          paginationMeasurementContextSignature
+        );
+      }
+    );
     const overlappingPageIndexes = nextMeasuredPageDiagnostics.reduce<number[]>(
       (indexes, diagnostics, pageIndex) => {
         if (diagnostics.bodyOverrunsFooter) {
@@ -37092,6 +37399,29 @@ export function DocxEditorViewer({
         }
         return nextMeasuredPageIdentityKeys;
       });
+      setMeasuredPageContentValidationByIndex((current) => {
+        const merged = nextMeasuredPageValidation.map(
+          (validation, pageIndex) => validation ?? current[pageIndex]
+        );
+        if (current.length === merged.length) {
+          let equal = true;
+          for (let pageIndex = 0; pageIndex < merged.length; pageIndex += 1) {
+            if (
+              !measuredPageContentValidationsEqual(
+                current[pageIndex],
+                merged[pageIndex]
+              )
+            ) {
+              equal = false;
+              break;
+            }
+          }
+          if (equal) {
+            return current;
+          }
+        }
+        return merged;
+      });
     });
 
     return () => {
@@ -37100,8 +37430,10 @@ export function DocxEditorViewer({
   }, [
     disableMeasuredImportPagination,
     documentLayout,
+    editor.model.nodes,
     measuredPageContentHeightByIndex,
     measuredPageContentIdentityKeysByIndex,
+    paginationMeasurementContextSignature,
     paginationMeasurementEnabled,
     paginationMeasurementEpoch,
     pageCount,
@@ -37150,6 +37482,7 @@ export function DocxEditorViewer({
     initialPaginationStableSignatureRef.current = undefined;
     setDisableMeasuredImportPagination(true);
     setMeasuredPageContentHeightByIndex([]);
+    setMeasuredPageContentValidationByIndex([]);
     setTableMeasuredRowHeights({});
   }, [
     deferInitialPaginationPaint,
@@ -37277,8 +37610,11 @@ export function DocxEditorViewer({
             (segment) => editor.model.nodes[segment.nodeIndex]?.type === "table"
           )
           .map((segment) => {
+            const tableNode = editor.model.nodes[segment.nodeIndex];
             const measuredHeights =
-              tableMeasuredRowHeights[segment.nodeIndex] ?? [];
+              (tableNode?.blockId
+                ? tableMeasuredRowHeights[tableNode.blockId]?.rowHeightsPx
+                : undefined) ?? [];
             return `${segment.nodeIndex}:${measuredHeights.join(",")}`;
           })
           .join(";")
@@ -43631,7 +43967,9 @@ export function DocxEditorViewer({
         docGridLinePitchPxByNodeIndex.get(nodeIndex),
         pageContentHeightPxByNodeIndex.get(nodeIndex)
       );
-      const previousMeasuredRowHeights = tableMeasuredRowHeights[nodeIndex];
+      const previousMeasuredRowHeights = node.blockId
+        ? tableMeasuredRowHeights[node.blockId]?.rowHeightsPx
+        : undefined;
       const measuredHeights = node.rows.map((_, rowIndex) => {
         const measuredHeight = measuredByRowIndex.get(rowIndex);
         if (measuredHeight !== undefined) {
@@ -43652,43 +43990,60 @@ export function DocxEditorViewer({
 
     setTableMeasuredRowHeights((current) => {
       let changed = false;
-      const next: Record<number, number[]> = {};
-
-      Object.entries(current).forEach(([tableIndexText, heights]) => {
-        const tableIndex = Number.parseInt(tableIndexText, 10);
-        const tableNode = editor.model.nodes[tableIndex];
-        if (!tableNode || tableNode.type !== "table") {
-          changed = true;
-          return;
+      const next: Record<string, MeasuredTableRowHeightsEntry> = {};
+      const tableNodesByBlockId = new Map<string, TableNode>();
+      const tableBlockIdsByNodeIndex = new Map<number, string>();
+      editor.model.nodes.forEach((node, nodeIndex) => {
+        if (node.type === "table" && node.blockId) {
+          tableNodesByBlockId.set(node.blockId, node);
+          tableBlockIdsByNodeIndex.set(nodeIndex, node.blockId);
         }
+      });
 
+      Object.entries(current).forEach(([blockId, entry]) => {
+        const tableNode = tableNodesByBlockId.get(blockId);
         if (
-          !Array.isArray(heights) ||
-          heights.length !== tableNode.rows.length
+          !tableNode ||
+          !Array.isArray(entry.rowHeightsPx) ||
+          entry.rowHeightsPx.length !== tableNode.rows.length
         ) {
           changed = true;
           return;
         }
 
-        next[tableIndex] = heights;
+        next[blockId] = entry;
       });
 
       Object.entries(nextMeasuredHeights).forEach(
         ([tableIndexText, measuredHeights]) => {
           const tableIndex = Number.parseInt(tableIndexText, 10);
-          const currentHeights = next[tableIndex] ?? [];
-          if (currentHeights.length !== measuredHeights.length) {
-            next[tableIndex] = measuredHeights;
-            changed = true;
+          const blockId = tableBlockIdsByNodeIndex.get(tableIndex);
+          const tableNode = blockId
+            ? tableNodesByBlockId.get(blockId)
+            : undefined;
+          if (!blockId || !tableNode) {
             return;
           }
 
-          for (let index = 0; index < measuredHeights.length; index += 1) {
-            if (currentHeights[index] !== measuredHeights[index]) {
-              next[tableIndex] = measuredHeights;
-              changed = true;
-              return;
+          const contentSignature = docNodeContentSignature(tableNode);
+          const currentEntry = next[blockId];
+          const currentHeights = currentEntry?.rowHeightsPx ?? [];
+          let heightsChanged = currentHeights.length !== measuredHeights.length;
+          if (!heightsChanged) {
+            for (let index = 0; index < measuredHeights.length; index += 1) {
+              if (currentHeights[index] !== measuredHeights[index]) {
+                heightsChanged = true;
+                break;
+              }
             }
+          }
+
+          if (
+            heightsChanged ||
+            currentEntry?.contentSignature !== contentSignature
+          ) {
+            next[blockId] = { rowHeightsPx: measuredHeights, contentSignature };
+            changed = true;
           }
         }
       );
@@ -51306,7 +51661,9 @@ export function DocxEditorViewer({
               ? Math.max(24, value as number)
               : 24
           );
-          const measuredRowHeightsPx = tableMeasuredRowHeights[nodeIndex];
+          const measuredRowHeightsPx = node.blockId
+            ? tableMeasuredRowHeights[node.blockId]?.rowHeightsPx
+            : undefined;
           const rowBoundarySourceHeightsPx =
             measuredRowHeightsPx &&
             measuredRowHeightsPx.length === node.rows.length

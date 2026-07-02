@@ -9,6 +9,11 @@ import { normalizeDocModel } from "./normalize";
 import type { DocModel } from "./types";
 
 export * from "./types";
+export {
+  allocateBlockId,
+  collectDuplicateDocModelBlockIds,
+  ensureDocModelBlockIds
+} from "./block-id";
 export { cloneDocModel } from "./clone";
 export { normalizeDocModel } from "./normalize";
 

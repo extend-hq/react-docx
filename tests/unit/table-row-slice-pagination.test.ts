@@ -10,6 +10,7 @@ function createModel(): DocModel {
     nodes: [
       {
         type: "table",
+        blockId: "table-0",
         rows: [
           {
             type: "table-row",
@@ -51,6 +52,7 @@ function createTwoRowModel(): DocModel {
     nodes: [
       {
         type: "table",
+        blockId: "table-0",
         rows: [
           {
             type: "table-row",
@@ -111,6 +113,7 @@ function createExplicitTallSplitRowModel(): DocModel {
     nodes: [
       {
         type: "table",
+        blockId: "table-0",
         rows: [
           {
             type: "table-row",
@@ -151,6 +154,7 @@ function createNestedTableSplitRowModel(): DocModel {
     nodes: [
       {
         type: "table",
+        blockId: "table-0",
         style: {
           cellMarginTwips: {
             topTwips: 0,
@@ -253,7 +257,7 @@ describe("table row slice pagination", () => {
       resolveTableMeasuredRowHeightsForPagination(
         model.nodes,
         {
-          0: [260]
+          "table-0": { rowHeightsPx: [260], contentSignature: "" }
         },
         {
           allowMeasuredImportPagination: true,
@@ -328,7 +332,7 @@ describe("table row slice pagination", () => {
       resolveTableMeasuredRowHeightsForPagination(
         model.nodes,
         {
-          0: [250, 80]
+          "table-0": { rowHeightsPx: [250, 80], contentSignature: "" }
         },
         {
           allowMeasuredImportPagination: true,
@@ -418,7 +422,7 @@ describe("table row slice pagination", () => {
       resolveTableMeasuredRowHeightsForPagination(
         model.nodes,
         {
-          0: [70, 100]
+          "table-0": { rowHeightsPx: [70, 100], contentSignature: "" }
         },
         {
           allowMeasuredImportPagination: true,
@@ -485,7 +489,7 @@ describe("table row slice pagination", () => {
       resolveTableMeasuredRowHeightsForPagination(
         model.nodes,
         {
-          0: [70, 100]
+          "table-0": { rowHeightsPx: [70, 100], contentSignature: "" }
         },
         {
           allowMeasuredImportPagination: true,

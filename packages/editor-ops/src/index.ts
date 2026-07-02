@@ -11,7 +11,7 @@ import type {
   TextRunNode,
   TextStyle
 } from "@extend-ai/react-docx-doc-model";
-import { cloneDocModel } from "@extend-ai/react-docx-doc-model";
+import { allocateBlockId, cloneDocModel } from "@extend-ai/react-docx-doc-model";
 
 export interface InsertParagraphOptions {
   paragraphStyle?: ParagraphStyle;
@@ -25,6 +25,7 @@ export interface UpdateTextOptions {
 function paragraphFromText(text: string, options?: InsertParagraphOptions): ParagraphNode {
   return {
     type: "paragraph",
+    blockId: allocateBlockId(),
     style: options?.paragraphStyle,
     children: [{ type: "text", text, style: options?.runStyle }]
   };
@@ -752,8 +753,11 @@ export function splitParagraphChildrenAtTextOffsets(
 }
 
 function cloneParagraph(paragraph: ParagraphNode): ParagraphNode {
+  // Copies are new blocks: they must not share measurement identity with the
+  // original, so they get a fresh id instead of inheriting one.
   return {
     type: "paragraph",
+    blockId: allocateBlockId(),
     style: paragraph.style ? { ...paragraph.style } : undefined,
     sourceXml: paragraph.sourceXml,
     children: paragraph.children.map(cloneParagraphChildRun)
