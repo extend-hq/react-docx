@@ -14475,6 +14475,38 @@ interface AbsoluteFloatingDropRect {
   height?: number;
 }
 
+// Pointer deltas and DOM rects arrive in screen pixels; layout math and drop
+// patches run in logical page pixels, so both must be divided by the
+// effective zoom scale before they are consumed.
+export function normalizeFloatingDragDeltaForZoom(
+  screenDeltaPx: number,
+  zoomScale: number
+): number {
+  const safeScale = Number.isFinite(zoomScale) && zoomScale > 0 ? zoomScale : 1;
+  return screenDeltaPx / safeScale;
+}
+
+export function normalizeFloatingDropRectForZoom(
+  rect: AbsoluteFloatingDropRect,
+  zoomScale: number
+): AbsoluteFloatingDropRect {
+  const safeScale = Number.isFinite(zoomScale) && zoomScale > 0 ? zoomScale : 1;
+  if (safeScale === 1) {
+    return rect;
+  }
+
+  return {
+    left: rect.left / safeScale,
+    top: rect.top / safeScale,
+    ...(Number.isFinite(rect.width)
+      ? { width: (rect.width as number) / safeScale }
+      : undefined),
+    ...(Number.isFinite(rect.height)
+      ? { height: (rect.height as number) / safeScale }
+      : undefined),
+  };
+}
+
 export function resolveAbsoluteFloatingImageDropPatch(
   floating: NonNullable<ImageRunNode["floating"]> | undefined,
   layout: Pick<
@@ -43549,6 +43581,7 @@ export function DocxEditorViewer({
         "[data-docx-paragraph-host='true']"
       ) as HTMLElement | null;
       const paragraphRect = paragraphHost?.getBoundingClientRect();
+      const zoomScale = resolveViewerMeasurementZoomScale(wrapperElement, 1);
       const baseFloating = image.floating ? { ...image.floating } : {};
 
       let latestDeltaX = 0;
@@ -43565,16 +43598,26 @@ export function DocxEditorViewer({
           deltaY: latestDeltaY,
           ...(paragraphRect
             ? {
-                baseLeftPx: Math.round(wrapperRect.left - paragraphRect.left),
-                baseTopPx: Math.round(wrapperRect.top - paragraphRect.top),
+                baseLeftPx: Math.round(
+                  (wrapperRect.left - paragraphRect.left) / zoomScale
+                ),
+                baseTopPx: Math.round(
+                  (wrapperRect.top - paragraphRect.top) / zoomScale
+                ),
               }
             : undefined),
         });
       };
 
       const onPointerMove = (pointerEvent: PointerEvent): void => {
-        latestDeltaX = pointerEvent.clientX - startX;
-        latestDeltaY = pointerEvent.clientY - startY;
+        latestDeltaX = normalizeFloatingDragDeltaForZoom(
+          pointerEvent.clientX - startX,
+          zoomScale
+        );
+        latestDeltaY = normalizeFloatingDragDeltaForZoom(
+          pointerEvent.clientY - startY,
+          zoomScale
+        );
 
         if (isInlineImage) {
           if (!inlineDragActivated) {
@@ -43680,11 +43723,15 @@ export function DocxEditorViewer({
         }
 
         if (isWrappedFloatingImage) {
-          const hostWidth = paragraphRect?.width ?? DEFAULT_DOC_PAGE_WIDTH;
+          const hostWidth = paragraphRect
+            ? paragraphRect.width / zoomScale
+            : DEFAULT_DOC_PAGE_WIDTH;
           const imageWidth =
-            image.widthPx ?? Math.max(24, Math.round(wrapperRect.width));
+            image.widthPx ??
+            Math.max(24, Math.round(wrapperRect.width / zoomScale));
           const imageHeight =
-            image.heightPx ?? Math.max(24, Math.round(wrapperRect.height));
+            image.heightPx ??
+            Math.max(24, Math.round(wrapperRect.height / zoomScale));
           const baseGeometry = resolveDualWrappedFloatingImageGeometry(
             image,
             hostWidth,
@@ -43694,9 +43741,11 @@ export function DocxEditorViewer({
               ...(paragraphRect
                 ? {
                     baseLeftPx: Math.round(
-                      wrapperRect.left - paragraphRect.left
+                      (wrapperRect.left - paragraphRect.left) / zoomScale
                     ),
-                    baseTopPx: Math.round(wrapperRect.top - paragraphRect.top),
+                    baseTopPx: Math.round(
+                      (wrapperRect.top - paragraphRect.top) / zoomScale
+                    ),
                   }
                 : undefined),
             }
@@ -43732,8 +43781,13 @@ export function DocxEditorViewer({
               baseFloating,
               documentLayout,
               {
-                wrapperRect,
-                pageSurfaceRect,
+                wrapperRect: normalizeFloatingDropRectForZoom(
+                  wrapperRect,
+                  zoomScale
+                ),
+                pageSurfaceRect: pageSurfaceRect
+                  ? normalizeFloatingDropRectForZoom(pageSurfaceRect, zoomScale)
+                  : undefined,
                 deltaX: latestDeltaX,
                 deltaY: latestDeltaY,
               }
@@ -43747,7 +43801,7 @@ export function DocxEditorViewer({
       window.addEventListener("pointerup", onPointerUp, { once: true });
       window.addEventListener("pointercancel", onPointerUp, { once: true });
     },
-    [documentLayout, editor, isReadOnly]
+    [documentLayout, editor, isReadOnly, resolveViewerMeasurementZoomScale]
   );
 
   const beginDropCapMove = React.useCallback(
@@ -43931,6 +43985,7 @@ export function DocxEditorViewer({
         "[data-docx-section-paragraph-host='true']"
       ) as HTMLElement | null;
       const paragraphRect = paragraphHost?.getBoundingClientRect();
+      const zoomScale = resolveViewerMeasurementZoomScale(wrapperElement, 1);
       const baseFloating = image.floating ? { ...image.floating } : {};
 
       let latestDeltaX = 0;
@@ -43944,16 +43999,26 @@ export function DocxEditorViewer({
           deltaY: latestDeltaY,
           ...(paragraphRect
             ? {
-                baseLeftPx: Math.round(wrapperRect.left - paragraphRect.left),
-                baseTopPx: Math.round(wrapperRect.top - paragraphRect.top),
+                baseLeftPx: Math.round(
+                  (wrapperRect.left - paragraphRect.left) / zoomScale
+                ),
+                baseTopPx: Math.round(
+                  (wrapperRect.top - paragraphRect.top) / zoomScale
+                ),
               }
             : undefined),
         });
       };
 
       const onPointerMove = (pointerEvent: PointerEvent): void => {
-        latestDeltaX = pointerEvent.clientX - startX;
-        latestDeltaY = pointerEvent.clientY - startY;
+        latestDeltaX = normalizeFloatingDragDeltaForZoom(
+          pointerEvent.clientX - startX,
+          zoomScale
+        );
+        latestDeltaY = normalizeFloatingDragDeltaForZoom(
+          pointerEvent.clientY - startY,
+          zoomScale
+        );
 
         if (frameId !== undefined) {
           window.cancelAnimationFrame(frameId);
@@ -43977,11 +44042,15 @@ export function DocxEditorViewer({
         }
 
         if (isWrappedFloatingImage) {
-          const hostWidth = paragraphRect?.width ?? documentLayout.pageWidthPx;
+          const hostWidth = paragraphRect
+            ? paragraphRect.width / zoomScale
+            : documentLayout.pageWidthPx;
           const imageWidth =
-            image.widthPx ?? Math.max(24, Math.round(wrapperRect.width));
+            image.widthPx ??
+            Math.max(24, Math.round(wrapperRect.width / zoomScale));
           const imageHeight =
-            image.heightPx ?? Math.max(24, Math.round(wrapperRect.height));
+            image.heightPx ??
+            Math.max(24, Math.round(wrapperRect.height / zoomScale));
           const baseGeometry = resolveDualWrappedFloatingImageGeometry(
             image,
             hostWidth,
@@ -43991,9 +44060,11 @@ export function DocxEditorViewer({
               ...(paragraphRect
                 ? {
                     baseLeftPx: Math.round(
-                      wrapperRect.left - paragraphRect.left
+                      (wrapperRect.left - paragraphRect.left) / zoomScale
                     ),
-                    baseTopPx: Math.round(wrapperRect.top - paragraphRect.top),
+                    baseTopPx: Math.round(
+                      (wrapperRect.top - paragraphRect.top) / zoomScale
+                    ),
                   }
                 : undefined),
             }
@@ -44031,8 +44102,13 @@ export function DocxEditorViewer({
               baseFloating,
               documentLayout,
               {
-                wrapperRect,
-                pageSurfaceRect,
+                wrapperRect: normalizeFloatingDropRectForZoom(
+                  wrapperRect,
+                  zoomScale
+                ),
+                pageSurfaceRect: pageSurfaceRect
+                  ? normalizeFloatingDropRectForZoom(pageSurfaceRect, zoomScale)
+                  : undefined,
                 deltaX: latestDeltaX,
                 deltaY: latestDeltaY,
               }
@@ -44045,7 +44121,13 @@ export function DocxEditorViewer({
       window.addEventListener("pointerup", onPointerUp, { once: true });
       window.addEventListener("pointercancel", onPointerUp, { once: true });
     },
-    [activeHeaderFooterEdit, documentLayout, editor, isReadOnly]
+    [
+      activeHeaderFooterEdit,
+      documentLayout,
+      editor,
+      isReadOnly,
+      resolveViewerMeasurementZoomScale,
+    ]
   );
 
   const onSectionImageClick = React.useCallback(
