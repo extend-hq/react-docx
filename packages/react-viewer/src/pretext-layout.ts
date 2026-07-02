@@ -36,6 +36,10 @@ export interface PretextExclusionRect {
   right: number;
   top: number;
   bottom: number;
+  // Metadata only — ignored by layout. Marks exclusions produced by an
+  // in-flight image drag preview so block-height consumers can avoid
+  // growing paragraphs to contain a transient preview band.
+  fromDragPreview?: boolean;
 }
 
 export interface PretextLineFragment {

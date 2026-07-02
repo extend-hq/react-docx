@@ -5881,6 +5881,14 @@ interface PageFlowFloatingWrapObstacle extends PretextExclusionRect {
   sourceNodeIndex: number;
 }
 
+// Rendered paragraph-host bands captured once at drag start, in logical
+// (zoom-normalized) pixels relative to the page surface. During a floating
+// image drag these replace estimated flow tops so obstacle intersection
+// tests run against the coordinates the user actually sees.
+interface FloatingMovePreviewMeasuredBands {
+  hostByNodeIndex: Record<number, { topPx: number; bottomPx: number }>;
+}
+
 function resolveDualWrapParagraphRenderBlockHeightPx(
   layout: PretextVariableWidthLayout,
   geometries: DualWrappedFloatingImageGeometry[]
@@ -5900,6 +5908,36 @@ function resolveDualWrapParagraphRenderBlockHeightPx(
   }
 
   return fullHeightPx;
+}
+
+// While an image drag preview is active, a foreign paragraph must not grow
+// to contain the preview exclusion's tail: Word keeps paragraph blocks at
+// their text extent while a dragged image merely overlaps them, and growing
+// the block here would push the anchor paragraph — and with it the preview —
+// away from the cursor mid-drag.
+function resolveDragPreviewAwareWrapBlockHeightPx(
+  layout: PretextVariableWidthLayout,
+  geometries: DualWrappedFloatingImageGeometry[],
+  foreignExclusions?: PretextExclusionRect[]
+): number {
+  const baseHeightPx = resolveDualWrapParagraphRenderBlockHeightPx(
+    layout,
+    geometries
+  );
+  if (!foreignExclusions?.some((exclusion) => exclusion.fromDragPreview)) {
+    return baseHeightPx;
+  }
+
+  const lineHeightPx = Math.max(1, Math.round(layout.lineHeightPx ?? 1));
+  const staticBottomPx = Math.max(
+    lineHeightPx,
+    pretextLayoutContentBottomPx(layout),
+    ...geometries.map((geometry) => geometry.exclusion.bottom),
+    ...foreignExclusions
+      .filter((exclusion) => !exclusion.fromDragPreview)
+      .map((exclusion) => exclusion.bottom)
+  );
+  return Math.min(baseHeightPx, Math.max(1, Math.round(staticBottomPx)));
 }
 
 export function resolveForeignWrapExclusionsForFlowRange(
@@ -6145,6 +6183,7 @@ export function precomputePageSegmentForeignWrapExclusions(
       deltaY: number;
       baseLeftPx?: number;
       baseTopPx?: number;
+      measuredBands?: FloatingMovePreviewMeasuredBands;
     };
     resizePreview?: {
       imageKey: string;
@@ -6364,7 +6403,92 @@ export function precomputePageSegmentForeignWrapExclusions(
         (flowHeightPxBySegmentIndex[segmentIndex] ?? 0)
     )
   );
-  return result;
+
+  // Estimated flow tops drift from rendered positions (empty paragraphs,
+  // exclusion-driven block growth), so during a drag the dragged image's
+  // obstacle can be tested against bands far from what the user sees and
+  // re-wrap paragraphs it never touched. Re-assign the DRAGGED image's
+  // exclusions with the rendered host bands captured at pointerdown — one
+  // consistent snapshot for the obstacle and the intersection tests — while
+  // every other obstacle keeps the estimate-based behavior the static
+  // layout uses.
+  const measuredBands = interaction?.floatingMovePreview?.measuredBands;
+  const draggedAnchorNodeIndex = ((): number | undefined => {
+    const key = interaction?.floatingMovePreview?.imageKey;
+    const match = key ? /^p:(\d+):/.exec(key) : null;
+    return match ? Number.parseInt(match[1], 10) : undefined;
+  })();
+  if (!measuredBands || draggedAnchorNodeIndex === undefined) {
+    return result;
+  }
+
+  const measuredFlowBandAt = (
+    nodeIndex: number
+  ): { top: number; bottom: number } | undefined => {
+    const band = measuredBands.hostByNodeIndex[nodeIndex];
+    if (!band) {
+      return undefined;
+    }
+    return {
+      top: band.topPx - pageLayout.marginsPx.top,
+      bottom: band.bottomPx - pageLayout.marginsPx.top,
+    };
+  };
+  const anchorSegmentIndex = segments.findIndex(
+    (segment) => segment.nodeIndex === draggedAnchorNodeIndex
+  );
+  const anchorMeasuredBand = measuredFlowBandAt(draggedAnchorNodeIndex);
+  if (anchorSegmentIndex < 0 || !anchorMeasuredBand) {
+    return result;
+  }
+
+  const anchorEstimatedFlowTopPx =
+    flowTopPxBySegmentIndex[anchorSegmentIndex] ?? 0;
+  const draggedObstacles: PageFlowFloatingWrapObstacle[] = [];
+  const otherObstacles: PageFlowFloatingWrapObstacle[] = [];
+  for (const obstacle of obstacles) {
+    if (obstacle.sourceNodeIndex === draggedAnchorNodeIndex) {
+      draggedObstacles.push({
+        ...obstacle,
+        top: obstacle.top - anchorEstimatedFlowTopPx + anchorMeasuredBand.top,
+        bottom:
+          obstacle.bottom - anchorEstimatedFlowTopPx + anchorMeasuredBand.top,
+      });
+    } else {
+      otherObstacles.push(obstacle);
+    }
+  }
+  if (draggedObstacles.length === 0) {
+    return result;
+  }
+
+  return segments.map((segment, segmentIndex) => {
+    const node = model.nodes[segment.nodeIndex];
+    const measuredBand = measuredFlowBandAt(segment.nodeIndex);
+    if (
+      node?.type !== "paragraph" ||
+      segment.nodeIndex === draggedAnchorNodeIndex ||
+      !measuredBand
+    ) {
+      return result[segmentIndex] ?? [];
+    }
+
+    return [
+      ...resolveForeignWrapExclusionsForFlowRange(
+        otherObstacles,
+        segment.nodeIndex,
+        flowTopPxBySegmentIndex[segmentIndex] ?? 0,
+        (flowTopPxBySegmentIndex[segmentIndex] ?? 0) +
+          (flowHeightPxBySegmentIndex[segmentIndex] ?? 0)
+      ),
+      ...resolveForeignWrapExclusionsForFlowRange(
+        draggedObstacles,
+        segment.nodeIndex,
+        measuredBand.top,
+        measuredBand.bottom
+      ).map((exclusion) => ({ ...exclusion, fromDragPreview: true })),
+    ];
+  });
 }
 
 function applyWrappedFloatingInteractionPreviewToParagraph(
@@ -33357,6 +33481,7 @@ export function DocxEditorViewer({
         deltaY: number;
         baseLeftPx?: number;
         baseTopPx?: number;
+        measuredBands?: FloatingMovePreviewMeasuredBands;
       }
     | undefined
   >();
@@ -43833,11 +43958,45 @@ export function DocxEditorViewer({
       let latestInlineDropTarget: DocxImageDropTarget | undefined;
       let latestInlineDropTargetKey: string | undefined;
 
+      const measuredBands = ((): FloatingMovePreviewMeasuredBands | undefined => {
+        if (!isWrappedFloatingImage || !pageSurface || !pageSurfaceRect) {
+          return undefined;
+        }
+
+        const hostByNodeIndex: FloatingMovePreviewMeasuredBands["hostByNodeIndex"] =
+          {};
+        for (const host of Array.from(
+          pageSurface.querySelectorAll(
+            "[data-docx-paragraph-host='true'][data-docx-paragraph-kind='paragraph'][data-docx-paragraph-node-index]"
+          )
+        )) {
+          const nodeIndex = Number.parseInt(
+            host.getAttribute("data-docx-paragraph-node-index") ?? "",
+            10
+          );
+          if (!Number.isFinite(nodeIndex)) {
+            continue;
+          }
+          const rect = (host as HTMLElement).getBoundingClientRect();
+          if (rect.height <= 0) {
+            continue;
+          }
+          hostByNodeIndex[nodeIndex] = {
+            topPx: (rect.top - pageSurfaceRect.top) / zoomScale,
+            bottomPx: (rect.bottom - pageSurfaceRect.top) / zoomScale,
+          };
+        }
+        return Object.keys(hostByNodeIndex).length > 0
+          ? { hostByNodeIndex }
+          : undefined;
+      })();
+
       const updatePreview = (): void => {
         setFloatingMovePreview({
           imageKey,
           deltaX: latestDeltaX,
           deltaY: latestDeltaY,
+          measuredBands,
           ...(paragraphRect
             ? {
                 baseLeftPx: Math.round(
@@ -47178,9 +47337,10 @@ export function DocxEditorViewer({
           source: activeWrappedSource,
           layout: activeWrappedLayout,
           lineHeightPx: activeDualWrappedLayout.lineHeightPx,
-          blockHeightPx: resolveDualWrapParagraphRenderBlockHeightPx(
+          blockHeightPx: resolveDragPreviewAwareWrapBlockHeightPx(
             activeWrappedLayout,
-            activeDualWrappedLayout.geometries
+            activeDualWrappedLayout.geometries,
+            options?.pageFlowForeignExclusions
           ),
           obstacleNodes: (
             <>
