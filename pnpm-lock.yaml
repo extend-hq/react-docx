@@ -204,8 +204,8 @@ importers:
   packages/react-viewer:
     dependencies:
       '@chenglou/pretext':
-        specifier: ^0.0.5
-        version: 0.0.5
+        specifier: ^0.0.8
+        version: 0.0.8
       '@tanstack/react-virtual':
         specifier: ^3.13.12
         version: 3.13.19(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
@@ -470,8 +470,8 @@ packages:
   '@changesets/write@0.4.0':
     resolution: {integrity: sha512-CdTLvIOPiCNuH71pyDu3rA+Q0n65cmAbXnwWH84rKGiFumFzkmHNT8KHTMEchcxN+Kl8I54xGUhJ7l3E7X396Q==}
 
-  '@chenglou/pretext@0.0.5':
-    resolution: {integrity: sha512-A8GZN10REdFGsyuiUgLV8jjPDDFMg5GmgxGWV0I3igxBOnzj+jgz2VMmVD7g+SFyoctfeqHFxbNatKSzVRWtRg==}
+  '@chenglou/pretext@0.0.8':
+    resolution: {integrity: sha512-yqm2GMxnPI7VHcHwe84P8ZF0JK/2d2DMKPqMN+s95jQhwDMYYXKVFVJUMEaVWckQStdsjdLav/0Vu+d9YbtGxA==}
 
   '@date-fns/tz@1.4.1':
     resolution: {integrity: sha512-P5LUNhtbj6YfI3iJjw5EL9eUAG6OitD0W3fWQcpQjDRc/QIsL0tRNuO1PcDvPccWL1fSTXXdE1ds+l95DV/OFA==}
@@ -4405,7 +4405,7 @@ snapshots:
       human-id: 4.1.3
       prettier: 2.8.8
 
-  '@chenglou/pretext@0.0.5': {}
+  '@chenglou/pretext@0.0.8': {}
 
   '@date-fns/tz@1.4.1': {}
 
