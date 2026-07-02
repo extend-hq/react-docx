@@ -334,7 +334,6 @@ const TABLE_ROW_HEIGHT_PAGINATION_ESTIMATE_PADDING_MIN_ROWS = 15;
 const MIN_TABLE_ROW_SLICE_REMAINING_HEIGHT_PX =
   MIN_PARAGRAPH_LINE_HEIGHT_PX * 2;
 const TABLE_ROW_SLICE_BOUNDARY_TOLERANCE_PX = 2;
-const TOP_AND_BOTTOM_VERTICAL_DRAG_SNAP_PX = 10;
 const HEADER_FOOTER_INACTIVE_OPACITY = 0.5;
 const LETTERHEAD_INDENT_MIN_TWIPS = 900;
 const LETTERHEAD_INDENT_MAX_TWIPS = 4200;
@@ -4012,7 +4011,8 @@ export interface DocxEditorController {
   ) => void;
   moveFloatingImage: (
     location: DocxImageLocation,
-    patch: Partial<NonNullable<ImageRunNode["floating"]>>
+    patch: Partial<NonNullable<ImageRunNode["floating"]>>,
+    options?: { reparentToParagraphNodeIndex?: number }
   ) => void;
   moveSectionFloatingImage: (
     location: DocxSectionImageLocation,
@@ -6107,6 +6107,14 @@ interface PageFlowFloatingWrapObstacle extends PretextExclusionRect {
   sourceNodeIndex: number;
 }
 
+// Rendered paragraph-host bands captured once at drag start, in logical
+// (zoom-normalized) pixels relative to the page surface. During a floating
+// image drag these replace estimated flow tops so obstacle intersection
+// tests run against the coordinates the user actually sees.
+interface FloatingMovePreviewMeasuredBands {
+  hostByNodeIndex: Record<number, { topPx: number; bottomPx: number }>;
+}
+
 function resolveDualWrapParagraphRenderBlockHeightPx(
   layout: PretextVariableWidthLayout,
   geometries: DualWrappedFloatingImageGeometry[]
@@ -6126,6 +6134,36 @@ function resolveDualWrapParagraphRenderBlockHeightPx(
   }
 
   return fullHeightPx;
+}
+
+// While an image drag preview is active, a foreign paragraph must not grow
+// to contain the preview exclusion's tail: Word keeps paragraph blocks at
+// their text extent while a dragged image merely overlaps them, and growing
+// the block here would push the anchor paragraph — and with it the preview —
+// away from the cursor mid-drag.
+function resolveDragPreviewAwareWrapBlockHeightPx(
+  layout: PretextVariableWidthLayout,
+  geometries: DualWrappedFloatingImageGeometry[],
+  foreignExclusions?: PretextExclusionRect[]
+): number {
+  const baseHeightPx = resolveDualWrapParagraphRenderBlockHeightPx(
+    layout,
+    geometries
+  );
+  if (!foreignExclusions?.some((exclusion) => exclusion.fromDragPreview)) {
+    return baseHeightPx;
+  }
+
+  const lineHeightPx = Math.max(1, Math.round(layout.lineHeightPx ?? 1));
+  const staticBottomPx = Math.max(
+    lineHeightPx,
+    pretextLayoutContentBottomPx(layout),
+    ...geometries.map((geometry) => geometry.exclusion.bottom),
+    ...foreignExclusions
+      .filter((exclusion) => !exclusion.fromDragPreview)
+      .map((exclusion) => exclusion.bottom)
+  );
+  return Math.min(baseHeightPx, Math.max(1, Math.round(staticBottomPx)));
 }
 
 export function resolveForeignWrapExclusionsForFlowRange(
@@ -6210,6 +6248,7 @@ export function collectPageFlowWrapObstaclesForParagraph(
       widthPx: number;
       heightPx: number;
     };
+    foreignExclusions?: PretextExclusionRect[];
   }
 ): PageFlowFloatingWrapObstacle[] {
   const obstacles: PageFlowFloatingWrapObstacle[] = [];
@@ -6258,6 +6297,7 @@ export function collectPageFlowWrapObstaclesForParagraph(
       pageMarginTopPx: options?.pageMarginTopPx,
       movePreviewByImageIndex,
       allowNegativeImageTop: movePreviewByImageIndex.size > 0,
+      foreignExclusions: options?.foreignExclusions,
     }
   );
   const coveredImageIndexes = new Set<number>();
@@ -6354,7 +6394,7 @@ export function resolveParagraphForeignOnlyWrappedTextLayout(
   };
 }
 
-function precomputePageSegmentForeignWrapExclusions(
+export function precomputePageSegmentForeignWrapExclusions(
   segments: DocumentPageNodeSegment[],
   model: DocModel,
   availableWidthPx: number,
@@ -6369,6 +6409,7 @@ function precomputePageSegmentForeignWrapExclusions(
       deltaY: number;
       baseLeftPx?: number;
       baseTopPx?: number;
+      measuredBands?: FloatingMovePreviewMeasuredBands;
     };
     resizePreview?: {
       imageKey: string;
@@ -6377,20 +6418,25 @@ function precomputePageSegmentForeignWrapExclusions(
     };
   }
 ): PretextExclusionRect[][] {
-  const flowTopPxBySegmentIndex: number[] = [];
-  const flowHeightPxBySegmentIndex: number[] = [];
-  let pageFlowTopPx = 0;
+  const segmentWidthPxAt = (nodeIndex: number): number =>
+    pageContentWidthPxByNodeIndex.get(nodeIndex) ?? availableWidthPx;
+  const flowTopsFromHeights = (heights: number[]): number[] => {
+    const flowTops: number[] = [];
+    let pageFlowTopPx = 0;
+    for (const heightPx of heights) {
+      flowTops.push(pageFlowTopPx);
+      pageFlowTopPx += heightPx;
+    }
+    return flowTops;
+  };
 
-  for (const segment of segments) {
-    flowTopPxBySegmentIndex.push(pageFlowTopPx);
+  const baseFlowHeightPxBySegmentIndex = segments.map((segment) => {
     const node = model.nodes[segment.nodeIndex];
-    const segmentWidthPx =
-      pageContentWidthPxByNodeIndex.get(segment.nodeIndex) ?? availableWidthPx;
-    const segmentHeightPx = estimateRenderedPageSegmentHeightPx(
+    return estimateRenderedPageSegmentHeightPx(
       node,
       segment,
       model,
-      segmentWidthPx,
+      segmentWidthPxAt(segment.nodeIndex),
       numberingDefinitions,
       docGridLinePitchPxByNodeIndex.get(segment.nodeIndex),
       // For the wrap-exclusion flow simulation, a square/tight-wrapped float
@@ -6400,46 +6446,177 @@ function precomputePageSegmentForeignWrapExclusions(
       // the float's exclusion rect to overlap and indent them.
       { excludeWrappedFloatingImageFootprint: true }
     );
-    flowHeightPxBySegmentIndex.push(segmentHeightPx);
-    pageFlowTopPx += segmentHeightPx;
-  }
+  });
 
-  const obstacles: PageFlowFloatingWrapObstacle[] = [];
-  for (let segmentIndex = 0; segmentIndex < segments.length; segmentIndex += 1) {
-    const segment = segments[segmentIndex];
-    const node = model.nodes[segment.nodeIndex];
-    if (node?.type !== "paragraph") {
-      continue;
-    }
+  const collectObstacles = (
+    flowTopPxBySegmentIndex: number[],
+    flowHeightPxBySegmentIndex: number[],
+    previousObstacles?: PageFlowFloatingWrapObstacle[]
+  ): PageFlowFloatingWrapObstacle[] => {
+    const obstacles: PageFlowFloatingWrapObstacle[] = [];
+    for (
+      let segmentIndex = 0;
+      segmentIndex < segments.length;
+      segmentIndex += 1
+    ) {
+      const segment = segments[segmentIndex];
+      const node = model.nodes[segment.nodeIndex];
+      if (node?.type !== "paragraph") {
+        continue;
+      }
 
-    const segmentWidthPx =
-      pageContentWidthPxByNodeIndex.get(segment.nodeIndex) ?? availableWidthPx;
-    const paragraphRenderTextWidthPx = paragraphAvailableTextWidthPx(
-      node,
-      segmentWidthPx,
-      numberingDefinitions
-    );
-    obstacles.push(
-      ...collectPageFlowWrapObstaclesForParagraph(
+      const paragraphRenderTextWidthPx = paragraphAvailableTextWidthPx(
         node,
-        segment.nodeIndex,
-        flowTopPxBySegmentIndex[segmentIndex] ?? 0,
-        paragraphRenderTextWidthPx,
-        estimateParagraphLineHeightPx(
+        segmentWidthPxAt(segment.nodeIndex),
+        numberingDefinitions
+      );
+      const flowTopPx = flowTopPxBySegmentIndex[segmentIndex] ?? 0;
+      obstacles.push(
+        ...collectPageFlowWrapObstaclesForParagraph(
           node,
-          docGridLinePitchPxByNodeIndex.get(segment.nodeIndex)
-        ),
-        {
-          paragraphTopPx: flowTopPxBySegmentIndex[segmentIndex] ?? 0,
-          pageMarginTopPx: pageLayout.marginsPx.top,
-          location: {
-            kind: "paragraph",
-            nodeIndex: segment.nodeIndex,
-          },
-          floatingMovePreview: interaction?.floatingMovePreview,
-          resizePreview: interaction?.resizePreview,
+          segment.nodeIndex,
+          flowTopPx,
+          paragraphRenderTextWidthPx,
+          estimateParagraphLineHeightPx(
+            node,
+            docGridLinePitchPxByNodeIndex.get(segment.nodeIndex)
+          ),
+          {
+            paragraphTopPx: flowTopPx,
+            pageMarginTopPx: pageLayout.marginsPx.top,
+            location: {
+              kind: "paragraph",
+              nodeIndex: segment.nodeIndex,
+            },
+            floatingMovePreview: interaction?.floatingMovePreview,
+            resizePreview: interaction?.resizePreview,
+            foreignExclusions: previousObstacles
+              ? resolveForeignWrapExclusionsForFlowRange(
+                  previousObstacles,
+                  segment.nodeIndex,
+                  flowTopPx,
+                  flowTopPx + (flowHeightPxBySegmentIndex[segmentIndex] ?? 0)
+                )
+              : undefined,
+          }
+        )
+      );
+    }
+    return obstacles;
+  };
+
+  const baseFlowTopPxBySegmentIndex = flowTopsFromHeights(
+    baseFlowHeightPxBySegmentIndex
+  );
+  const firstPassObstacles = collectObstacles(
+    baseFlowTopPxBySegmentIndex,
+    baseFlowHeightPxBySegmentIndex
+  );
+
+  let flowTopPxBySegmentIndex = baseFlowTopPxBySegmentIndex;
+  let flowHeightPxBySegmentIndex = baseFlowHeightPxBySegmentIndex;
+  let obstacles = firstPassObstacles;
+
+  // While a floating image is dragged or resized, paragraphs reflow around
+  // the preview obstacle, so obstacle intersection tests against the base
+  // (pre-preview) flow ranges wrap paragraphs before the preview visually
+  // reaches them. Recompute flow tops with reflow-aware heights and rebuild
+  // the obstacles against them so every rect comes from the same snapshot: a
+  // paragraph reflows around the preview iff its refreshed band
+  // pixel-intersects the preview exclusion rect.
+  const hasInteractionPreview = Boolean(
+    interaction?.floatingMovePreview || interaction?.resizePreview
+  );
+  if (hasInteractionPreview && firstPassObstacles.length > 0) {
+    const reflowHeightPxBySegmentIndex = segments.map(
+      (segment, segmentIndex) => {
+        const baseHeightPx = baseFlowHeightPxBySegmentIndex[segmentIndex] ?? 0;
+        const node = model.nodes[segment.nodeIndex];
+        if (
+          node?.type !== "paragraph" ||
+          segment.tableRowRange ||
+          segment.tableRowSlice ||
+          segment.paragraphLineRange
+        ) {
+          return baseHeightPx;
         }
-      )
+        if (
+          node.children.some(
+            (child) =>
+              child.type === "image" && shouldRenderWrappedFloatingImage(child)
+          )
+        ) {
+          return baseHeightPx;
+        }
+
+        const flowTopPx = baseFlowTopPxBySegmentIndex[segmentIndex] ?? 0;
+        const foreignExclusions = resolveForeignWrapExclusionsForFlowRange(
+          firstPassObstacles,
+          segment.nodeIndex,
+          flowTopPx,
+          flowTopPx + baseHeightPx
+        );
+        if (foreignExclusions.length === 0) {
+          return baseHeightPx;
+        }
+
+        const source = buildParagraphPretextLayoutSource(node);
+        if (!source) {
+          return baseHeightPx;
+        }
+
+        const textWidthPx = paragraphAvailableTextWidthPx(
+          node,
+          segmentWidthPxAt(segment.nodeIndex),
+          numberingDefinitions
+        );
+        const lineHeightPx = Math.max(
+          1,
+          Math.round(
+            estimateParagraphLineHeightPx(
+              node,
+              docGridLinePitchPxByNodeIndex.get(segment.nodeIndex)
+            )
+          )
+        );
+        const unexcludedLayout = layoutParagraphPretextSource(
+          node,
+          source,
+          textWidthPx,
+          lineHeightPx,
+          []
+        );
+        const excludedLayout = layoutParagraphPretextSource(
+          node,
+          source,
+          textWidthPx,
+          lineHeightPx,
+          foreignExclusions
+        );
+        if (!unexcludedLayout || !excludedLayout) {
+          return baseHeightPx;
+        }
+
+        const lineExtentPx = (layout: PretextVariableWidthLayout): number =>
+          layout.lines.length > 0
+            ? (layout.lines[layout.lines.length - 1]?.y ?? 0) + lineHeightPx
+            : 0;
+        return (
+          baseHeightPx +
+          Math.max(
+            0,
+            lineExtentPx(excludedLayout) - lineExtentPx(unexcludedLayout)
+          )
+        );
+      }
+    );
+
+    flowHeightPxBySegmentIndex = reflowHeightPxBySegmentIndex;
+    flowTopPxBySegmentIndex = flowTopsFromHeights(reflowHeightPxBySegmentIndex);
+    obstacles = collectObstacles(
+      flowTopPxBySegmentIndex,
+      flowHeightPxBySegmentIndex,
+      firstPassObstacles
     );
   }
 
@@ -6452,7 +6629,92 @@ function precomputePageSegmentForeignWrapExclusions(
         (flowHeightPxBySegmentIndex[segmentIndex] ?? 0)
     )
   );
-  return result;
+
+  // Estimated flow tops drift from rendered positions (empty paragraphs,
+  // exclusion-driven block growth), so during a drag the dragged image's
+  // obstacle can be tested against bands far from what the user sees and
+  // re-wrap paragraphs it never touched. Re-assign the DRAGGED image's
+  // exclusions with the rendered host bands captured at pointerdown — one
+  // consistent snapshot for the obstacle and the intersection tests — while
+  // every other obstacle keeps the estimate-based behavior the static
+  // layout uses.
+  const measuredBands = interaction?.floatingMovePreview?.measuredBands;
+  const draggedAnchorNodeIndex = ((): number | undefined => {
+    const key = interaction?.floatingMovePreview?.imageKey;
+    const match = key ? /^p:(\d+):/.exec(key) : null;
+    return match ? Number.parseInt(match[1], 10) : undefined;
+  })();
+  if (!measuredBands || draggedAnchorNodeIndex === undefined) {
+    return result;
+  }
+
+  const measuredFlowBandAt = (
+    nodeIndex: number
+  ): { top: number; bottom: number } | undefined => {
+    const band = measuredBands.hostByNodeIndex[nodeIndex];
+    if (!band) {
+      return undefined;
+    }
+    return {
+      top: band.topPx - pageLayout.marginsPx.top,
+      bottom: band.bottomPx - pageLayout.marginsPx.top,
+    };
+  };
+  const anchorSegmentIndex = segments.findIndex(
+    (segment) => segment.nodeIndex === draggedAnchorNodeIndex
+  );
+  const anchorMeasuredBand = measuredFlowBandAt(draggedAnchorNodeIndex);
+  if (anchorSegmentIndex < 0 || !anchorMeasuredBand) {
+    return result;
+  }
+
+  const anchorEstimatedFlowTopPx =
+    flowTopPxBySegmentIndex[anchorSegmentIndex] ?? 0;
+  const draggedObstacles: PageFlowFloatingWrapObstacle[] = [];
+  const otherObstacles: PageFlowFloatingWrapObstacle[] = [];
+  for (const obstacle of obstacles) {
+    if (obstacle.sourceNodeIndex === draggedAnchorNodeIndex) {
+      draggedObstacles.push({
+        ...obstacle,
+        top: obstacle.top - anchorEstimatedFlowTopPx + anchorMeasuredBand.top,
+        bottom:
+          obstacle.bottom - anchorEstimatedFlowTopPx + anchorMeasuredBand.top,
+      });
+    } else {
+      otherObstacles.push(obstacle);
+    }
+  }
+  if (draggedObstacles.length === 0) {
+    return result;
+  }
+
+  return segments.map((segment, segmentIndex) => {
+    const node = model.nodes[segment.nodeIndex];
+    const measuredBand = measuredFlowBandAt(segment.nodeIndex);
+    if (
+      node?.type !== "paragraph" ||
+      segment.nodeIndex === draggedAnchorNodeIndex ||
+      !measuredBand
+    ) {
+      return result[segmentIndex] ?? [];
+    }
+
+    return [
+      ...resolveForeignWrapExclusionsForFlowRange(
+        otherObstacles,
+        segment.nodeIndex,
+        flowTopPxBySegmentIndex[segmentIndex] ?? 0,
+        (flowTopPxBySegmentIndex[segmentIndex] ?? 0) +
+          (flowHeightPxBySegmentIndex[segmentIndex] ?? 0)
+      ),
+      ...resolveForeignWrapExclusionsForFlowRange(
+        draggedObstacles,
+        segment.nodeIndex,
+        measuredBand.top,
+        measuredBand.bottom
+      ).map((exclusion) => ({ ...exclusion, fromDragPreview: true })),
+    ];
+  });
 }
 
 function applyWrappedFloatingInteractionPreviewToParagraph(
@@ -12418,7 +12680,7 @@ function paragraphSegmentIdentityMatches(
   );
 }
 
-function estimateRenderedPageSegmentHeightPx(
+export function estimateRenderedPageSegmentHeightPx(
   node: DocModel["nodes"][number],
   segment: DocumentPageNodeSegment,
   model: DocModel,
@@ -14703,6 +14965,38 @@ interface AbsoluteFloatingDropRect {
   height?: number;
 }
 
+// Pointer deltas and DOM rects arrive in screen pixels; layout math and drop
+// patches run in logical page pixels, so both must be divided by the
+// effective zoom scale before they are consumed.
+export function normalizeFloatingDragDeltaForZoom(
+  screenDeltaPx: number,
+  zoomScale: number
+): number {
+  const safeScale = Number.isFinite(zoomScale) && zoomScale > 0 ? zoomScale : 1;
+  return screenDeltaPx / safeScale;
+}
+
+export function normalizeFloatingDropRectForZoom(
+  rect: AbsoluteFloatingDropRect,
+  zoomScale: number
+): AbsoluteFloatingDropRect {
+  const safeScale = Number.isFinite(zoomScale) && zoomScale > 0 ? zoomScale : 1;
+  if (safeScale === 1) {
+    return rect;
+  }
+
+  return {
+    left: rect.left / safeScale,
+    top: rect.top / safeScale,
+    ...(Number.isFinite(rect.width)
+      ? { width: (rect.width as number) / safeScale }
+      : undefined),
+    ...(Number.isFinite(rect.height)
+      ? { height: (rect.height as number) / safeScale }
+      : undefined),
+  };
+}
+
 export function resolveAbsoluteFloatingImageDropPatch(
   floating: NonNullable<ImageRunNode["floating"]> | undefined,
   layout: Pick<
@@ -14822,16 +15116,9 @@ export function resolveWrappedFloatingImageDropPatch(
     previewGeometry === undefined ||
     previewGeometry.exclusion.left <= 0 ||
     previewGeometry.exclusion.right >= hostWidth;
-  const rawExplicitTopPx = Math.round(
+  const explicitTopPx = Math.round(
     movedTop - Math.round(baseFloating.distTPx ?? 0)
   );
-  const currentTopPx = Math.round(baseFloating.yPx ?? 0);
-  const explicitTopPx =
-    wrapType.trim().toLowerCase() === "topandbottom" &&
-    Math.abs(rawExplicitTopPx - currentTopPx) <
-      TOP_AND_BOTTOM_VERTICAL_DRAG_SNAP_PX
-      ? currentTopPx
-      : rawExplicitTopPx;
 
   return {
     wrapType,
@@ -14857,6 +15144,86 @@ export function resolveWrappedFloatingImageDropPatch(
       : baseFloating.verticalRelativeTo ?? "paragraph",
     behindDocument: false,
   };
+}
+
+// Word re-anchors a dragged floating image to the paragraph its drop
+// position lands in. Pick the body paragraph host whose band contains the
+// dropped image origin, falling back to the nearest one; horizontal distance
+// only breaks ties between side-by-side column hosts.
+function resolveWrappedDropAnchorParagraphHost(
+  wrapperElement: HTMLElement,
+  droppedTopScreenPx: number,
+  droppedLeftScreenPx: number
+): { host: HTMLElement; nodeIndex: number; rect: DOMRect } | undefined {
+  const viewerRoot =
+    wrapperElement.closest("[data-testid='docx-editor-viewer']") ??
+    wrapperElement.ownerDocument;
+  if (!viewerRoot) {
+    return undefined;
+  }
+
+  const hosts = Array.from(
+    viewerRoot.querySelectorAll(
+      "[data-docx-paragraph-host='true'][data-docx-paragraph-kind='paragraph'][data-docx-paragraph-node-index]"
+    )
+  ) as HTMLElement[];
+
+  let best:
+    | { host: HTMLElement; nodeIndex: number; rect: DOMRect }
+    | undefined;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  for (const host of hosts) {
+    const nodeIndex = Number.parseInt(
+      host.getAttribute("data-docx-paragraph-node-index") ?? "",
+      10
+    );
+    if (!Number.isFinite(nodeIndex)) {
+      continue;
+    }
+
+    const rect = host.getBoundingClientRect();
+    if (rect.width <= 0 && rect.height <= 0) {
+      continue;
+    }
+
+    const verticalDistance =
+      droppedTopScreenPx < rect.top
+        ? rect.top - droppedTopScreenPx
+        : droppedTopScreenPx >= rect.bottom
+        ? droppedTopScreenPx - rect.bottom
+        : 0;
+    const horizontalDistance =
+      droppedLeftScreenPx < rect.left
+        ? rect.left - droppedLeftScreenPx
+        : droppedLeftScreenPx > rect.right
+        ? droppedLeftScreenPx - rect.right
+        : 0;
+    const distance = verticalDistance * 4 + horizontalDistance;
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      best = { host, nodeIndex, rect };
+    }
+  }
+
+  return best;
+}
+
+// A wrapped drag only re-anchors when the drop patch will express the
+// vertical offset in paragraph-local coordinates.
+function wrappedDragCanReanchorToParagraph(
+  floating: Partial<NonNullable<ImageRunNode["floating"]>>
+): boolean {
+  if (!floatingImageMovesWithText(floating)) {
+    return true;
+  }
+
+  const verticalRelativeTo =
+    floating.verticalRelativeTo?.trim().toLowerCase() ?? "";
+  return (
+    verticalRelativeTo === "" ||
+    verticalRelativeTo === "paragraph" ||
+    verticalRelativeTo === "line"
+  );
 }
 
 function resolvePageSpanningAbsoluteFloatingDimensions(
@@ -28587,7 +28954,8 @@ export function useDocxEditor(
   const moveFloatingImage = React.useCallback(
     (
       location: DocxImageLocation,
-      patch: Partial<NonNullable<ImageRunNode["floating"]>>
+      patch: Partial<NonNullable<ImageRunNode["floating"]>>,
+      options?: { reparentToParagraphNodeIndex?: number }
     ): void => {
       applyModelChange((current) => {
         const next = cloneDocModel(current);
@@ -28608,6 +28976,25 @@ export function useDocxEditor(
           ...(child.floating ?? {}),
           ...patch,
         };
+
+        const reparentNodeIndex = options?.reparentToParagraphNodeIndex;
+        const reparentTarget =
+          reparentNodeIndex !== undefined
+            ? next.nodes[reparentNodeIndex]
+            : undefined;
+        if (
+          reparentTarget &&
+          reparentTarget.type === "paragraph" &&
+          reparentTarget !== paragraph
+        ) {
+          paragraph.children.splice(location.childIndex, 1);
+          if (paragraph.children.length === 0) {
+            paragraph.children.push({ type: "text", text: "" });
+          }
+          reparentTarget.children.unshift(child);
+          reparentTarget.sourceXml = undefined;
+        }
+
         paragraph.sourceXml = undefined;
         if (tableNode) {
           tableNode.sourceXml = undefined;
@@ -33568,6 +33955,7 @@ export function DocxEditorViewer({
         deltaY: number;
         baseLeftPx?: number;
         baseTopPx?: number;
+        measuredBands?: FloatingMovePreviewMeasuredBands;
       }
     | undefined
   >();
@@ -44722,7 +45110,19 @@ export function DocxEditorViewer({
         "[data-docx-paragraph-host='true']"
       ) as HTMLElement | null;
       const paragraphRect = paragraphHost?.getBoundingClientRect();
+      const zoomScale = resolveViewerMeasurementZoomScale(wrapperElement, 1);
       const baseFloating = image.floating ? { ...image.floating } : {};
+      // The band the image visually starts in; re-anchoring only happens
+      // when the drop lands in a different band than both this and the
+      // current anchor paragraph.
+      const dragStartAnchor =
+        isWrappedFloatingImage && location.kind === "paragraph"
+          ? resolveWrappedDropAnchorParagraphHost(
+              wrapperElement,
+              wrapperRect.top,
+              wrapperRect.left
+            )
+          : undefined;
 
       let latestDeltaX = 0;
       let latestDeltaY = 0;
@@ -44731,23 +45131,67 @@ export function DocxEditorViewer({
       let latestInlineDropTarget: DocxImageDropTarget | undefined;
       let latestInlineDropTargetKey: string | undefined;
 
+      const measuredBands = ((): FloatingMovePreviewMeasuredBands | undefined => {
+        if (!isWrappedFloatingImage || !pageSurface || !pageSurfaceRect) {
+          return undefined;
+        }
+
+        const hostByNodeIndex: FloatingMovePreviewMeasuredBands["hostByNodeIndex"] =
+          {};
+        for (const host of Array.from(
+          pageSurface.querySelectorAll(
+            "[data-docx-paragraph-host='true'][data-docx-paragraph-kind='paragraph'][data-docx-paragraph-node-index]"
+          )
+        )) {
+          const nodeIndex = Number.parseInt(
+            host.getAttribute("data-docx-paragraph-node-index") ?? "",
+            10
+          );
+          if (!Number.isFinite(nodeIndex)) {
+            continue;
+          }
+          const rect = (host as HTMLElement).getBoundingClientRect();
+          if (rect.height <= 0) {
+            continue;
+          }
+          hostByNodeIndex[nodeIndex] = {
+            topPx: (rect.top - pageSurfaceRect.top) / zoomScale,
+            bottomPx: (rect.bottom - pageSurfaceRect.top) / zoomScale,
+          };
+        }
+        return Object.keys(hostByNodeIndex).length > 0
+          ? { hostByNodeIndex }
+          : undefined;
+      })();
+
       const updatePreview = (): void => {
         setFloatingMovePreview({
           imageKey,
           deltaX: latestDeltaX,
           deltaY: latestDeltaY,
+          measuredBands,
           ...(paragraphRect
             ? {
-                baseLeftPx: Math.round(wrapperRect.left - paragraphRect.left),
-                baseTopPx: Math.round(wrapperRect.top - paragraphRect.top),
+                baseLeftPx: Math.round(
+                  (wrapperRect.left - paragraphRect.left) / zoomScale
+                ),
+                baseTopPx: Math.round(
+                  (wrapperRect.top - paragraphRect.top) / zoomScale
+                ),
               }
             : undefined),
         });
       };
 
       const onPointerMove = (pointerEvent: PointerEvent): void => {
-        latestDeltaX = pointerEvent.clientX - startX;
-        latestDeltaY = pointerEvent.clientY - startY;
+        latestDeltaX = normalizeFloatingDragDeltaForZoom(
+          pointerEvent.clientX - startX,
+          zoomScale
+        );
+        latestDeltaY = normalizeFloatingDragDeltaForZoom(
+          pointerEvent.clientY - startY,
+          zoomScale
+        );
 
         if (isInlineImage) {
           if (!inlineDragActivated) {
@@ -44853,11 +45297,15 @@ export function DocxEditorViewer({
         }
 
         if (isWrappedFloatingImage) {
-          const hostWidth = paragraphRect?.width ?? DEFAULT_DOC_PAGE_WIDTH;
+          const hostWidth = paragraphRect
+            ? paragraphRect.width / zoomScale
+            : DEFAULT_DOC_PAGE_WIDTH;
           const imageWidth =
-            image.widthPx ?? Math.max(24, Math.round(wrapperRect.width));
+            image.widthPx ??
+            Math.max(24, Math.round(wrapperRect.width / zoomScale));
           const imageHeight =
-            image.heightPx ?? Math.max(24, Math.round(wrapperRect.height));
+            image.heightPx ??
+            Math.max(24, Math.round(wrapperRect.height / zoomScale));
           const baseGeometry = resolveDualWrappedFloatingImageGeometry(
             image,
             hostWidth,
@@ -44867,9 +45315,11 @@ export function DocxEditorViewer({
               ...(paragraphRect
                 ? {
                     baseLeftPx: Math.round(
-                      wrapperRect.left - paragraphRect.left
+                      (wrapperRect.left - paragraphRect.left) / zoomScale
                     ),
-                    baseTopPx: Math.round(wrapperRect.top - paragraphRect.top),
+                    baseTopPx: Math.round(
+                      (wrapperRect.top - paragraphRect.top) / zoomScale
+                    ),
                   }
                 : undefined),
             }
@@ -44882,6 +45332,59 @@ export function DocxEditorViewer({
           const movedTop = Math.round(
             (baseGeometry?.imageTopPx ?? 0) + latestDeltaY
           );
+          const droppedTopScreenPx = wrapperRect.top + latestDeltaY * zoomScale;
+          const droppedLeftScreenPx =
+            wrapperRect.left + latestDeltaX * zoomScale;
+          const dropAnchor =
+            location.kind === "paragraph" &&
+            wrappedDragCanReanchorToParagraph(baseFloating)
+              ? resolveWrappedDropAnchorParagraphHost(
+                  wrapperElement,
+                  droppedTopScreenPx,
+                  droppedLeftScreenPx
+                )
+              : undefined;
+          if (
+            dropAnchor &&
+            location.kind === "paragraph" &&
+            dropAnchor.nodeIndex !== location.nodeIndex &&
+            dropAnchor.nodeIndex !== dragStartAnchor?.nodeIndex
+          ) {
+            // Crossing a paragraph boundary re-anchors the image to the
+            // paragraph the drop landed in, with offsets recomputed against
+            // the new anchor so the visual position is preserved.
+            const targetHostWidth = dropAnchor.rect.width / zoomScale;
+            const targetMovedLeft = clampNumber(
+              Math.round(
+                (droppedLeftScreenPx - dropAnchor.rect.left) / zoomScale
+              ),
+              0,
+              Math.max(0, targetHostWidth - imageWidth)
+            );
+            const targetMovedTop = Math.round(
+              (droppedTopScreenPx - dropAnchor.rect.top) / zoomScale
+            );
+            editor.moveFloatingImage(
+              location,
+              resolveWrappedFloatingImageDropPatch(
+                image,
+                targetHostWidth,
+                targetMovedLeft,
+                targetMovedTop,
+                {
+                  widthPx: imageWidth,
+                  heightPx: imageHeight,
+                }
+              ),
+              { reparentToParagraphNodeIndex: dropAnchor.nodeIndex }
+            );
+            setSelectedImage({
+              kind: "paragraph",
+              nodeIndex: dropAnchor.nodeIndex,
+              childIndex: 0,
+            });
+            return;
+          }
           editor.moveFloatingImage(
             location,
             resolveWrappedFloatingImageDropPatch(
@@ -44899,14 +45402,29 @@ export function DocxEditorViewer({
         }
 
         if (isAbsoluteFloatingImage) {
+          // The page can shift mid-drag (reflow from preview exclusions,
+          // virtualizer remeasure, scroll), so re-measure the page surface at
+          // drop; the pointerdown capture only serves as a detached fallback.
+          const dropPageSurfaceRect =
+            pageSurface && pageSurface.isConnected
+              ? pageSurface.getBoundingClientRect()
+              : pageSurfaceRect;
           editor.moveFloatingImage(
             location,
             resolveAbsoluteFloatingImageDropPatch(
               baseFloating,
               documentLayout,
               {
-                wrapperRect,
-                pageSurfaceRect,
+                wrapperRect: normalizeFloatingDropRectForZoom(
+                  wrapperRect,
+                  zoomScale
+                ),
+                pageSurfaceRect: dropPageSurfaceRect
+                  ? normalizeFloatingDropRectForZoom(
+                      dropPageSurfaceRect,
+                      zoomScale
+                    )
+                  : undefined,
                 deltaX: latestDeltaX,
                 deltaY: latestDeltaY,
               }
@@ -44920,7 +45438,7 @@ export function DocxEditorViewer({
       window.addEventListener("pointerup", onPointerUp, { once: true });
       window.addEventListener("pointercancel", onPointerUp, { once: true });
     },
-    [documentLayout, editor, isReadOnly]
+    [documentLayout, editor, isReadOnly, resolveViewerMeasurementZoomScale]
   );
 
   const beginDropCapMove = React.useCallback(
@@ -45104,6 +45622,7 @@ export function DocxEditorViewer({
         "[data-docx-section-paragraph-host='true']"
       ) as HTMLElement | null;
       const paragraphRect = paragraphHost?.getBoundingClientRect();
+      const zoomScale = resolveViewerMeasurementZoomScale(wrapperElement, 1);
       const baseFloating = image.floating ? { ...image.floating } : {};
 
       let latestDeltaX = 0;
@@ -45117,16 +45636,26 @@ export function DocxEditorViewer({
           deltaY: latestDeltaY,
           ...(paragraphRect
             ? {
-                baseLeftPx: Math.round(wrapperRect.left - paragraphRect.left),
-                baseTopPx: Math.round(wrapperRect.top - paragraphRect.top),
+                baseLeftPx: Math.round(
+                  (wrapperRect.left - paragraphRect.left) / zoomScale
+                ),
+                baseTopPx: Math.round(
+                  (wrapperRect.top - paragraphRect.top) / zoomScale
+                ),
               }
             : undefined),
         });
       };
 
       const onPointerMove = (pointerEvent: PointerEvent): void => {
-        latestDeltaX = pointerEvent.clientX - startX;
-        latestDeltaY = pointerEvent.clientY - startY;
+        latestDeltaX = normalizeFloatingDragDeltaForZoom(
+          pointerEvent.clientX - startX,
+          zoomScale
+        );
+        latestDeltaY = normalizeFloatingDragDeltaForZoom(
+          pointerEvent.clientY - startY,
+          zoomScale
+        );
 
         if (frameId !== undefined) {
           window.cancelAnimationFrame(frameId);
@@ -45150,11 +45679,15 @@ export function DocxEditorViewer({
         }
 
         if (isWrappedFloatingImage) {
-          const hostWidth = paragraphRect?.width ?? documentLayout.pageWidthPx;
+          const hostWidth = paragraphRect
+            ? paragraphRect.width / zoomScale
+            : documentLayout.pageWidthPx;
           const imageWidth =
-            image.widthPx ?? Math.max(24, Math.round(wrapperRect.width));
+            image.widthPx ??
+            Math.max(24, Math.round(wrapperRect.width / zoomScale));
           const imageHeight =
-            image.heightPx ?? Math.max(24, Math.round(wrapperRect.height));
+            image.heightPx ??
+            Math.max(24, Math.round(wrapperRect.height / zoomScale));
           const baseGeometry = resolveDualWrappedFloatingImageGeometry(
             image,
             hostWidth,
@@ -45164,9 +45697,11 @@ export function DocxEditorViewer({
               ...(paragraphRect
                 ? {
                     baseLeftPx: Math.round(
-                      wrapperRect.left - paragraphRect.left
+                      (wrapperRect.left - paragraphRect.left) / zoomScale
                     ),
-                    baseTopPx: Math.round(wrapperRect.top - paragraphRect.top),
+                    baseTopPx: Math.round(
+                      (wrapperRect.top - paragraphRect.top) / zoomScale
+                    ),
                   }
                 : undefined),
             }
@@ -45198,14 +45733,26 @@ export function DocxEditorViewer({
         }
 
         if (isAbsoluteFloatingImage) {
+          const dropPageSurfaceRect =
+            pageSurface && pageSurface.isConnected
+              ? pageSurface.getBoundingClientRect()
+              : pageSurfaceRect;
           editor.moveSectionFloatingImage(
             location,
             resolveAbsoluteFloatingImageDropPatch(
               baseFloating,
               documentLayout,
               {
-                wrapperRect,
-                pageSurfaceRect,
+                wrapperRect: normalizeFloatingDropRectForZoom(
+                  wrapperRect,
+                  zoomScale
+                ),
+                pageSurfaceRect: dropPageSurfaceRect
+                  ? normalizeFloatingDropRectForZoom(
+                      dropPageSurfaceRect,
+                      zoomScale
+                    )
+                  : undefined,
                 deltaX: latestDeltaX,
                 deltaY: latestDeltaY,
               }
@@ -45218,7 +45765,13 @@ export function DocxEditorViewer({
       window.addEventListener("pointerup", onPointerUp, { once: true });
       window.addEventListener("pointercancel", onPointerUp, { once: true });
     },
-    [activeHeaderFooterEdit, documentLayout, editor, isReadOnly]
+    [
+      activeHeaderFooterEdit,
+      documentLayout,
+      editor,
+      isReadOnly,
+      resolveViewerMeasurementZoomScale,
+    ]
   );
 
   const onSectionImageClick = React.useCallback(
@@ -47982,9 +48535,10 @@ export function DocxEditorViewer({
           source: activeWrappedSource,
           layout: activeWrappedLayout,
           lineHeightPx: activeDualWrappedLayout.lineHeightPx,
-          blockHeightPx: resolveDualWrapParagraphRenderBlockHeightPx(
+          blockHeightPx: resolveDragPreviewAwareWrapBlockHeightPx(
             activeWrappedLayout,
-            activeDualWrappedLayout.geometries
+            activeDualWrappedLayout.geometries,
+            options?.pageFlowForeignExclusions
           ),
           obstacleNodes: (
             <>

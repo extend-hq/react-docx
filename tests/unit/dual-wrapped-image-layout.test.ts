@@ -600,7 +600,7 @@ describe("dual wrapped image layout", () => {
     expect(style.marginLeft).toBe(36);
   });
 
-  it("ignores tiny vertical jitter when dropping top-and-bottom wrapped images", async () => {
+  it("commits small vertical drops of top-and-bottom wrapped images exactly", async () => {
     const { resolveWrappedFloatingImageDropPatch } = await import(
       "../../packages/react-viewer/src/editor"
     );
@@ -632,7 +632,7 @@ describe("dual wrapped image layout", () => {
       }
     );
 
-    expect(patch.yPx).toBe(30);
+    expect(patch.yPx).toBe(35);
   });
 
   it("lets full-width top-and-bottom exclusions overflow the anchor paragraph box", async () => {
@@ -1008,5 +1008,190 @@ describe("dual wrapped image layout", () => {
     expect(
       firstLine?.fragments.some((fragment) => (fragment.x ?? 0) > 100)
     ).toBe(true);
+  });
+
+  it("skips obstacles that do not pixel-overlap a paragraph's flow band", async () => {
+    const { resolveForeignWrapExclusionsForFlowRange } = await import(
+      "../../packages/react-viewer/src/editor"
+    );
+
+    const obstacles = [
+      { sourceNodeIndex: 2, left: 100, right: 220, top: 150, bottom: 260 },
+    ];
+
+    // Strictly above the obstacle with a gap: no exclusion.
+    expect(
+      resolveForeignWrapExclusionsForFlowRange(obstacles, 0, 0, 120)
+    ).toEqual([]);
+    // Touching edge-to-edge is not an overlap.
+    expect(
+      resolveForeignWrapExclusionsForFlowRange(obstacles, 0, 0, 150)
+    ).toEqual([]);
+    // One pixel of overlap wraps.
+    expect(
+      resolveForeignWrapExclusionsForFlowRange(obstacles, 0, 0, 151)
+    ).toEqual([{ left: 100, right: 220, top: 150, bottom: 260 }]);
+    // Strictly below with a gap: no exclusion.
+    expect(
+      resolveForeignWrapExclusionsForFlowRange(obstacles, 0, 270, 400)
+    ).toEqual([]);
+    // A paragraph never wraps around its own obstacle.
+    expect(
+      resolveForeignWrapExclusionsForFlowRange(obstacles, 2, 140, 280)
+    ).toEqual([]);
+  });
+
+  it("refreshes flow tops from reflow-aware heights before wrapping paragraphs above a dragged image", async () => {
+    const {
+      collectPageFlowWrapObstaclesForParagraph,
+      estimateParagraphLineHeightPx,
+      estimateRenderedPageSegmentHeightPx,
+      precomputePageSegmentForeignWrapExclusions,
+      resolveForeignWrapExclusionsForFlowRange,
+    } = await import("../../packages/react-viewer/src/editor");
+
+    const headingParagraph = {
+      type: "paragraph" as const,
+      children: [{ type: "text" as const, text: "Images" }],
+    };
+    const fillerParagraph = {
+      type: "paragraph" as const,
+      children: [
+        {
+          type: "text" as const,
+          text:
+            "Documents may contain images. For example, there is an image of the web accessibility symbol nearby. " +
+            "The picture moves with the surrounding words while the text tightly wraps around the floating artwork.",
+        },
+      ],
+    };
+    const anchorParagraph = {
+      type: "paragraph" as const,
+      children: [
+        {
+          type: "image" as const,
+          widthPx: 120,
+          heightPx: 110,
+          floating: {
+            xPx: 140,
+            yPx: 0,
+            distLPx: 8,
+            distRPx: 8,
+            distTPx: 0,
+            distBPx: 4,
+            wrapType: "square" as const,
+            wrapText: "bothSides" as const,
+            behindDocument: false,
+          },
+        },
+        {
+          type: "text" as const,
+          text: "Anchor paragraph with a wrapped image.",
+        },
+      ],
+    };
+
+    const nodes = [headingParagraph, fillerParagraph, anchorParagraph];
+    const model = { nodes } as never;
+    const segments = nodes.map((_, nodeIndex) => ({ nodeIndex })) as never;
+    const containerWidthPx = 400;
+    const pageLayout = {
+      pageWidthPx: 612,
+      pageHeightPx: 792,
+      marginsPx: { top: 56, right: 56, bottom: 56, left: 56 },
+      headerDistancePx: 0,
+      footerDistancePx: 0,
+    };
+    const movePreviewAt = (deltaY: number) => ({
+      imageKey: "p:2:0",
+      deltaX: 0,
+      deltaY,
+      baseLeftPx: 140,
+      baseTopPx: 0,
+    });
+    const precompute = (deltaY: number) =>
+      precomputePageSegmentForeignWrapExclusions(
+        segments,
+        model,
+        containerWidthPx,
+        undefined,
+        new Map(),
+        new Map(),
+        pageLayout,
+        { floatingMovePreview: movePreviewAt(deltaY) }
+      );
+
+    // Reconstruct the stale single-pass bands: pre-drag heights only.
+    const baseHeights = nodes.map((node, nodeIndex) =>
+      estimateRenderedPageSegmentHeightPx(
+        node,
+        { nodeIndex } as never,
+        model,
+        containerWidthPx,
+        undefined,
+        undefined,
+        { excludeWrappedFloatingImageFootprint: true }
+      )
+    );
+    const headingHeightPx = baseHeights[0]!;
+    const staleAnchorFlowTopPx = baseHeights[0]! + baseHeights[1]!;
+    const staleHeadingExclusionsAt = (deltaY: number) =>
+      resolveForeignWrapExclusionsForFlowRange(
+        collectPageFlowWrapObstaclesForParagraph(
+          anchorParagraph,
+          2,
+          staleAnchorFlowTopPx,
+          containerWidthPx,
+          estimateParagraphLineHeightPx(anchorParagraph),
+          {
+            paragraphTopPx: staleAnchorFlowTopPx,
+            pageMarginTopPx: pageLayout.marginsPx.top,
+            location: { kind: "paragraph", nodeIndex: 2 },
+            floatingMovePreview: movePreviewAt(deltaY),
+          }
+        ),
+        0,
+        0,
+        headingHeightPx
+      );
+
+    const firstWrapDeltaY = (
+      headingExclusionsAt: (deltaY: number) => { length: number }[] | unknown[]
+    ): number | undefined => {
+      for (let deltaY = 0; deltaY >= -600; deltaY -= 2) {
+        if ((headingExclusionsAt(deltaY) as unknown[]).length > 0) {
+          return deltaY;
+        }
+      }
+      return undefined;
+    };
+
+    const staleThresholdDeltaY = firstWrapDeltaY(staleHeadingExclusionsAt);
+    expect(staleThresholdDeltaY).toBeDefined();
+
+    // At the delta where stale flow tops already wrapped the heading, the
+    // two-pass snapshot keeps it untouched: the filler reflows around the
+    // preview, pushing the refreshed anchor flow top (and the preview band)
+    // further down.
+    const twoPassAtStaleThreshold = precompute(staleThresholdDeltaY as number);
+    expect(twoPassAtStaleThreshold[0]).toEqual([]);
+    expect(twoPassAtStaleThreshold[1]?.length ?? 0).toBeGreaterThan(0);
+
+    // The heading still wraps once the preview band pixel-reaches it, and
+    // strictly later (further up) than the stale bands claimed.
+    const twoPassThresholdDeltaY = firstWrapDeltaY(
+      (deltaY: number) => precompute(deltaY)[0] ?? []
+    );
+    expect(twoPassThresholdDeltaY).toBeDefined();
+    expect(twoPassThresholdDeltaY as number).toBeLessThan(
+      staleThresholdDeltaY as number
+    );
+
+    // The refreshed snapshot is stable: running the two-pass computation
+    // again at the same delta reproduces identical exclusions (the second
+    // pass already converged).
+    expect(precompute(twoPassThresholdDeltaY as number)).toEqual(
+      precompute(twoPassThresholdDeltaY as number)
+    );
   });
 });

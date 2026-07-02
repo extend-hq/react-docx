@@ -75,6 +75,127 @@ describe("image wrap state", () => {
     });
   });
 
+  it("normalizes pointer deltas from screen pixels to logical page pixels", async () => {
+    const { normalizeFloatingDragDeltaForZoom } = await import(
+      "../../packages/react-viewer/src/editor"
+    );
+
+    expect(normalizeFloatingDragDeltaForZoom(100, 2)).toBe(50);
+    expect(normalizeFloatingDragDeltaForZoom(90, 0.9)).toBeCloseTo(100, 6);
+    expect(normalizeFloatingDragDeltaForZoom(-45, 0.9)).toBeCloseTo(-50, 6);
+    expect(normalizeFloatingDragDeltaForZoom(64, 1)).toBe(64);
+    expect(normalizeFloatingDragDeltaForZoom(64, 0)).toBe(64);
+    expect(normalizeFloatingDragDeltaForZoom(64, Number.NaN)).toBe(64);
+  });
+
+  it("normalizes drop rects from screen pixels to logical page pixels", async () => {
+    const { normalizeFloatingDropRectForZoom } = await import(
+      "../../packages/react-viewer/src/editor"
+    );
+
+    expect(
+      normalizeFloatingDropRectForZoom(
+        { left: 125, top: 250, width: 100, height: 75 },
+        1.25
+      )
+    ).toEqual({ left: 100, top: 200, width: 80, height: 60 });
+    expect(
+      normalizeFloatingDropRectForZoom({ left: 90, top: 45 }, 0.9)
+    ).toEqual({ left: 100, top: 50 });
+
+    const identityRect = { left: 10, top: 20, width: 30, height: 40 };
+    expect(normalizeFloatingDropRectForZoom(identityRect, 1)).toBe(
+      identityRect
+    );
+    expect(normalizeFloatingDropRectForZoom(identityRect, 0)).toBe(
+      identityRect
+    );
+  });
+
+  it("keeps absolute drops zoom-invariant once rects and deltas are normalized", async () => {
+    const { resolveAbsoluteFloatingImageDropPatch, normalizeFloatingDropRectForZoom } =
+      await import("../../packages/react-viewer/src/editor");
+
+    const layout = {
+      marginsPx: { top: 72, right: 72, bottom: 72, left: 72 },
+      pageWidthPx: 612,
+      pageHeightPx: 792
+    };
+    const floating = {
+      wrapType: "none" as const,
+      behindDocument: true,
+      horizontalRelativeTo: "column",
+      verticalRelativeTo: "paragraph"
+    };
+    const logicalPatch = resolveAbsoluteFloatingImageDropPatch(floating, layout, {
+      wrapperRect: { left: 240, top: 310, width: 26, height: 26 },
+      pageSurfaceRect: { left: 100, top: 120, width: 612, height: 792 },
+      deltaX: 90,
+      deltaY: -40
+    });
+
+    const zoom = 1.25;
+    const zoomedPatch = resolveAbsoluteFloatingImageDropPatch(floating, layout, {
+      wrapperRect: normalizeFloatingDropRectForZoom(
+        { left: 240 * zoom, top: 310 * zoom, width: 26 * zoom, height: 26 * zoom },
+        zoom
+      ),
+      pageSurfaceRect: normalizeFloatingDropRectForZoom(
+        { left: 100 * zoom, top: 120 * zoom, width: 612 * zoom, height: 792 * zoom },
+        zoom
+      ),
+      deltaX: 112.5 / zoom,
+      deltaY: -50 / zoom
+    });
+
+    expect(zoomedPatch).toEqual(logicalPatch);
+  });
+
+  it("compensates absolute drops for page-surface drift measured at drop time", async () => {
+    const { resolveAbsoluteFloatingImageDropPatch } = await import(
+      "../../packages/react-viewer/src/editor"
+    );
+
+    const layout = {
+      marginsPx: { top: 72, right: 72, bottom: 72, left: 72 },
+      pageWidthPx: 612,
+      pageHeightPx: 792
+    };
+    const floating = {
+      wrapType: "none" as const,
+      behindDocument: true,
+      horizontalRelativeTo: "column",
+      verticalRelativeTo: "paragraph"
+    };
+    const wrapperRect = { left: 240, top: 310, width: 26, height: 26 };
+    const settledPatch = resolveAbsoluteFloatingImageDropPatch(
+      floating,
+      layout,
+      {
+        wrapperRect,
+        pageSurfaceRect: { left: 100, top: 120, width: 612, height: 792 },
+        deltaX: 90,
+        deltaY: -40
+      }
+    );
+    // The page drifted mid-drag; re-measuring the surface at drop keeps the
+    // committed page-local position under the cursor instead of offset by
+    // the drift.
+    const driftedPatch = resolveAbsoluteFloatingImageDropPatch(
+      floating,
+      layout,
+      {
+        wrapperRect,
+        pageSurfaceRect: { left: 112, top: 90, width: 612, height: 792 },
+        deltaX: 90,
+        deltaY: -40
+      }
+    );
+
+    expect(driftedPatch.xPx).toBe((settledPatch.xPx as number) - 12);
+    expect(driftedPatch.yPx).toBe((settledPatch.yPx as number) + 30);
+  });
+
   it("drops absolute floating images in page coordinates instead of paragraph coordinates", async () => {
     const { resolveAbsoluteFloatingImageDropPatch } = await import(
       "../../packages/react-viewer/src/editor"
