@@ -5984,6 +5984,7 @@ export function collectPageFlowWrapObstaclesForParagraph(
       widthPx: number;
       heightPx: number;
     };
+    foreignExclusions?: PretextExclusionRect[];
   }
 ): PageFlowFloatingWrapObstacle[] {
   const obstacles: PageFlowFloatingWrapObstacle[] = [];
@@ -6032,6 +6033,7 @@ export function collectPageFlowWrapObstaclesForParagraph(
       pageMarginTopPx: options?.pageMarginTopPx,
       movePreviewByImageIndex,
       allowNegativeImageTop: movePreviewByImageIndex.size > 0,
+      foreignExclusions: options?.foreignExclusions,
     }
   );
   const coveredImageIndexes = new Set<number>();
@@ -6128,7 +6130,7 @@ export function resolveParagraphForeignOnlyWrappedTextLayout(
   };
 }
 
-function precomputePageSegmentForeignWrapExclusions(
+export function precomputePageSegmentForeignWrapExclusions(
   segments: DocumentPageNodeSegment[],
   model: DocModel,
   availableWidthPx: number,
@@ -6151,20 +6153,25 @@ function precomputePageSegmentForeignWrapExclusions(
     };
   }
 ): PretextExclusionRect[][] {
-  const flowTopPxBySegmentIndex: number[] = [];
-  const flowHeightPxBySegmentIndex: number[] = [];
-  let pageFlowTopPx = 0;
+  const segmentWidthPxAt = (nodeIndex: number): number =>
+    pageContentWidthPxByNodeIndex.get(nodeIndex) ?? availableWidthPx;
+  const flowTopsFromHeights = (heights: number[]): number[] => {
+    const flowTops: number[] = [];
+    let pageFlowTopPx = 0;
+    for (const heightPx of heights) {
+      flowTops.push(pageFlowTopPx);
+      pageFlowTopPx += heightPx;
+    }
+    return flowTops;
+  };
 
-  for (const segment of segments) {
-    flowTopPxBySegmentIndex.push(pageFlowTopPx);
+  const baseFlowHeightPxBySegmentIndex = segments.map((segment) => {
     const node = model.nodes[segment.nodeIndex];
-    const segmentWidthPx =
-      pageContentWidthPxByNodeIndex.get(segment.nodeIndex) ?? availableWidthPx;
-    const segmentHeightPx = estimateRenderedPageSegmentHeightPx(
+    return estimateRenderedPageSegmentHeightPx(
       node,
       segment,
       model,
-      segmentWidthPx,
+      segmentWidthPxAt(segment.nodeIndex),
       numberingDefinitions,
       docGridLinePitchPxByNodeIndex.get(segment.nodeIndex),
       // For the wrap-exclusion flow simulation, a square/tight-wrapped float
@@ -6174,46 +6181,177 @@ function precomputePageSegmentForeignWrapExclusions(
       // the float's exclusion rect to overlap and indent them.
       { excludeWrappedFloatingImageFootprint: true }
     );
-    flowHeightPxBySegmentIndex.push(segmentHeightPx);
-    pageFlowTopPx += segmentHeightPx;
-  }
+  });
 
-  const obstacles: PageFlowFloatingWrapObstacle[] = [];
-  for (let segmentIndex = 0; segmentIndex < segments.length; segmentIndex += 1) {
-    const segment = segments[segmentIndex];
-    const node = model.nodes[segment.nodeIndex];
-    if (node?.type !== "paragraph") {
-      continue;
-    }
+  const collectObstacles = (
+    flowTopPxBySegmentIndex: number[],
+    flowHeightPxBySegmentIndex: number[],
+    previousObstacles?: PageFlowFloatingWrapObstacle[]
+  ): PageFlowFloatingWrapObstacle[] => {
+    const obstacles: PageFlowFloatingWrapObstacle[] = [];
+    for (
+      let segmentIndex = 0;
+      segmentIndex < segments.length;
+      segmentIndex += 1
+    ) {
+      const segment = segments[segmentIndex];
+      const node = model.nodes[segment.nodeIndex];
+      if (node?.type !== "paragraph") {
+        continue;
+      }
 
-    const segmentWidthPx =
-      pageContentWidthPxByNodeIndex.get(segment.nodeIndex) ?? availableWidthPx;
-    const paragraphRenderTextWidthPx = paragraphAvailableTextWidthPx(
-      node,
-      segmentWidthPx,
-      numberingDefinitions
-    );
-    obstacles.push(
-      ...collectPageFlowWrapObstaclesForParagraph(
+      const paragraphRenderTextWidthPx = paragraphAvailableTextWidthPx(
         node,
-        segment.nodeIndex,
-        flowTopPxBySegmentIndex[segmentIndex] ?? 0,
-        paragraphRenderTextWidthPx,
-        estimateParagraphLineHeightPx(
+        segmentWidthPxAt(segment.nodeIndex),
+        numberingDefinitions
+      );
+      const flowTopPx = flowTopPxBySegmentIndex[segmentIndex] ?? 0;
+      obstacles.push(
+        ...collectPageFlowWrapObstaclesForParagraph(
           node,
-          docGridLinePitchPxByNodeIndex.get(segment.nodeIndex)
-        ),
-        {
-          paragraphTopPx: flowTopPxBySegmentIndex[segmentIndex] ?? 0,
-          pageMarginTopPx: pageLayout.marginsPx.top,
-          location: {
-            kind: "paragraph",
-            nodeIndex: segment.nodeIndex,
-          },
-          floatingMovePreview: interaction?.floatingMovePreview,
-          resizePreview: interaction?.resizePreview,
+          segment.nodeIndex,
+          flowTopPx,
+          paragraphRenderTextWidthPx,
+          estimateParagraphLineHeightPx(
+            node,
+            docGridLinePitchPxByNodeIndex.get(segment.nodeIndex)
+          ),
+          {
+            paragraphTopPx: flowTopPx,
+            pageMarginTopPx: pageLayout.marginsPx.top,
+            location: {
+              kind: "paragraph",
+              nodeIndex: segment.nodeIndex,
+            },
+            floatingMovePreview: interaction?.floatingMovePreview,
+            resizePreview: interaction?.resizePreview,
+            foreignExclusions: previousObstacles
+              ? resolveForeignWrapExclusionsForFlowRange(
+                  previousObstacles,
+                  segment.nodeIndex,
+                  flowTopPx,
+                  flowTopPx + (flowHeightPxBySegmentIndex[segmentIndex] ?? 0)
+                )
+              : undefined,
+          }
+        )
+      );
+    }
+    return obstacles;
+  };
+
+  const baseFlowTopPxBySegmentIndex = flowTopsFromHeights(
+    baseFlowHeightPxBySegmentIndex
+  );
+  const firstPassObstacles = collectObstacles(
+    baseFlowTopPxBySegmentIndex,
+    baseFlowHeightPxBySegmentIndex
+  );
+
+  let flowTopPxBySegmentIndex = baseFlowTopPxBySegmentIndex;
+  let flowHeightPxBySegmentIndex = baseFlowHeightPxBySegmentIndex;
+  let obstacles = firstPassObstacles;
+
+  // While a floating image is dragged or resized, paragraphs reflow around
+  // the preview obstacle, so obstacle intersection tests against the base
+  // (pre-preview) flow ranges wrap paragraphs before the preview visually
+  // reaches them. Recompute flow tops with reflow-aware heights and rebuild
+  // the obstacles against them so every rect comes from the same snapshot: a
+  // paragraph reflows around the preview iff its refreshed band
+  // pixel-intersects the preview exclusion rect.
+  const hasInteractionPreview = Boolean(
+    interaction?.floatingMovePreview || interaction?.resizePreview
+  );
+  if (hasInteractionPreview && firstPassObstacles.length > 0) {
+    const reflowHeightPxBySegmentIndex = segments.map(
+      (segment, segmentIndex) => {
+        const baseHeightPx = baseFlowHeightPxBySegmentIndex[segmentIndex] ?? 0;
+        const node = model.nodes[segment.nodeIndex];
+        if (
+          node?.type !== "paragraph" ||
+          segment.tableRowRange ||
+          segment.tableRowSlice ||
+          segment.paragraphLineRange
+        ) {
+          return baseHeightPx;
         }
-      )
+        if (
+          node.children.some(
+            (child) =>
+              child.type === "image" && shouldRenderWrappedFloatingImage(child)
+          )
+        ) {
+          return baseHeightPx;
+        }
+
+        const flowTopPx = baseFlowTopPxBySegmentIndex[segmentIndex] ?? 0;
+        const foreignExclusions = resolveForeignWrapExclusionsForFlowRange(
+          firstPassObstacles,
+          segment.nodeIndex,
+          flowTopPx,
+          flowTopPx + baseHeightPx
+        );
+        if (foreignExclusions.length === 0) {
+          return baseHeightPx;
+        }
+
+        const source = buildParagraphPretextLayoutSource(node);
+        if (!source) {
+          return baseHeightPx;
+        }
+
+        const textWidthPx = paragraphAvailableTextWidthPx(
+          node,
+          segmentWidthPxAt(segment.nodeIndex),
+          numberingDefinitions
+        );
+        const lineHeightPx = Math.max(
+          1,
+          Math.round(
+            estimateParagraphLineHeightPx(
+              node,
+              docGridLinePitchPxByNodeIndex.get(segment.nodeIndex)
+            )
+          )
+        );
+        const unexcludedLayout = layoutParagraphPretextSource(
+          node,
+          source,
+          textWidthPx,
+          lineHeightPx,
+          []
+        );
+        const excludedLayout = layoutParagraphPretextSource(
+          node,
+          source,
+          textWidthPx,
+          lineHeightPx,
+          foreignExclusions
+        );
+        if (!unexcludedLayout || !excludedLayout) {
+          return baseHeightPx;
+        }
+
+        const lineExtentPx = (layout: PretextVariableWidthLayout): number =>
+          layout.lines.length > 0
+            ? (layout.lines[layout.lines.length - 1]?.y ?? 0) + lineHeightPx
+            : 0;
+        return (
+          baseHeightPx +
+          Math.max(
+            0,
+            lineExtentPx(excludedLayout) - lineExtentPx(unexcludedLayout)
+          )
+        );
+      }
+    );
+
+    flowHeightPxBySegmentIndex = reflowHeightPxBySegmentIndex;
+    flowTopPxBySegmentIndex = flowTopsFromHeights(reflowHeightPxBySegmentIndex);
+    obstacles = collectObstacles(
+      flowTopPxBySegmentIndex,
+      flowHeightPxBySegmentIndex,
+      firstPassObstacles
     );
   }
 
@@ -12192,7 +12330,7 @@ function paragraphSegmentIdentityMatches(
   );
 }
 
-function estimateRenderedPageSegmentHeightPx(
+export function estimateRenderedPageSegmentHeightPx(
   node: DocModel["nodes"][number],
   segment: DocumentPageNodeSegment,
   model: DocModel,
