@@ -39867,9 +39867,9 @@ export function DocxEditorViewer({
   }, [resolveParagraphBoundaryFromSelectionPoint]);
 
   const setActiveRangeFromSelection = React.useCallback((): void => {
-    // Selection-authority model (mirrors ProseMirror): while the user is
-    // actively producing input (typing / IME composition) the *DOM* selection
-    // is authoritative and the model lags by one debounced flush. While idle or
+    // Selection-authority model: while the user is actively producing input
+    // (typing / IME composition) the *DOM* selection is authoritative and the
+    // model lags by one debounced flush. While idle or
     // after a pointer interaction the *model* is authoritative. We only ever
     // write the model back into the DOM when the DOM selection has been
     // destroyed by a re-render (innerHTML rewrite / remount during pagination
@@ -39979,7 +39979,7 @@ export function DocxEditorViewer({
     });
   }, [setActiveRangeFromSelection]);
 
-  // ProseMirror-style invariant: the DOM selection must follow the model. When
+  // Core selection invariant: the DOM selection must follow the model. When
   // a re-render rewrites an editable paragraph's `innerHTML` (pagination /
   // layout churn), the browser destroys the live selection — collapsing it onto
   // the host element or dropping it entirely. This layout effect runs
