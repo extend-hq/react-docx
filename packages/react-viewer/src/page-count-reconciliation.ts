@@ -119,6 +119,108 @@ export function resolveMeasuredBodyFooterOverlapLatchState(options: {
   };
 }
 
+export function createEstimatedPagesBuildMemo<TPages>(
+  build: (
+    measuredTableRowHeightsByNodeIndex: Record<number, number[]> | undefined,
+    measuredPageContentHeightsPxByPageIndex: number[] | undefined,
+    strictLastRenderedParagraphStartBreaks: boolean
+  ) => TPages
+): (
+  measuredTableRowHeightsByNodeIndex: Record<number, number[]> | undefined,
+  measuredPageContentHeightsPxByPageIndex: number[] | undefined,
+  strictLastRenderedParagraphStartBreaks: boolean
+) => TPages {
+  const entries: Array<{
+    measuredTableRowHeightsByNodeIndex: Record<number, number[]> | undefined;
+    measuredPageContentHeightsPxByPageIndex: number[] | undefined;
+    strictLastRenderedParagraphStartBreaks: boolean;
+    pages: TPages;
+  }> = [];
+  return (
+    measuredTableRowHeightsByNodeIndex,
+    measuredPageContentHeightsPxByPageIndex,
+    strictLastRenderedParagraphStartBreaks
+  ) => {
+    const cached = entries.find(
+      (entry) =>
+        entry.measuredTableRowHeightsByNodeIndex ===
+          measuredTableRowHeightsByNodeIndex &&
+        entry.measuredPageContentHeightsPxByPageIndex ===
+          measuredPageContentHeightsPxByPageIndex &&
+        entry.strictLastRenderedParagraphStartBreaks ===
+          strictLastRenderedParagraphStartBreaks
+    );
+    if (cached) {
+      return cached.pages;
+    }
+
+    const pages = build(
+      measuredTableRowHeightsByNodeIndex,
+      measuredPageContentHeightsPxByPageIndex,
+      strictLastRenderedParagraphStartBreaks
+    );
+    entries.push({
+      measuredTableRowHeightsByNodeIndex,
+      measuredPageContentHeightsPxByPageIndex,
+      strictLastRenderedParagraphStartBreaks,
+      pages,
+    });
+    return pages;
+  };
+}
+
+export function resolveMeasuredSplitParagraphPageComparison<TPage>(options: {
+  canUndo: boolean;
+  canRedo: boolean;
+  hasMeasuredPageContentHeights: boolean;
+  measuredEstimatedPages: TPage[];
+  buildPureEstimatedPages: () => TPage[];
+  pageContainsOnlySplitParagraphSegments: (page: TPage) => boolean;
+}): { pages: TPage[]; usedPureEstimatedPages: boolean } {
+  // The measured-vs-pure degenerate check unwinds import-calibrated page
+  // heights that compress every page into split-paragraph slivers. That is a
+  // pristine-import concern, so edited documents keep the single measured
+  // pass instead of paying a second full pagination per keystroke.
+  if (
+    options.canUndo ||
+    options.canRedo ||
+    !options.hasMeasuredPageContentHeights
+  ) {
+    return {
+      pages: options.measuredEstimatedPages,
+      usedPureEstimatedPages: false,
+    };
+  }
+
+  const measuredPagesAreOnlySplitParagraphs =
+    options.measuredEstimatedPages.length > 0 &&
+    options.measuredEstimatedPages.every(
+      options.pageContainsOnlySplitParagraphSegments
+    );
+  if (!measuredPagesAreOnlySplitParagraphs) {
+    return {
+      pages: options.measuredEstimatedPages,
+      usedPureEstimatedPages: false,
+    };
+  }
+
+  const pureEstimatedPages = options.buildPureEstimatedPages();
+  const purePagesAreOnlySplitParagraphs =
+    pureEstimatedPages.length > 0 &&
+    pureEstimatedPages.every(options.pageContainsOnlySplitParagraphSegments);
+  if (
+    purePagesAreOnlySplitParagraphs &&
+    pureEstimatedPages.length < options.measuredEstimatedPages.length
+  ) {
+    return { pages: pureEstimatedPages, usedPureEstimatedPages: true };
+  }
+
+  return {
+    pages: options.measuredEstimatedPages,
+    usedPureEstimatedPages: false,
+  };
+}
+
 function isBetterCandidate<TPage>(
   candidate: PageCountCandidate<TPage>,
   incumbent: PageCountCandidate<TPage>,

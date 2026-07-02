@@ -53,8 +53,10 @@ import {
   collectTopLevelExplicitPageBreakStartNodeIndexes,
 } from "./pagination-breaks";
 import {
+  createEstimatedPagesBuildMemo,
   reconcilePageCountCandidateToTargetCountByScalingHeight,
   resolveMeasuredBodyFooterOverlapLatchState,
+  resolveMeasuredSplitParagraphPageComparison,
   shouldAllowStoredPageCountReduction,
 } from "./page-count-reconciliation";
 import {
@@ -12994,6 +12996,7 @@ export function buildDocumentPageNodeSegments(
     measuredParagraphOuterHeightsPxByNodeIndex?: Map<number, number>;
     preferLastRenderedParagraphStartBreaks?: boolean;
     strictLastRenderedParagraphStartBreaks?: boolean;
+    precomputedNumberingLabels?: Map<string, ParagraphNumberingLabel>;
   }
 ): DocumentPageNodeSegment[][] {
   if (model.nodes.length === 0) {
@@ -13025,7 +13028,8 @@ export function buildDocumentPageNodeSegments(
     collectDocxHardPageBreakStartNodeIndexes(model);
   // Numbered-list markers consume horizontal text room, so pagination needs the
   // rendered label text (e.g. "10.") to estimate line wrapping accurately.
-  const paginationNumberingLabels = buildParagraphNumberingLabels(model);
+  const paginationNumberingLabels =
+    options?.precomputedNumberingLabels ?? buildParagraphNumberingLabels(model);
   const sectionStartPageBreakNodeIndexes =
     collectDocxSectionStartPageBreakNodeIndexes(model);
   const nextHardBreakStartNodeIndexByNodeIndex =
@@ -25208,6 +25212,9 @@ function updateSectionImageFloatingAtLocation(
   return changed ? next : model;
 }
 
+const NO_TRACKED_CHANGES: DocxTrackedChange[] = [];
+const NO_COMMENTS: DocxComment[] = [];
+
 export function useDocxEditor(
   options: UseDocxEditorOptions = {}
 ): DocxEditorController {
@@ -34458,6 +34465,51 @@ export function DocxEditorViewer({
       !floatingMovePreview &&
       !dropCapMovePreview &&
       (measuredPageContentHeightsPxForPagination?.length ?? 0) > 0;
+    // Candidate paths below re-request builds whose raw arguments differ but
+    // whose effective inputs are identical (e.g. the pure build when no
+    // measured heights survived an edit); the memo collapses those into one
+    // pagination pass per evaluation.
+    const buildEstimatedPagesForInputs = createEstimatedPagesBuildMemo(
+      (
+        measuredTableRowHeightsByNodeIndex: Record<number, number[]> | undefined,
+        measuredPageContentHeightsPx: number[] | undefined,
+        strictLastRenderedParagraphStartBreaks: boolean
+      ): DocumentPageNodeSegment[][] => {
+        const buildPagesWithHeights = (
+          resolvedPageContentHeights?: number[]
+        ): DocumentPageNodeSegment[][] =>
+          buildDocumentPageNodeSegments(
+            editor.model,
+            pageContentHeightPx,
+            pageContentWidthPx,
+            editor.model.metadata.numberingDefinitions,
+            paginationSectionMetrics,
+            {
+              allowParagraphLineSplitting: true,
+              suppressSpacingBeforeAfterPageBreak,
+              preferLastRenderedParagraphStartBreaks,
+              strictLastRenderedParagraphStartBreaks,
+              measuredTableRowHeightsByNodeIndex,
+              measuredPageContentHeightsPxByPageIndex:
+                resolvedPageContentHeights,
+              measuredParagraphOuterHeightsPxByNodeIndex,
+              precomputedNumberingLabels: paragraphNumberingLabels,
+            }
+          );
+        const basePages = buildPagesWithHeights(measuredPageContentHeightsPx);
+        return applyEstimatedFootnoteReserveToPages(
+          editor.model,
+          basePages,
+          pageContentHeightPx,
+          pageContentWidthPx,
+          paginationSectionMetrics,
+          editor.model.metadata.numberingDefinitions,
+          editor.model.metadata.footnotes ?? [],
+          (pageContentHeightsOverride) =>
+            buildPagesWithHeights(pageContentHeightsOverride)
+        );
+      }
+    );
     const buildEstimatedPages = (
       measuredTableRowHeightsByNodeIndex?: Record<number, number[]>,
       measuredPageContentHeightsOverride?: number[] | null,
@@ -34475,37 +34527,10 @@ export function DocxEditorViewer({
           ? undefined
           : measuredPageContentHeightsOverride ??
             measuredPageContentHeightsPxForPagination;
-      const buildPagesWithHeights = (
-        resolvedPageContentHeights?: number[]
-      ): DocumentPageNodeSegment[][] =>
-        buildDocumentPageNodeSegments(
-          editor.model,
-          pageContentHeightPx,
-          pageContentWidthPx,
-          editor.model.metadata.numberingDefinitions,
-          paginationSectionMetrics,
-          {
-            allowParagraphLineSplitting: true,
-            suppressSpacingBeforeAfterPageBreak,
-            preferLastRenderedParagraphStartBreaks,
-            strictLastRenderedParagraphStartBreaks:
-              paginationOptions?.strictLastRenderedParagraphStartBreaks ?? false,
-            measuredTableRowHeightsByNodeIndex,
-            measuredPageContentHeightsPxByPageIndex: resolvedPageContentHeights,
-            measuredParagraphOuterHeightsPxByNodeIndex,
-          }
-        );
-      const basePages = buildPagesWithHeights(baseMeasuredHeights);
-      return applyEstimatedFootnoteReserveToPages(
-        editor.model,
-        basePages,
-        pageContentHeightPx,
-        pageContentWidthPx,
-        paginationSectionMetrics,
-        editor.model.metadata.numberingDefinitions,
-        editor.model.metadata.footnotes ?? [],
-        (pageContentHeightsOverride) =>
-          buildPagesWithHeights(pageContentHeightsOverride)
+      return buildEstimatedPagesForInputs(
+        measuredTableRowHeightsByNodeIndex,
+        baseMeasuredHeights,
+        paginationOptions?.strictLastRenderedParagraphStartBreaks ?? false
       );
     };
     const storedDocumentPageCount = editor.model.metadata.documentPageCount;
@@ -34588,34 +34613,24 @@ export function DocxEditorViewer({
         renderPageContentHeightScale: estimatedRenderPageContentHeightScale,
       };
     }
-    if (
-      measuredPageContentHeightsPxForPagination &&
-      measuredPageContentHeightsPxForPagination.length > 0
-    ) {
-      const pureEstimatedPages = buildEstimatedPages(
-        tableMeasuredRowHeightsForPagination,
-        null
-      );
-      const measuredPagesAreOnlySplitParagraphs =
-        estimatedPages.length > 0 &&
-        estimatedPages.every((pageSegments) =>
-          documentPageContainsOnlySplitParagraphSegments(pageSegments)
-        );
-      const purePagesAreOnlySplitParagraphs =
-        pureEstimatedPages.length > 0 &&
-        pureEstimatedPages.every((pageSegments) =>
-          documentPageContainsOnlySplitParagraphSegments(pageSegments)
-        );
-      if (
-        measuredPagesAreOnlySplitParagraphs &&
-        purePagesAreOnlySplitParagraphs &&
-        pureEstimatedPages.length < estimatedPages.length
-      ) {
-        estimatedPages = pureEstimatedPages;
-        estimatedPagesUseMeasuredPageContentHeightsForRender = false;
-        estimatedRenderMeasuredPageContentHeightsPxByPageIndex = undefined;
-        estimatedRenderPageContentHeightScale = undefined;
+    const splitParagraphComparison = resolveMeasuredSplitParagraphPageComparison(
+      {
+        canUndo: editor.canUndo,
+        canRedo: editor.canRedo,
+        hasMeasuredPageContentHeights:
+          (measuredPageContentHeightsPxForPagination?.length ?? 0) > 0,
+        measuredEstimatedPages: estimatedPages,
+        buildPureEstimatedPages: () =>
+          buildEstimatedPages(tableMeasuredRowHeightsForPagination, null),
+        pageContainsOnlySplitParagraphSegments:
+          documentPageContainsOnlySplitParagraphSegments,
       }
+    );
+    if (splitParagraphComparison.usedPureEstimatedPages) {
+      estimatedPages = splitParagraphComparison.pages;
+      estimatedPagesUseMeasuredPageContentHeightsForRender = false;
+      estimatedRenderMeasuredPageContentHeightsPxByPageIndex = undefined;
+      estimatedRenderPageContentHeightScale = undefined;
     }
     if (
       !editor.canUndo &&
@@ -34920,6 +34935,7 @@ export function DocxEditorViewer({
                       heightScale
                     ),
               measuredParagraphOuterHeightsPxByNodeIndex,
+              precomputedNumberingLabels: paragraphNumberingLabels,
             }
           ),
       });
@@ -35018,6 +35034,7 @@ export function DocxEditorViewer({
     measuredPageContentValidationByIndex,
     measuredParagraphOuterHeightsPxByNodeIndex,
     paginationMeasurementContextSignature,
+    paragraphNumberingLabels,
     tableMeasuredRowHeightsForPagination,
   ]);
   const pageNodeSegmentsByPage = pageSegmentationPlan.pages;
