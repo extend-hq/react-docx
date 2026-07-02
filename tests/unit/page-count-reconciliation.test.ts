@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  createEstimatedPagesBuildMemo,
   reconcilePageCountCandidateToTargetCountByScalingHeight,
   reconcilePagesToTargetCountByScalingHeight,
   resolveMeasuredBodyFooterOverlapLatchState,
+  resolveMeasuredSplitParagraphPageComparison,
   shouldLatchMeasuredBodyFooterOverlap,
   shouldAllowStoredPageCountReduction,
 } from "../../packages/react-viewer/src/page-count-reconciliation";
@@ -309,5 +311,118 @@ describe("page-count-reconciliation", () => {
       consecutivePasses: 0,
       shouldLatch: false,
     });
+  });
+});
+
+describe("createEstimatedPagesBuildMemo", () => {
+  it("collapses repeated builds with identical inputs into one pagination pass", () => {
+    let buildCount = 0;
+    const rowHeights = { 0: [24] };
+    const pageHeights = [640];
+    const build = createEstimatedPagesBuildMemo(() => {
+      buildCount += 1;
+      return [["page-1"]];
+    });
+
+    const first = build(rowHeights, pageHeights, false);
+    const second = build(rowHeights, pageHeights, false);
+
+    expect(buildCount).toBe(1);
+    expect(second).toBe(first);
+  });
+
+  it("rebuilds when any distinguishing input changes", () => {
+    let buildCount = 0;
+    const rowHeights = { 0: [24] };
+    const pageHeights = [640];
+    const build = createEstimatedPagesBuildMemo(() => {
+      buildCount += 1;
+      return [["page-1"]];
+    });
+
+    build(rowHeights, pageHeights, false);
+    build(rowHeights, undefined, false);
+    build(rowHeights, undefined, true);
+    build(undefined, undefined, true);
+
+    expect(buildCount).toBe(4);
+
+    build(rowHeights, pageHeights, false);
+    build(rowHeights, undefined, true);
+    expect(buildCount).toBe(4);
+  });
+});
+
+describe("resolveMeasuredSplitParagraphPageComparison", () => {
+  const allSplit = (): boolean => true;
+
+  it("skips the pure comparison build entirely after an edit", () => {
+    let pureBuildCount = 0;
+    const measuredEstimatedPages = [["page-1"], ["page-2"]];
+    const resolved = resolveMeasuredSplitParagraphPageComparison({
+      canUndo: true,
+      canRedo: false,
+      hasMeasuredPageContentHeights: true,
+      measuredEstimatedPages,
+      buildPureEstimatedPages: () => {
+        pureBuildCount += 1;
+        return [["page-1"]];
+      },
+      pageContainsOnlySplitParagraphSegments: allSplit,
+    });
+
+    expect(pureBuildCount).toBe(0);
+    expect(resolved.usedPureEstimatedPages).toBe(false);
+    expect(resolved.pages).toBe(measuredEstimatedPages);
+  });
+
+  it("skips the pure build when measured pages are not degenerate", () => {
+    let pureBuildCount = 0;
+    const measuredEstimatedPages = [["page-1"], ["page-2"]];
+    const resolved = resolveMeasuredSplitParagraphPageComparison({
+      canUndo: false,
+      canRedo: false,
+      hasMeasuredPageContentHeights: true,
+      measuredEstimatedPages,
+      buildPureEstimatedPages: () => {
+        pureBuildCount += 1;
+        return [["page-1"]];
+      },
+      pageContainsOnlySplitParagraphSegments: () => false,
+    });
+
+    expect(pureBuildCount).toBe(0);
+    expect(resolved.usedPureEstimatedPages).toBe(false);
+    expect(resolved.pages).toBe(measuredEstimatedPages);
+  });
+
+  it("unwinds degenerate measured pagination to the smaller pure estimate on pristine imports", () => {
+    const pureEstimatedPages = [["page-1"]];
+    const resolved = resolveMeasuredSplitParagraphPageComparison({
+      canUndo: false,
+      canRedo: false,
+      hasMeasuredPageContentHeights: true,
+      measuredEstimatedPages: [["page-1"], ["page-2"]],
+      buildPureEstimatedPages: () => pureEstimatedPages,
+      pageContainsOnlySplitParagraphSegments: allSplit,
+    });
+
+    expect(resolved.usedPureEstimatedPages).toBe(true);
+    expect(resolved.pages).toBe(pureEstimatedPages);
+  });
+
+  it("keeps the measured pagination when the pure estimate is not smaller", () => {
+    const measuredEstimatedPages = [["page-1"], ["page-2"]];
+    const resolved = resolveMeasuredSplitParagraphPageComparison({
+      canUndo: false,
+      canRedo: false,
+      hasMeasuredPageContentHeights: true,
+      measuredEstimatedPages,
+      buildPureEstimatedPages: () => [["page-1"], ["page-2"], ["page-3"]],
+      pageContainsOnlySplitParagraphSegments: allSplit,
+    });
+
+    expect(resolved.usedPureEstimatedPages).toBe(false);
+    expect(resolved.pages).toBe(measuredEstimatedPages);
   });
 });

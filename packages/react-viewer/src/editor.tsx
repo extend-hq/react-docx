@@ -26068,12 +26068,16 @@ export function useDocxEditor(
     ? paragraphListType(selectedParagraph, model.metadata.numberingDefinitions)
     : undefined;
   const trackedChanges = React.useMemo(
-    () => collectTrackedChangesFromModel(model),
-    [model]
+    () =>
+      showTrackedChanges
+        ? collectTrackedChangesFromModel(model)
+        : NO_TRACKED_CHANGES,
+    [model, showTrackedChanges]
   );
-  const comments = React.useMemo(() => collectCommentsFromModel(model), [
-    model,
-  ]);
+  const comments = React.useMemo(
+    () => (showComments ? collectCommentsFromModel(model) : NO_COMMENTS),
+    [model, showComments]
+  );
   const hasUnorderedList = selectedListType === "unordered";
   const hasOrderedList = selectedListType === "ordered";
   const canUndo = history.past.length > 0;
