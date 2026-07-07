@@ -48927,6 +48927,12 @@ export function DocxEditorViewer({
               paragraphSegmentEndLine >= paragraphSegmentTotalLines
                 ? baseParagraphStyle.marginBottom
                 : 0,
+            // See body-paragraph twin: the pretext split path positions
+            // everything absolutely, so drop the block hanging text-indent that
+            // would otherwise shift the segment left by the hanging amount.
+            ...(shouldRenderParagraphSegmentWithPretext
+              ? { textIndent: 0 }
+              : undefined),
           }
         : undefined),
       outline: "none",
@@ -49364,6 +49370,15 @@ export function DocxEditorViewer({
                 paragraphSegmentEndLine >= paragraphSegmentTotalLines
                   ? resolvedAfterSpacingPx ?? afterSpacingPx
                   : 0,
+              // The pretext split path positions the marker and every line
+              // fragment absolutely, so it does not want the block hanging
+              // `text-indent: -hanging` (which otherwise shifts the whole
+              // absolutely-positioned segment left by the hanging amount,
+              // dropping the paragraph's left indent). The clip-fallback path
+              // still renders inline and keeps the text-indent.
+              ...(shouldRenderParagraphSegmentWithPretext
+                ? { textIndent: 0 }
+                : undefined),
             }
           : resolvedBeforeSpacingPx !== undefined ||
             resolvedAfterSpacingPx !== undefined
