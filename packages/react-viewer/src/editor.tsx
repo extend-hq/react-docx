@@ -48877,6 +48877,9 @@ export function DocxEditorViewer({
             ),
             top: 0,
             marginRight: 0,
+            // Left-align the glyph in its hanging box (see body-paragraph twin)
+            // so a split list item's marker doesn't overlap the body text.
+            justifyContent: "flex-start",
             zIndex: 1,
             pointerEvents: "none",
           }}
@@ -49219,6 +49222,11 @@ export function DocxEditorViewer({
               ),
               top: 0,
               marginRight: 0,
+              // Left-align the marker glyph within its hanging-indent box so it
+              // sits at the number position with a gap before the text, instead
+              // of flex-end pinning it against the body text (which starts at
+              // the box's right edge) and overlapping it on split paragraphs.
+              justifyContent: "flex-start",
               zIndex: 1,
               pointerEvents: "none",
             }}
