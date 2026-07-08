@@ -4058,6 +4058,11 @@ export interface DocxEditorController {
   ) => void;
   deleteTable: (tableIndex: number) => void;
   moveTable: (tableIndex: number, targetNodeIndex: number) => void;
+  setTableFloating: (
+    tableIndex: number,
+    patch: Partial<NonNullable<NonNullable<TableNode["style"]>["floating"]>>,
+    options?: { moveToNodeIndex?: number }
+  ) => void;
   moveEmbeddedTableToBody: (
     tableRuntimeKey: string,
     targetNodeIndex: number
@@ -6105,7 +6110,31 @@ interface ParagraphDualWrappedTextLayout {
 
 interface PageFlowFloatingWrapObstacle extends PretextExclusionRect {
   sourceNodeIndex: number;
+  // Absolute-rendered wrapped objects are not part of their anchor
+  // paragraph's own dual-wrap layout, so their exclusions must apply to the
+  // anchor paragraph too (the same-source skip would otherwise leave a hole).
+  appliesToSourceNode?: boolean;
 }
+
+// Rendered wrap bands captured after each committed render, in logical
+// (zoom-normalized) pixels relative to the page body (content box) origin —
+// the same coordinate space as page-flow obstacles. Keys: `tbl:{nodeIndex}`
+// for floating tables, `img:p:{nodeIndex}:{childIndex}` for absolute-rendered
+// wrapped images, `para:{nodeIndex}` for paragraph host bands.
+export interface MeasuredWrapBand {
+  topPx: number;
+  bottomPx: number;
+  leftPx: number;
+  rightPx: number;
+}
+
+const WRAP_BAND_RECONCILE_TOLERANCE_PX = 2;
+// Wrap corrections propagate one flow link per pass (an exclusion changes a
+// paragraph's height, which moves the next paragraph's band, which re-bases
+// its exclusions), so a chain of wrapped paragraphs needs a pass per link
+// plus a settle pass each. The tolerance short-circuit ends the loop as soon
+// as bands stop moving; the cap only bounds pathological oscillation.
+const WRAP_BAND_RECONCILE_MAX_PASSES = 24;
 
 // Rendered paragraph-host bands captured once at drag start, in logical
 // (zoom-normalized) pixels relative to the page surface. During a floating
@@ -6175,7 +6204,10 @@ export function resolveForeignWrapExclusionsForFlowRange(
   const foreignExclusions: PretextExclusionRect[] = [];
 
   for (const obstacle of obstacles) {
-    if (obstacle.sourceNodeIndex === sourceNodeIndex) {
+    if (
+      obstacle.sourceNodeIndex === sourceNodeIndex &&
+      !obstacle.appliesToSourceNode
+    ) {
       continue;
     }
     if (obstacle.bottom <= pageFlowTopPx || obstacle.top >= pageFlowBottomPx) {
@@ -6416,10 +6448,18 @@ export function precomputePageSegmentForeignWrapExclusions(
       widthPx: number;
       heightPx: number;
     };
+    measuredWrapBands?: Map<string, MeasuredWrapBand>;
   }
 ): PretextExclusionRect[][] {
   const segmentWidthPxAt = (nodeIndex: number): number =>
     pageContentWidthPxByNodeIndex.get(nodeIndex) ?? availableWidthPx;
+  const measuredWrapBands = interaction?.measuredWrapBands;
+  const measuredBandAt = (key: string): MeasuredWrapBand | undefined => {
+    const band = measuredWrapBands?.get(key);
+    return band && band.bottomPx > band.topPx && band.rightPx > band.leftPx
+      ? band
+      : undefined;
+  };
   const flowTopsFromHeights = (heights: number[]): number[] => {
     const flowTops: number[] = [];
     let pageFlowTopPx = 0;
@@ -6461,6 +6501,81 @@ export function precomputePageSegmentForeignWrapExclusions(
     ) {
       const segment = segments[segmentIndex];
       const node = model.nodes[segment.nodeIndex];
+      if (
+        node?.type === "table" &&
+        node.style?.floating &&
+        !segment.tableRowRange
+      ) {
+        const tableContainerWidthPx = segmentWidthPxAt(segment.nodeIndex);
+        const tableFlowTopPx = flowTopPxBySegmentIndex[segmentIndex] ?? 0;
+        // Prefer the rendered table rect over estimates — estimated table
+        // heights/widths drift from what the DOM lays out, which leaves the
+        // wrap band short and lets text overlap the table edges.
+        const measuredTableBand = measuredBandAt(`tbl:${segment.nodeIndex}`);
+        if (measuredTableBand) {
+          const floating = node.style.floating;
+          const distLPx = twipsToPixels(floating.leftFromTextTwips) ?? 0;
+          const distRPx = twipsToPixels(floating.rightFromTextTwips) ?? 0;
+          const distTPx = twipsToPixels(floating.topFromTextTwips) ?? 0;
+          const distBPx = twipsToPixels(floating.bottomFromTextTwips) ?? 0;
+          let exclusionLeftPx = Math.max(0, measuredTableBand.leftPx - distLPx);
+          let exclusionRightPx = Math.min(
+            tableContainerWidthPx,
+            measuredTableBand.rightPx + distRPx
+          );
+          if (
+            exclusionLeftPx > 0 &&
+            exclusionLeftPx < MIN_DUAL_WRAPPED_INTERIOR_BAND_PX
+          ) {
+            exclusionLeftPx = 0;
+          }
+          if (
+            exclusionRightPx < tableContainerWidthPx &&
+            tableContainerWidthPx - exclusionRightPx <
+              MIN_DUAL_WRAPPED_INTERIOR_BAND_PX
+          ) {
+            exclusionRightPx = tableContainerWidthPx;
+          }
+          obstacles.push({
+            sourceNodeIndex: segment.nodeIndex,
+            left: exclusionLeftPx,
+            right: exclusionRightPx,
+            top: measuredTableBand.topPx - distTPx,
+            bottom: measuredTableBand.bottomPx + distBPx,
+          });
+          continue;
+        }
+        const geometry = resolveFloatingTableGeometry(
+          node,
+          tableContainerWidthPx,
+          {
+            tableWidthPx: estimateFloatingTableWidthPx(
+              node,
+              tableContainerWidthPx
+            ),
+            tableHeightPx: estimateTableHeightPx(
+              node,
+              tableContainerWidthPx,
+              numberingDefinitions,
+              docGridLinePitchPxByNodeIndex.get(segment.nodeIndex)
+            ),
+            indentPx: twipsToSignedPixels(node.style?.indentTwips) ?? 0,
+            flowTopPx: tableFlowTopPx,
+            pageMarginTopPx: pageLayout.marginsPx.top,
+            pageMarginLeftPx: pageLayout.marginsPx.left,
+          }
+        );
+        if (geometry) {
+          obstacles.push({
+            sourceNodeIndex: segment.nodeIndex,
+            left: geometry.exclusion.left,
+            right: geometry.exclusion.right,
+            top: tableFlowTopPx + geometry.exclusion.top,
+            bottom: tableFlowTopPx + geometry.exclusion.bottom,
+          });
+        }
+        continue;
+      }
       if (node?.type !== "paragraph") {
         continue;
       }
@@ -6470,7 +6585,64 @@ export function precomputePageSegmentForeignWrapExclusions(
         segmentWidthPxAt(segment.nodeIndex),
         numberingDefinitions
       );
-      const flowTopPx = flowTopPxBySegmentIndex[segmentIndex] ?? 0;
+      // Absolute-rendered wrapped images (margin/page corner anchors) are not
+      // part of any paragraph's dual-wrap layout, so without an obstacle here
+      // text flows straight under them. Their rendered rect is the only
+      // truthful position source, so these obstacles exist once measured.
+      node.children.forEach((child, childIndex) => {
+        if (
+          child.type !== "image" ||
+          !child.floating?.wrapType ||
+          child.floating.wrapType === "none" ||
+          child.floating.behindDocument === true ||
+          shouldRenderWrappedFloatingImage(child)
+        ) {
+          return;
+        }
+        const band = measuredBandAt(
+          `img:p:${segment.nodeIndex}:${childIndex}`
+        );
+        if (!band) {
+          return;
+        }
+        const floating = child.floating;
+        const containerWidthPx = segmentWidthPxAt(segment.nodeIndex);
+        const fullWidthWrap = floating.wrapType === "topAndBottom";
+        let exclusionLeftPx = fullWidthWrap
+          ? 0
+          : Math.max(0, band.leftPx - (floating.distLPx ?? 0));
+        let exclusionRightPx = fullWidthWrap
+          ? containerWidthPx
+          : Math.min(containerWidthPx, band.rightPx + (floating.distRPx ?? 0));
+        if (
+          exclusionLeftPx > 0 &&
+          exclusionLeftPx < MIN_DUAL_WRAPPED_INTERIOR_BAND_PX
+        ) {
+          exclusionLeftPx = 0;
+        }
+        if (
+          exclusionRightPx < containerWidthPx &&
+          containerWidthPx - exclusionRightPx <
+            MIN_DUAL_WRAPPED_INTERIOR_BAND_PX
+        ) {
+          exclusionRightPx = containerWidthPx;
+        }
+        if (exclusionRightPx <= exclusionLeftPx) {
+          return;
+        }
+        obstacles.push({
+          sourceNodeIndex: segment.nodeIndex,
+          appliesToSourceNode: true,
+          left: exclusionLeftPx,
+          right: exclusionRightPx,
+          top: band.topPx - (floating.distTPx ?? 0),
+          bottom: band.bottomPx + (floating.distBPx ?? 0),
+        });
+      });
+      const flowTopPx =
+        measuredBandAt(`para:${segment.nodeIndex}`)?.topPx ??
+        flowTopPxBySegmentIndex[segmentIndex] ??
+        0;
       obstacles.push(
         ...collectPageFlowWrapObstaclesForParagraph(
           node,
@@ -6527,7 +6699,23 @@ export function precomputePageSegmentForeignWrapExclusions(
   const hasInteractionPreview = Boolean(
     interaction?.floatingMovePreview || interaction?.resizePreview
   );
-  if (hasInteractionPreview && firstPassObstacles.length > 0) {
+  // Floating-table exclusions grow the paragraphs that wrap beside them, so
+  // static flow tops drift below the base estimates for everything after the
+  // wrapped paragraphs. Run the reflow-aware pass whenever a floating table
+  // contributed an obstacle, not just during image interactions, so later
+  // obstacles line up with what actually renders.
+  const hasFloatingTableObstacle = segments.some((segment) => {
+    const node = model.nodes[segment.nodeIndex];
+    return (
+      node?.type === "table" &&
+      Boolean(node.style?.floating) &&
+      !segment.tableRowRange
+    );
+  });
+  if (
+    (hasInteractionPreview || hasFloatingTableObstacle) &&
+    firstPassObstacles.length > 0
+  ) {
     const reflowHeightPxBySegmentIndex = segments.map(
       (segment, segmentIndex) => {
         const baseHeightPx = baseFlowHeightPxBySegmentIndex[segmentIndex] ?? 0;
@@ -6620,15 +6808,30 @@ export function precomputePageSegmentForeignWrapExclusions(
     );
   }
 
-  const result = segments.map((segment, segmentIndex) =>
-    resolveForeignWrapExclusionsForFlowRange(
+  const result = segments.map((segment, segmentIndex) => {
+    // Re-base each paragraph's exclusions against its rendered band when one
+    // was measured — estimated flow tops accumulate drift down the page.
+    // A line range that spans every line still covers the whole paragraph.
+    const segmentLineRange = segment.paragraphLineRange;
+    const segmentCoversWholeParagraph =
+      !segmentLineRange ||
+      (segmentLineRange.startLineIndex === 0 &&
+        segmentLineRange.endLineIndex >= segmentLineRange.totalLineCount);
+    const measuredParagraphBand = segmentCoversWholeParagraph
+      ? measuredBandAt(`para:${segment.nodeIndex}`)
+      : undefined;
+    const flowTopPx =
+      measuredParagraphBand?.topPx ?? flowTopPxBySegmentIndex[segmentIndex] ?? 0;
+    const flowBottomPx =
+      measuredParagraphBand?.bottomPx ??
+      flowTopPx + (flowHeightPxBySegmentIndex[segmentIndex] ?? 0);
+    return resolveForeignWrapExclusionsForFlowRange(
       obstacles,
       segment.nodeIndex,
-      flowTopPxBySegmentIndex[segmentIndex] ?? 0,
-      (flowTopPxBySegmentIndex[segmentIndex] ?? 0) +
-        (flowHeightPxBySegmentIndex[segmentIndex] ?? 0)
-    )
-  );
+      flowTopPx,
+      flowBottomPx
+    );
+  });
 
   // Estimated flow tops drift from rendered positions (empty paragraphs,
   // exclusion-driven block growth), so during a drag the dragged image's
@@ -7578,6 +7781,27 @@ function layoutParagraphPretextSource(
   );
   const wordBreak = pretextWordBreakModeForText(source.text);
   const items = buildParagraphPretextLayoutItems(paragraph, source);
+  // Fragments render with text-indent zeroed (each is its own block), so the
+  // paragraph's first-line indent is reserved here instead: a synthetic
+  // exclusion narrows the first row's leading interval by the indent.
+  const firstLineIndentPx = twipsToSignedPixels(
+    paragraph.style?.indent?.firstLineTwips
+  );
+  const layoutExclusions =
+    Number.isFinite(firstLineIndentPx) && (firstLineIndentPx as number) > 0
+      ? [
+          ...(exclusions ?? []),
+          {
+            left: 0,
+            right: Math.min(
+              Math.max(1, Math.round(containerWidthPx)),
+              Math.round(firstLineIndentPx as number)
+            ),
+            top: 0,
+            bottom: 1,
+          },
+        ]
+      : exclusions;
   const richLayout =
     items.length > 0
       ? layoutItemsWithPretextAroundExclusions(
@@ -7585,7 +7809,7 @@ function layoutParagraphPretextSource(
           items,
           containerWidthPx,
           lineHeightPx,
-          exclusions,
+          layoutExclusions,
           fallbackFont
         )
       : undefined;
@@ -7598,7 +7822,7 @@ function layoutParagraphPretextSource(
     fallbackFont,
     containerWidthPx,
     lineHeightPx,
-    exclusions,
+    layoutExclusions,
     {
       wordBreak,
     }
@@ -7824,6 +8048,12 @@ export function resolveDualWrappedFloatingImageGeometry(
       ? Math.round(rawImageTopPx)
       : Math.max(0, Math.round(rawImageTopPx));
 
+  // Alignment only drives the exclusion when it is the operative horizontal
+  // position. Once an explicit x offset exists (committed posOffset or a
+  // drag preview), the exclusion must hug the image so interior placements
+  // wrap text on both sides instead of swallowing a whole column band.
+  const horizontalAlignIsOperative =
+    !hasExplicitBaseLeftPx && !Number.isFinite(floating?.xPx);
   let exclusionLeftPx = Math.max(0, imageLeftPx - distLPx);
   let exclusionRightPx = Math.min(
     safeContainerWidthPx,
@@ -7832,9 +8062,15 @@ export function resolveDualWrappedFloatingImageGeometry(
   if (wrapType === "topAndBottom") {
     exclusionLeftPx = 0;
     exclusionRightPx = safeContainerWidthPx;
-  } else if (horizontalAlign === "left" || horizontalAlign === "inside") {
+  } else if (
+    horizontalAlignIsOperative &&
+    (horizontalAlign === "left" || horizontalAlign === "inside")
+  ) {
     exclusionLeftPx = 0;
-  } else if (horizontalAlign === "right" || horizontalAlign === "outside") {
+  } else if (
+    horizontalAlignIsOperative &&
+    (horizontalAlign === "right" || horizontalAlign === "outside")
+  ) {
     exclusionRightPx = safeContainerWidthPx;
   }
 
@@ -12782,6 +13018,12 @@ export function estimateRenderedPageSegmentHeightPx(
     );
   }
 
+  // Floating tables render out of flow (absolutely positioned, text wraps
+  // around them via exclusions), so they consume no flow height themselves.
+  if (node.type === "table" && node.style?.floating) {
+    return 0;
+  }
+
   return Math.max(
     MIN_PARAGRAPH_LINE_HEIGHT_PX,
     estimateTableHeightPx(
@@ -14065,6 +14307,14 @@ export function buildDocumentPageNodeSegments(
         pageConsumedHeightPx > 0 ? collapsedNodeHeightPx : rawNodeHeightPx;
       pageConsumedHeightPx += effectiveNodeHeightPx;
       previousParagraphAfterPx = afterSpacingPx;
+      continue;
+    }
+
+    // Floating tables are out-of-flow: text wraps around them, so they
+    // consume no page height and never split across pages here.
+    if (node.style?.floating) {
+      currentPageSegments.push({ nodeIndex });
+      previousParagraphAfterPx = 0;
       continue;
     }
 
@@ -21145,6 +21395,132 @@ function resolveFloatingTableSide(
   }
 
   return "left";
+}
+
+export function estimateFloatingTableWidthPx(
+  table: TableNode,
+  containerWidthPx: number
+): number {
+  const explicitWidthPx = twipsToPixels(table.style?.widthTwips);
+  const columnWidthsTwips = table.style?.columnWidthsTwips;
+  const columnsWidthPx =
+    columnWidthsTwips && columnWidthsTwips.length > 0
+      ? columnWidthsTwips.reduce(
+          (total, widthTwips) => total + (twipsToPixels(widthTwips) ?? 0),
+          0
+        )
+      : undefined;
+  return Math.max(
+    24,
+    Math.min(
+      Math.max(1, Math.round(containerWidthPx)),
+      Math.round(explicitWidthPx ?? columnsWidthPx ?? containerWidthPx)
+    )
+  );
+}
+
+interface FloatingTableGeometry {
+  leftPx: number;
+  topPx: number;
+  exclusion: {
+    left: number;
+    right: number;
+    top: number;
+    bottom: number;
+  };
+}
+
+// Maps a table's tblpPr position (style.floating) into column-local
+// coordinates plus the exclusion rect text must wrap around, mirroring
+// resolveDualWrappedFloatingImageGeometry for images. topPx/exclusion tops are
+// relative to the table's flow anchor position (where the table would sit in
+// normal flow), matching the page-flow obstacle coordinate space.
+export function resolveFloatingTableGeometry(
+  table: TableNode,
+  containerWidthPx: number,
+  options: {
+    tableWidthPx: number;
+    tableHeightPx: number;
+    indentPx?: number;
+    flowTopPx?: number;
+    pageMarginTopPx?: number;
+    pageMarginLeftPx?: number;
+    deltaX?: number;
+    deltaY?: number;
+  }
+): FloatingTableGeometry | undefined {
+  const floating = table.style?.floating;
+  if (!floating) {
+    return undefined;
+  }
+
+  const safeContainerWidthPx = Math.max(1, Math.round(containerWidthPx));
+  const tableWidthPx = Math.max(1, Math.round(options.tableWidthPx));
+  const tableHeightPx = Math.max(0, Math.round(options.tableHeightPx));
+  const distLPx = twipsToPixels(floating.leftFromTextTwips) ?? 0;
+  const distRPx = twipsToPixels(floating.rightFromTextTwips) ?? 0;
+  const distTPx = twipsToPixels(floating.topFromTextTwips) ?? 0;
+  const distBPx = twipsToPixels(floating.bottomFromTextTwips) ?? 0;
+  const xPx = twipsToSignedPixels(floating.xTwips);
+  const yPx = twipsToSignedPixels(floating.yTwips);
+  const horizontalAnchor = floating.horizontalAnchor?.trim().toLowerCase();
+  const verticalAnchor = floating.verticalAnchor?.trim().toLowerCase();
+  const horizontalAlign = floating.horizontalAlign?.trim().toLowerCase();
+  const flowTopPx = Math.round(options.flowTopPx ?? 0);
+  const deltaX = Math.round(options.deltaX ?? 0);
+  const deltaY = Math.round(options.deltaY ?? 0);
+
+  const leftPx =
+    (xPx !== undefined
+      ? horizontalAnchor === "page"
+        ? xPx - Math.round(options.pageMarginLeftPx ?? 0)
+        : xPx
+      : horizontalAlign === "right" || horizontalAlign === "outside"
+      ? safeContainerWidthPx - tableWidthPx - distRPx
+      : horizontalAlign === "center"
+      ? Math.round((safeContainerWidthPx - tableWidthPx) / 2)
+      : horizontalAlign === "left" || horizontalAlign === "inside"
+      ? distLPx
+      : Math.round(options.indentPx ?? 0)) + deltaX;
+  const topPx =
+    (yPx !== undefined
+      ? verticalAnchor === "margin"
+        ? yPx - flowTopPx
+        : verticalAnchor === "page"
+        ? yPx - Math.round(options.pageMarginTopPx ?? 0) - flowTopPx
+        : yPx
+      : 0) + deltaY;
+
+  let exclusionLeftPx = Math.max(0, leftPx - distLPx);
+  let exclusionRightPx = Math.min(
+    safeContainerWidthPx,
+    leftPx + tableWidthPx + distRPx
+  );
+  // Word does not flow text into a band narrower than a usable column, so
+  // snap sub-minimum edge bands to the edge instead of leaving text slivers.
+  if (
+    exclusionLeftPx > 0 &&
+    exclusionLeftPx < MIN_DUAL_WRAPPED_INTERIOR_BAND_PX
+  ) {
+    exclusionLeftPx = 0;
+  }
+  if (
+    exclusionRightPx < safeContainerWidthPx &&
+    safeContainerWidthPx - exclusionRightPx < MIN_DUAL_WRAPPED_INTERIOR_BAND_PX
+  ) {
+    exclusionRightPx = safeContainerWidthPx;
+  }
+
+  return {
+    leftPx,
+    topPx,
+    exclusion: {
+      left: exclusionLeftPx,
+      right: exclusionRightPx,
+      top: topPx - distTPx,
+      bottom: topPx + tableHeightPx + distBPx,
+    },
+  };
 }
 
 function tableWrapperStyle(
@@ -29519,6 +29895,65 @@ export function useDocxEditor(
     [applyModelChange]
   );
 
+  const setTableFloating = React.useCallback(
+    (
+      tableIndex: number,
+      patch: Partial<NonNullable<NonNullable<TableNode["style"]>["floating"]>>,
+      options?: { moveToNodeIndex?: number }
+    ): void => {
+      applyModelChange((current) => {
+        const tableNode = current.nodes[tableIndex];
+        if (!tableNode || tableNode.type !== "table") {
+          return current;
+        }
+
+        const next = cloneDocModel(current);
+        const nextTable = next.nodes[tableIndex];
+        if (!nextTable || nextTable.type !== "table") {
+          return current;
+        }
+
+        nextTable.style = {
+          ...(nextTable.style ?? {}),
+          floating: {
+            ...(nextTable.style?.floating ?? {}),
+            ...patch,
+          },
+        };
+        nextTable.sourceXml = undefined;
+
+        // Word re-anchors a dragged floating table to the block its drop
+        // position lands at, keeping tblpY a small offset from the anchor.
+        const moveToNodeIndex = options?.moveToNodeIndex;
+        if (
+          moveToNodeIndex !== undefined &&
+          moveToNodeIndex !== tableIndex &&
+          moveToNodeIndex !== tableIndex + 1
+        ) {
+          const clampedTarget = clampNumber(
+            moveToNodeIndex,
+            0,
+            next.nodes.length
+          );
+          const extracted = next.nodes.splice(tableIndex, 1)[0];
+          if (extracted) {
+            next.nodes.splice(
+              clampNumber(
+                clampedTarget > tableIndex ? clampedTarget - 1 : clampedTarget,
+                0,
+                next.nodes.length
+              ),
+              0,
+              extracted
+            );
+          }
+        }
+        return next;
+      }, "Moved table");
+    },
+    [applyModelChange]
+  );
+
   const moveEmbeddedTableToBody = React.useCallback(
     (tableRuntimeKey: string, targetNodeIndex: number): void => {
       const runtimeLocation = parseEmbeddedTableRuntimeKey(tableRuntimeKey);
@@ -30388,6 +30823,7 @@ export function useDocxEditor(
     deleteTableColumn,
     deleteTable,
     moveTable,
+    setTableFloating,
     moveEmbeddedTableToBody,
     replaceExpandedSelection,
     deleteExpandedSelection,
@@ -34300,6 +34736,15 @@ export function DocxEditorViewer({
       }
     | undefined
   >();
+  const [tableFloatingDragPreview, setTableFloatingDragPreview] =
+    React.useState<
+      | {
+          tableIndex: number;
+          deltaX: number;
+          deltaY: number;
+        }
+      | undefined
+    >();
   const [tableContextMenuState, setTableContextMenuState] = React.useState<
     | (DocxTableContextMenuContext & {
         clientX: number;
@@ -34330,6 +34775,14 @@ export function DocxEditorViewer({
     React.useReducer((value: number) => value + 1, 0);
   const [paginationMeasurementEpoch, bumpPaginationMeasurementEpoch] =
     React.useReducer((value: number) => value + 1, 0);
+  // Rendered wrap bands (page-body-local, zoom-normalized) captured after each
+  // committed render; consumed by the wrap-exclusion precompute so obstacle
+  // rects and per-paragraph re-basing track the DOM instead of estimates.
+  const [measuredWrapBands, setMeasuredWrapBands] = React.useState<
+    Map<string, MeasuredWrapBand>
+  >(() => new Map());
+  const wrapBandReconcileModelRef = React.useRef<unknown>(undefined);
+  const wrapBandReconcilePassCountRef = React.useRef(0);
   const paginationMeasurementSuspendUntilRef = React.useRef(0);
   const paginationMeasurementResumeTimeoutRef = React.useRef<number | null>(
     null
@@ -34494,6 +34947,7 @@ export function DocxEditorViewer({
     setHoveredEmbeddedTableKey(undefined);
     setFocusedEmbeddedTableKey(undefined);
     setTableMoveDropPreview(undefined);
+    setTableFloatingDragPreview(undefined);
     tableMoveDragRef.current = undefined;
     setTableContextMenuState(undefined);
     setContextMenuState(undefined);
@@ -36012,6 +36466,195 @@ export function DocxEditorViewer({
     },
     [explicitPageVirtualizationZoomScale]
   );
+  // Measured wrap-band reconciliation. Estimated flow tops/heights drift from
+  // what the DOM lays out, which lets text overlap floating objects or wrap
+  // short of them. After each committed render (outside drags, which have
+  // their own pointerdown snapshot), capture the rendered rects of floating
+  // wrapped objects and paragraph hosts and feed them back into the wrap
+  // exclusion pipeline. Tolerance + a per-edit pass cap keep the
+  // render -> measure -> correct loop a damped fixed point.
+  React.useEffect(() => {
+    if (
+      floatingMovePreview ||
+      resizePreview ||
+      tableFloatingDragPreview ||
+      tableMoveDragRef.current
+    ) {
+      return;
+    }
+    const modelChanged = wrapBandReconcileModelRef.current !== editor.model;
+    if (modelChanged) {
+      wrapBandReconcileModelRef.current = editor.model;
+      wrapBandReconcilePassCountRef.current = 0;
+    }
+    if (
+      wrapBandReconcilePassCountRef.current >= WRAP_BAND_RECONCILE_MAX_PASSES
+    ) {
+      return;
+    }
+
+    const fresh = new Map<string, MeasuredWrapBand>();
+    pageBodyElementsRef.current.forEach((bodyElement) => {
+      if (!bodyElement.isConnected) {
+        return;
+      }
+      const origin = bodyElement.getBoundingClientRect();
+      if (origin.width <= 0) {
+        return;
+      }
+      const zoomScale = resolveViewerMeasurementZoomScale(bodyElement, 1);
+      const toBand = (rect: DOMRect): MeasuredWrapBand => ({
+        topPx: (rect.top - origin.top) / zoomScale,
+        bottomPx: (rect.bottom - origin.top) / zoomScale,
+        leftPx: (rect.left - origin.left) / zoomScale,
+        rightPx: (rect.right - origin.left) / zoomScale,
+      });
+
+      let pageHasFloatingObject = false;
+      tableElementsRef.current.forEach((element, nodeIndex) => {
+        if (!element.isConnected || !bodyElement.contains(element)) {
+          return;
+        }
+        const node = editor.model.nodes[nodeIndex];
+        if (node?.type !== "table" || !node.style?.floating) {
+          return;
+        }
+        pageHasFloatingObject = true;
+        fresh.set(`tbl:${nodeIndex}`, toBand(element.getBoundingClientRect()));
+      });
+
+      bodyElement
+        .querySelectorAll("[data-docx-image-location]")
+        .forEach((span) => {
+          if (!(span instanceof HTMLElement)) {
+            return;
+          }
+          const location = span.getAttribute("data-docx-image-location") ?? "";
+          const match = /^p:(\d+):(\d+)$/.exec(location);
+          if (!match) {
+            return;
+          }
+          const nodeIndex = Number.parseInt(match[1] ?? "", 10);
+          const childIndex = Number.parseInt(match[2] ?? "", 10);
+          const node = editor.model.nodes[nodeIndex];
+          const child =
+            node?.type === "paragraph" ? node.children[childIndex] : undefined;
+          if (
+            !child ||
+            child.type !== "image" ||
+            !child.floating?.wrapType ||
+            child.floating.wrapType === "none" ||
+            child.floating.behindDocument === true ||
+            shouldRenderWrappedFloatingImage(child)
+          ) {
+            return;
+          }
+          if (getComputedStyle(span).position !== "absolute") {
+            return;
+          }
+          pageHasFloatingObject = true;
+          fresh.set(`img:${location}`, toBand(span.getBoundingClientRect()));
+        });
+
+      // Paragraph bands are only consumed to re-base exclusions, so pages
+      // without floating objects contribute none — this keeps ordinary
+      // typing from churning the reconciliation state.
+      if (!pageHasFloatingObject) {
+        let hasInFlowWrappedFloat = false;
+        paragraphElementsRef.current.forEach((element, nodeIndex) => {
+          if (
+            hasInFlowWrappedFloat ||
+            !element.isConnected ||
+            !bodyElement.contains(element)
+          ) {
+            return;
+          }
+          const candidate = editor.model.nodes[nodeIndex];
+          if (
+            candidate?.type === "paragraph" &&
+            candidate.children.some(
+              (child) =>
+                child.type === "image" &&
+                shouldRenderWrappedFloatingImage(child)
+            )
+          ) {
+            hasInFlowWrappedFloat = true;
+          }
+        });
+        if (!hasInFlowWrappedFloat) {
+          return;
+        }
+      }
+
+      paragraphElementsRef.current.forEach((element, nodeIndex) => {
+        if (!element.isConnected || !bodyElement.contains(element)) {
+          return;
+        }
+        const rect = element.getBoundingClientRect();
+        if (rect.height <= 0) {
+          return;
+        }
+        fresh.set(`para:${nodeIndex}`, toBand(rect));
+      });
+    });
+
+    const withinTolerance = (
+      previous: MeasuredWrapBand,
+      candidate: MeasuredWrapBand
+    ): boolean =>
+      Math.abs(previous.topPx - candidate.topPx) <=
+        WRAP_BAND_RECONCILE_TOLERANCE_PX &&
+      Math.abs(previous.bottomPx - candidate.bottomPx) <=
+        WRAP_BAND_RECONCILE_TOLERANCE_PX &&
+      Math.abs(previous.leftPx - candidate.leftPx) <=
+        WRAP_BAND_RECONCILE_TOLERANCE_PX &&
+      Math.abs(previous.rightPx - candidate.rightPx) <=
+        WRAP_BAND_RECONCILE_TOLERANCE_PX;
+
+    // Node indexes shift on edits, so a model change drops every stale band;
+    // within a model epoch, bands for unmounted pages survive so scrolling
+    // does not churn state. Carrying the previous band object forward when a
+    // remeasure lands within tolerance makes identity comparison detect "no
+    // real change" and end the loop.
+    const next = new Map<string, MeasuredWrapBand>();
+    if (!modelChanged) {
+      measuredWrapBands.forEach((band, key) => {
+        next.set(key, band);
+      });
+    }
+    let modifiedExistingBand = false;
+    fresh.forEach((band, key) => {
+      const previous = measuredWrapBands.get(key);
+      if (previous && withinTolerance(previous, band)) {
+        next.set(key, previous);
+        return;
+      }
+      if (previous && !modelChanged) {
+        modifiedExistingBand = true;
+      }
+      next.set(key, band);
+    });
+
+    let changed = next.size !== measuredWrapBands.size;
+    if (!changed) {
+      for (const [key, band] of next) {
+        if (measuredWrapBands.get(key) !== band) {
+          changed = true;
+          break;
+        }
+      }
+    }
+    if (!changed) {
+      return;
+    }
+    // Only corrections of already-known bands count toward the pass cap;
+    // newly mounted pages adding bands must always be able to register.
+    if (modifiedExistingBand) {
+      wrapBandReconcilePassCountRef.current += 1;
+    }
+    setMeasuredWrapBands(next);
+  });
+
   React.useEffect(() => {
     setDeferInternalPageVirtualization(!hasLargeTableLayoutSurface);
   }, [editor.documentLoadNonce, hasLargeTableLayoutSurface]);
@@ -38350,24 +38993,40 @@ export function DocxEditorViewer({
         hasMoved: false,
       };
 
+      // Word floats a table dragged by its move handle: the drop commits a
+      // tblpPr position and text wraps around it, instead of reordering the
+      // table between blocks.
+      const zoomScale = resolveViewerMeasurementZoomScale(
+        viewerRootRef.current,
+        1
+      );
+      const tableElementAtStart = tableElementsRef.current.get(tableIndex);
+      const tableRectAtStart = tableElementAtStart?.getBoundingClientRect();
+      const floatingHostRectAtStart = tableElementAtStart
+        ?.closest("[data-docx-floating-table-host]")
+        ?.getBoundingClientRect();
+
       const onPointerMove = (pointerMoveEvent: PointerEvent): void => {
         const dragState = tableMoveDragRef.current;
         if (!dragState || pointerMoveEvent.pointerId !== dragState.pointerId) {
           return;
         }
 
-        const deltaX = Math.abs(pointerMoveEvent.clientX - dragState.startX);
-        const deltaY = Math.abs(pointerMoveEvent.clientY - dragState.startY);
-        if (deltaX + deltaY < TABLE_MOVE_DRAG_THRESHOLD_PX) {
+        const movedX = pointerMoveEvent.clientX - dragState.startX;
+        const movedY = pointerMoveEvent.clientY - dragState.startY;
+        if (
+          !dragState.hasMoved &&
+          Math.abs(movedX) + Math.abs(movedY) < TABLE_MOVE_DRAG_THRESHOLD_PX
+        ) {
           return;
         }
 
         dragState.hasMoved = true;
-        const target = resolveTableMoveDropTarget(dragState.tableIndex, {
-          x: pointerMoveEvent.clientX,
-          y: pointerMoveEvent.clientY,
+        setTableFloatingDragPreview({
+          tableIndex: dragState.tableIndex,
+          deltaX: normalizeFloatingDragDeltaForZoom(movedX, zoomScale),
+          deltaY: normalizeFloatingDragDeltaForZoom(movedY, zoomScale),
         });
-        setTableMoveDropPreview(target?.preview);
         pointerMoveEvent.preventDefault();
       };
 
@@ -38393,20 +39052,90 @@ export function DocxEditorViewer({
           pointerStillOverTable ? dragState.tableIndex : undefined
         );
 
-        const target = resolveTableMoveDropTarget(dragState.tableIndex, {
+        setTableFloatingDragPreview(undefined);
+        if (!dragState.hasMoved || !tableRectAtStart) {
+          return;
+        }
+
+        const deltaX = normalizeFloatingDragDeltaForZoom(
+          pointerUpEvent.clientX - dragState.startX,
+          zoomScale
+        );
+        const deltaY = normalizeFloatingDragDeltaForZoom(
+          pointerUpEvent.clientY - dragState.startY,
+          zoomScale
+        );
+        const tableNode = editor.model.nodes[dragState.tableIndex];
+        if (!tableNode || tableNode.type !== "table") {
+          return;
+        }
+
+        const currentFloating = tableNode.style?.floating;
+        // Column-local left and flow-anchor-relative top of the table before
+        // the drag. Non-floating tables sit at their indent in normal flow;
+        // floating ones measure against their zero-height anchor host.
+        const baseLeftPx = floatingHostRectAtStart
+          ? (tableRectAtStart.left - floatingHostRectAtStart.left) / zoomScale
+          : twipsToSignedPixels(tableNode.style?.indentTwips) ?? 0;
+        const baseTopPx = floatingHostRectAtStart
+          ? (tableRectAtStart.top - floatingHostRectAtStart.top) / zoomScale
+          : 0;
+
+        // Word re-anchors the dropped table to the block boundary the drop
+        // lands at, so tblpY stays a small offset from the anchor below it
+        // instead of a large negative offset that no exclusion can satisfy.
+        const dropTarget = resolveTableMoveDropTarget(dragState.tableIndex, {
           x: pointerUpEvent.clientX,
           y: pointerUpEvent.clientY,
         });
-        setTableMoveDropPreview(undefined);
-        if (!dragState.hasMoved) {
-          return;
-        }
+        const rootRect = viewerRootRef.current?.getBoundingClientRect();
+        const shouldReanchor =
+          dropTarget !== undefined &&
+          rootRect !== undefined &&
+          dropTarget.targetNodeIndex !== dragState.tableIndex &&
+          dropTarget.targetNodeIndex !== dragState.tableIndex + 1;
 
-        if (!target) {
-          return;
+        let committedTopPx = baseTopPx + deltaY;
+        if (shouldReanchor && dropTarget && rootRect) {
+          let targetScreenTop = rootRect.top + dropTarget.preview.top;
+          // A non-floating table collapses to zero flow height when it
+          // floats, so anchors below its original position shift up by its
+          // rendered height once the model commits.
+          if (
+            !floatingHostRectAtStart &&
+            dropTarget.targetNodeIndex > dragState.tableIndex
+          ) {
+            targetScreenTop -= tableRectAtStart.height;
+          }
+          const droppedTopScreenPx =
+            tableRectAtStart.top +
+            (pointerUpEvent.clientY - dragState.startY);
+          committedTopPx = (droppedTopScreenPx - targetScreenTop) / zoomScale;
         }
+        // A negative offset would push the exclusion into the paragraph
+        // above the anchor, inflating that paragraph and shifting the anchor
+        // itself — an estimate feedback loop. Keep the offset anchored below
+        // the drop target instead.
+        committedTopPx = Math.max(0, committedTopPx);
 
-        editor.moveTable(dragState.tableIndex, target.targetNodeIndex);
+        editor.setTableFloating(
+          dragState.tableIndex,
+          {
+            xTwips: pixelsToTwips(baseLeftPx + deltaX),
+            yTwips: pixelsToTwips(committedTopPx),
+            horizontalAnchor: "margin",
+            verticalAnchor: "text",
+            horizontalAlign: undefined,
+            verticalAlign: undefined,
+            leftFromTextTwips: currentFloating?.leftFromTextTwips ?? 187,
+            rightFromTextTwips: currentFloating?.rightFromTextTwips ?? 187,
+            topFromTextTwips: currentFloating?.topFromTextTwips ?? 0,
+            bottomFromTextTwips: currentFloating?.bottomFromTextTwips ?? 0,
+          },
+          shouldReanchor && dropTarget
+            ? { moveToNodeIndex: dropTarget.targetNodeIndex }
+            : undefined
+        );
       };
 
       window.addEventListener("pointermove", onPointerMove);
@@ -46653,6 +47382,10 @@ export function DocxEditorViewer({
             display: "inline-block",
             whiteSpace: "pre",
             lineHeight: `${lineHeightPx}px`,
+            // Each fragment is its own block, so an inherited paragraph
+            // text-indent would shift every fragment past its computed
+            // interval; the layout reserves first-line indent itself.
+            textIndent: 0,
             pointerEvents: activeSession ? "none" : undefined,
           }}
         >
@@ -47695,6 +48428,7 @@ export function DocxEditorViewer({
                 display: "inline-block",
                 whiteSpace: "pre",
                 lineHeight: `${activeDualWrappedLayout.lineHeightPx}px`,
+                textIndent: 0,
               }}
             >
               {pieces}
@@ -52038,7 +52772,26 @@ export function DocxEditorViewer({
       ? TABLE_ROW_SLICE_VISUAL_BLEED_PX
       : 0;
 
-    return (
+    // Floating tables (tblpPr) render absolutely out of flow inside a
+    // zero-height host; surrounding paragraphs wrap around them via the
+    // page-flow exclusion pipeline, mirroring fixed wrapped images.
+    const floatingTablePageLayout = options?.pageLayout ?? documentLayout;
+    const floatingTableGeometry =
+      node.style?.floating && !tableRowRange && !tableRowSlice
+        ? resolveFloatingTableGeometry(node, nodeContentWidthPx, {
+            tableWidthPx: estimateFloatingTableWidthPx(
+              node,
+              nodeContentWidthPx
+            ),
+            tableHeightPx: 0,
+            indentPx: twipsToSignedPixels(node.style?.indentTwips) ?? 0,
+            flowTopPx: options?.pageFlowTopPx ?? 0,
+            pageMarginTopPx: floatingTablePageLayout.marginsPx.top,
+            pageMarginLeftPx: floatingTablePageLayout.marginsPx.left,
+          })
+        : undefined;
+
+    const renderedTableBlock = (
       <div
         key={
           tableRowRange
@@ -52071,10 +52824,25 @@ export function DocxEditorViewer({
           }
         }}
         style={{
-          ...tableWrapperStyle(
-            node,
-            twipsToSignedPixels(node.style?.indentTwips) ?? 0
-          ),
+          ...(floatingTableGeometry
+            ? {
+                position: "absolute" as const,
+                left: floatingTableGeometry.leftPx,
+                top: floatingTableGeometry.topPx,
+                maxWidth: nodeContentWidthPx,
+                zIndex: 2,
+              }
+            : tableWrapperStyle(
+                node,
+                twipsToSignedPixels(node.style?.indentTwips) ?? 0
+              )),
+          ...(tableFloatingDragPreview?.tableIndex === nodeIndex
+            ? {
+                transform: `translate(${tableFloatingDragPreview.deltaX}px, ${tableFloatingDragPreview.deltaY}px)`,
+                zIndex: 30,
+                opacity: 0.9,
+              }
+            : undefined),
           ...(tableRowSlice
             ? {
                 height: Math.max(
@@ -54696,6 +55464,20 @@ export function DocxEditorViewer({
         })()}
       </div>
     );
+
+    if (floatingTableGeometry) {
+      return (
+        <div
+          key={`floating-table-host-${nodeIndex}`}
+          data-docx-floating-table-host="true"
+          style={{ height: 0, position: "relative", overflow: "visible" }}
+        >
+          {renderedTableBlock}
+        </div>
+      );
+    }
+
+    return renderedTableBlock;
   };
 
   const renderNodeSegments = React.useCallback(
@@ -54721,6 +55503,7 @@ export function DocxEditorViewer({
           {
             floatingMovePreview,
             resizePreview,
+            measuredWrapBands,
           }
         );
 
@@ -55473,6 +56256,18 @@ export function DocxEditorViewer({
           }
         }
 
+        // Keep the render-side flow top in the same measured coordinate frame
+        // as the wrap obstacles so anchored geometry does not diverge from
+        // the exclusions computed above.
+        const segmentParagraphLineRange = segment.paragraphLineRange;
+        const measuredSegmentFlowTopPx =
+          node.type === "paragraph" &&
+          (!segmentParagraphLineRange ||
+            (segmentParagraphLineRange.startLineIndex === 0 &&
+              segmentParagraphLineRange.endLineIndex >=
+                segmentParagraphLineRange.totalLineCount))
+            ? measuredWrapBands.get(`para:${nodeIndex}`)?.topPx
+            : undefined;
         rendered.push(
           renderDocumentNode(
             node,
@@ -55482,7 +56277,7 @@ export function DocxEditorViewer({
             segment.paragraphLineRange,
             {
               pageLayout: options?.pageLayout,
-              pageFlowTopPx,
+              pageFlowTopPx: measuredSegmentFlowTopPx ?? pageFlowTopPx,
               pageFlowForeignExclusions:
                 foreignWrapExclusionsBySegmentIndex[offset],
               suppressLikelyFullPageCoverImageKeys:
@@ -55517,6 +56312,7 @@ export function DocxEditorViewer({
       focusDropCapWrappedParagraph,
       hoveredDropCapNodeIndex,
       isReadOnly,
+      measuredWrapBands,
       pageContentWidthPxByNodeIndex,
       renderDocumentNode,
       resizePreview,

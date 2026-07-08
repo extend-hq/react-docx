@@ -139,6 +139,78 @@ describe("dual wrapped image layout", () => {
     expect(geometry?.exclusion.top).toBe(44);
   });
 
+  it("hugs the exclusion around interior images with a stale side alignment", async () => {
+    const { resolveDualWrappedFloatingImageGeometry } = await import(
+      "../../packages/react-viewer/src/editor"
+    );
+
+    // A margin-corner image dragged into the column keeps its original
+    // horizontalAlign in the model; the explicit xPx must drive the
+    // exclusion so text wraps both sides instead of losing the whole band
+    // between the image and the aligned edge.
+    const geometry = resolveDualWrappedFloatingImageGeometry(
+      {
+        type: "image",
+        widthPx: 102,
+        heightPx: 102,
+        floating: {
+          xPx: 261,
+          yPx: 13,
+          horizontalAlign: "right",
+          verticalAlign: "top",
+          horizontalRelativeTo: "margin",
+          verticalRelativeTo: "paragraph",
+          distLPx: 12,
+          distRPx: 12,
+          distTPx: 0,
+          distBPx: 0,
+          wrapType: "square",
+          wrapText: "bothSides",
+          behindDocument: false
+        }
+      },
+      624
+    );
+
+    expect(geometry?.exclusion).toEqual({
+      left: 249,
+      right: 375,
+      top: 13,
+      bottom: 115
+    });
+  });
+
+  it("extends the exclusion to the edge when alignment is the operative position", async () => {
+    const { resolveDualWrappedFloatingImageGeometry } = await import(
+      "../../packages/react-viewer/src/editor"
+    );
+
+    const geometry = resolveDualWrappedFloatingImageGeometry(
+      {
+        type: "image",
+        widthPx: 102,
+        heightPx: 102,
+        floating: {
+          yPx: 13,
+          horizontalAlign: "right",
+          horizontalRelativeTo: "margin",
+          verticalRelativeTo: "paragraph",
+          distLPx: 12,
+          distRPx: 12,
+          distTPx: 0,
+          distBPx: 0,
+          wrapType: "square",
+          wrapText: "bothSides",
+          behindDocument: false
+        }
+      },
+      624
+    );
+
+    expect(geometry?.exclusion.right).toBe(624);
+    expect(geometry?.imageLeftPx).toBe(510);
+  });
+
   it("keeps narrow near-edge both-sides wraps on the side-float path", async () => {
     const { resolveDualWrappedFloatingImageGeometry } = await import(
       "../../packages/react-viewer/src/editor"

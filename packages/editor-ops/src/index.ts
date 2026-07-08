@@ -11,7 +11,12 @@ import type {
   TextRunNode,
   TextStyle
 } from "@extend-ai/react-docx-doc-model";
-import { allocateBlockId, cloneDocModel } from "@extend-ai/react-docx-doc-model";
+import {
+  allocateBlockId,
+  cloneDocModel,
+  cloneParagraphNode,
+  cloneTableNode
+} from "@extend-ai/react-docx-doc-model";
 
 export interface InsertParagraphOptions {
   paragraphStyle?: ParagraphStyle;
@@ -809,16 +814,20 @@ export function updateParagraphText(
   text: string,
   options?: UpdateTextOptions
 ): DocModel {
-  const next = cloneDocModel(model);
-  const paragraph = getParagraph(next, index);
-  if (!paragraph) {
-    return next;
+  // Hot per-keystroke path: share every untouched node so identity-keyed
+  // caches survive the edit; only the edited paragraph is copied.
+  const source = getParagraph(model, index);
+  if (!source) {
+    return { ...model, nodes: [...model.nodes] };
   }
 
-  paragraph.children = distributeTextAcrossParagraphChildren(paragraph, text, options);
+  const paragraph = cloneParagraphNode(source);
+  paragraph.children = distributeTextAcrossParagraphChildren(source, text, options);
   paragraph.sourceXml = undefined;
 
-  return next;
+  const nextNodes = [...model.nodes];
+  nextNodes[index] = paragraph;
+  return { ...model, nodes: nextNodes };
 }
 
 export function updateTableCellText(
@@ -829,17 +838,21 @@ export function updateTableCellText(
   text: string,
   options?: UpdateTextOptions
 ): DocModel {
-  const next = cloneDocModel(model);
-  const tableNode = next.nodes[tableIndex];
-  if (!tableNode || tableNode.type !== "table") {
-    return next;
+  const sourceTable = model.nodes[tableIndex];
+  if (!sourceTable || sourceTable.type !== "table") {
+    return { ...model, nodes: [...model.nodes] };
   }
 
+  const tableNode = cloneTableNode(sourceTable);
   const row = tableNode.rows[rowIndex];
   const cell = row?.cells[cellIndex];
   if (!cell) {
-    return next;
+    return { ...model, nodes: [...model.nodes] };
   }
+
+  const nextNodes = [...model.nodes];
+  nextNodes[tableIndex] = tableNode;
+  const next = { ...model, nodes: nextNodes };
 
   const paragraphs = cell.nodes.filter((node): node is ParagraphNode => node.type === "paragraph");
   const incomingParagraphTexts = text
@@ -886,25 +899,27 @@ export function updateTableCellParagraphText(
   text: string,
   options?: UpdateTextOptions
 ): DocModel {
-  const next = cloneDocModel(model);
-  const tableNode = next.nodes[tableIndex];
-  if (!tableNode || tableNode.type !== "table") {
-    return next;
+  const sourceTable = model.nodes[tableIndex];
+  if (!sourceTable || sourceTable.type !== "table") {
+    return { ...model, nodes: [...model.nodes] };
   }
 
+  const tableNode = cloneTableNode(sourceTable);
   const row = tableNode.rows[rowIndex];
   const cell = row?.cells[cellIndex];
   const paragraph = cell?.nodes.filter((node): node is ParagraphNode => node.type === "paragraph")[paragraphIndex];
 
   if (!cell || !paragraph) {
-    return next;
+    return { ...model, nodes: [...model.nodes] };
   }
 
   paragraph.children = distributeTextAcrossParagraphChildren(paragraph, text, options);
   paragraph.sourceXml = undefined;
   tableNode.sourceXml = undefined;
 
-  return next;
+  const nextNodes = [...model.nodes];
+  nextNodes[tableIndex] = tableNode;
+  return { ...model, nodes: nextNodes };
 }
 
 export function updateTableCellParagraphTextRecursive(

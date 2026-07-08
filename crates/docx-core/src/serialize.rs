@@ -1808,6 +1808,49 @@ fn table_xml(table: &TableNode, state: &mut ImageSerializationState<'_>, run_id_
     }
 
     let mut table_props: Vec<String> = Vec::new();
+    // tblpPr precedes tblW in the tblPr child sequence.
+    if let Some(floating) = table.style.as_ref().and_then(|s| s.floating.as_ref()) {
+        let mut attrs = String::new();
+        if let Some(value) = floating.left_from_text_twips {
+            attrs.push_str(&format!(r#" w:leftFromText="{value}""#));
+        }
+        if let Some(value) = floating.right_from_text_twips {
+            attrs.push_str(&format!(r#" w:rightFromText="{value}""#));
+        }
+        if let Some(value) = floating.top_from_text_twips {
+            attrs.push_str(&format!(r#" w:topFromText="{value}""#));
+        }
+        if let Some(value) = floating.bottom_from_text_twips {
+            attrs.push_str(&format!(r#" w:bottomFromText="{value}""#));
+        }
+        if let Some(value) = floating.vertical_anchor.as_ref() {
+            attrs.push_str(&format!(r#" w:vertAnchor="{}""#, escape_xml(value)));
+        }
+        if let Some(value) = floating.horizontal_anchor.as_ref() {
+            attrs.push_str(&format!(r#" w:horzAnchor="{}""#, escape_xml(value)));
+        }
+        if let Some(align) = floating.horizontal_align {
+            attrs.push_str(&format!(
+                r#" w:tblpXSpec="{}""#,
+                image_horizontal_align_str(align)
+            ));
+        }
+        if let Some(value) = floating.x_twips {
+            attrs.push_str(&format!(r#" w:tblpX="{value}""#));
+        }
+        if let Some(align) = floating.vertical_align {
+            attrs.push_str(&format!(
+                r#" w:tblpYSpec="{}""#,
+                image_vertical_align_str(align)
+            ));
+        }
+        if let Some(value) = floating.y_twips {
+            attrs.push_str(&format!(r#" w:tblpY="{value}""#));
+        }
+        if !attrs.is_empty() {
+            table_props.push(format!("<w:tblpPr{attrs}/>"));
+        }
+    }
     if let Some(table_width_twips) = twips_to_xml(table.style.as_ref().and_then(|s| s.width_twips)) {
         table_props.push(format!(
             r#"<w:tblW w:w="{table_width_twips}" w:type="dxa"/>"#

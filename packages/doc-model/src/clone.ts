@@ -110,6 +110,14 @@ function cloneParagraphStyle(
   };
 }
 
+export function cloneParagraphNode(paragraph: ParagraphNode): ParagraphNode {
+  return cloneParagraph(paragraph);
+}
+
+export function cloneTableNode(table: TableNode): TableNode {
+  return cloneTable(table);
+}
+
 function cloneParagraph(paragraph: ParagraphNode): ParagraphNode {
   return {
     type: "paragraph",

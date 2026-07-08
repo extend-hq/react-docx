@@ -14,7 +14,8 @@ export {
   collectDuplicateDocModelBlockIds,
   ensureDocModelBlockIds
 } from "./block-id";
-export { cloneDocModel } from "./clone";
+export { cloneDocModel, cloneParagraphNode, cloneTableNode } from "./clone";
+export { deepFreezeDocModel } from "./freeze";
 export { normalizeDocModel } from "./normalize";
 
 export async function buildDocModel(pkg: OoxmlPackage): Promise<DocModel> {
