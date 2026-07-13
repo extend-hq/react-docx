@@ -54,11 +54,10 @@ function Viewer({ model }: { model: DocModel }): React.JSX.Element {
 }
 
 describe("left+right tab-stop columns (signature block)", () => {
-  it("renders via the anchored left-right tab layout with three zones", () => {
+  it("renders via the anchored left-right tab layout (left margin + right column)", () => {
     const html = renderToStaticMarkup(React.createElement(Viewer, { model: buildModel() }));
     expect(html).toContain('data-docx-tab-layout="left-right"');
     expect(html).toMatch(/data-docx-tab-zone="0"/);
     expect(html).toMatch(/data-docx-tab-zone="1"/);
-    expect(html).toMatch(/data-docx-tab-zone="2"/);
   });
 });

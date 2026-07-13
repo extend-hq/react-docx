@@ -20460,17 +20460,16 @@ function renderParagraphRuns(
   }
 
   if (useLeftRightTabLayout) {
-    // Two-column signature-block layout: zone 0 at the left margin, zone 1
-    // left-aligned starting at the left tab, zone 2 right-aligned ending at the
-    // right tab. Grid columns are anchored at the tab-stop positions.
-    const zones = buildAnchoredTabZones(3);
+    // Two-column signature-block layout: zone 0 at the left margin, and
+    // everything after the first tab as a left-aligned right column anchored at
+    // the left tab. Word collapses the trailing right tab once the column's
+    // content runs past it (the usual case for party names), so the content
+    // simply left-flows and wraps within the right column — matching Word and
+    // avoiding the overlap a fixed right-aligned zone would cause.
+    const zones = buildAnchoredTabZones(2);
     const leftStopPx = Math.max(
       0,
       Math.round(paragraphFirstTabStopPx(paragraph, "left") ?? 0)
-    );
-    const rightStopPx = Math.max(
-      leftStopPx,
-      Math.round(paragraphFirstTabStopPx(paragraph, "right") ?? leftStopPx)
     );
 
     return (
@@ -20479,49 +20478,42 @@ function renderParagraphRuns(
         data-docx-tab-layout="left-right"
         style={{
           display: "grid",
-          gridTemplateColumns: `${leftStopPx}px 0px ${Math.max(
-            0,
-            rightStopPx - leftStopPx
-          )}px 0px minmax(0, 1fr)`,
+          gridTemplateColumns: `${leftStopPx}px 0px minmax(0, 1fr)`,
           alignItems: "start",
           width: "100%",
         }}
       >
-        <span
-          data-docx-tab-zone="0"
-          style={{
-            ...anchoredTabZoneStyle,
-            gridColumn: "1 / 2",
-            gridRow: "1 / 2",
-            justifySelf: "start",
-          }}
-        >
-          {zones[0]}
-        </span>
+        {zones[0].length > 0 ? (
+          <span
+            data-docx-tab-zone="0"
+            style={{
+              ...anchoredTabZoneStyle,
+              gridColumn: "1 / 2",
+              gridRow: "1 / 2",
+              justifySelf: "start",
+            }}
+          >
+            {zones[0]}
+          </span>
+        ) : null}
         <span
           data-docx-tab-zone="1"
           style={{
-            ...anchoredTabZoneStyle,
+            // Normal flowing block (not the shared inline-flex zone style) so
+            // the right column's run segments wrap as ordinary text at the
+            // column width instead of shrinking into side-by-side sub-columns.
+            display: "block",
+            minWidth: 0,
+            whiteSpace: "pre-wrap",
+            wordBreak: "normal",
+            overflowWrap: "normal",
             gridColumn: "3 / -1",
             gridRow: "1 / 2",
-            justifySelf: "start",
+            justifySelf: "stretch",
             textAlign: "left",
           }}
         >
           {zones[1]}
-        </span>
-        <span
-          data-docx-tab-zone="2"
-          style={{
-            ...anchoredTabZoneStyle,
-            gridColumn: "1 / 4",
-            gridRow: "1 / 2",
-            justifySelf: "end",
-            justifyContent: "flex-end",
-            textAlign: "right",
-          }}
-        >
-          {zones[2]}
         </span>
       </div>
     );
