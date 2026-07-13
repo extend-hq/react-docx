@@ -29,11 +29,14 @@ function buildModel(): DocModel {
             { alignment: "right", positionTwips: 9240 },
           ],
         },
+        // Two rows (split by the line break) x two columns (split by the tab):
+        //   Client A                     | Company B Legal Name LLC
+        //   On behalf of itself and ...  | On behalf of itself and ...
         children: [
           {
             type: "text",
             text:
-              "Client A\tCompany B Legal Name LLC United States On behalf of itself and its affiliates\tOn behalf of itself and its affiliates",
+              "Client A\tCompany B Legal Name LLC\nOn behalf of itself and its affiliates\tOn behalf of itself and its affiliates",
           },
         ],
       },

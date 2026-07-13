@@ -20246,12 +20246,21 @@ function renderParagraphRuns(
 
     renderNumberingIntoTarget(zones[0], `${keyPrefix}-numbering-anchored`);
 
+    // A line break (`\n`, e.g. a `<w:br/>`) is a shared row boundary: it starts
+    // a new visual line in EVERY column and returns the cursor to the first
+    // column. Emit a <br> into all zones and reset the active column.
+    const emitRowBreakToAllZones = (breakKey: string): void => {
+      zones.forEach((zone, zoneIdx) => {
+        zone.push(React.createElement("br", { key: `${breakKey}-z${zoneIdx}` }));
+      });
+      activeZone = 0;
+    };
+
     paragraph.children.forEach((child, childIndex) => {
       const zoneIndex = Math.max(0, Math.min(zoneCount - 1, activeZone));
-      const zoneTarget = zones[zoneIndex];
       const key = `${keyPrefix}-anchored-run-${childIndex}`;
       appendTrackedDeletionSegments(
-        zoneTarget,
+        zones[zoneIndex],
         `${key}-before`,
         child.type === "text" || child.type === "form-field"
           ? child.style
@@ -20265,46 +20274,45 @@ function renderParagraphRuns(
           : child.type === "form-field"
           ? formFieldDisplayValue(child)
           : undefined;
-      if (typeof rawText !== "string" || !rawText.includes("\t")) {
-        if (child.type === "text") {
-          const resolvedText = resolveFieldText(rawText ?? "", zoneIndex);
-          renderRun(
-            zoneTarget,
-            child,
-            key,
-            attachTextToPreviousCheckbox(paragraph, childIndex, resolvedText),
-            trackedInlineChange,
-            childIndex
-          );
-        } else {
-          renderRun(
-            zoneTarget,
-            child,
-            key,
-            undefined,
-            trackedInlineChange,
-            childIndex
-          );
-        }
+
+      if (typeof rawText !== "string") {
+        // Non-text child (image, etc.) — render into the current column.
+        renderRun(
+          zones[Math.max(0, Math.min(zoneCount - 1, activeZone))],
+          child,
+          key,
+          undefined,
+          trackedInlineChange,
+          childIndex
+        );
         consumeTrackedVisibleChild(child);
         return;
       }
 
-      const parts = rawText.split("\t");
-      parts.forEach((part, partIndex) => {
-        const currentZone = Math.max(0, Math.min(zoneCount - 1, activeZone));
-        if (part.length > 0) {
+      // Tokenize on tabs and line breaks, keeping the delimiters: a tab advances
+      // to the next column; a newline is a shared row break.
+      const tokens = rawText.split(/(\t|\n)/);
+      tokens.forEach((token, tokenIndex) => {
+        if (token === "\t") {
+          if (activeZone < zoneCount - 1) {
+            activeZone += 1;
+          }
+          return;
+        }
+        if (token === "\n") {
+          emitRowBreakToAllZones(`${key}-br-${tokenIndex}`);
+          return;
+        }
+        if (token.length > 0) {
+          const currentZone = Math.max(0, Math.min(zoneCount - 1, activeZone));
           renderRun(
             zones[currentZone],
             child,
-            `${key}-part-${partIndex}`,
-            resolveFieldText(part, currentZone),
+            `${key}-part-${tokenIndex}`,
+            resolveFieldText(token, currentZone),
             trackedInlineChange,
             childIndex
           );
-        }
-        if (partIndex < parts.length - 1 && activeZone < zoneCount - 1) {
-          activeZone += 1;
         }
       });
       consumeTrackedVisibleChild(child);
@@ -20487,10 +20495,17 @@ function renderParagraphRuns(
           <span
             data-docx-tab-zone="0"
             style={{
-              ...anchoredTabZoneStyle,
+              // Block (not the shared inline-flex zone style) so shared row
+              // breaks (<br>) split the left column into lines too.
+              display: "block",
+              minWidth: 0,
+              whiteSpace: "pre-wrap",
+              wordBreak: "normal",
+              overflowWrap: "normal",
               gridColumn: "1 / 2",
               gridRow: "1 / 2",
               justifySelf: "start",
+              textAlign: "left",
             }}
           >
             {zones[0]}
