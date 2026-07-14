@@ -22,6 +22,7 @@ import {
   type ParagraphIndent,
   type ImageRunNode,
   type ParagraphNode,
+  type ParagraphTabStop,
   type TableBorderSet,
   type TableBorderStyle,
   type TableCellStyle,
@@ -8725,6 +8726,42 @@ function updateMeasuredLineWidthPxForText(
   const segments = text.split("\n");
   const trailingSegment = segments[segments.length - 1] ?? "";
   return measureTextWidthPx(trailingSegment, style, paragraphBaseFontPx);
+}
+
+// Canvas-measured width of the text run that follows a tab, up to (but not
+// including) the next tab or line break. Used to right/center-align the segment
+// after a right/center tab stop: the tab spacer is sized so the segment ends at
+// (right) or straddles (center) the stop. Stops at the first non-text child so
+// alignment is only attempted for plain-text segments (extend-hq/react-docx#15).
+function measureFollowingTabSegmentWidthPx(
+  children: ParagraphNode["children"],
+  startIndex: number,
+  paragraphBaseFontPx: number
+): number {
+  let widthPx = 0;
+  for (let index = startIndex; index < children.length; index += 1) {
+    const child = children[index];
+    if (child.type !== "text") {
+      break;
+    }
+    const text = child.text ?? "";
+    if (text === "\t") {
+      break;
+    }
+    const newlineIndex = text.indexOf("\n");
+    if (newlineIndex >= 0) {
+      return (
+        widthPx +
+        measureTextWidthPx(
+          text.slice(0, newlineIndex),
+          child.style,
+          paragraphBaseFontPx
+        )
+      );
+    }
+    widthPx += measureTextWidthPx(text, child.style, paragraphBaseFontPx);
+  }
+  return widthPx;
 }
 
 function resolveTabSpacerWidthPx(
@@ -19267,6 +19304,20 @@ function renderParagraphRuns(
         Number.isFinite(value) && (value as number) > 0
     )
     .sort((left, right) => left - right);
+  const tabStopsWithAlignPx = (paragraph.style?.tabStops ?? [])
+    .map((tabStopEntry) => ({
+      posPx: twipsToPixels(tabStopEntry.positionTwips),
+      align: tabStopEntry.alignment ?? "left",
+    }))
+    .filter(
+      (
+        entry
+      ): entry is {
+        posPx: number;
+        align: NonNullable<ParagraphTabStop["alignment"]>;
+      } => Number.isFinite(entry.posPx) && (entry.posPx as number) > 0
+    )
+    .sort((left, right) => left.posPx - right.posPx);
   const hasExplicitTabStops = tabStopPositionsPx.length > 0;
   const paragraphBaseFontPx = paragraphBaseFontSizePx(paragraph);
   let hasTabSplit = false;
@@ -19423,6 +19474,32 @@ function renderParagraphRuns(
       fallbackTabWidthPx,
       checkboxChoiceRow
     );
+  // Alignment-aware tab spacer (see the read-only renderer): right/center stops
+  // size the spacer so the following segment ends at / straddles the stop when
+  // it fits, else fall back to the plain left-advance.
+  const resolveAlignedTabWidthPx = (tabChildIndex: number): number => {
+    if (tabChildIndex < 0) {
+      return resolveNextTabWidthPx();
+    }
+    const stop = tabStopsWithAlignPx.find(
+      (candidate) => candidate.posPx > approximateLineWidthPx + 0.5
+    );
+    if (!stop || (stop.align !== "right" && stop.align !== "center")) {
+      return resolveNextTabWidthPx();
+    }
+    const gapPx = stop.posPx - approximateLineWidthPx;
+    const segmentWidthPx = measureFollowingTabSegmentWidthPx(
+      paragraph.children,
+      tabChildIndex + 1,
+      paragraphBaseFontPx
+    );
+    const offsetPx =
+      stop.align === "right" ? segmentWidthPx : segmentWidthPx / 2;
+    if (gapPx - offsetPx >= 8) {
+      return Math.round(gapPx - offsetPx);
+    }
+    return resolveNextTabWidthPx();
+  };
   const appendPlainTextWithSoftBreakControl = (
     target: React.ReactNode[],
     keySeed: string,
@@ -19494,9 +19571,10 @@ function renderParagraphRuns(
   };
   const tabTextStyle = (
     style: TextRunNode["style"] | FormFieldRunNode["style"],
-    textStyle: React.CSSProperties
+    textStyle: React.CSSProperties,
+    tabChildIndex = -1
   ): React.CSSProperties => {
-    const tabWidthPx = resolveNextTabWidthPx();
+    const tabWidthPx = resolveAlignedTabWidthPx(tabChildIndex);
     trackInlineAdvance(tabWidthPx);
     const hasUnderline = Boolean(style?.underline);
     return {
@@ -19733,7 +19811,7 @@ function renderParagraphRuns(
           <span
             key={key}
             {...annotationAttributes}
-            style={tabTextStyle(child.style, trackedStyle)}
+            style={tabTextStyle(child.style, trackedStyle, childIndex)}
           >
             {"\u00a0"}
           </span>
@@ -20139,7 +20217,7 @@ function renderParagraphRuns(
         <span
           key={key}
           {...annotationAttributes}
-          style={tabTextStyle(child.style, textStyle)}
+          style={tabTextStyle(child.style, textStyle, childIndex)}
         >
           {"\u00a0"}
         </span>
@@ -48914,6 +48992,23 @@ export function DocxEditorViewer({
             Number.isFinite(value) && (value as number) > 0
         )
         .sort((left, right) => left - right);
+      // Tab stops with their alignment preserved (sorted by position), so the
+      // plain-tab renderer can right/center-align the segment that follows a
+      // right/center stop instead of always left-aligning at the position.
+      const tabStopsWithAlignPx = (paragraph.style?.tabStops ?? [])
+        .map((tabStopEntry) => ({
+          posPx: twipsToPixels(tabStopEntry.positionTwips),
+          align: tabStopEntry.alignment ?? "left",
+        }))
+        .filter(
+          (
+            entry
+          ): entry is {
+            posPx: number;
+            align: NonNullable<ParagraphTabStop["alignment"]>;
+          } => Number.isFinite(entry.posPx) && (entry.posPx as number) > 0
+        )
+        .sort((left, right) => left.posPx - right.posPx);
       const compactTabStopFieldLayout = tabStopPositionsPx.length > 0;
       const paragraphBaseFontPx = paragraphBaseFontSizePx(paragraph);
       let approximateLineWidthPx = 0;
@@ -48943,6 +49038,31 @@ export function DocxEditorViewer({
           approximateLineWidthPx,
           fallbackTabWidthPx
         );
+      // Alignment-aware tab spacer: for a right/center stop, size the spacer so
+      // the following text segment ends at (right) or straddles (center) the
+      // stop. Falls back to the plain left-advance when there is no explicit
+      // stop, the stop is left-aligned, or the segment is too wide to fit before
+      // the stop (matching Word, which degrades an overrun right tab to left).
+      const resolveAlignedTabWidthPx = (tabChildIndex: number): number => {
+        const stop = tabStopsWithAlignPx.find(
+          (candidate) => candidate.posPx > approximateLineWidthPx + 0.5
+        );
+        if (!stop || (stop.align !== "right" && stop.align !== "center")) {
+          return resolveNextTabWidthPx();
+        }
+        const gapPx = stop.posPx - approximateLineWidthPx;
+        const segmentWidthPx = measureFollowingTabSegmentWidthPx(
+          previewParagraph.children,
+          tabChildIndex + 1,
+          paragraphBaseFontPx
+        );
+        const offsetPx =
+          stop.align === "right" ? segmentWidthPx : segmentWidthPx / 2;
+        if (gapPx - offsetPx >= 8) {
+          return Math.round(gapPx - offsetPx);
+        }
+        return resolveNextTabWidthPx();
+      };
       const appendInteractiveTextWithSoftBreakControl = (
         keySeed: string,
         text: string,
@@ -51476,7 +51596,7 @@ export function DocxEditorViewer({
             renderedText
           );
           if (renderedText === "\t") {
-            const tabWidthPx = resolveNextTabWidthPx();
+            const tabWidthPx = resolveAlignedTabWidthPx(childIndex);
             nodes.push(
               <span
                 key={runKey}
