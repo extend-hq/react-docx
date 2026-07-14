@@ -22,6 +22,7 @@ import {
   type ParagraphIndent,
   type ImageRunNode,
   type ParagraphNode,
+  type ParagraphTabStop,
   type TableBorderSet,
   type TableBorderStyle,
   type TableCellStyle,
@@ -8698,6 +8699,119 @@ function updateEstimatedLineWidthPxForText(
   return estimateTextAdvanceWidthPx(trailingSegment, style);
 }
 
+// Canvas-accurate analog of updateEstimatedLineWidthPxForText. The per-character
+// heuristic used above over-estimates long lowercase runs, which is harmless for
+// wrap counting but shifts explicit tab-stop columns: a tab is rendered as a
+// fixed-width spacer of (tabStop - runningWidth), while the preceding text lays
+// out at its real width, so any running-width error drags the column off the
+// stop. Paragraphs with explicit tab stops therefore track their running width
+// with the same canvas metrics the text actually renders at, keeping tabbed
+// columns aligned across wrapped/broken lines (extend-hq/react-docx#15).
+function updateMeasuredLineWidthPxForText(
+  currentLineWidthPx: number,
+  text: string,
+  style: TextRunNode["style"] | FormFieldRunNode["style"] | undefined,
+  paragraphBaseFontPx: number
+): number {
+  if (!text) {
+    return currentLineWidthPx;
+  }
+
+  if (!text.includes("\n")) {
+    return (
+      currentLineWidthPx + measureTextWidthPx(text, style, paragraphBaseFontPx)
+    );
+  }
+
+  const segments = text.split("\n");
+  const trailingSegment = segments[segments.length - 1] ?? "";
+  return measureTextWidthPx(trailingSegment, style, paragraphBaseFontPx);
+}
+
+// Canvas-measured width of the text run that follows a tab, up to (but not
+// including) the next tab or line break. Used to right/center-align the segment
+// after a right/center tab stop: the tab spacer is sized so the segment ends at
+// (right) or straddles (center) the stop. Stops at the first non-text child so
+// alignment is only attempted for plain-text segments (extend-hq/react-docx#15).
+function measureFollowingTabSegmentWidthPx(
+  children: ParagraphNode["children"],
+  startIndex: number,
+  paragraphBaseFontPx: number
+): number {
+  let widthPx = 0;
+  for (let index = startIndex; index < children.length; index += 1) {
+    const child = children[index];
+    if (child.type !== "text") {
+      break;
+    }
+    const text = child.text ?? "";
+    if (text === "\t") {
+      break;
+    }
+    const newlineIndex = text.indexOf("\n");
+    if (newlineIndex >= 0) {
+      return (
+        widthPx +
+        measureTextWidthPx(
+          text.slice(0, newlineIndex),
+          child.style,
+          paragraphBaseFontPx
+        )
+      );
+    }
+    widthPx += measureTextWidthPx(text, child.style, paragraphBaseFontPx);
+  }
+  return widthPx;
+}
+
+// Advance the running width for `text` while simulating the browser's greedy
+// word-wrap: when adding a word would overflow the content width, the word
+// starts a new visual line and the running width resets to that word's width.
+// This keeps the running width equal to the CURRENT visual line's width, which
+// is what a right/center tab after a wrapped run needs to align correctly — the
+// plain tracker only reset at explicit breaks and drifted past the tab stop.
+// Canvas metrics match the browser's layout closely enough that the simulated
+// wrap points line up with the real ones (extend-hq/react-docx#15).
+function advanceWrapAwareLineWidthPx(
+  currentLineWidthPx: number,
+  text: string,
+  style: TextRunNode["style"] | FormFieldRunNode["style"] | undefined,
+  paragraphBaseFontPx: number,
+  maxLineWidthPx: number
+): number {
+  if (!text) {
+    return currentLineWidthPx;
+  }
+  let widthPx = currentLineWidthPx;
+  const lines = text.split("\n");
+  lines.forEach((line, lineIndex) => {
+    if (lineIndex > 0) {
+      widthPx = 0; // explicit break resets to the margin
+    }
+    if (!line) {
+      return;
+    }
+    // Split into whitespace-preserving tokens so words wrap at spaces.
+    for (const token of line.split(/(\s+)/)) {
+      if (!token) {
+        continue;
+      }
+      const tokenWidthPx = measureTextWidthPx(token, style, paragraphBaseFontPx);
+      const isWhitespace = token.trim().length === 0;
+      if (
+        !isWhitespace &&
+        widthPx > 0 &&
+        widthPx + tokenWidthPx > maxLineWidthPx
+      ) {
+        widthPx = tokenWidthPx; // word wraps to a new line at the margin
+      } else {
+        widthPx += tokenWidthPx;
+      }
+    }
+  });
+  return widthPx;
+}
+
 function resolveTabSpacerWidthPx(
   tabStopPositionsPx: number[],
   currentLineWidthPx: number,
@@ -8729,6 +8843,133 @@ function resolveTabSpacerWidthPx(
   const stepCount = Math.floor(overflow / safeFallback) + 1;
   const projectedStop = lastStop + stepCount * safeFallback;
   return Math.max(8, Math.round(projectedStop - currentLineWidthPx));
+}
+
+// ---------------------------------------------------------------------------
+// Shared plain-tab layout logic (extend-hq/react-docx#15).
+//
+// A paragraph is rendered through more than one code path (the fast read-only
+// inline path, and the markup-aware `renderParagraphRuns` used for editing,
+// tracked changes, comments, and special tab layouts). These helpers are the
+// single source of truth for how tab stops position text, so a fix lands once
+// instead of being duplicated per path (which is how alignment/wrap bugs kept
+// slipping through one path).
+// ---------------------------------------------------------------------------
+
+type TabStopWithAlignPx = {
+  posPx: number;
+  align: NonNullable<ParagraphTabStop["alignment"]>;
+};
+
+// Tab stops with alignment preserved, sorted by position.
+function buildTabStopsWithAlignPx(
+  paragraph: ParagraphNode
+): TabStopWithAlignPx[] {
+  return (paragraph.style?.tabStops ?? [])
+    .map((tabStopEntry) => ({
+      posPx: twipsToPixels(tabStopEntry.positionTwips),
+      align: tabStopEntry.alignment ?? "left",
+    }))
+    .filter(
+      (entry): entry is TabStopWithAlignPx =>
+        Number.isFinite(entry.posPx) && (entry.posPx as number) > 0
+    )
+    .sort((left, right) => left.posPx - right.posPx);
+}
+
+// Advance the running line width for rendered text. Paragraphs without explicit
+// tab stops keep the cheap per-character estimate; those with stops track the
+// canvas-accurate width the text actually renders at (so tab columns land on
+// their stop), and, when a content-box width is known, simulate the browser's
+// word-wrap so a tab after a wrapped run resolves on the correct visual line.
+function advanceTabLineWidthPx(params: {
+  currentLineWidthPx: number;
+  text: string;
+  style: TextRunNode["style"] | FormFieldRunNode["style"] | undefined;
+  paragraphBaseFontPx: number;
+  hasExplicitTabStops: boolean;
+  contentWidthPx?: number;
+}): number {
+  const {
+    currentLineWidthPx,
+    text,
+    style,
+    paragraphBaseFontPx,
+    hasExplicitTabStops,
+    contentWidthPx,
+  } = params;
+  if (!hasExplicitTabStops) {
+    return updateEstimatedLineWidthPxForText(currentLineWidthPx, text, style);
+  }
+  if (contentWidthPx !== undefined && Number.isFinite(contentWidthPx)) {
+    return advanceWrapAwareLineWidthPx(
+      currentLineWidthPx,
+      text,
+      style,
+      paragraphBaseFontPx,
+      contentWidthPx
+    );
+  }
+  return updateMeasuredLineWidthPxForText(
+    currentLineWidthPx,
+    text,
+    style,
+    paragraphBaseFontPx
+  );
+}
+
+// Width of the spacer that renders a tab. For a right/center stop the following
+// segment is right-aligned / centered on the stop when it fits before it;
+// otherwise (left stop, no stop, or an overrun that cannot fit) it degrades to
+// the plain left-advance, matching Word.
+function resolveAlignedTabSpacerPx(params: {
+  tabStopsWithAlignPx: TabStopWithAlignPx[];
+  tabStopPositionsPx: number[];
+  currentLineWidthPx: number;
+  children: ParagraphNode["children"];
+  tabChildIndex: number;
+  paragraphBaseFontPx: number;
+  fallbackTabWidthPx: number;
+  fixedFallbackTab?: boolean;
+}): number {
+  const {
+    tabStopsWithAlignPx,
+    tabStopPositionsPx,
+    currentLineWidthPx,
+    children,
+    tabChildIndex,
+    paragraphBaseFontPx,
+    fallbackTabWidthPx,
+    fixedFallbackTab = false,
+  } = params;
+  const plainSpacerPx = (): number =>
+    resolveTabSpacerWidthPx(
+      tabStopPositionsPx,
+      currentLineWidthPx,
+      fallbackTabWidthPx,
+      fixedFallbackTab
+    );
+  if (tabChildIndex < 0) {
+    return plainSpacerPx();
+  }
+  const stop = tabStopsWithAlignPx.find(
+    (candidate) => candidate.posPx > currentLineWidthPx + 0.5
+  );
+  if (!stop || (stop.align !== "right" && stop.align !== "center")) {
+    return plainSpacerPx();
+  }
+  const gapPx = stop.posPx - currentLineWidthPx;
+  const segmentWidthPx = measureFollowingTabSegmentWidthPx(
+    children,
+    tabChildIndex + 1,
+    paragraphBaseFontPx
+  );
+  const offsetPx =
+    stop.align === "right" ? segmentWidthPx : segmentWidthPx / 2;
+  if (gapPx - offsetPx >= 8) {
+    return Math.round(gapPx - offsetPx);
+  }
+  return plainSpacerPx();
 }
 
 function estimateInteractiveFieldWidthPx(field: FormFieldRunNode): number {
@@ -19177,6 +19418,10 @@ interface ParagraphRunRenderOptions {
   paragraphOriginLeftPx?: number;
   paragraphOriginTopPx?: number;
   imageFilterSuffix?: string;
+  // Content-box width (the wrap boundary) so tab tracking can be wrap-aware for
+  // right/center tab alignment after a wrapped run. When omitted, the tracker
+  // falls back to cumulative width (extend-hq/react-docx#15).
+  paragraphContentWidthPx?: number;
 }
 
 function renderParagraphRuns(
@@ -19238,6 +19483,9 @@ function renderParagraphRuns(
         Number.isFinite(value) && (value as number) > 0
     )
     .sort((left, right) => left - right);
+  const tabStopsWithAlignPx = buildTabStopsWithAlignPx(paragraph);
+  const hasExplicitTabStops = tabStopPositionsPx.length > 0;
+  const paragraphBaseFontPx = paragraphBaseFontSizePx(paragraph);
   let hasTabSplit = false;
   let tabLeaderColor: string | undefined;
   const showTrackedChanges = options?.showTrackedChanges === true;
@@ -19366,11 +19614,14 @@ function renderParagraphRuns(
     if (!shouldTrackTabLineWidth) {
       return;
     }
-    approximateLineWidthPx = updateEstimatedLineWidthPxForText(
-      approximateLineWidthPx,
+    approximateLineWidthPx = advanceTabLineWidthPx({
+      currentLineWidthPx: approximateLineWidthPx,
       text,
-      style
-    );
+      style,
+      paragraphBaseFontPx,
+      hasExplicitTabStops,
+      contentWidthPx: options?.paragraphContentWidthPx,
+    });
   };
   const trackInlineAdvance = (widthPx: number): void => {
     if (!shouldTrackTabLineWidth) {
@@ -19378,13 +19629,17 @@ function renderParagraphRuns(
     }
     approximateLineWidthPx += Math.max(0, Math.round(widthPx));
   };
-  const resolveNextTabWidthPx = (): number =>
-    resolveTabSpacerWidthPx(
+  const resolveAlignedTabWidthPx = (tabChildIndex: number): number =>
+    resolveAlignedTabSpacerPx({
+      tabStopsWithAlignPx,
       tabStopPositionsPx,
-      approximateLineWidthPx,
+      currentLineWidthPx: approximateLineWidthPx,
+      children: paragraph.children,
+      tabChildIndex,
+      paragraphBaseFontPx,
       fallbackTabWidthPx,
-      checkboxChoiceRow
-    );
+      fixedFallbackTab: checkboxChoiceRow,
+    });
   const appendPlainTextWithSoftBreakControl = (
     target: React.ReactNode[],
     keySeed: string,
@@ -19456,9 +19711,10 @@ function renderParagraphRuns(
   };
   const tabTextStyle = (
     style: TextRunNode["style"] | FormFieldRunNode["style"],
-    textStyle: React.CSSProperties
+    textStyle: React.CSSProperties,
+    tabChildIndex = -1
   ): React.CSSProperties => {
-    const tabWidthPx = resolveNextTabWidthPx();
+    const tabWidthPx = resolveAlignedTabWidthPx(tabChildIndex);
     trackInlineAdvance(tabWidthPx);
     const hasUnderline = Boolean(style?.underline);
     return {
@@ -19695,7 +19951,7 @@ function renderParagraphRuns(
           <span
             key={key}
             {...annotationAttributes}
-            style={tabTextStyle(child.style, trackedStyle)}
+            style={tabTextStyle(child.style, trackedStyle, childIndex)}
           >
             {"\u00a0"}
           </span>
@@ -20101,7 +20357,7 @@ function renderParagraphRuns(
         <span
           key={key}
           {...annotationAttributes}
-          style={tabTextStyle(child.style, textStyle)}
+          style={tabTextStyle(child.style, textStyle, childIndex)}
         >
           {"\u00a0"}
         </span>
@@ -48876,27 +49132,38 @@ export function DocxEditorViewer({
             Number.isFinite(value) && (value as number) > 0
         )
         .sort((left, right) => left - right);
+      const tabStopsWithAlignPx = buildTabStopsWithAlignPx(paragraph);
       const compactTabStopFieldLayout = tabStopPositionsPx.length > 0;
+      const paragraphBaseFontPx = paragraphBaseFontSizePx(paragraph);
       let approximateLineWidthPx = 0;
       const trackTextAdvance = (
         text: string,
         style?: TextRunNode["style"] | FormFieldRunNode["style"]
       ): void => {
-        approximateLineWidthPx = updateEstimatedLineWidthPxForText(
-          approximateLineWidthPx,
+        // paragraphContentWidthPx (declared below) is the wrap boundary; this
+        // closure only runs while rendering children, after it is initialized.
+        approximateLineWidthPx = advanceTabLineWidthPx({
+          currentLineWidthPx: approximateLineWidthPx,
           text,
-          style
-        );
+          style,
+          paragraphBaseFontPx,
+          hasExplicitTabStops: compactTabStopFieldLayout,
+          contentWidthPx: paragraphContentWidthPx,
+        });
       };
       const trackInlineAdvance = (widthPx: number): void => {
         approximateLineWidthPx += Math.max(0, Math.round(widthPx));
       };
-      const resolveNextTabWidthPx = (): number =>
-        resolveTabSpacerWidthPx(
+      const resolveAlignedTabWidthPx = (tabChildIndex: number): number =>
+        resolveAlignedTabSpacerPx({
+          tabStopsWithAlignPx,
           tabStopPositionsPx,
-          approximateLineWidthPx,
-          fallbackTabWidthPx
-        );
+          currentLineWidthPx: approximateLineWidthPx,
+          children: previewParagraph.children,
+          tabChildIndex,
+          paragraphBaseFontPx,
+          fallbackTabWidthPx,
+        });
       const appendInteractiveTextWithSoftBreakControl = (
         keySeed: string,
         text: string,
@@ -49138,6 +49405,7 @@ export function DocxEditorViewer({
             tocLinkColorByLevel,
             paragraphOriginLeftPx: bodyParagraphOriginLeftPx,
             paragraphOriginTopPx: bodyParagraphOriginTopPx,
+            paragraphContentWidthPx,
           }
         );
       }
@@ -51430,7 +51698,7 @@ export function DocxEditorViewer({
             renderedText
           );
           if (renderedText === "\t") {
-            const tabWidthPx = resolveNextTabWidthPx();
+            const tabWidthPx = resolveAlignedTabWidthPx(childIndex);
             nodes.push(
               <span
                 key={runKey}
