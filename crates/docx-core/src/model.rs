@@ -1250,7 +1250,7 @@ pub struct DocModel {
 
 #[cfg(test)]
 mod deserialize_tests {
-    use super::{DocModel, DocNode};
+    use super::{DocModel, DocNode, HeadingLevel, ParagraphAlignment};
 
     #[test]
     fn deserializes_minimal_js_doc_model() {
@@ -1261,15 +1261,27 @@ mod deserialize_tests {
 
     #[test]
     fn deserializes_heading_level_two() {
-        let json = include_str!("../../../tmp/second_node_h2.json");
+        let json = r#"{"type":"paragraph","style":{"headingLevel":2},"children":[{"type":"text","text":"Added"}]}"#;
         let node: DocNode = serde_json::from_str(json).expect("heading level 2");
-        assert!(matches!(node, DocNode::Paragraph(_)));
+        let DocNode::Paragraph(paragraph) = node else {
+            panic!("expected paragraph");
+        };
+        assert_eq!(
+            paragraph.style.and_then(|style| style.heading_level),
+            Some(HeadingLevel::Two)
+        );
     }
 
     #[test]
     fn deserializes_align_center() {
-        let json = include_str!("../../../tmp/second_node_align.json");
+        let json = r#"{"type":"paragraph","style":{"align":"center"},"children":[{"type":"text","text":"Added"}]}"#;
         let node: DocNode = serde_json::from_str(json).expect("align center");
-        assert!(matches!(node, DocNode::Paragraph(_)));
+        let DocNode::Paragraph(paragraph) = node else {
+            panic!("expected paragraph");
+        };
+        assert_eq!(
+            paragraph.style.and_then(|style| style.align),
+            Some(ParagraphAlignment::Center)
+        );
     }
 }
