@@ -216,6 +216,7 @@ pub fn parse_docx(bytes: &[u8]) -> Result<OoxmlPackage, String> {
     Ok(OoxmlPackage {
         parts,
         binary_assets,
+        warnings: Vec::new(),
     })
 }
 
@@ -381,6 +382,7 @@ pub fn create_minimal_docx_package(document_xml: Option<&str>) -> OoxmlPackage {
     OoxmlPackage {
         parts,
         binary_assets: HashMap::new(),
+        warnings: Vec::new(),
     }
 }
 

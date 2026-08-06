@@ -2,7 +2,9 @@ use std::fs;
 use std::path::PathBuf;
 
 use docx_core::doc::{parse_doc, DocFile};
-use docx_core::{build_doc_model, DocNode};
+use docx_core::{
+    build_doc_model, DocNode, ImageRunNode, ImageWrapText, ImageWrapType, TableNode,
+};
 
 fn fixture(name: &str) -> Vec<u8> {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -76,6 +78,48 @@ fn collect_node_text(node: &DocNode, out: &mut String) {
     }
 }
 
+fn collect_node_images<'a>(node: &'a DocNode, out: &mut Vec<&'a ImageRunNode>) {
+    match node {
+        DocNode::Paragraph(paragraph) => {
+            for child in &paragraph.children {
+                if let docx_core::ParagraphChildNode::Image(image) = child {
+                    out.push(image);
+                }
+            }
+        }
+        DocNode::Table(table) => collect_table_images(table, out),
+    }
+}
+
+fn collect_table_images<'a>(table: &'a TableNode, out: &mut Vec<&'a ImageRunNode>) {
+    for row in &table.rows {
+        for cell in &row.cells {
+            for content in &cell.nodes {
+                match content {
+                    docx_core::TableCellContentNode::Paragraph(paragraph) => {
+                        for child in &paragraph.children {
+                            if let docx_core::ParagraphChildNode::Image(image) = child {
+                                out.push(image);
+                            }
+                        }
+                    }
+                    docx_core::TableCellContentNode::Table(table) => {
+                        collect_table_images(table, out);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn collect_images(nodes: &[DocNode]) -> Vec<&ImageRunNode> {
+    let mut images = Vec::new();
+    for node in nodes {
+        collect_node_images(node, &mut images);
+    }
+    images
+}
+
 #[test]
 fn full_pipeline_textutil_doc() {
     let pkg = parse_doc(&fixture("simple-textutil.doc")).expect("parse_doc");
@@ -110,6 +154,62 @@ fn full_pipeline_testpage_and_invoice_template() {
         let model = build_doc_model(&pkg);
         assert!(!model.nodes.is_empty(), "{name}: empty model");
     }
+}
+
+#[test]
+fn imports_main_story_textbox_at_legacy_shape_anchor() {
+    let package = parse_doc(&fixture("DOCX_TestPage.doc")).expect("parse textbox fixture");
+    let document_xml = &package.parts["word/document.xml"].content;
+    assert!(document_xml.contains("<w:txbxContent>"));
+    assert!(document_xml.contains("Office"));
+    assert!(document_xml.contains("2019 / 365"));
+
+    let model = build_doc_model(&package);
+    let images = collect_images(&model.nodes);
+    let text_box = images
+        .into_iter()
+        .find(|image| {
+            image.synthetic_text_box == Some(true)
+                && image
+                    .source_xml
+                    .as_deref()
+                    .is_some_and(|xml| xml.contains("Office") && xml.contains("2019 / 365"))
+        })
+        .expect("main-story textbox image");
+    assert!(text_box.width_px.is_some_and(|width| width > 1.0));
+    assert!(text_box.height_px.is_some_and(|height| height > 1.0));
+    let floating = text_box.floating.as_ref().expect("textbox anchor geometry");
+    assert_eq!(floating.wrap_type, Some(ImageWrapType::WrapNone));
+    assert_eq!(floating.wrap_text, Some(ImageWrapText::BothSides));
+    assert!(model.metadata.warnings.is_empty(), "{:?}", model.metadata.warnings);
+}
+
+#[test]
+fn imports_header_footer_story_textbox_and_field_results() {
+    let package = parse_doc(&fixture("Sellers-Property-Disclosure-Statement.doc"))
+        .expect("parse header textbox fixture");
+    let model = build_doc_model(&package);
+    let text_box = model
+        .metadata
+        .header_sections
+        .iter()
+        .flat_map(|section| collect_images(&section.nodes))
+        .chain(
+            model
+                .metadata
+                .footer_sections
+                .iter()
+                .flat_map(|section| collect_images(&section.nodes)),
+        )
+        .find(|image| {
+            image.synthetic_text_box == Some(true)
+                && image.source_xml.as_deref().is_some_and(|xml| {
+                    xml.contains("PAGE") && xml.contains("NUMPAGES")
+                })
+        })
+        .expect("header-story textbox image");
+    assert!(text_box.floating.is_some());
+    assert!(model.metadata.warnings.is_empty(), "{:?}", model.metadata.warnings);
 }
 
 /// A genuine Microsoft Word-authored binary file (not a converter product).

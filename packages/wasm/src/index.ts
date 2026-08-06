@@ -92,12 +92,14 @@ export interface WasmOoxmlPart {
 export interface WasmOoxmlPackage {
   parts: Record<string, WasmOoxmlPart>;
   binaryAssets: Record<string, Uint8Array>;
+  warnings?: string[];
 }
 
 /** Package shape produced by pre-Uint8Array versions of this library. */
 export interface LegacyWasmOoxmlPackage {
   parts: Record<string, WasmOoxmlPart>;
   binaryAssets: Record<string, number[]>;
+  warnings?: string[];
 }
 
 function toUint8Array(value: number[] | Uint8Array): Uint8Array {
@@ -116,6 +118,7 @@ export function docModelToWasmJson(model: unknown): string {
 export function wasmPackageToMaps(raw: WasmOoxmlPackage | LegacyWasmOoxmlPackage): {
   parts: Map<string, WasmOoxmlPart>;
   binaryAssets: Map<string, Uint8Array>;
+  warnings: string[];
 } {
   const parts = new Map<string, WasmOoxmlPart>();
   for (const [name, part] of Object.entries(raw.parts ?? {})) {
@@ -130,12 +133,17 @@ export function wasmPackageToMaps(raw: WasmOoxmlPackage | LegacyWasmOoxmlPackage
     binaryAssets.set(name, toUint8Array(asset));
   }
 
-  return { parts, binaryAssets };
+  return {
+    parts,
+    binaryAssets,
+    warnings: Array.isArray(raw.warnings) ? [...raw.warnings] : []
+  };
 }
 
 export function mapsToWasmPackage(input: {
   parts: Map<string, WasmOoxmlPart>;
   binaryAssets: Map<string, Uint8Array>;
+  warnings?: string[];
 }): WasmOoxmlPackage {
   const parts: Record<string, WasmOoxmlPart> = {};
   for (const [name, part] of input.parts.entries()) {
@@ -152,7 +160,11 @@ export function mapsToWasmPackage(input: {
     binaryAssets[name] = asset;
   }
 
-  return { parts, binaryAssets };
+  return {
+    parts,
+    binaryAssets,
+    ...(input.warnings && input.warnings.length > 0 ? { warnings: [...input.warnings] } : {})
+  };
 }
 
 export async function wasmParseDocx(bytes: ArrayBuffer | Uint8Array): Promise<WasmOoxmlPackage> {

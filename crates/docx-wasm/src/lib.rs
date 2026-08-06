@@ -4,7 +4,7 @@ use docx_core::{
     build_doc_model, model_to_document_xml, package_to_bytes, parse_document_bytes,
     serialize_doc_model, DocModel, OoxmlPackage, OoxmlPart,
 };
-use js_sys::{Object, Reflect};
+use js_sys::{Array, Object, Reflect};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 
@@ -85,9 +85,25 @@ fn value_to_ooxml_package(value: &JsValue) -> Result<OoxmlPackage, JsValue> {
         binary_assets.insert(name.clone(), js_bytes_to_vec(&entry, &name)?);
     }
 
+    let warnings_value = Reflect::get(value, &JsValue::from_str("warnings"))
+        .map_err(|error| JsValue::from_str(&format!("Failed to read warnings: {error:?}")))?;
+    let mut warnings = Vec::new();
+    if !warnings_value.is_undefined() && !warnings_value.is_null() {
+        if !Array::is_array(&warnings_value) {
+            return Err(JsValue::from_str("warnings must be a string array"));
+        }
+        for warning in Array::from(&warnings_value).iter() {
+            let warning = warning
+                .as_string()
+                .ok_or_else(|| JsValue::from_str("warnings must contain only strings"))?;
+            warnings.push(warning);
+        }
+    }
+
     Ok(OoxmlPackage {
         parts,
         binary_assets,
+        warnings,
     })
 }
 
@@ -122,6 +138,14 @@ fn package_to_js(pkg: &OoxmlPackage) -> Result<JsValue, JsValue> {
         .map_err(|error| JsValue::from_str(&format!("Failed to set parts: {error:?}")))?;
     Reflect::set(&result, &JsValue::from_str("binaryAssets"), &assets)
         .map_err(|error| JsValue::from_str(&format!("Failed to set binaryAssets: {error:?}")))?;
+    if !pkg.warnings.is_empty() {
+        let warnings = Array::new();
+        for warning in &pkg.warnings {
+            warnings.push(&JsValue::from_str(warning));
+        }
+        Reflect::set(&result, &JsValue::from_str("warnings"), &warnings)
+            .map_err(|error| JsValue::from_str(&format!("Failed to set warnings: {error:?}")))?;
+    }
     Ok(result.into())
 }
 

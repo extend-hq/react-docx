@@ -41,6 +41,11 @@ pub struct OoxmlPackage {
     pub parts: HashMap<String, OoxmlPart>,
     #[serde(with = "byte_asset_map")]
     pub binary_assets: HashMap<String, Vec<u8>>,
+    /// Import diagnostics that cannot be represented by OOXML itself. This is
+    /// empty for native DOCX packages and populated by format adapters such as
+    /// the legacy binary DOC importer.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 pub fn get_part<'a>(pkg: &'a OoxmlPackage, part_name: &str) -> Option<&'a OoxmlPart> {
@@ -53,5 +58,6 @@ pub fn with_part(pkg: &OoxmlPackage, part: OoxmlPart) -> OoxmlPackage {
     OoxmlPackage {
         parts,
         binary_assets: pkg.binary_assets.clone(),
+        warnings: pkg.warnings.clone(),
     }
 }

@@ -481,7 +481,26 @@ pub fn parse_vml_floating_anchor_from_run_xml(run_xml: &str) -> Option<ImageFloa
             .get("mso-wrap-distance-bottom")
             .map(String::as_str),
     );
-    let wrap_type = normalize_vml_wrap_type(declarations.get("mso-wrap-style").map(String::as_str));
+    let wrap_tag = regex_capture_tag(run_xml, r"(?i)<w10:wrap\b[^>]*/?>");
+    let wrap_type = wrap_tag
+        .as_deref()
+        .and_then(|tag| get_attribute(tag, "type"))
+        .as_deref()
+        .and_then(|raw| normalize_vml_wrap_type(Some(raw)))
+        .or_else(|| {
+            normalize_vml_wrap_type(declarations.get("mso-wrap-style").map(String::as_str))
+        });
+    let wrap_text = wrap_tag
+        .as_deref()
+        .and_then(|tag| get_attribute(tag, "side"))
+        .as_deref()
+        .and_then(|raw| match raw.trim().to_ascii_lowercase().as_str() {
+            "both" | "bothsides" => Some(ImageWrapText::BothSides),
+            "left" => Some(ImageWrapText::Left),
+            "right" => Some(ImageWrapText::Right),
+            "largest" => Some(ImageWrapText::Largest),
+            _ => None,
+        });
     let z_index = parse_vml_numeric(declarations.get("z-index").map(String::as_str));
     let behind_document = z_index.is_some_and(|index| index < 0);
 
@@ -496,6 +515,7 @@ pub fn parse_vml_floating_anchor_from_run_xml(run_xml: &str) -> Option<ImageFloa
         && dist_t_px.is_none()
         && dist_b_px.is_none()
         && wrap_type.is_none()
+        && wrap_text.is_none()
         && z_index.is_none()
     {
         return None;
@@ -513,7 +533,7 @@ pub fn parse_vml_floating_anchor_from_run_xml(run_xml: &str) -> Option<ImageFloa
         dist_t_px: dist_t_px.map(|value| value.max(0.0)),
         dist_b_px: dist_b_px.map(|value| value.max(0.0)),
         wrap_type,
-        wrap_text: None,
+        wrap_text,
         behind_document: if behind_document { Some(true) } else { None },
         z_index,
     })
@@ -1023,14 +1043,16 @@ fn resolve_run_image_layout(run_xml: &str) -> (Option<f64>, Option<f64>, Option<
     let extent_cx = regex_capture(run_xml, r#"(?i)<wp:extent\b[^>]*cx="(\d+)""#);
     let extent_cy = regex_capture(run_xml, r#"(?i)<wp:extent\b[^>]*cy="(\d+)""#);
     let vml_size = parse_vml_size(run_xml);
-    let width_px = extent_cx
+    let drawing_width_px = extent_cx
         .as_deref()
-        .and_then(|raw| emu_to_pixels(Some(raw)))
-        .or(vml_size.0);
-    let height_px = extent_cy
+        .and_then(|raw| emu_to_pixels(Some(raw)));
+    let drawing_height_px = extent_cy
         .as_deref()
-        .and_then(|raw| emu_to_pixels(Some(raw)))
-        .or(vml_size.1);
+        .and_then(|raw| emu_to_pixels(Some(raw)));
+    // A VML textbox can contain DrawingML images. Its outer VML dimensions
+    // govern the textbox; a nested wp:extent governs only the inline image.
+    let width_px = vml_size.0.or(drawing_width_px);
+    let height_px = vml_size.1.or(drawing_height_px);
     let floating = parse_floating_anchor_from_run_xml(run_xml)
         .or_else(|| parse_vml_floating_anchor_from_run_xml(run_xml));
     (width_px, height_px, floating)
@@ -1096,6 +1118,35 @@ pub fn parse_run_image_block(run_xml: &str, context: &ParseContext<'_>) -> Optio
     let contains_grouped_or_standalone_shape =
         re::get_unchecked(r"(?i)<wpg:wgp\b|<wps:wsp\b").is_match(active_run_xml);
     let contains_text_box_content = re::get_unchecked(r"(?i)<w:txbxContent\b").is_match(active_run_xml);
+
+    if contains_text_box_content {
+        let text_box_paragraphs = parse_text_box_paragraphs(active_run_xml, context);
+        if !text_box_paragraphs.is_empty() {
+            let text_box_src = svg_data_uri(&render_text_box_svg(
+                &text_box_paragraphs,
+                width_px,
+                height_px,
+                parse_text_box_layout(active_run_xml).as_ref(),
+            ));
+            return Some(ImageRunNode {
+                r#type: ImageRunNodeType::Image,
+                src: Some(text_box_src),
+                alt: Some(alt.unwrap_or_else(|| "Text box".to_string())),
+                width_px,
+                height_px,
+                part_name: None,
+                content_type: Some("image/svg+xml".to_string()),
+                data: None,
+                source_xml: Some(active_run_xml.to_string()),
+                crop,
+                css_filter,
+                css_opacity,
+                floating,
+                synthetic_text_box: Some(true),
+                text_box_text: None,
+            });
+        }
+    }
 
     if standalone_shape_svg.is_some()
         && (contains_grouped_or_standalone_shape || relationship_id.is_none())
@@ -1290,4 +1341,29 @@ pub fn parse_run_images(run_xml: &str, context: &ParseContext<'_>) -> Vec<ImageR
     }
 
     images
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vml_wrap_element_overrides_style_and_preserves_side() {
+        let xml = r#"<w:pict><v:shape style="position:absolute;left:-60.15pt;top:-45pt;mso-wrap-style:square;z-index:-1"><w10:wrap type="none" side="right"/></v:shape></w:pict>"#;
+        let floating = parse_vml_floating_anchor_from_run_xml(xml).expect("VML anchor");
+        assert_eq!(floating.wrap_type, Some(ImageWrapType::WrapNone));
+        assert_eq!(floating.wrap_text, Some(ImageWrapText::Right));
+        assert_eq!(floating.z_index, Some(-1));
+        assert_eq!(floating.behind_document, Some(true));
+        assert!(floating.x_px.is_some_and(|x| (x + 80.0).abs() < 0.01));
+        assert!(floating.y_px.is_some_and(|y| (y + 60.0).abs() < 0.01));
+    }
+
+    #[test]
+    fn outer_vml_size_wins_over_nested_drawing_extent() {
+        let xml = r#"<w:pict><v:shape style="width:558pt;height:738pt"><v:textbox><w:txbxContent><w:p><w:r><w:drawing><wp:inline><wp:extent cx="952500" cy="476250"/></wp:inline></w:drawing></w:r></w:p></w:txbxContent></v:textbox></v:shape></w:pict>"#;
+        let (width, height, _) = resolve_run_image_layout(xml);
+        assert!(width.is_some_and(|value| (value - 744.0).abs() < 0.01));
+        assert!(height.is_some_and(|value| (value - 984.0).abs() < 0.01));
+    }
 }

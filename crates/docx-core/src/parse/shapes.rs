@@ -13,6 +13,14 @@ pub struct ParsedTextBoxParagraph {
     pub text: String,
     pub style: Option<crate::model::TextStyle>,
     pub align: Option<ParagraphAlignment>,
+    pub images: Vec<ParsedTextBoxImage>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ParsedTextBoxImage {
+    pub src: String,
+    pub width_px: f64,
+    pub height_px: f64,
 }
 
 #[derive(Clone, Debug)]
@@ -39,13 +47,22 @@ pub fn parse_text_box_paragraphs(run_xml: &str, context: &ParseContext<'_>) -> V
     };
     let paragraphs = extract_balanced_tag_blocks(&text_box_xml, "w:p");
     let mut resolved = Vec::new();
+    let mut has_visible_text = false;
     for paragraph_xml in paragraphs {
         let paragraph_text = super::paragraph::parse_run_text(&paragraph_xml)
             .trim_end_matches('\n')
             .to_string();
-        if paragraph_text.is_empty() {
-            continue;
-        }
+        let images = super::images::parse_run_images(&paragraph_xml, context)
+            .into_iter()
+            .filter_map(|image| {
+                Some(ParsedTextBoxImage {
+                    src: image.src?,
+                    width_px: image.width_px.unwrap_or(96.0).max(1.0),
+                    height_px: image.height_px.unwrap_or(96.0).max(1.0),
+                })
+            })
+            .collect::<Vec<_>>();
+        has_visible_text |= !paragraph_text.is_empty() || !images.is_empty();
         let paragraph_properties_xml = extract_balanced_tag_blocks(&paragraph_xml, "w:pPr")
             .into_iter()
             .next()
@@ -85,9 +102,10 @@ pub fn parse_text_box_paragraphs(run_xml: &str, context: &ParseContext<'_>) -> V
             text: paragraph_text,
             style,
             align,
+            images,
         });
     }
-    resolved
+    if has_visible_text { resolved } else { Vec::new() }
 }
 
 pub fn parse_text_box_layout(run_xml: &str) -> Option<ParsedTextBoxLayout> {
@@ -95,20 +113,34 @@ pub fn parse_text_box_layout(run_xml: &str) -> Option<ParsedTextBoxLayout> {
     let body_pr_xml = extract_balanced_tag_blocks(&normalized_run_xml, "wps:bodyPr")
         .into_iter()
         .next()
-        .or_else(|| regex_tag(&normalized_run_xml, r"(?i)<wps:bodyPr\b[^>]*/?>"))?;
-    let anchor_raw = get_attribute(&body_pr_xml, "anchor")
-        .map(|v| v.trim().to_ascii_lowercase());
-    let vertical_anchor = match anchor_raw.as_deref() {
-        Some("ctr") => Some("center".to_string()),
-        Some("b") => Some("bottom".to_string()),
-        _ => Some("top".to_string()),
-    };
+        .or_else(|| regex_tag(&normalized_run_xml, r"(?i)<wps:bodyPr\b[^>]*/?>"));
+    if let Some(body_pr_xml) = body_pr_xml {
+        let anchor_raw = get_attribute(&body_pr_xml, "anchor")
+            .map(|v| v.trim().to_ascii_lowercase());
+        let vertical_anchor = match anchor_raw.as_deref() {
+            Some("ctr") => Some("center".to_string()),
+            Some("b") => Some("bottom".to_string()),
+            _ => Some("top".to_string()),
+        };
+        return Some(ParsedTextBoxLayout {
+            padding_left_px: emu_to_pixels(get_attribute(&body_pr_xml, "lIns").as_deref()),
+            padding_top_px: emu_to_pixels(get_attribute(&body_pr_xml, "tIns").as_deref()),
+            padding_right_px: emu_to_pixels(get_attribute(&body_pr_xml, "rIns").as_deref()),
+            padding_bottom_px: emu_to_pixels(get_attribute(&body_pr_xml, "bIns").as_deref()),
+            vertical_anchor,
+        });
+    }
+
+    let text_box_tag = regex_tag(&normalized_run_xml, r"(?i)<v:textbox\b[^>]*>")
+        .or_else(|| regex_tag(&normalized_run_xml, r"(?i)<v:textbox\b[^>]*/>"))?;
+    let inset = get_attribute(&text_box_tag, "inset")?;
+    let mut values = inset.split(',').map(str::trim);
     Some(ParsedTextBoxLayout {
-        padding_left_px: emu_to_pixels(get_attribute(&body_pr_xml, "lIns").as_deref()),
-        padding_top_px: emu_to_pixels(get_attribute(&body_pr_xml, "tIns").as_deref()),
-        padding_right_px: emu_to_pixels(get_attribute(&body_pr_xml, "rIns").as_deref()),
-        padding_bottom_px: emu_to_pixels(get_attribute(&body_pr_xml, "bIns").as_deref()),
-        vertical_anchor,
+        padding_left_px: super::images::css_length_to_pixels(values.next()),
+        padding_top_px: super::images::css_length_to_pixels(values.next()),
+        padding_right_px: super::images::css_length_to_pixels(values.next()),
+        padding_bottom_px: super::images::css_length_to_pixels(values.next()),
+        vertical_anchor: Some("top".to_string()),
     })
 }
 
@@ -124,7 +156,14 @@ pub fn render_text_box_svg(
         .map(|paragraph| {
             let font_size_pt = paragraph.style.as_ref().and_then(|s| s.font_size_pt).unwrap_or(12.0);
             let font_size_px = ((font_size_pt * 96.0) / 72.0).round().max(10.0) as i64;
-            (font_size_px as f64 * 1.24).round().max(14.0) as i64
+            let text_height = (font_size_px as f64 * 1.24).round().max(14.0) as i64;
+            let image_height = paragraph
+                .images
+                .iter()
+                .map(|image| clamp_i64(image.height_px.round() as i64, 1, 2400))
+                .max()
+                .unwrap_or(0);
+            text_height.max(image_height)
         })
         .collect();
     let estimated_height: i64 = line_heights.iter().sum::<i64>() + 24;
@@ -144,9 +183,15 @@ pub fn render_text_box_svg(
     let max_text_width = (safe_width - horizontal_inset * 2.0).max(20.0);
     let total_text_height: f64 = line_heights.iter().map(|h| *h as f64).sum();
     let available_height = (safe_height - top_inset - bottom_inset).max(0.0);
+    let vertical_scale = if total_text_height > available_height && total_text_height > 0.0 {
+        (available_height / total_text_height).clamp(0.25, 1.0)
+    } else {
+        1.0
+    };
+    let scaled_text_height = total_text_height * vertical_scale;
     let start_offset_y = match layout.and_then(|l| l.vertical_anchor.as_deref()) {
-        Some("center") => top_inset + ((available_height - total_text_height) / 2.0).max(0.0).round(),
-        Some("bottom") => (safe_height - bottom_inset - total_text_height).max(top_inset).round(),
+        Some("center") => top_inset + ((available_height - scaled_text_height) / 2.0).max(0.0).round(),
+        Some("bottom") => (safe_height - bottom_inset - scaled_text_height).max(top_inset).round(),
         _ => top_inset.round(),
     };
     let mut cursor_y = start_offset_y;
@@ -160,13 +205,13 @@ pub fn render_text_box_svg(
         } else {
             1.0
         };
-        let fitted_font_size_px = if overflow_ratio < 1.0 {
+        let fitted_font_size_px = (if overflow_ratio < 1.0 {
             font_size_px * overflow_ratio
         } else {
             font_size_px
-        }
-        .round()
-        .max(10.0);
+        } * vertical_scale)
+            .round()
+            .max(6.0);
         let text_length_attr = if estimated_text_width > max_text_width + 1.0 {
             format!(
                 r#" textLength="{}" lengthAdjust="spacingAndGlyphs""#,
@@ -178,7 +223,8 @@ pub fn render_text_box_svg(
         let line_height = line_heights
             .get(paragraph_index)
             .copied()
-            .unwrap_or(((fitted_font_size_px * 1.24).round().max(14.0)) as i64) as f64;
+            .unwrap_or(((fitted_font_size_px * 1.24).round().max(8.0)) as i64) as f64
+            * vertical_scale;
         cursor_y += line_height;
         if cursor_y > safe_height - 4.0 {
             break;
@@ -197,16 +243,46 @@ pub fn render_text_box_svg(
         .flatten()
         .collect::<Vec<_>>()
         .join(" ");
-        lines.push(format!(
-            r#"<text xml:space="preserve" x="{x:.0}" y="{cursor_y:.0}" text-anchor="{anchor}" font-size="{fitted_font_size_px:.0}" fill="{}" font-family="{}" font-weight="{}" font-style="{}"{}{}>{}</text>"#,
-            paragraph.style.as_ref().and_then(|s| s.color.clone()).unwrap_or_else(|| "#111111".to_string()),
-            escape_xml_text(&resolve_svg_font_family(paragraph.style.as_ref().and_then(|s| s.font_family.as_deref()))),
-            if paragraph.style.as_ref().and_then(|s| s.bold).unwrap_or(false) { "700" } else { "400" },
-            if paragraph.style.as_ref().and_then(|s| s.italic).unwrap_or(false) { "italic" } else { "normal" },
-            if text_decoration.is_empty() { String::new() } else { format!(r#" text-decoration="{}""#, text_decoration) },
-            text_length_attr,
-            escape_xml_text(&paragraph.text),
-        ));
+        if !paragraph.text.is_empty() {
+            lines.push(format!(
+                r#"<text xml:space="preserve" x="{x:.0}" y="{cursor_y:.0}" text-anchor="{anchor}" font-size="{fitted_font_size_px:.0}" fill="{}" font-family="{}" font-weight="{}" font-style="{}"{}{}>{}</text>"#,
+                paragraph.style.as_ref().and_then(|s| s.color.clone()).unwrap_or_else(|| "#111111".to_string()),
+                escape_xml_text(&resolve_svg_font_family(paragraph.style.as_ref().and_then(|s| s.font_family.as_deref()))),
+                if paragraph.style.as_ref().and_then(|s| s.bold).unwrap_or(false) { "700" } else { "400" },
+                if paragraph.style.as_ref().and_then(|s| s.italic).unwrap_or(false) { "italic" } else { "normal" },
+                if text_decoration.is_empty() { String::new() } else { format!(r#" text-decoration="{}""#, text_decoration) },
+                text_length_attr,
+                escape_xml_text(&paragraph.text),
+            ));
+        }
+        if !paragraph.images.is_empty() {
+            let available_width = (safe_width - horizontal_inset - right_inset).max(1.0);
+            let total_width = paragraph
+                .images
+                .iter()
+                .map(|image| image.width_px.min(available_width).max(1.0))
+                .sum::<f64>();
+            let force_right = paragraph.text.contains('\t')
+                || paragraph.text.chars().take_while(|ch| *ch == ' ').count() >= 4;
+            let mut image_x = if force_right || text_align == ParagraphAlignment::Right {
+                (safe_width - right_inset - total_width).max(horizontal_inset)
+            } else if text_align == ParagraphAlignment::Center {
+                ((safe_width - total_width) / 2.0).max(horizontal_inset)
+            } else {
+                horizontal_inset
+            };
+            for image in &paragraph.images {
+                let width = image.width_px.min(available_width).max(1.0);
+                let scale = width / image.width_px.max(1.0);
+                let height = (image.height_px * scale).min(line_height).max(1.0);
+                let image_y = (cursor_y - height).max(0.0);
+                lines.push(format!(
+                    r#"<image href="{}" x="{image_x:.0}" y="{image_y:.0}" width="{width:.0}" height="{height:.0}" preserveAspectRatio="xMidYMid meet"/>"#,
+                    escape_xml_text(&image.src),
+                ));
+                image_x += width;
+            }
+        }
     }
     format!(
         r#"<svg xmlns="http://www.w3.org/2000/svg" width="{safe_width:.0}" height="{safe_height:.0}" viewBox="0 0 {safe_width:.0} {safe_height:.0}">

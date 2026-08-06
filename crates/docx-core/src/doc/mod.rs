@@ -20,6 +20,7 @@ pub mod pieces;
 pub mod sep;
 pub mod sprm;
 pub mod tap;
+mod textboxes;
 
 pub use build::parse_doc;
 pub use cfb::is_cfb as is_doc_format;
@@ -59,6 +60,16 @@ impl DocFile {
             .table_slice(&table, fib::fcidx::CLX)
             .ok_or_else(|| "Invalid .doc: missing piece table (Clx)".to_string())?;
         let pieces = PieceTable::parse(clx)?;
+        let declared_cp_max = fib
+            .ccp
+            .checked_total()
+            .ok_or_else(|| "Invalid .doc: FIB story character counts overflow".to_string())?;
+        if declared_cp_max > pieces.cp_max() {
+            return Err(format!(
+                "Invalid .doc: FIB stories end at CP {declared_cp_max}, beyond piece table CP {}",
+                pieces.cp_max()
+            ));
+        }
 
         Ok(DocFile {
             word,

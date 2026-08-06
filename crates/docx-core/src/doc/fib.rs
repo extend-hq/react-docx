@@ -29,8 +29,13 @@ pub mod fcidx {
     pub const PLCF_FLD_MOM: usize = 16;
     pub const DOP: usize = 31;
     pub const CLX: usize = 33;
+    pub const PLCF_SPA_MOM: usize = 40;
+    pub const PLCF_SPA_HDR: usize = 41;
     pub const PLCFEND_REF: usize = 46;
     pub const PLCFEND_TXT: usize = 47;
+    pub const DGG_INFO: usize = 50;
+    pub const PLCF_TXBX_TXT: usize = 56;
+    pub const PLCF_HDR_TXBX_TXT: usize = 58;
     pub const PLF_LST: usize = 73;
     pub const PLF_LFO: usize = 74;
 }
@@ -48,8 +53,23 @@ pub struct CcpCounts {
 }
 
 impl CcpCounts {
+    pub fn checked_total(&self) -> Option<u32> {
+        [
+            self.text,
+            self.ftn,
+            self.hdd,
+            self.mcr,
+            self.atn,
+            self.edn,
+            self.txbx,
+            self.hdr_txbx,
+        ]
+        .into_iter()
+        .try_fold(0u32, u32::checked_add)
+    }
+
     pub fn total(&self) -> u32 {
-        self.text + self.ftn + self.hdd + self.mcr + self.atn + self.edn + self.txbx + self.hdr_txbx
+        self.checked_total().unwrap_or(u32::MAX)
     }
 
     /// CP at which the footnote subdocument starts.
@@ -59,12 +79,28 @@ impl CcpCounts {
 
     /// CP at which the header/footer subdocument starts.
     pub fn hdd_start(&self) -> u32 {
-        self.text + self.ftn
+        self.text.saturating_add(self.ftn)
     }
 
     /// CP at which the endnote subdocument starts.
     pub fn edn_start(&self) -> u32 {
-        self.text + self.ftn + self.hdd + self.mcr + self.atn
+        [self.text, self.ftn, self.hdd, self.mcr, self.atn]
+            .into_iter()
+            .fold(0u32, u32::saturating_add)
+    }
+
+    /// CP at which the main-textbox subdocument starts.
+    pub fn txbx_start(&self) -> u32 {
+        [
+            self.text, self.ftn, self.hdd, self.mcr, self.atn, self.edn,
+        ]
+        .into_iter()
+        .fold(0u32, u32::saturating_add)
+    }
+
+    /// CP at which the header-textbox subdocument starts.
+    pub fn hdr_txbx_start(&self) -> u32 {
+        self.txbx_start().saturating_add(self.txbx)
     }
 }
 

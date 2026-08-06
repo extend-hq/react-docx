@@ -21,7 +21,7 @@ use super::styles::{
 };
 
 pub fn build_doc_model(pkg: &OoxmlPackage) -> DocModel {
-    let mut warnings = Vec::new();
+    let mut warnings = pkg.warnings.clone();
     let document_xml = pkg
         .parts
         .get("word/document.xml")
@@ -160,6 +160,7 @@ mod tests {
         let pkg = OoxmlPackage {
             parts: HashMap::new(),
             binary_assets: HashMap::new(),
+            warnings: Vec::new(),
         };
         let model = build_doc_model(&pkg);
         assert_eq!(model.nodes.len(), 1);
@@ -183,9 +184,25 @@ mod tests {
         let pkg = OoxmlPackage {
             parts,
             binary_assets: HashMap::new(),
+            warnings: Vec::new(),
         };
         let model = build_doc_model(&pkg);
         assert_eq!(model.nodes.len(), 1);
         assert!(model.metadata.sections.is_some());
+    }
+
+    #[test]
+    fn build_doc_model_preserves_adapter_warnings() {
+        let pkg = OoxmlPackage {
+            parts: HashMap::new(),
+            binary_assets: HashMap::new(),
+            warnings: vec!["Legacy DOC adapter warning".to_string()],
+        };
+        let model = build_doc_model(&pkg);
+        assert!(model
+            .metadata
+            .warnings
+            .iter()
+            .any(|warning| warning == "Legacy DOC adapter warning"));
     }
 }

@@ -21,7 +21,8 @@ export { normalizeDocModel } from "./normalize";
 export async function buildDocModel(pkg: OoxmlPackage): Promise<DocModel> {
   const wasmPackage = mapsToWasmPackage({
     parts: pkg.parts,
-    binaryAssets: pkg.binaryAssets
+    binaryAssets: pkg.binaryAssets,
+    warnings: pkg.warnings
   });
   const model = (await wasmBuildDocModelFromPackage(wasmPackage)) as DocModel;
   return normalizeDocModel(model);

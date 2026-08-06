@@ -15,12 +15,14 @@ export interface OoxmlPart {
 export interface OoxmlPackage {
   parts: Map<string, OoxmlPart>;
   binaryAssets: Map<string, Uint8Array>;
+  /** Diagnostics produced while adapting a non-OOXML source such as legacy DOC. */
+  warnings?: string[];
 }
 
 export async function parseDocx(input: ArrayBuffer): Promise<OoxmlPackage> {
   const wasmPackage = await wasmParseDocx(input);
-  const { parts, binaryAssets } = wasmPackageToMaps(wasmPackage);
-  return { parts, binaryAssets };
+  const { parts, binaryAssets, warnings } = wasmPackageToMaps(wasmPackage);
+  return { parts, binaryAssets, ...(warnings.length > 0 ? { warnings } : {}) };
 }
 
 export async function packageToArrayBuffer(pkg: OoxmlPackage): Promise<ArrayBuffer> {
@@ -53,7 +55,8 @@ export function withPart(pkg: OoxmlPackage, part: OoxmlPart): OoxmlPackage {
   parts.set(part.name, part);
   return {
     parts,
-    binaryAssets: new Map(pkg.binaryAssets)
+    binaryAssets: new Map(pkg.binaryAssets),
+    ...(pkg.warnings && pkg.warnings.length > 0 ? { warnings: [...pkg.warnings] } : {})
   };
 }
 

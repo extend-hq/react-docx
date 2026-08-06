@@ -19,6 +19,7 @@ fn package_with_parts(parts: &[(&str, &str)]) -> OoxmlPackage {
     OoxmlPackage {
         parts: map,
         binary_assets: HashMap::new(),
+        warnings: Vec::new(),
     }
 }
 

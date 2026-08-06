@@ -22,6 +22,7 @@ fn build_package(document_xml: &str, styles_xml: &str) -> OoxmlPackage {
     OoxmlPackage {
         parts,
         binary_assets: HashMap::new(),
+        warnings: Vec::new(),
     }
 }
 

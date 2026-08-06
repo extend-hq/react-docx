@@ -18,6 +18,7 @@ use super::pap::Pap;
 use super::sep::Sep;
 use super::stsh::StyleSheet;
 use super::tap::Tap;
+use super::textboxes::{parse_text_boxes, TextBoxSpec, TextBoxStory};
 use super::DocFile;
 
 const W_NS: &str = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
@@ -125,6 +126,8 @@ pub struct DocBuilder<'a> {
     endnote_refs: Vec<u32>,
     footnote_ranges: Vec<(u32, u32)>,
     endnote_ranges: Vec<(u32, u32)>,
+    text_boxes_by_anchor: HashMap<u32, Vec<TextBoxSpec>>,
+    warnings: Vec<String>,
     f_facing_pages: bool,
     default_tab: u16,
     // Outputs accumulated during emission.
@@ -173,6 +176,8 @@ impl<'a> DocBuilder<'a> {
             endnote_refs: Vec::new(),
             footnote_ranges: Vec::new(),
             endnote_ranges: Vec::new(),
+            text_boxes_by_anchor: HashMap::new(),
+            warnings: Vec::new(),
             f_facing_pages: false,
             default_tab: 720,
             parts: HashMap::new(),
@@ -187,6 +192,7 @@ impl<'a> DocBuilder<'a> {
         builder.load_sections();
         builder.load_notes();
         builder.load_dop();
+        builder.load_text_boxes();
         builder
     }
 
@@ -393,6 +399,22 @@ impl<'a> DocBuilder<'a> {
                     self.default_tab = tab;
                 }
             }
+        }
+    }
+
+    fn load_text_boxes(&mut self) {
+        for story in [TextBoxStory::Main, TextBoxStory::Header] {
+            let parsed = parse_text_boxes(self.doc, story);
+            self.warnings.extend(parsed.warnings);
+            for spec in parsed.specs {
+                self.text_boxes_by_anchor
+                    .entry(spec.anchor_cp)
+                    .or_default()
+                    .push(spec);
+            }
+        }
+        for specs in self.text_boxes_by_anchor.values_mut() {
+            specs.sort_by_key(|spec| spec.shape_id);
         }
     }
 
@@ -605,6 +627,15 @@ impl<'a> DocBuilder<'a> {
                     flush(&mut buffer, xml, *field_state, rpr);
                     single(xml, rpr, r#"<w:br w:type="column"/>"#);
                 }
+                0x08 => {
+                    flush(&mut buffer, xml, *field_state, rpr);
+                    if let Some(specs) = self.text_boxes_by_anchor.remove(&cp) {
+                        for spec in specs {
+                            let shape = self.build_text_box_shape(&spec);
+                            single(xml, rpr, &shape);
+                        }
+                    }
+                }
                 0x13 => {
                     flush(&mut buffer, xml, *field_state, rpr);
                     single(xml, rpr, r#"<w:fldChar w:fldCharType="begin"/>"#);
@@ -681,6 +712,54 @@ impl<'a> DocBuilder<'a> {
             }
         }
         flush(&mut buffer, xml, *field_state, rpr);
+    }
+
+    fn build_text_box_shape(&mut self, spec: &TextBoxSpec) -> String {
+        let paragraphs = self.build_paragraphs(
+            spec.text_cp_start,
+            spec.text_cp_end,
+            &NoteContext::Body,
+        );
+        let body = self.assemble_blocks(&paragraphs);
+        let horizontal_relative = match spec.horizontal_relative {
+            0 => "margin",
+            1 => "page",
+            2 => "column",
+            _ => "page",
+        };
+        let vertical_relative = match spec.vertical_relative {
+            0 => "margin",
+            1 => "page",
+            2 => "paragraph",
+            _ => "page",
+        };
+        let wrap_type = match spec.wrap {
+            0 | 2 => "square",
+            1 => "topAndBottom",
+            3 => "none",
+            4 => "tight",
+            5 => "through",
+            _ => "square",
+        };
+        let wrap_side = match spec.wrap_side {
+            1 => "left",
+            2 => "right",
+            3 => "largest",
+            _ => "both",
+        };
+        let z_index = if spec.wrap == 3 && spec.behind_text {
+            -1
+        } else {
+            0
+        };
+        let left = format_twips_as_points(i64::from(spec.left_twips));
+        let top = format_twips_as_points(i64::from(spec.top_twips));
+        let width = format_twips_as_points(i64::from(spec.width_twips));
+        let height = format_twips_as_points(i64::from(spec.height_twips));
+        format!(
+            r##"<w:pict xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w10="urn:schemas-microsoft-com:office:word"><v:shape id="_x0000_s{shape_id}" type="#_x0000_t202" filled="f" stroked="f" style="position:absolute;left:{left}pt;top:{top}pt;width:{width}pt;height:{height}pt;mso-position-horizontal:absolute;mso-position-horizontal-relative:{horizontal_relative};mso-position-vertical:absolute;mso-position-vertical-relative:{vertical_relative};mso-wrap-style:{wrap_type};z-index:{z_index}"><w10:wrap type="{wrap_type}" side="{wrap_side}"/><v:textbox inset="0pt,0pt,0pt,0pt"><w:txbxContent>{body}</w:txbxContent></v:textbox></v:shape></w:pict>"##,
+            shape_id = spec.shape_id,
+        )
     }
 
     fn register_image(&mut self, image: InlineImage) -> String {
@@ -1389,10 +1468,36 @@ impl<'a> DocBuilder<'a> {
             );
         }
 
+        let mut unanchored: Vec<(u32, u32)> = self
+            .text_boxes_by_anchor
+            .drain()
+            .flat_map(|(cp, specs)| specs.into_iter().map(move |spec| (cp, spec.shape_id)))
+            .collect();
+        unanchored.sort_unstable();
+        for (cp, shape_id) in unanchored {
+            self.warnings.push(format!(
+                "Legacy DOC textbox shape {shape_id} could not be attached at CP {cp}"
+            ));
+        }
+
         Ok(OoxmlPackage {
             parts,
             binary_assets: self.media.drain().collect(),
+            warnings: std::mem::take(&mut self.warnings),
         })
+    }
+}
+
+fn format_twips_as_points(twips: i64) -> String {
+    let sign = if twips < 0 { "-" } else { "" };
+    let magnitude = twips.unsigned_abs();
+    let whole = magnitude / 20;
+    let remainder = magnitude % 20;
+    if remainder == 0 {
+        format!("{sign}{whole}")
+    } else {
+        let hundredths = remainder * 5;
+        format!("{sign}{whole}.{hundredths:02}")
     }
 }
 
