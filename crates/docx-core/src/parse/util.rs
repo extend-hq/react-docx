@@ -967,6 +967,30 @@ pub fn parse_paragraph_tab_stops_from_xml(xml: &str) -> Vec<ParagraphTabStop> {
     tab_stops
 }
 
+/// Raw `w:numPr` sub-values before inheritance: `(numId, ilvl)`, each `None`
+/// when its element is absent. Returns `None` when the properties block has no
+/// `w:numPr` at all. Callers use this to distinguish an ilvl-only override
+/// (level change on a style-provided list) from numbering removal (numId=0).
+pub fn parse_paragraph_numbering_parts_from_xml(
+    xml: &str,
+) -> Option<(Option<i64>, Option<i64>)> {
+    if xml.is_empty() {
+        return None;
+    }
+    let numbering_xml = extract_balanced_tag_blocks(xml, "w:numPr")
+        .into_iter()
+        .next()
+        .or_else(|| regex_capture_tag(xml, r"(?i)<w:numPr\b[^>]*/?>"))?;
+    if numbering_xml.is_empty() {
+        return None;
+    }
+    let num_id = regex_capture(&numbering_xml, r#"(?i)<w:numId\b[^>]*w:val="(-?\d+)""#)
+        .and_then(|raw| raw.parse::<i64>().ok());
+    let ilvl = regex_capture(&numbering_xml, r#"(?i)<w:ilvl\b[^>]*w:val="(-?\d+)""#)
+        .and_then(|raw| raw.parse::<i64>().ok());
+    Some((num_id, ilvl))
+}
+
 pub fn parse_paragraph_numbering_from_xml(xml: &str) -> Option<crate::model::ParagraphNumbering> {
     if xml.is_empty() {
         return None;

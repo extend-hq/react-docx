@@ -16341,10 +16341,9 @@ function resolveListParagraphIndent(
   };
 }
 
-function resolveNumberingMarkerBoxWidthPx(
+function numberingIndentCandidateWidthPx(
   paragraph: ParagraphNode,
-  numberingDefinitions?: NumberingDefinitionSet,
-  numberingLabel?: ParagraphNumberingLabel
+  numberingDefinitions?: NumberingDefinitionSet
 ): number | undefined {
   const resolvedIndent = resolveListParagraphIndent(
     paragraph,
@@ -16352,12 +16351,81 @@ function resolveNumberingMarkerBoxWidthPx(
   );
   const hangingIndentPx = twipsToSignedPixels(resolvedIndent?.hangingTwips);
   const firstLineIndentPx = twipsToSignedPixels(resolvedIndent?.firstLineTwips);
-  const candidateWidthPx =
-    Number.isFinite(hangingIndentPx) && Math.abs(hangingIndentPx as number) > 0
-      ? Math.abs(hangingIndentPx as number)
-      : Number.isFinite(firstLineIndentPx) && (firstLineIndentPx as number) < 0
-      ? Math.abs(firstLineIndentPx as number)
-      : undefined;
+  return Number.isFinite(hangingIndentPx) &&
+    Math.abs(hangingIndentPx as number) > 0
+    ? Math.abs(hangingIndentPx as number)
+    : Number.isFinite(firstLineIndentPx) && (firstLineIndentPx as number) < 0
+    ? Math.abs(firstLineIndentPx as number)
+    : undefined;
+}
+
+function resolvedNumberingLevelForParagraph(
+  paragraph: ParagraphNode,
+  numberingDefinitions?: NumberingDefinitionSet
+): NumberingLevelDefinition | undefined {
+  const numbering = paragraph.style?.numbering;
+  if (
+    !numberingDefinitions ||
+    !numbering ||
+    !Number.isFinite(numbering.numId) ||
+    numbering.numId <= 0
+  ) {
+    return undefined;
+  }
+  const effectiveNumId =
+    effectiveNumberingNumIdForParagraph(paragraph, numberingDefinitions) ??
+    numbering.numId;
+  return findNumberingLevelDefinition(
+    numberingDefinitions,
+    effectiveNumId,
+    Math.max(0, Math.round(numbering.ilvl ?? 0))
+  );
+}
+
+/// Marker width for an indent-less level whose suffix is a tab (explicit or
+/// the OOXML default when w:suff is absent): Word advances to the next
+/// default tab stop after the number, so the marker box spans to that stop.
+function numberingTabAdvanceWidthPx(
+  paragraph: ParagraphNode,
+  numberingDefinitions?: NumberingDefinitionSet,
+  numberingLabel?: ParagraphNumberingLabel
+): number | undefined {
+  if (
+    !numberingLabel?.text ||
+    numberingLabel.imageSrc ||
+    isTableOfContentsParagraph(paragraph)
+  ) {
+    return undefined;
+  }
+  const level = resolvedNumberingLevelForParagraph(
+    paragraph,
+    numberingDefinitions
+  );
+  const suffix = level?.suffix ?? "tab";
+  if (suffix !== "tab") {
+    return undefined;
+  }
+  const labelWidthPx = Math.ceil(
+    measureTextWidthPx(
+      numberingLabel.text.replace(/\t/g, " ").replace(/\u00a0/g, " "),
+      numberingLabel.style,
+      paragraphBaseFontSizePx(paragraph)
+    )
+  );
+  return (
+    (Math.floor(labelWidthPx / DEFAULT_TAB_STOP_PX) + 1) * DEFAULT_TAB_STOP_PX
+  );
+}
+
+function resolveNumberingMarkerBoxWidthPx(
+  paragraph: ParagraphNode,
+  numberingDefinitions?: NumberingDefinitionSet,
+  numberingLabel?: ParagraphNumberingLabel
+): number | undefined {
+  const candidateWidthPx = numberingIndentCandidateWidthPx(
+    paragraph,
+    numberingDefinitions
+  );
 
   const labelTextForWidth = numberingLabel?.imageSrc
     ? numberingLabel.trailingText ?? ""
@@ -16400,6 +16468,18 @@ function resolveNumberingMarkerBoxWidthPx(
   );
 
   if (!Number.isFinite(candidateWidthPx) || (candidateWidthPx as number) < 8) {
+    const tabAdvanceWidthPx = numberingTabAdvanceWidthPx(
+      paragraph,
+      numberingDefinitions,
+      numberingLabel
+    );
+    if (tabAdvanceWidthPx !== undefined) {
+      return clampNumber(
+        Math.round(Math.max(tabAdvanceWidthPx, minimumVisualWidthPx)),
+        8,
+        220
+      );
+    }
     return minimumVisualWidthPx > 0
       ? clampNumber(Math.round(minimumVisualWidthPx), 8, 220)
       : undefined;
@@ -16428,12 +16508,24 @@ function numberingMarkerStyle(
     : markerBoxWidthPx
     ? 0
     : 2;
+  // A box synthesized from the default-tab advance (no hanging indent) holds
+  // the number at the paragraph's left edge with the gap after it; hanging-
+  // indent boxes keep the calibrated right-justified layout.
+  const tabSynthesized =
+    markerBoxWidthPx !== undefined &&
+    numberingIndentCandidateWidthPx(paragraph, numberingDefinitions) ===
+      undefined &&
+    numberingTabAdvanceWidthPx(
+      paragraph,
+      numberingDefinitions,
+      numberingLabel
+    ) !== undefined;
 
   return {
     ...(baseStyle ?? {}),
     display: "inline-flex",
     alignItems: "baseline",
-    justifyContent: "flex-end",
+    justifyContent: tabSynthesized ? "flex-start" : "flex-end",
     verticalAlign: "baseline",
     width: markerBoxWidthPx ? `${markerBoxWidthPx}px` : undefined,
     minWidth: markerBoxWidthPx ? `${markerBoxWidthPx}px` : "1.1em",
@@ -20694,15 +20786,138 @@ function numberToLetters(value: number): string {
     return "";
   }
 
-  let remaining = Math.floor(value);
-  let output = "";
-  while (remaining > 0) {
-    const offset = (remaining - 1) % 26;
-    output = String.fromCharCode(65 + offset) + output;
-    remaining = Math.floor((remaining - 1) / 26);
-  }
+  // Word's letter numbering repeats a single letter past 26 (27="AA",
+  // 28="BB", 53="AAA"), unlike spreadsheet-style bijective counting.
+  const rounded = Math.floor(value);
+  const letter = String.fromCharCode(65 + ((rounded - 1) % 26));
+  return letter.repeat(Math.floor((rounded - 1) / 26) + 1);
+}
 
-  return output;
+const CARDINAL_ONES = [
+  "zero",
+  "one",
+  "two",
+  "three",
+  "four",
+  "five",
+  "six",
+  "seven",
+  "eight",
+  "nine",
+  "ten",
+  "eleven",
+  "twelve",
+  "thirteen",
+  "fourteen",
+  "fifteen",
+  "sixteen",
+  "seventeen",
+  "eighteen",
+  "nineteen",
+];
+const CARDINAL_TENS = [
+  "",
+  "",
+  "twenty",
+  "thirty",
+  "forty",
+  "fifty",
+  "sixty",
+  "seventy",
+  "eighty",
+  "ninety",
+];
+const ORDINAL_ONES = [
+  "zeroth",
+  "first",
+  "second",
+  "third",
+  "fourth",
+  "fifth",
+  "sixth",
+  "seventh",
+  "eighth",
+  "ninth",
+  "tenth",
+  "eleventh",
+  "twelfth",
+  "thirteenth",
+  "fourteenth",
+  "fifteenth",
+  "sixteenth",
+  "seventeenth",
+  "eighteenth",
+  "nineteenth",
+];
+const ORDINAL_TENS = [
+  "",
+  "",
+  "twentieth",
+  "thirtieth",
+  "fortieth",
+  "fiftieth",
+  "sixtieth",
+  "seventieth",
+  "eightieth",
+  "ninetieth",
+];
+
+function numberToCardinalText(value: number): string {
+  if (value < 20) {
+    return CARDINAL_ONES[value];
+  }
+  if (value < 100) {
+    const tens = Math.floor(value / 10);
+    const ones = value % 10;
+    return ones === 0
+      ? CARDINAL_TENS[tens]
+      : `${CARDINAL_TENS[tens]}-${CARDINAL_ONES[ones]}`;
+  }
+  if (value < 1000) {
+    const hundreds = Math.floor(value / 100);
+    const rest = value % 100;
+    const head = `${CARDINAL_ONES[hundreds]} hundred`;
+    return rest === 0 ? head : `${head} ${numberToCardinalText(rest)}`;
+  }
+  return String(value);
+}
+
+function numberToOrdinalText(value: number): string {
+  if (value < 20) {
+    return ORDINAL_ONES[value];
+  }
+  if (value < 100) {
+    const tens = Math.floor(value / 10);
+    const ones = value % 10;
+    return ones === 0
+      ? ORDINAL_TENS[tens]
+      : `${CARDINAL_TENS[tens]}-${ORDINAL_ONES[ones]}`;
+  }
+  if (value < 1000) {
+    const hundreds = Math.floor(value / 100);
+    const rest = value % 100;
+    return rest === 0
+      ? `${CARDINAL_ONES[hundreds]} hundredth`
+      : `${CARDINAL_ONES[hundreds]} hundred ${numberToOrdinalText(rest)}`;
+  }
+  return String(value);
+}
+
+function numberToOrdinalDigits(value: number): string {
+  const mod100 = value % 100;
+  if (mod100 >= 11 && mod100 <= 13) {
+    return `${value}th`;
+  }
+  switch (value % 10) {
+    case 1:
+      return `${value}st`;
+    case 2:
+      return `${value}nd`;
+    case 3:
+      return `${value}rd`;
+    default:
+      return `${value}th`;
+  }
 }
 
 interface ParagraphNumberingLabel {
@@ -20720,31 +20935,41 @@ function formatNumberingCounter(
   format: string | undefined,
   value: number
 ): string {
-  if (!Number.isFinite(value) || value <= 0) {
+  if (!Number.isFinite(value) || value < 0) {
     return "";
   }
 
+  const rounded = Math.round(value);
   switch ((format ?? "decimal").toLowerCase()) {
     case "decimal":
-      return String(value);
+      return String(rounded);
+    case "decimalzero":
+      // Word pads to a minimum of two digits: 01..09, then 10, 100 unchanged.
+      return rounded < 10 ? `0${rounded}` : String(rounded);
     case "upperroman":
-      return numberToRoman(value);
+      return rounded === 0 ? String(rounded) : numberToRoman(rounded);
     case "lowerroman":
-      return numberToRoman(value).toLowerCase();
+      return rounded === 0
+        ? String(rounded)
+        : numberToRoman(rounded).toLowerCase();
     case "upperletter":
-      return numberToLetters(value);
+      return rounded === 0 ? String(rounded) : numberToLetters(rounded);
     case "lowerletter":
-      return numberToLetters(value).toLowerCase();
+      return rounded === 0
+        ? String(rounded)
+        : numberToLetters(rounded).toLowerCase();
     case "ordinal":
+      return numberToOrdinalDigits(rounded);
     case "cardinaltext":
+      return numberToCardinalText(rounded);
     case "ordinaltext":
-      return String(value);
+      return numberToOrdinalText(rounded);
     case "bullet":
       return "\u2022";
     case "none":
       return "";
     default:
-      return String(value);
+      return String(rounded);
   }
 }
 
@@ -20924,11 +21149,13 @@ function numberingStartValue(
   const instance = numbering.instances.find((item) => item.numId === numId);
   const override = instance?.levelStartOverrides?.[String(ilvl)];
   if (Number.isFinite(override)) {
-    return Math.max(1, Math.round(override as number));
+    return Math.max(0, Math.round(override as number));
   }
 
+  // w:start val="0" is legal and renders "0" in Word; only negative or
+  // missing values fall back to 1.
   const level = findNumberingLevelDefinition(numbering, numId, ilvl);
-  if (Number.isFinite(level?.start) && (level?.start as number) > 0) {
+  if (Number.isFinite(level?.start) && (level?.start as number) >= 0) {
     return Math.round(level?.start as number);
   }
 
@@ -20942,6 +21169,11 @@ function numberingSuffix(level: NumberingLevelDefinition | undefined): string {
   if (level?.suffix === "space") {
     return " ";
   }
+  // The OOXML default when w:suff is absent is a tab, but the marker box
+  // (resolveNumberingMarkerBoxWidthPx) emulates the advance geometrically:
+  // hanging indents size the box, and indent-less levels synthesize the
+  // default-tab advance (numberingTabAdvanceWidthPx), so the label itself
+  // deliberately carries no separator text.
   return "";
 }
 
@@ -21055,13 +21287,13 @@ export function buildParagraphNumberingLabels(
     for (let index = 0; index < ilvl; index += 1) {
       const abstractCounterValue =
         sharedAbstractCounters && Number.isFinite(sharedAbstractCounters[index])
-          ? Math.max(1, Math.round(sharedAbstractCounters[index] as number))
+          ? Math.max(0, Math.round(sharedAbstractCounters[index] as number))
           : undefined;
       if (abstractCounterValue !== undefined) {
         const previousCounter = counters[index];
         if (
           (!Number.isFinite(previousCounter) ||
-            Math.max(1, Math.round(previousCounter as number)) !==
+            Math.max(0, Math.round(previousCounter as number)) !==
               abstractCounterValue) &&
           index <= currentRestartCeiling
         ) {
@@ -21108,13 +21340,13 @@ export function buildParagraphNumberingLabels(
       const levelIndex = Math.max(0, Number(rawLevel) - 1);
       const levelValue = counters[levelIndex];
       const safeValue = Number.isFinite(levelValue)
-        ? Math.max(1, Math.round(levelValue as number))
+        ? Math.max(0, Math.round(levelValue as number))
         : numberingStartValue(numbering, numId, levelIndex);
-      const levelFormat = findNumberingLevelDefinition(
-        numbering,
-        numId,
-        levelIndex
-      )?.format;
+      // w:isLgl (legal numbering): every placeholder in this level's text
+      // renders as decimal regardless of the referenced levels' formats.
+      const levelFormat = level?.isLgl
+        ? "decimal"
+        : findNumberingLevelDefinition(numbering, numId, levelIndex)?.format;
       return formatNumberingCounter(levelFormat, safeValue);
     });
 

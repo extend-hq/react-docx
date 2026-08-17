@@ -9,7 +9,8 @@ use crate::parse::util::{
     merge_paragraph_spacing, merge_paragraph_tab_stops, merge_text_styles,
     normalize_heading_level, normalize_hex_color, parse_paragraph_border_set_from_xml,
     parse_paragraph_indent_from_xml, parse_paragraph_numbering_from_xml,
-    parse_paragraph_shading_from_xml, parse_paragraph_spacing_from_xml,
+    parse_paragraph_numbering_parts_from_xml, parse_paragraph_shading_from_xml,
+    parse_paragraph_spacing_from_xml,
     parse_paragraph_tab_stops_from_xml, parse_text_run_border_style, prefer_alternate_content_choice,
     resolve_style_properties_block, resolve_theme_font, to_model_alignment,
 };
@@ -384,6 +385,25 @@ pub fn parse_text_style_from_xml(xml: &str, theme_fonts: &ThemeFontMap) -> Optio
     }
 }
 
+/// ECMA-376 §17.7.3 toggle-property resolution: a toggle set true by both the
+/// paragraph style and the character style cancels out (XOR across style
+/// application levels). Direct formatting and explicit `val="0"` stay
+/// absolute, and basedOn chains resolve by normal inheritance beforehand.
+fn resolve_toggle_property(
+    default_value: Option<bool>,
+    paragraph_value: Option<bool>,
+    character_value: Option<bool>,
+    direct_value: Option<bool>,
+) -> Option<bool> {
+    if direct_value.is_some() {
+        return direct_value;
+    }
+    if paragraph_value == Some(true) && character_value == Some(true) {
+        return Some(false);
+    }
+    character_value.or(paragraph_value).or(default_value)
+}
+
 pub fn parse_run_style(
     run_xml: &str,
     context: &ParseContext<'_>,
@@ -405,12 +425,32 @@ pub fn parse_run_style(
     let inherited_run_style = run_style_id
         .as_deref()
         .and_then(|id| context.style_sheet.run_style_by_id.get(id).cloned());
-    merge_text_styles(&[
-        context.style_sheet.default_run_style.clone(),
+    let default_run_style = context.style_sheet.default_run_style.clone();
+
+    let toggle_of = |get: fn(&TextStyle) -> Option<bool>| {
+        resolve_toggle_property(
+            default_run_style.as_ref().and_then(get),
+            inherited_paragraph_run_style.as_ref().and_then(get),
+            inherited_run_style.as_ref().and_then(get),
+            direct.as_ref().and_then(get),
+        )
+    };
+    let bold = toggle_of(|s| s.bold);
+    let italic = toggle_of(|s| s.italic);
+    let strike = toggle_of(|s| s.strike);
+
+    let merged = merge_text_styles(&[
+        default_run_style,
         inherited_paragraph_run_style,
         inherited_run_style,
         direct,
-    ])
+    ]);
+    merged.map(|mut style| {
+        style.bold = bold;
+        style.italic = italic;
+        style.strike = strike;
+        style
+    })
 }
 
 pub fn parse_paragraph_style(
@@ -470,7 +510,22 @@ pub fn parse_paragraph_style_in_table(
         .or_else(|| inherited.and_then(|s| s.heading_level))
         .or_else(|| default_paragraph_style.and_then(|s| s.heading_level));
     let numbering = if has_direct_num_pr {
-        direct_numbering
+        direct_numbering.or_else(|| {
+            // A direct numPr without a usable numId either removes numbering
+            // (numId present but <= 0) or, when it carries only an ilvl,
+            // changes the level of the style-provided list (ECMA-376: numId
+            // and ilvl inherit independently through the hierarchy).
+            match parse_paragraph_numbering_parts_from_xml(&paragraph_properties_xml) {
+                Some((None, Some(direct_ilvl))) => inherited
+                    .and_then(|s| s.numbering.clone())
+                    .or_else(|| default_paragraph_style.and_then(|s| s.numbering.clone()))
+                    .map(|style_numbering| crate::model::ParagraphNumbering {
+                        num_id: style_numbering.num_id,
+                        ilvl: direct_ilvl.max(0),
+                    }),
+                _ => None,
+            }
+        })
     } else {
         direct_numbering
             .or_else(|| inherited.and_then(|s| s.numbering.clone()))

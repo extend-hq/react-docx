@@ -1097,6 +1097,10 @@ pub struct NumberingLevelDefinition {
     /// any shallower level is used).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lvl_restart: Option<i64>,
+    /// `w:isLgl`: legal numbering — every placeholder in this level's text
+    /// renders as decimal regardless of the referenced levels' formats.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_lgl: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub indent: Option<ParagraphIndent>,
     #[serde(skip_serializing_if = "Option::is_none")]

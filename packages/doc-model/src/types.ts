@@ -412,6 +412,11 @@ export interface NumberingLevelDefinition {
    * shallower level is used).
    */
   lvlRestart?: number;
+  /**
+   * `w:isLgl`: legal numbering — every placeholder in this level's text
+   * renders as decimal regardless of the referenced levels' formats.
+   */
+  isLgl?: boolean;
   indent?: ParagraphIndent;
   runStyle?: TextStyle;
   bulletFontFamily?: string;

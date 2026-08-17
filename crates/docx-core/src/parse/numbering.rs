@@ -146,6 +146,7 @@ pub fn parse_numbering_level_definition(
 
     let start_tag = find_tag_token(level_xml, "w:start");
     let lvl_restart_tag = find_tag_token(level_xml, "w:lvlRestart");
+    let is_lgl_tag = find_tag_token(level_xml, "w:isLgl");
     let num_fmt_tag = find_tag_token(level_xml, "w:numFmt");
     let lvl_text_tag = find_tag_token(level_xml, "w:lvlText");
     let suffix_tag = find_tag_token(level_xml, "w:suff");
@@ -214,6 +215,12 @@ pub fn parse_numbering_level_definition(
         lvl_restart: lvl_restart_tag
             .as_deref()
             .and_then(|tag| parse_integer_attribute(tag, "w:val")),
+        is_lgl: is_lgl_tag.as_deref().map(|tag| {
+            !matches!(
+                get_attribute(tag, "w:val").as_deref(),
+                Some("0") | Some("false") | Some("off")
+            )
+        }),
         format: num_fmt_tag.as_deref().and_then(|tag| get_attribute(tag, "w:val")),
         text: lvl_text_tag
             .as_deref()
