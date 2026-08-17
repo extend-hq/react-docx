@@ -406,6 +406,12 @@ export interface NumberingLevelDefinition {
   format?: string;
   text?: string;
   suffix?: "tab" | "space" | "nothing";
+  /**
+   * `w:lvlRestart`: one-based level whose use restarts this level; 0 means the
+   * level never restarts. Absent means the OOXML default (restart when any
+   * shallower level is used).
+   */
+  lvlRestart?: number;
   indent?: ParagraphIndent;
   runStyle?: TextStyle;
   bulletFontFamily?: string;

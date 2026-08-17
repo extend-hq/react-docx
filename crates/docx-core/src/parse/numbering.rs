@@ -145,6 +145,7 @@ pub fn parse_numbering_level_definition(
         .filter(|value| value.is_finite())?;
 
     let start_tag = find_tag_token(level_xml, "w:start");
+    let lvl_restart_tag = find_tag_token(level_xml, "w:lvlRestart");
     let num_fmt_tag = find_tag_token(level_xml, "w:numFmt");
     let lvl_text_tag = find_tag_token(level_xml, "w:lvlText");
     let suffix_tag = find_tag_token(level_xml, "w:suff");
@@ -208,6 +209,9 @@ pub fn parse_numbering_level_definition(
     Some(NumberingLevelDefinition {
         ilvl: ilvl.round().max(0.0) as i64,
         start: start_tag
+            .as_deref()
+            .and_then(|tag| parse_integer_attribute(tag, "w:val")),
+        lvl_restart: lvl_restart_tag
             .as_deref()
             .and_then(|tag| parse_integer_attribute(tag, "w:val")),
         format: num_fmt_tag.as_deref().and_then(|tag| get_attribute(tag, "w:val")),

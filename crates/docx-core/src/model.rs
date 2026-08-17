@@ -1092,6 +1092,11 @@ pub struct NumberingLevelDefinition {
     pub text: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub suffix: Option<NumberingLevelSuffix>,
+    /// `w:lvlRestart`: one-based level whose use restarts this level; 0 means
+    /// this level never restarts. Absent means the OOXML default (restart when
+    /// any shallower level is used).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lvl_restart: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub indent: Option<ParagraphIndent>,
     #[serde(skip_serializing_if = "Option::is_none")]

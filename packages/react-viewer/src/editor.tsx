@@ -21025,6 +21025,28 @@ export function buildParagraphNumberingLabels(
       return;
     }
 
+    // Deepest zero-based level whose use restarts the given level, per
+    // `w:lvlRestart`: absent (or a value deeper than the previous level, which
+    // ECMA-376 says to ignore) means any shallower level restarts it; 0 means
+    // it never restarts (-1: no level triggers).
+    const restartTriggerCeiling = (levelIndex: number): number => {
+      const rawRestart = findNumberingLevelDefinition(
+        numbering,
+        numId,
+        levelIndex
+      )?.lvlRestart;
+      if (
+        rawRestart === undefined ||
+        !Number.isFinite(rawRestart) ||
+        Math.round(rawRestart) > levelIndex
+      ) {
+        return levelIndex - 1;
+      }
+      const restart = Math.round(rawRestart);
+      return restart <= 0 ? -1 : restart - 1;
+    };
+    const currentRestartCeiling = restartTriggerCeiling(ilvl);
+
     const counters = countersByNumId.get(numId) ?? [];
     const sharedAbstractCounters = Number.isFinite(abstractNumId)
       ? abstractCountersByAbstractNumId.get(abstractNumId as number) ?? []
@@ -21038,9 +21060,10 @@ export function buildParagraphNumberingLabels(
       if (abstractCounterValue !== undefined) {
         const previousCounter = counters[index];
         if (
-          !Number.isFinite(previousCounter) ||
-          Math.max(1, Math.round(previousCounter as number)) !==
-            abstractCounterValue
+          (!Number.isFinite(previousCounter) ||
+            Math.max(1, Math.round(previousCounter as number)) !==
+              abstractCounterValue) &&
+          index <= currentRestartCeiling
         ) {
           parentCountersChanged = true;
         }
@@ -21057,7 +21080,9 @@ export function buildParagraphNumberingLabels(
       ? (currentValue as number) + 1
       : numberingStartValue(numbering, numId, ilvl);
     for (let index = ilvl + 1; index < counters.length; index += 1) {
-      counters[index] = undefined;
+      if (ilvl <= restartTriggerCeiling(index)) {
+        counters[index] = undefined;
+      }
     }
     countersByNumId.set(numId, counters);
     if (sharedAbstractCounters && Number.isFinite(abstractNumId)) {
@@ -21069,7 +21094,9 @@ export function buildParagraphNumberingLabels(
         index < sharedAbstractCounters.length;
         index += 1
       ) {
-        sharedAbstractCounters[index] = undefined;
+        if (ilvl <= restartTriggerCeiling(index)) {
+          sharedAbstractCounters[index] = undefined;
+        }
       }
       abstractCountersByAbstractNumId.set(
         abstractNumId as number,
