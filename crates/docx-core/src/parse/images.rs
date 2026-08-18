@@ -1119,7 +1119,10 @@ pub fn parse_run_image_block(run_xml: &str, context: &ParseContext<'_>) -> Optio
         re::get_unchecked(r"(?i)<wpg:wgp\b|<wps:wsp\b").is_match(active_run_xml);
     let contains_text_box_content = re::get_unchecked(r"(?i)<w:txbxContent\b").is_match(active_run_xml);
 
-    if contains_text_box_content {
+    // A grouped drawing renders through the group pipeline so sibling pictures and
+    // vector layers survive alongside the textbox content; only a bare textbox shape
+    // (where the group renderer yields nothing) falls back to the flat textbox SVG.
+    if contains_text_box_content && standalone_shape_svg.is_none() {
         let text_box_paragraphs = parse_text_box_paragraphs(active_run_xml, context);
         if !text_box_paragraphs.is_empty() {
             let text_box_src = svg_data_uri(&render_text_box_svg(
