@@ -32629,6 +32629,7 @@ class DocxDetachedThumbnailSurfaceRenderer {
   private root: DocxDetachedThumbnailSurfaceRendererRoot | undefined;
   private activePageIndex: number | undefined;
   private activeRenderKey: string | undefined;
+  private rootGeneration = 0;
 
   async renderPageSurface(params: {
     editor: DocxEditorController;
@@ -32664,16 +32665,31 @@ class DocxDetachedThumbnailSurfaceRenderer {
   }
 
   clear(): void {
-    if (this.root) {
-      this.root.unmount();
-      this.root = undefined;
-    }
-    if (this.host?.parentNode) {
-      this.host.parentNode.removeChild(this.host);
-    }
+    const root = this.root;
+    const host = this.host;
+
+    this.rootGeneration += 1;
+    this.root = undefined;
     this.host = undefined;
     this.activePageIndex = undefined;
     this.activeRenderKey = undefined;
+
+    const dispose = () => {
+      root?.unmount();
+      if (host?.parentNode) {
+        host.parentNode.removeChild(host);
+      }
+    };
+
+    // clear() is invoked from React effect bodies/cleanups; unmounting another
+    // root there runs inside React's commit and triggers the dev-mode
+    // "synchronously unmount a root while React was already rendering"
+    // warning, so the teardown is deferred to the next task.
+    if (root && typeof window !== "undefined") {
+      window.setTimeout(dispose, 0);
+    } else {
+      dispose();
+    }
   }
 
   private async ensureRoot(): Promise<void> {
@@ -32684,6 +32700,7 @@ class DocxDetachedThumbnailSurfaceRenderer {
       return;
     }
 
+    const generation = this.rootGeneration;
     const host = document.createElement("div");
     host.setAttribute("data-docx-thumbnail-detached-renderer", "true");
     Object.assign(host.style, {
@@ -32701,6 +32718,14 @@ class DocxDetachedThumbnailSurfaceRenderer {
     this.host = host;
 
     const { createRoot } = await import("react-dom/client");
+    if (generation !== this.rootGeneration) {
+      // clear() ran while the import was pending and already removed the host;
+      // don't resurrect a root into the detached node.
+      if (host.parentNode) {
+        host.parentNode.removeChild(host);
+      }
+      return;
+    }
     this.root = createRoot(host);
   }
 
