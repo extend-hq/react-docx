@@ -45,6 +45,7 @@ import {
 import { type OoxmlPackage } from "@extend-ai/react-docx-ooxml-core";
 import { serializeDocx } from "@extend-ai/react-docx-serializer";
 import { importDocxBuffer } from "./docx-import";
+import type { ParsedDocxDocument } from "./parsed-docx";
 import {
   applyTextEditingIntent,
   editingIntentCoalesceClass,
@@ -3913,6 +3914,17 @@ export type DocxBorderPresetState = Record<DocxBorderPreset, boolean>;
  */
 export interface UseDocxEditorOptions {
   /**
+   * Parsed document to use as the initial editor state without reading or
+   * parsing the source again.
+   */
+  document?: ParsedDocxDocument;
+  /**
+   * Loads embedded fonts when an initial parsed document deferred them.
+   *
+   * @defaultValue `true`
+   */
+  loadEmbeddedFonts?: boolean;
+  /**
    * Model used for `editor.newDocument()` and for the initial empty editor.
    *
    * @defaultValue `defaultStarterModel`
@@ -4474,6 +4486,11 @@ export interface DocxEditorViewerProps {
    */
   visiblePageRange?: DocxVisiblePageRange;
   /**
+   * Hard set of zero-based pages to mount. Unlike `visiblePageRange`, omitted
+   * pages remain metadata-only even when they fall between requested pages.
+   */
+  pageIndexes?: readonly number[];
+  /**
    * Called whenever the viewer's resolved page count changes.
    */
   onPageCountChange?: (pageCount: number) => void;
@@ -4813,6 +4830,17 @@ export interface UseDocxPageThumbnailsOptions {
    */
   renderWindow?: DocxPageThumbnailRenderWindow;
   /**
+   * Hard set of zero-based pages exposed and eligible for rasterization.
+   * Omit to preserve the existing all-pages behavior.
+   */
+  pageIndexes?: readonly number[];
+  /**
+   * Default scheduling policy for thumbnail paint requests.
+   *
+   * @defaultValue `"idle"`
+   */
+  scheduling?: DocxThumbnailScheduling;
+  /**
    * Prevents thumbnail rendering while keeping stable item metadata.
    *
    * @defaultValue `false`
@@ -4826,6 +4854,15 @@ export type DocxPageThumbnailStatus =
   | "ready"
   | "unavailable"
   | "error";
+
+export type DocxThumbnailScheduling = "idle" | "immediate";
+
+export interface DocxRenderToCanvasOptions {
+  /** Bypasses idle scheduling for a visible imperative request. */
+  scheduling?: DocxThumbnailScheduling;
+  /** Ignores unchanged-content and surface-cache fast paths. */
+  force?: boolean;
+}
 
 export interface DocxPageThumbnailItem extends DocxPageThumbnailResolution {
   /** Source page aspect ratio. */
@@ -4855,7 +4892,10 @@ export interface DocxPageThumbnailItem extends DocxPageThumbnailResolution {
   /** Ref callback that keeps an attached canvas rendered as the page changes. */
   canvasRef: (canvas: HTMLCanvasElement | null) => void;
   /** Asynchronously renders this thumbnail into a canvas. */
-  renderToCanvas: (canvas: HTMLCanvasElement) => Promise<void>;
+  renderToCanvas: (
+    canvas: HTMLCanvasElement,
+    options?: DocxRenderToCanvasOptions
+  ) => Promise<void>;
   /** Alias for `widthPx`. */
   width: number;
 }
@@ -26581,12 +26621,17 @@ export function useDocxEditor(
   const starterTemplateRef = React.useRef<DocModel>(
     cloneDocModelWithBlockIds(options.starterModel ?? defaultStarterModel)
   );
+  const initialModelRef = React.useRef<DocModel>(
+    cloneDocModelWithBlockIds(
+      options.document?.model ?? starterTemplateRef.current
+    )
+  );
 
   const [editorState, dispatchCanonicalEditorState] = React.useReducer(
     reduceDocxEditorState,
-    starterTemplateRef.current,
-    (starterModel): DocxEditorState => ({
-      model: cloneDocModelWithBlockIds(starterModel),
+    initialModelRef.current,
+    (initialModel): DocxEditorState => ({
+      model: cloneDocModelWithBlockIds(initialModel),
       selection: {
         kind: "paragraph",
         nodeIndex: 0,
@@ -26693,7 +26738,7 @@ export function useDocxEditor(
   );
   const [basePackage, setBasePackage] = React.useState<
     OoxmlPackage | undefined
-  >();
+  >(options.document?.package);
   const [documentLoadNonce, setDocumentLoadNonce] = React.useState<number>(0);
   const documentLoadNonceRef = React.useRef(0);
   const advanceDocumentLoadNonce = React.useCallback((): void => {
@@ -26701,12 +26746,15 @@ export function useDocxEditor(
     setDocumentLoadNonce(documentLoadNonceRef.current);
   }, []);
   const [fileName, setFileName] = React.useState<string>(
-    options.initialFileName ?? "(new document)"
+    options.initialFileName ?? options.document?.fileName ?? "(new document)"
   );
   const [selectedFormFieldLocation, setSelectedFormFieldLocation] =
     React.useState<DocxFormFieldLocation | undefined>();
   const [status, setStatus] = React.useState<string>(
-    options.initialStatus ?? "Ready"
+    options.initialStatus ??
+      (options.document?.fileName
+        ? `Loaded ${options.document.fileName}`
+        : "Ready")
   );
   const [importError, setImportError] = React.useState<Error | undefined>();
   const [isImporting, setIsImporting] = React.useState(false);
@@ -27254,6 +27302,21 @@ export function useDocxEditor(
       unloadEmbeddedFonts();
     };
   }, [unloadEmbeddedFonts]);
+
+  React.useEffect(() => {
+    if (
+      !options.document ||
+      options.loadEmbeddedFonts === false ||
+      options.document.embeddedFontsLoaded
+    ) {
+      return;
+    }
+    void loadEmbeddedFontsFromPackage(options.document.package);
+  }, [
+    loadEmbeddedFontsFromPackage,
+    options.document,
+    options.loadEmbeddedFonts,
+  ]);
 
   const dispatchEditorTransaction = React.useCallback(
     (
@@ -32611,7 +32674,7 @@ function DocxDetachedThumbnailPageSurface({
     <DocxEditorViewer
       editor={editor}
       mode="read-only"
-      visiblePageRange={{ startPageIndex: pageIndex, endPageIndex: pageIndex }}
+      pageIndexes={[pageIndex]}
       pageVirtualization={{ enabled: false }}
       showTrackedChanges={editor.showTrackedChanges}
       showComments={editor.showComments}
@@ -32881,7 +32944,13 @@ export function useDocxPageThumbnails(
     Map<number, React.RefCallback<HTMLCanvasElement>>
   >(new Map());
   const renderToCanvasCallbacksRef = React.useRef<
-    Map<number, (canvas: HTMLCanvasElement) => Promise<void>>
+    Map<
+      number,
+      (
+        canvas: HTMLCanvasElement,
+        options?: DocxRenderToCanvasOptions
+      ) => Promise<void>
+    >
   >(new Map());
   const fallbackLayout = React.useMemo(
     () => resolveDocumentLayout(editor.model),
@@ -32946,6 +33015,7 @@ export function useDocxPageThumbnails(
   const queuedPrefetchThumbnailKeysRef = React.useRef<Set<string>>(new Set());
   const thumbnailMinRasterIntervalMs =
     normalizeDocxThumbnailMinRasterIntervalMs(options.minRasterIntervalMs);
+  const defaultThumbnailScheduling = options.scheduling ?? "idle";
   const ensureThumbnailSurfaceCache = React.useCallback(() => {
     if (!thumbnailSurfaceCacheRef.current) {
       thumbnailSurfaceCacheRef.current = new DocxThumbnailSurfaceCache(
@@ -33041,22 +33111,51 @@ export function useDocxPageThumbnails(
     [editor.documentTheme, pageSurfaceRegistry, thumbnailResolutionOptionsKey]
   );
   const totalThumbnailPages = Math.max(1, editor.totalPages);
-  const visibleThumbnailPageIndexes = React.useMemo(
+  const hardThumbnailPageIndexes = React.useMemo(
     () =>
-      normalizeDocxThumbnailPageIndexes(
-        options.renderWindow?.visiblePageIndexes,
-        totalThumbnailPages
-      ),
-    [options.renderWindow?.visiblePageIndexes, totalThumbnailPages]
+      options.pageIndexes === undefined
+        ? undefined
+        : normalizeDocxThumbnailPageIndexes(
+            options.pageIndexes,
+            totalThumbnailPages
+          ),
+    [options.pageIndexes, totalThumbnailPages]
   );
-  const prefetchThumbnailPageIndexes = React.useMemo(
+  const hardThumbnailPageIndexSet = React.useMemo(
     () =>
-      normalizeDocxThumbnailPageIndexes(
-        options.renderWindow?.prefetchPageIndexes,
-        totalThumbnailPages
-      ),
-    [options.renderWindow?.prefetchPageIndexes, totalThumbnailPages]
+      hardThumbnailPageIndexes ? new Set(hardThumbnailPageIndexes) : undefined,
+    [hardThumbnailPageIndexes]
   );
+  const visibleThumbnailPageIndexes = React.useMemo(() => {
+    const normalized = normalizeDocxThumbnailPageIndexes(
+      options.renderWindow?.visiblePageIndexes,
+      totalThumbnailPages
+    );
+    return hardThumbnailPageIndexSet
+      ? normalized.filter((pageIndex) =>
+          hardThumbnailPageIndexSet.has(pageIndex)
+        )
+      : normalized;
+  }, [
+    hardThumbnailPageIndexSet,
+    options.renderWindow?.visiblePageIndexes,
+    totalThumbnailPages,
+  ]);
+  const prefetchThumbnailPageIndexes = React.useMemo(() => {
+    const normalized = normalizeDocxThumbnailPageIndexes(
+      options.renderWindow?.prefetchPageIndexes,
+      totalThumbnailPages
+    );
+    return hardThumbnailPageIndexSet
+      ? normalized.filter((pageIndex) =>
+          hardThumbnailPageIndexSet.has(pageIndex)
+        )
+      : normalized;
+  }, [
+    hardThumbnailPageIndexSet,
+    options.renderWindow?.prefetchPageIndexes,
+    totalThumbnailPages,
+  ]);
   const visibleThumbnailPageIndexesKey = docxThumbnailPageIndexesKey(
     visibleThumbnailPageIndexes
   );
@@ -33198,7 +33297,11 @@ export function useDocxPageThumbnails(
     async (
       pageIndex: number,
       canvas?: HTMLCanvasElement,
-      renderOptions?: { force?: boolean; priority?: number }
+      renderOptions?: {
+        force?: boolean;
+        priority?: number;
+        scheduling?: DocxThumbnailScheduling;
+      }
     ): Promise<void> => {
       if (options.disabled) {
         return;
@@ -33274,6 +33377,14 @@ export function useDocxPageThumbnails(
         return;
       }
 
+      if (
+        (renderOptions?.scheduling ?? defaultThumbnailScheduling) ===
+        "immediate"
+      ) {
+        await paintIntoTarget();
+        return;
+      }
+
       await ensureThumbnailRasterQueue().enqueue(
         thumbnailQueueKeyForCanvas(targetCanvas),
         paintIntoTarget,
@@ -33289,6 +33400,7 @@ export function useDocxPageThumbnails(
     },
     [
       ensureThumbnailRasterQueue,
+      defaultThumbnailScheduling,
       options.disabled,
       pageSurfaceRegistry,
       renderPageThumbnailSurface,
@@ -33431,7 +33543,10 @@ export function useDocxPageThumbnails(
   // no longer re-measure every page (which was O(pages^2) of forced layout).
   const thumbnailGeometryItems = React.useMemo(() => {
     const totalPages = Math.max(1, editor.totalPages);
-    return Array.from({ length: totalPages }, (_, pageIndex) => {
+    const geometryPageIndexes =
+      hardThumbnailPageIndexes ??
+      Array.from({ length: totalPages }, (_, pageIndex) => pageIndex);
+    return geometryPageIndexes.map((pageIndex) => {
       const pageElement = mountedPageElements.get(pageIndex);
       const sourceSize =
         pageElement && pageElement.isConnected
@@ -33497,9 +33612,13 @@ export function useDocxPageThumbnails(
           renderToCanvasCallbacksRef.current.get(pageIndex) ??
           (() => {
             const nextRenderToCanvas = async (
-              canvas: HTMLCanvasElement
+              canvas: HTMLCanvasElement,
+              renderOptions?: DocxRenderToCanvasOptions
             ): Promise<void> => {
-              await renderPageThumbnailToCanvasRef.current(pageIndex, canvas);
+              await renderPageThumbnailToCanvasRef.current(pageIndex, canvas, {
+                force: renderOptions?.force,
+                scheduling: renderOptions?.scheduling,
+              });
             };
             renderToCanvasCallbacksRef.current.set(
               pageIndex,
@@ -33525,6 +33644,7 @@ export function useDocxPageThumbnails(
     options.maxHeightPx,
     options.maxWidthPx,
     options.pixelRatio,
+    hardThumbnailPageIndexes,
     pageSurfaceRegistry,
     thumbnailQueueKeyForCanvas,
   ]);
@@ -33550,7 +33670,9 @@ export function useDocxPageThumbnails(
       if (!canvas || options.disabled) {
         return false;
       }
-      const thumbnail = thumbnails[pageIndex];
+      const thumbnail = thumbnails.find(
+        (candidate) => candidate.pageIndex === pageIndex
+      );
       if (!thumbnail) {
         return false;
       }
@@ -35146,6 +35268,7 @@ export function DocxEditorViewer({
   loadingState,
   pageVirtualization,
   visiblePageRange,
+  pageIndexes,
   onPageCountChange,
   onRequestPageReveal,
   headingStyles,
@@ -37313,6 +37436,14 @@ export function DocxEditorViewer({
     };
   }, [editor.model.nodes, pageNodeSegmentsByPage]);
   const pageCount = pageNodeSegmentsByPage.length;
+  const requestedPageIndexes = React.useMemo(
+    () =>
+      normalizeDocxThumbnailPageIndexes(pageIndexes, pageCount).sort(
+        (left, right) => left - right
+      ),
+    [pageCount, pageIndexes]
+  );
+  const hasRequestedPageIndexes = pageIndexes !== undefined;
   const hasLargeTableLayoutSurface = React.useMemo(() => {
     let tableParagraphCount = 0;
     let tableCellCount = 0;
@@ -37430,6 +37561,7 @@ export function DocxEditorViewer({
       )
     : 0;
   const hasExternalVisiblePageRange =
+    hasRequestedPageIndexes ||
     Number.isFinite(Number(visiblePageRange?.startPageIndex)) ||
     Number.isFinite(Number(visiblePageRange?.endPageIndex));
   const [deferInternalPageVirtualization, setDeferInternalPageVirtualization] =
@@ -38250,17 +38382,24 @@ export function DocxEditorViewer({
     pageCount > 0 &&
     initialPremeasureStartPageIndex === 0 &&
     initialPremeasureEndPageIndex >= pageCount - 1;
-  const visiblePageStartIndex = measureAllPagesBeforeInitialReveal
+  const visiblePageStartIndex = hasRequestedPageIndexes
+    ? requestedPageIndexes[0] ?? 0
+    : measureAllPagesBeforeInitialReveal
     ? 0
     : hideDocumentUntilPaginationSettled
     ? initialPremeasureStartPageIndex
     : normalizedVisiblePageRange.startPageIndex;
-  const visiblePageEndIndex = measureAllPagesBeforeInitialReveal
+  const visiblePageEndIndex = hasRequestedPageIndexes
+    ? requestedPageIndexes[requestedPageIndexes.length - 1] ?? -1
+    : measureAllPagesBeforeInitialReveal
     ? pageCount - 1
     : hideDocumentUntilPaginationSettled
     ? initialPremeasureEndPageIndex
     : normalizedVisiblePageRange.endPageIndex;
   const visiblePageIndexes = React.useMemo(() => {
+    if (hasRequestedPageIndexes) {
+      return requestedPageIndexes;
+    }
     if (pageCount <= 0 || visiblePageEndIndex < visiblePageStartIndex) {
       return [] as number[];
     }
@@ -38274,7 +38413,13 @@ export function DocxEditorViewer({
       indexes.push(pageIndex);
     }
     return indexes;
-  }, [pageCount, visiblePageEndIndex, visiblePageStartIndex]);
+  }, [
+    hasRequestedPageIndexes,
+    pageCount,
+    requestedPageIndexes,
+    visiblePageEndIndex,
+    visiblePageStartIndex,
+  ]);
   const pageStackVirtualSpacers = React.useMemo(() => {
     const pageWrapperWidthPxForIndex = (pageIndex: number): number => {
       const pageLayout =
@@ -38819,11 +38964,17 @@ export function DocxEditorViewer({
   ]);
   const isPageVisible = React.useCallback(
     (pageIndex: number): boolean => {
-      return (
-        pageIndex >= visiblePageStartIndex && pageIndex <= visiblePageEndIndex
-      );
+      return hasRequestedPageIndexes
+        ? requestedPageIndexes.includes(pageIndex)
+        : pageIndex >= visiblePageStartIndex &&
+            pageIndex <= visiblePageEndIndex;
     },
-    [visiblePageEndIndex, visiblePageStartIndex]
+    [
+      hasRequestedPageIndexes,
+      requestedPageIndexes,
+      visiblePageEndIndex,
+      visiblePageStartIndex,
+    ]
   );
   const requestPageReveal = React.useCallback(
     (targetPageIndex: number): void => {

@@ -1,14 +1,29 @@
 import * as React from "react";
+import { flushSync } from "react-dom";
+import type { Root } from "react-dom/client";
 import type { DocModel } from "@extend-ai/react-docx-doc-model";
 import {
   layoutDocument,
   type LayoutBlock,
   type LayoutOptions,
+  type LayoutPage,
   type LayoutParagraphBlock,
   type LayoutRun,
   type LayoutTableBlock,
 } from "@extend-ai/react-docx-layout-engine";
 import { importDocxBuffer } from "./docx-import";
+import type { ParsedDocxDocument } from "./parsed-docx";
+import {
+  buildDocumentPageNodeSegments,
+  resolveDocxPageThumbnailResolution,
+  type DocxPageThumbnailBounds,
+  type DocxThumbnailScheduling,
+} from "./editor";
+import {
+  blitDocxThumbnailSurface,
+  rasterizeDocxThumbnailSurface,
+  SerialIdleTaskQueue,
+} from "./thumbnail-raster";
 import {
   DEFAULT_DOCUMENT_LAYOUT,
   parseSectionLayout,
@@ -46,6 +61,12 @@ export interface ReactDocxViewerProps {
    * pipeline.
    */
   model?: DocModel;
+  /** Parsed input returned by `parseDocxForViewer`. */
+  document?: ParsedDocxDocument;
+  /** Loads deferred embedded fonts when a parsed document is mounted. */
+  loadEmbeddedFonts?: boolean;
+  /** Hard set of zero-based pages to mount. */
+  pageIndexes?: readonly number[];
   /**
    * CSS class applied to the outer viewer container.
    *
@@ -452,6 +473,9 @@ function renderBlock(block: LayoutBlock): React.JSX.Element {
 export function ReactDocxViewer({
   file,
   model,
+  document,
+  loadEmbeddedFonts = true,
+  pageIndexes,
   className,
   layoutOptions,
   emptyState,
@@ -460,8 +484,13 @@ export function ReactDocxViewer({
     model: parsedModel,
     isLoading,
     error,
-  } = useDocxModel(model ? undefined : file);
-  const resolvedModel = model ?? parsedModel;
+  } = useDocxModel(model || document ? undefined : file);
+  const resolvedModel = model ?? document?.model ?? parsedModel;
+  React.useEffect(() => {
+    if (document && loadEmbeddedFonts && !document.embeddedFontsLoaded) {
+      void document.loadEmbeddedFonts();
+    }
+  }, [document, loadEmbeddedFonts]);
   const modelWithSections = React.useMemo(() => {
     if (!resolvedModel) {
       return undefined;
@@ -498,6 +527,17 @@ export function ReactDocxViewer({
     }
     return layoutDocument(modelWithSections, resolvedLayoutOptions);
   }, [modelWithSections, resolvedLayoutOptions]);
+  const requestedPageIndexSet = React.useMemo(
+    () =>
+      pageIndexes === undefined
+        ? undefined
+        : new Set(
+            pageIndexes
+              .filter((pageIndex) => Number.isFinite(pageIndex))
+              .map((pageIndex) => Math.trunc(pageIndex))
+          ),
+    [pageIndexes]
+  );
 
   if (isLoading) {
     return <div className={className}>Loading DOCX...</div>;
@@ -525,28 +565,379 @@ export function ReactDocxViewer({
       data-testid="react-docx-viewer"
       style={containerStyle}
     >
-      {pages.map((page) => (
+      {pages.map((page, pageIndex) =>
+        requestedPageIndexSet &&
+        !requestedPageIndexSet.has(pageIndex) ? null : (
+          <section
+            key={page.number}
+            data-page={page.number}
+            data-page-index={pageIndex}
+            style={{
+              width: pageWidth,
+              minHeight: pageHeight,
+              boxSizing: "border-box",
+              padding: pagePadding,
+              background: "#fff",
+              border: "1px solid #d4d4d4",
+              boxShadow: "0 8px 24px rgba(0, 0, 0, 0.08)",
+              display: "grid",
+              gap: 8,
+              alignContent: "start",
+            }}
+          >
+            {page.blocks.map(renderBlock)}
+          </section>
+        )
+      )}
+    </div>
+  );
+}
+
+export type DocxThumbnailOutput = "canvas" | "blob" | "imageBitmap";
+
+export interface CreateDocxThumbnailRendererOptions {
+  scheduling?: DocxThumbnailScheduling;
+  pixelRatio?: number;
+  resolution?: DocxPageThumbnailBounds;
+  pageIndexes?: readonly number[];
+}
+
+export interface RenderDocxThumbnailPageOptions {
+  scheduling?: DocxThumbnailScheduling;
+  pixelRatio?: number;
+  resolution?: DocxPageThumbnailBounds;
+  maxWidth?: number;
+  maxHeight?: number;
+  output?: DocxThumbnailOutput;
+  canvas?: HTMLCanvasElement;
+  mimeType?: string;
+  quality?: number;
+}
+
+export interface DocxThumbnailRenderTimings {
+  paginationMs: number;
+  pageMountMs: number;
+  rasterizationMs: number;
+  encodingMs: number;
+  totalMs: number;
+}
+
+export interface DocxThumbnailRenderResult {
+  pageIndex: number;
+  pageCount: number;
+  width: number;
+  height: number;
+  pixelWidth: number;
+  pixelHeight: number;
+  output: DocxThumbnailOutput;
+  canvas?: HTMLCanvasElement;
+  blob?: Blob;
+  imageBitmap?: ImageBitmap;
+  timings: DocxThumbnailRenderTimings;
+}
+
+export type DocxThumbnailDocument = ParsedDocxDocument | DocModel;
+
+export interface DocxThumbnailRenderer {
+  readonly document: DocxThumbnailDocument;
+  readonly pageCount: number;
+  renderPage(
+    pageIndex: number,
+    options?: RenderDocxThumbnailPageOptions
+  ): Promise<DocxThumbnailRenderResult>;
+  dispose(): void;
+}
+
+function thumbnailNow(): number {
+  return typeof performance !== "undefined" &&
+    typeof performance.now === "function"
+    ? performance.now()
+    : Date.now();
+}
+
+function canvasToBlob(
+  canvas: HTMLCanvasElement,
+  mimeType: string,
+  quality?: number
+): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob(
+      (blob) => {
+        if (blob) {
+          resolve(blob);
+        } else {
+          reject(new Error("Failed to encode DOCX thumbnail."));
+        }
+      },
+      mimeType,
+      quality
+    );
+  });
+}
+
+export function createDocxThumbnailRenderer(
+  documentModel: DocxThumbnailDocument,
+  options: CreateDocxThumbnailRendererOptions = {}
+): DocxThumbnailRenderer {
+  const model = "model" in documentModel ? documentModel.model : documentModel;
+  const layout = resolveDocumentLayout(model);
+  const layoutOptions: LayoutOptions = {
+    pageWidth: layout.pageWidthPx,
+    pageHeight: layout.pageHeightPx,
+  };
+  const headerNodes = model.metadata.headerSections[0]?.nodes ?? [];
+  const footerNodes = model.metadata.footerSections[0]?.nodes ?? [];
+  const paginationStartedAt = thumbnailNow();
+  const builtPageSegments = buildDocumentPageNodeSegments(
+    model,
+    Math.max(
+      120,
+      layout.pageHeightPx - layout.marginsPx.top - layout.marginsPx.bottom
+    ),
+    Math.max(
+      120,
+      layout.pageWidthPx - layout.marginsPx.left - layout.marginsPx.right
+    ),
+    model.metadata.numberingDefinitions
+  );
+  const pageSegments =
+    builtPageSegments.length > 0 ? builtPageSegments : ([[]] as const);
+  const paginationMs = thumbnailNow() - paginationStartedAt;
+  const pageLayoutCache = new Map<number, LayoutPage>();
+  const layoutPage = (
+    pageIndex: number
+  ): { page: LayoutPage; paginationMs: number } => {
+    const cached = pageLayoutCache.get(pageIndex);
+    if (cached) {
+      return { page: cached, paginationMs: 0 };
+    }
+    const startedAt = thumbnailNow();
+    const nodeIndexes = new Set(
+      (pageSegments[pageIndex] ?? []).map((segment) => segment.nodeIndex)
+    );
+    const pageModel: DocModel = {
+      ...model,
+      nodes: [
+        ...headerNodes,
+        ...model.nodes.filter((_, nodeIndex) =>
+          nodeIndexes.has(nodeIndex)
+        ),
+        ...footerNodes,
+      ],
+    };
+    const page = layoutDocument(pageModel, layoutOptions)[0];
+    if (!page) {
+      throw new RangeError(`DOCX page index ${pageIndex} is unavailable.`);
+    }
+    pageLayoutCache.set(pageIndex, page);
+    return { page, paginationMs: thumbnailNow() - startedAt };
+  };
+  const allowedPageIndexes =
+    options.pageIndexes === undefined
+      ? undefined
+      : new Set(
+          options.pageIndexes
+            .filter((pageIndex) => Number.isFinite(pageIndex))
+            .map((pageIndex) => Math.trunc(pageIndex))
+        );
+  const queue = new SerialIdleTaskQueue<string>({ minTaskIntervalMs: 0 });
+  let host: HTMLDivElement | undefined;
+  let root: Root | undefined;
+  let rootPromise: Promise<Root> | undefined;
+  let requestId = 0;
+  let disposed = false;
+
+  const ensureRoot = async (): Promise<Root> => {
+    if (disposed) {
+      throw new Error("DOCX thumbnail renderer has been disposed.");
+    }
+    if (root) {
+      return root;
+    }
+    if (!rootPromise) {
+      rootPromise = (async () => {
+        if (typeof document === "undefined") {
+          throw new Error("DOCX thumbnail rendering requires a browser DOM.");
+        }
+        const nextHost = document.createElement("div");
+        nextHost.setAttribute("data-docx-thumbnail-renderer", "true");
+        Object.assign(nextHost.style, {
+          position: "fixed",
+          left: "-100000px",
+          top: "0",
+          overflow: "visible",
+          pointerEvents: "none",
+        });
+        document.body.appendChild(nextHost);
+        host = nextHost;
+        const { createRoot } = await import("react-dom/client");
+        const nextRoot = createRoot(nextHost);
+        if (disposed) {
+          nextRoot.unmount();
+          nextHost.remove();
+          throw new Error("DOCX thumbnail renderer has been disposed.");
+        }
+        root = nextRoot;
+        return root;
+      })();
+    }
+    return rootPromise;
+  };
+
+  const renderImmediately = async (
+    pageIndex: number,
+    renderOptions: RenderDocxThumbnailPageOptions
+  ): Promise<DocxThumbnailRenderResult> => {
+    const startedAt = thumbnailNow();
+    if (
+      !Number.isInteger(pageIndex) ||
+      pageIndex < 0 ||
+      pageIndex >= pageSegments.length
+    ) {
+      throw new RangeError(`DOCX page index ${pageIndex} is out of range.`);
+    }
+    if (allowedPageIndexes && !allowedPageIndexes.has(pageIndex)) {
+      throw new RangeError(`DOCX page index ${pageIndex} was not requested.`);
+    }
+
+    const resolvedPage = layoutPage(pageIndex);
+    const renderPaginationMs = paginationMs + resolvedPage.paginationMs;
+    const pageMountStartedAt = thumbnailNow();
+    const activeRoot = await ensureRoot();
+    flushSync(() => {
+      activeRoot.render(
         <section
-          key={page.number}
-          data-page={page.number}
+          data-docx-thumbnail-page-index={pageIndex}
           style={{
-            width: pageWidth,
-            minHeight: pageHeight,
+            width: layout.pageWidthPx,
+            minHeight: layout.pageHeightPx,
             boxSizing: "border-box",
-            padding: pagePadding,
+            padding: `${layout.marginsPx.top}px ${layout.marginsPx.right}px ${layout.marginsPx.bottom}px ${layout.marginsPx.left}px`,
             background: "#fff",
-            border: "1px solid #d4d4d4",
-            boxShadow: "0 8px 24px rgba(0, 0, 0, 0.08)",
             display: "grid",
             gap: 8,
             alignContent: "start",
           }}
         >
-          {page.blocks.map(renderBlock)}
+          {resolvedPage.page.blocks.map(renderBlock)}
         </section>
-      ))}
-    </div>
-  );
+      );
+    });
+    const pageElement = host?.querySelector<HTMLElement>(
+      `[data-docx-thumbnail-page-index="${pageIndex}"]`
+    );
+    if (!pageElement) {
+      throw new Error("Failed to mount the requested DOCX page.");
+    }
+    const pageMountMs = thumbnailNow() - pageMountStartedAt;
+    const resolution = resolveDocxPageThumbnailResolution({
+      sourceWidthPx: layout.pageWidthPx,
+      sourceHeightPx: layout.pageHeightPx,
+      resolution: renderOptions.resolution ?? options.resolution,
+      maxWidthPx: renderOptions.maxWidth,
+      maxHeightPx: renderOptions.maxHeight,
+      pixelRatio: renderOptions.pixelRatio ?? options.pixelRatio,
+    });
+
+    const rasterStartedAt = thumbnailNow();
+    const surface = await rasterizeDocxThumbnailSurface({
+      pageElement,
+      sourceWidthPx: layout.pageWidthPx,
+      sourceHeightPx: layout.pageHeightPx,
+      widthPx: resolution.widthPx,
+      heightPx: resolution.heightPx,
+      pixelWidthPx: resolution.pixelWidthPx,
+      pixelHeightPx: resolution.pixelHeightPx,
+    });
+    const rasterizationMs = thumbnailNow() - rasterStartedAt;
+    const output = renderOptions.output ?? "canvas";
+    const outputCanvas = renderOptions.canvas ?? surface;
+    if (outputCanvas !== surface) {
+      blitDocxThumbnailSurface(surface, outputCanvas, resolution);
+    }
+
+    const encodingStartedAt = thumbnailNow();
+    let blob: Blob | undefined;
+    let imageBitmap: ImageBitmap | undefined;
+    if (output === "blob") {
+      blob = await canvasToBlob(
+        outputCanvas,
+        renderOptions.mimeType ?? "image/png",
+        renderOptions.quality
+      );
+    } else if (output === "imageBitmap") {
+      if (typeof createImageBitmap !== "function") {
+        throw new Error("ImageBitmap output is not supported in this browser.");
+      }
+      imageBitmap = await createImageBitmap(outputCanvas);
+    }
+    const encodingMs = thumbnailNow() - encodingStartedAt;
+
+    return {
+      pageIndex,
+      pageCount: pageSegments.length,
+      width: resolution.widthPx,
+      height: resolution.heightPx,
+      pixelWidth: resolution.pixelWidthPx,
+      pixelHeight: resolution.pixelHeightPx,
+      output,
+      canvas: output === "canvas" ? outputCanvas : undefined,
+      blob,
+      imageBitmap,
+      timings: {
+        paginationMs: renderPaginationMs,
+        pageMountMs,
+        rasterizationMs,
+        encodingMs,
+        totalMs: paginationMs + thumbnailNow() - startedAt,
+      },
+    };
+  };
+
+  return {
+    document: documentModel,
+    pageCount: pageSegments.length,
+    renderPage(pageIndex, renderOptions = {}) {
+      const scheduling =
+        renderOptions.scheduling ?? options.scheduling ?? "idle";
+      if (scheduling === "immediate") {
+        return renderImmediately(pageIndex, renderOptions);
+      }
+      requestId += 1;
+      let result: DocxThumbnailRenderResult | undefined;
+      let failure: unknown;
+      return queue
+        .enqueue(
+          `page:${pageIndex}:${requestId}`,
+          async () => {
+            try {
+              result = await renderImmediately(pageIndex, renderOptions);
+            } catch (error) {
+              failure = error;
+            }
+          },
+          { priority: 0 }
+        )
+        .then(() => {
+          if (failure) {
+            throw failure;
+          }
+          if (!result) {
+            throw new Error("DOCX thumbnail request was cancelled.");
+          }
+          return result;
+        });
+    },
+    dispose() {
+      disposed = true;
+      queue.clear();
+      root?.unmount();
+      root = undefined;
+      rootPromise = undefined;
+      host?.remove();
+      host = undefined;
+    },
+  };
 }
 
 export {
@@ -610,6 +1001,8 @@ export {
   type DocxPageThumbnailResolution,
   type DocxPageThumbnailResolutionOptions,
   type DocxPageThumbnailStatus,
+  type DocxRenderToCanvasOptions,
+  type DocxThumbnailScheduling,
   type UseDocxPaginationResult,
   type UseDocxParagraphStylesResult,
   type UseDocxTrackChangesResult,
@@ -631,6 +1024,14 @@ export {
   resolveDocxPageThumbnailResolution,
   type UseDocxEditorOptions,
 } from "./editor";
+
+export {
+  parseDocxForViewer,
+  type DocxViewerSource,
+  type ParseDocxForViewerOptions,
+  type ParsedDocxDocument,
+  type ParsedDocxPerformanceTimings,
+} from "./parsed-docx";
 
 export { parseSectionLayout, resolveDocumentLayout } from "./section-layout";
 

@@ -130,6 +130,46 @@ export function EditorExample() {
 }
 ```
 
+## Thumbnail-only rendering
+
+Use the imperative renderer when a cover or page preview is needed before the
+full viewer mounts. The parsed document can be passed to `useDocxEditor` later,
+so the source is read and parsed only once.
+
+```tsx
+import {
+  createDocxThumbnailRenderer,
+  parseDocxForViewer,
+  useDocxEditor,
+} from "@extend-ai/react-docx";
+
+const document = await parseDocxForViewer(file, {
+  loadEmbeddedFonts: false,
+});
+const renderer = createDocxThumbnailRenderer(document, {
+  scheduling: "immediate",
+  pixelRatio: 1,
+  pageIndexes: [0],
+});
+const cover = await renderer.renderPage(0, {
+  maxWidth: 240,
+  output: "blob",
+});
+
+function FullEditor() {
+  const editor = useDocxEditor({ document });
+  return <DocxEditorViewer editor={editor} />;
+}
+```
+
+`renderPage` supports `canvas`, `blob`, and `imageBitmap` output. Pass `canvas`
+to draw into a caller-owned canvas without an encoding round trip. Its timings
+separate pagination, page mounting, rasterization, and encoding; the parsed
+document timings separately expose file reading, parsing, model construction,
+and embedded-font loading. Use `loadEmbeddedFonts: "defer"` to load fonts later
+through `document.loadEmbeddedFonts()`. The renderer also accepts an existing
+`DocModel` directly when the OOXML package is not needed.
+
 ## Thumbnail Hook
 
 The library can expose page thumbnails so you can build your own page strip, mini-map, or navigation UI. Thumbnail painting can render from the live page surface when it is mounted, or from an offscreen one-page surface when viewer virtualization has unmounted that page.
@@ -149,6 +189,7 @@ export function ThumbnailExample() {
     maxHeightPx: 220,
     pixelRatio: 2,
     minRasterIntervalMs: 40,
+    pageIndexes: [0, 1, 2, 3, 4, 5],
     renderWindow: {
       visiblePageIndexes: [0, 1, 2],
       prefetchPageIndexes: [3, 4, 5],
@@ -183,6 +224,8 @@ Notes:
 
 - Thumbnail canvases can stay attached in a virtualized sidebar; only canvases you mount request paint work.
 - Use `renderWindow.visiblePageIndexes` for thumbnails currently visible in your sidebar, and `renderWindow.prefetchPageIndexes` to warm nearby pages after visible work.
+- Use `pageIndexes` as a hard render set when unlisted pages must remain metadata-only. It is distinct from the priority hints in `renderWindow`.
+- Call `thumbnail.renderToCanvas(canvas, { scheduling: "immediate" })` for a visible cover that must bypass idle scheduling.
 - `minRasterIntervalMs` controls repeat renders for the same canvas. Lower values are useful when the consumer already limits thumbnail work to a small visible window.
 - Thumbnail sizing is bounded by `maxWidthPx` and `maxHeightPx`, so downstream UIs can bias toward portrait thumbnail rails.
 - Thumbnails use a direct layout/model canvas renderer first; if a page has no usable snapshot, the hook falls back to an isolated offscreen page surface.
