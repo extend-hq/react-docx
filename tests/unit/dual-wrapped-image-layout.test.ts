@@ -211,7 +211,7 @@ describe("dual wrapped image layout", () => {
     expect(geometry?.imageLeftPx).toBe(510);
   });
 
-  it("keeps narrow near-edge both-sides wraps on the side-float path", async () => {
+  it("keeps narrow near-edge wraps in Pretext with an edge exclusion", async () => {
     const { resolveDualWrappedFloatingImageGeometry } = await import(
       "../../packages/react-viewer/src/editor"
     );
@@ -236,7 +236,23 @@ describe("dual wrapped image layout", () => {
       612
     );
 
-    expect(geometry).toBeUndefined();
+    expect(geometry?.imageLeftPx).toBe(40);
+    expect(geometry?.exclusion.left).toBe(0);
+    expect(geometry?.exclusion.right).toBe(336);
+  });
+
+  it.each([-30, 360, -160, 500])("preserves wrapped image offsets outside the text margins: %s", async (left) => {
+    const { resolveDualWrappedFloatingImageGeometry } = await import(
+      "../../packages/react-viewer/src/editor"
+    );
+    const geometry = resolveDualWrappedFloatingImageGeometry({
+      type: "image", widthPx: 120, heightPx: 90,
+      floating: { xPx: left, yPx: 0, wrapType: "square", distLPx: 8, distRPx: 8 }
+    }, 420);
+    expect(geometry?.imageLeftPx).toBe(left);
+    expect(geometry?.exclusion.left).toBeGreaterThanOrEqual(0);
+    expect(geometry?.exclusion.right).toBeLessThanOrEqual(420);
+    expect(geometry?.exclusion.right).toBeGreaterThanOrEqual(geometry!.exclusion.left);
   });
 
   it("maps explicit left insets into occupied side-float width", async () => {
@@ -1265,5 +1281,65 @@ describe("dual wrapped image layout", () => {
     expect(precompute(twoPassThresholdDeltaY as number)).toEqual(
       precompute(twoPassThresholdDeltaY as number)
     );
+  });
+});
+
+describe("page-space object drag exclusions", () => {
+  it("keeps the other image's exclusion when a moving image uses a page-space obstacle", async () => {
+    const { resolveParagraphDualWrappedTextLayout } = await import("../../packages/react-viewer/src/editor");
+    const paragraph: ParagraphNode = {
+      type: "paragraph", children: [
+        { type: "image", widthPx: 70, heightPx: 50, floating: { xPx: 100, yPx: 0, wrapType: "square", wrapText: "bothSides" } },
+        { type: "image", widthPx: 70, heightPx: 50, floating: { xPx: 280, yPx: 0, wrapType: "square", wrapText: "bothSides" } },
+        { type: "text", text: "Text follows the current obstacle position. ".repeat(12) },
+      ],
+    };
+    const layout = resolveParagraphDualWrappedTextLayout(paragraph, 500, 20, { excludedImageIndex: 0 });
+    expect(layout?.layout.exclusions).toHaveLength(1);
+    expect(layout?.layout.exclusions?.[0].left).toBe(280);
+  });
+
+  it("applies a moving table obstacle to paragraphs before and after its anchor", async () => {
+    const { precomputePageSegmentForeignWrapExclusions } = await import("../../packages/react-viewer/src/editor");
+    const { DEFAULT_DOCUMENT_LAYOUT } = await import("../../packages/react-viewer/src/section-layout");
+    const paragraph = (): ParagraphNode => ({ type: "paragraph", children: [{ type: "text", text: "Text beside a moving table. ".repeat(12) }] });
+    const model = { nodes: [paragraph(), { type: "table" as const, rows: [], style: { floating: { xTwips: 1000 } } }, paragraph()], metadata: { warnings: [] } };
+    const result = precomputePageSegmentForeignWrapExclusions(
+      [0, 1, 2].map(nodeIndex => ({ nodeIndex })), model, 500, undefined, new Map(), new Map(), DEFAULT_DOCUMENT_LAYOUT,
+      { draggedTableIndex: 1, dragObstacle: { left: 180, right: 300, top: 20, bottom: 140, fromDragPreview: true },
+        measuredWrapBands: new Map([
+          ["para:0", { leftPx: 0, rightPx: 500, topPx: 0, bottomPx: 80 }],
+          ["para:2", { leftPx: 0, rightPx: 500, topPx: 80, bottomPx: 180 }],
+        ]) },
+    );
+    expect(result[0]).toEqual([{ left: 180, right: 300, top: 20, bottom: 140, fromDragPreview: true }]);
+    expect(result[2]).toEqual([{ left: 180, right: 300, top: 0, bottom: 60, fromDragPreview: true }]);
+  });
+});
+
+describe("floating anchors within text runs", () => {
+  it("keeps line breaks stable when an anchor splits an otherwise uniform text run", async () => {
+    const { resolveParagraphDualWrappedTextLayout } = await import("../../packages/react-viewer/src/editor");
+    const text = "Text layout must remain stable when an image moves between words. ".repeat(8);
+    const image = { type: "image" as const, widthPx: 80, heightPx: 40,
+      floating: { xPx: 180, yPx: 10, wrapType: "square", wrapText: "bothSides", verticalRelativeTo: "paragraph" } };
+    const style = { fontFamily: "Arial", fontSizePt: 12 };
+    const before: ParagraphNode = { type: "paragraph", children: [image, { type: "text", text, style }] };
+    const after: ParagraphNode = { type: "paragraph", children: [
+      { type: "text", text: text.slice(0, 100), style }, image, { type: "text", text: text.slice(100), style },
+    ] };
+    const first = resolveParagraphDualWrappedTextLayout(before, 500, 20);
+    const second = resolveParagraphDualWrappedTextLayout(after, 500, 20);
+    expect(second?.layout.lines).toEqual(first?.layout.lines);
+  });
+
+  it("measures a line-relative anchor from its text position", async () => {
+    const { resolveParagraphDualWrappedTextLayout } = await import("../../packages/react-viewer/src/editor");
+    const paragraph: ParagraphNode = { type: "paragraph", children: [
+      { type: "text", text: "Earlier text fills several lines before the anchor. ".repeat(6) },
+      { type: "image", widthPx: 80, heightPx: 40, floating: { xPx: 180, yPx: 0, wrapType: "square", wrapText: "bothSides", verticalRelativeTo: "line" } },
+      { type: "text", text: "Following text continues after the anchor." },
+    ] };
+    expect(resolveParagraphDualWrappedTextLayout(paragraph, 500, 20)?.geometries[0].imageTopPx).toBeGreaterThan(20);
   });
 });

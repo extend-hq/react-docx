@@ -170,6 +170,18 @@ and embedded-font loading. Use `loadEmbeddedFonts: "defer"` to load fonts later
 through `document.loadEmbeddedFonts()`. The renderer also accepts an existing
 `DocModel` directly when the OOXML package is not needed.
 
+The built-in viewer and editor require a Web Worker for file imports. If a worker
+cannot start, they report an import error instead of parsing on the main thread.
+For custom imports, pass `useWorker: "required"` to `parseDocxForViewer` for the
+same behavior. Its default allows a main-thread fallback; `useWorker: false`
+explicitly runs parsing there. Lower-level parsing APIs also run on the calling
+thread. Pagination and React rendering still run on the main thread.
+
+Imports transfer internally owned buffers to the worker. Caller-provided
+`ArrayBuffer` objects remain usable unless `transferBuffer: true` is specified.
+Loading or removing embedded fonts invalidates cached text measurements and
+repaginates mounted editor viewers.
+
 ## Thumbnail Hook
 
 The library can expose page thumbnails so you can build your own page strip, mini-map, or navigation UI. Thumbnail painting can render from the live page surface when it is mounted, or from an offscreen one-page surface when viewer virtualization has unmounted that page.

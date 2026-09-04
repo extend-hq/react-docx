@@ -8,6 +8,12 @@ use js_sys::{Array, Object, Reflect};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_namespace = performance, js_name = now)]
+    fn performance_now() -> f64;
+}
+
 fn doc_model_from_json(json_str: &str) -> Result<DocModel, JsValue> {
     serde_json::from_str(json_str)
         .map_err(|error| JsValue::from_str(&format!("Invalid DocModel JSON: {error}")))
@@ -165,18 +171,33 @@ pub fn build_doc_model_from_package(package: &JsValue) -> Result<String, JsValue
 
 #[wasm_bindgen]
 pub fn build_doc_model_from_bytes(bytes: &[u8]) -> Result<JsValue, JsValue> {
+    let started_at = performance_now();
     let pkg = parse_document_bytes(bytes).map_err(|error| JsValue::from_str(&error))?;
+    let parsed_at = performance_now();
     let model = build_doc_model(&pkg);
     let model_json = serde_json::to_string(&model)
         .map_err(|error| JsValue::from_str(&format!("Model serialization failed: {error}")))?;
     let model_js = js_sys::JSON::parse(&model_json)
         .map_err(|error| JsValue::from_str(&format!("Model JSON parse failed: {error:?}")))?;
+    let built_at = performance_now();
 
     let result = Object::new();
     Reflect::set(&result, &JsValue::from_str("package"), &package_to_js(&pkg)?)
         .map_err(|error| JsValue::from_str(&format!("Failed to set package: {error:?}")))?;
     Reflect::set(&result, &JsValue::from_str("model"), &model_js)
         .map_err(|error| JsValue::from_str(&format!("Failed to set model: {error:?}")))?;
+    let timings = Object::new();
+    Reflect::set(
+        &timings,
+        &JsValue::from_str("parseMs"),
+        &JsValue::from_f64(parsed_at - started_at + performance_now() - built_at),
+    )?;
+    Reflect::set(
+        &timings,
+        &JsValue::from_str("buildModelMs"),
+        &JsValue::from_f64(built_at - parsed_at),
+    )?;
+    Reflect::set(&result, &JsValue::from_str("timings"), &timings)?;
     Ok(result.into())
 }
 

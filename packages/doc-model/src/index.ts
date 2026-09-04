@@ -1,6 +1,7 @@
 import type { OoxmlPackage } from "@extend-ai/react-docx-ooxml-core";
 import {
   mapsToWasmPackage,
+  wasmBuildDocModelFromBytes,
   wasmBuildDocModelFromPackage,
   wasmPackageToMaps
 } from "@extend-ai/react-docx-wasm";
@@ -31,12 +32,23 @@ export async function buildDocModel(pkg: OoxmlPackage): Promise<DocModel> {
 export async function buildDocModelFromBytes(bytes: ArrayBuffer | Uint8Array): Promise<{
   package: OoxmlPackage;
   model: DocModel;
+  timings: { parseMs: number; buildModelMs: number; totalMs: number };
 }> {
-  const { parseDocx } = await import("@extend-ai/react-docx-ooxml-core");
-  const payload = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
-  const buffer =
-    payload.buffer.slice(payload.byteOffset, payload.byteOffset + payload.byteLength) as ArrayBuffer;
-  const pkg = await parseDocx(buffer);
-  const model = await buildDocModel(pkg);
-  return { package: pkg, model };
+  const startedAt = performance.now();
+  const result = await wasmBuildDocModelFromBytes(bytes);
+  const builtAt = performance.now();
+  const { parts, binaryAssets, warnings } = wasmPackageToMaps(result.package);
+  const pkg = { parts, binaryAssets, ...(warnings.length > 0 ? { warnings } : {}) };
+  const model = normalizeDocModel(result.model as DocModel);
+  const finishedAt = performance.now();
+  const buildModelMs = result.timings.buildModelMs + finishedAt - builtAt;
+  return {
+    package: pkg,
+    model,
+    timings: {
+      parseMs: Math.max(0, builtAt - startedAt - result.timings.buildModelMs),
+      buildModelMs,
+      totalMs: finishedAt - startedAt,
+    },
+  };
 }

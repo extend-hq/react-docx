@@ -14,6 +14,8 @@
  *   per target canvas instead of fanning out `Promise.all` storms.
  */
 
+import { registerFontMetricCache } from "./font-metrics";
+
 /** Marks editor chrome that must never appear in rasterized thumbnails. */
 export const DOCX_THUMBNAIL_EXCLUDE_ATTRIBUTE = "data-docx-thumbnail-exclude";
 
@@ -321,6 +323,7 @@ const THUMBNAIL_DIRECT_TOKEN_REGEX =
 const THUMBNAIL_DIRECT_LEADING_WHITESPACE_REGEX = /^\s/;
 const THUMBNAIL_DIRECT_TEXT_MEASURE_CACHE_MAX_ENTRIES = 4096;
 const directThumbnailTextMeasureCache = new Map<string, number>();
+registerFontMetricCache(() => directThumbnailTextMeasureCache.clear());
 
 /**
  * Measures a token's advance width, memoizing by `font|text`. Tokens (spaces,

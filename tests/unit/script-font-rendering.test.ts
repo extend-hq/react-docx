@@ -10,6 +10,7 @@ import {
 } from "../../packages/react-viewer/src/editor";
 import {
   classifyDocxFontScript,
+  resolveDocxTextFontFamily,
   segmentTextByDocxScriptFont,
 } from "../../packages/react-viewer/src/script-fonts";
 
@@ -53,6 +54,53 @@ function EditorProbe({ model }: { model: DocModel }): React.JSX.Element {
 }
 
 describe("DOCX script font rendering", () => {
+  it("resolves the first available font without changing mixed-script behavior", () => {
+    for (const text of ["", "A\u00a0text", "—日A", "—é日ع", "😀", "\u00a0", "עִברִית", "\tLatin\n", "عA"]) {
+      for (const style of [undefined, SCRIPT_STYLE, { fontFamilyEastAsia: "East Asia Face" }, { ...SCRIPT_STYLE, complexScript: true }, { ...SCRIPT_STYLE, rightToLeft: true, complexScript: false }]) {
+        expect(resolveDocxTextFontFamily(text, style)).toBe(
+          segmentTextByDocxScriptFont(text, style).find((segment) => segment.fontFamily)?.fontFamily ?? style?.fontFamily
+        );
+      }
+    }
+  });
+
+  it("preserves ASCII controls and explicit complex-script overrides", () => {
+    const text = "Latin\ttext\n123";
+    for (const complexScript of [true, false]) {
+      const script = complexScript ? "complexScript" : "ascii";
+      const fontFamily = complexScript ? "Complex Script Face" : "ASCII Face";
+      expect(
+        segmentTextByDocxScriptFont(text, {
+          ...SCRIPT_STYLE,
+          rightToLeft: true,
+          complexScript,
+        })
+      ).toEqual([
+        { text, startOffset: 0, endOffset: text.length, script, fontFamily },
+      ]);
+    }
+  });
+
+  it("merges equivalent families without changing Unicode text or offsets", () => {
+    const text = "Aé日😀";
+    expect(
+      segmentTextByDocxScriptFont(text, {
+        ...SCRIPT_STYLE,
+        fontFamilyAscii: " Shared Face ",
+        fontFamilyHAnsi: '"shared face"',
+        fontFamilyEastAsia: "'SHARED FACE'",
+      })
+    ).toEqual([
+      {
+        text,
+        startOffset: 0,
+        endOffset: text.length,
+        script: "ascii",
+        fontFamily: "Shared Face",
+      },
+    ]);
+  });
+
   it("classifies and segments mixed Unicode text by OOXML font slot", () => {
     expect(classifyDocxFontScript("A", SCRIPT_STYLE)).toBe("ascii");
     expect(classifyDocxFontScript("é", SCRIPT_STYLE)).toBe("highAnsi");

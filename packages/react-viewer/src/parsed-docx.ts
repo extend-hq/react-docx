@@ -1,5 +1,6 @@
 import type { DocModel } from "@extend-ai/react-docx-doc-model";
 import type { OoxmlPackage } from "@extend-ai/react-docx-ooxml-core";
+import { invalidateFontMetrics } from "./font-metrics";
 import {
   importDocxBuffer,
   type DocxImportOptions,
@@ -198,7 +199,7 @@ export async function parseDocxForViewer(
   const readFinishedAt = now();
   const importResult = await importDocxBuffer(buffer, {
     signal: options.signal,
-    transferBuffer: options.transferBuffer,
+    transferBuffer: options.transferBuffer ?? !(source instanceof ArrayBuffer),
     useWorker: options.useWorker,
   });
   const importFinishedAt = now();
@@ -216,6 +217,9 @@ export async function parseDocxForViewer(
           // Best-effort cleanup.
         }
       });
+    }
+    if (faces.length > 0) {
+      invalidateFontMetrics();
     }
     faces = [];
   };
@@ -257,6 +261,9 @@ export async function parseDocxForViewer(
         )
       ).filter((face): face is FontFace => Boolean(face));
       loaded.forEach((face) => document.fonts.add(face));
+      if (loaded.length > 0) {
+        invalidateFontMetrics();
+      }
       faces = loaded;
       try {
         await document.fonts.ready;

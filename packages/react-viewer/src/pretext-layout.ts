@@ -1,4 +1,5 @@
 import {
+  clearCache,
   layoutNextLine,
   measureLineStats,
   prepareWithSegments,
@@ -6,6 +7,7 @@ import {
   type LayoutLine,
   type PreparedTextWithSegments,
 } from "@chenglou/pretext";
+import { registerFontMetricCache } from "./font-metrics";
 
 const PREPARED_TEXT_CACHE_MAX_ENTRIES = 8192;
 const LAYOUT_CACHE_MAX_ENTRIES = 4096;
@@ -14,11 +16,19 @@ const LINE_COUNT_CACHE_MAX_ENTRIES = 16384;
 const preparedTextByKey = new Map<string, PreparedTextWithSegments>();
 const layoutByKey = new Map<string, PretextVariableWidthLayout>();
 const lineCountByKey = new Map<string, number>();
-const fragmentOffsetAdvancesByFragment = new WeakMap<
+let fragmentOffsetAdvancesByFragment = new WeakMap<
   PretextLineFragment,
   number[]
 >();
 const graphemeOffsetsByText = new Map<string, number[]>();
+
+registerFontMetricCache(() => {
+  clearCache();
+  preparedTextByKey.clear();
+  layoutByKey.clear();
+  lineCountByKey.clear();
+  fragmentOffsetAdvancesByFragment = new WeakMap();
+});
 
 type PretextWordBreak = "normal" | "keep-all";
 

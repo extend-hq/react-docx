@@ -167,6 +167,15 @@ const FONT_SIZE_OPTIONS = [
 ] as const;
 
 const LINE_SPACING_OPTIONS = [1, 1.15, 1.2, 1.5, 2, 2.5, 3] as const;
+const FONT_FAMILY_ITEMS = FONT_FAMILIES.map((value) => ({ value, label: value }));
+const FONT_SIZE_ITEMS = FONT_SIZE_OPTIONS.map((value) => ({
+  value: String(value),
+  label: `${value} pt`,
+}));
+const LINE_SPACING_ITEMS = LINE_SPACING_OPTIONS.map((value) => ({
+  value: String(value),
+  label: `${value}x`,
+}));
 const THUMBNAIL_ROW_ESTIMATE_PX = 236;
 // Rows mounted (and painted) just outside the viewport, both directions, so a
 // thumbnail is already on screen by the time it scrolls into view.
@@ -477,6 +486,11 @@ const HIGHLIGHT_PRESET_OPTIONS = [
 const ZOOM_PERCENT_OPTIONS = [
   50, 75, 90, 100, 110, 125, 150, 175, 200,
 ] as const;
+
+const ZOOM_PERCENT_ITEMS = ZOOM_PERCENT_OPTIONS.map((value) => ({
+  value: String(value),
+  label: `${value}%`,
+}));
 
 const DEFAULT_HEADING_PREVIEW_RUN_STYLE: Record<
   PreviewHeadingLevel,
@@ -1803,6 +1817,7 @@ export function App(): React.JSX.Element {
   });
   const thumbnailVirtualItems = thumbnailVirtualizer.getVirtualItems();
   const { thumbnails } = useDocxPageThumbnails(editor, {
+    pageIndexes: thumbnailsSheetOpen ? undefined : EMPTY_THUMBNAIL_RENDER_WINDOW.visiblePageIndexes,
     maxWidthPx: 148,
     pixelRatio: THUMBNAIL_PIXEL_RATIO,
     minRasterIntervalMs: 80,
@@ -2323,10 +2338,16 @@ export function App(): React.JSX.Element {
     );
     return matchedPreset?.id ?? "custom";
   })();
-  const paragraphStyleOptions: ParagraphStyleOption[] =
-    paragraphStyles.length > 0
+  const paragraphStyleOptions = React.useMemo<ParagraphStyleOption[]>(
+    () => paragraphStyles.length > 0
       ? paragraphStyles
-      : [...FALLBACK_PARAGRAPH_STYLE_OPTIONS];
+      : [...FALLBACK_PARAGRAPH_STYLE_OPTIONS],
+    [paragraphStyles]
+  );
+  const paragraphStyleItems = React.useMemo(
+    () => paragraphStyleOptions.map((option) => ({ value: option.id, label: option.name })),
+    [paragraphStyleOptions]
+  );
   const selectedParagraphStyleValue =
     selectedParagraphStyleId ??
     paragraphStyleOptions.find(
@@ -2904,12 +2925,11 @@ export function App(): React.JSX.Element {
 
               <HoverCard handle={paragraphStylePreviewHandle}>
                 {({ payload }) => {
-                  const previewOption = payload as
-                    | ParagraphStyleOption
-                    | undefined;
+                  const previewOption = payload as ParagraphStyleOption | undefined;
                   return (
                     <>
                       <Select
+                        items={paragraphStyleItems}
                         value={selectedParagraphStyleValue}
                         onOpenChange={(open) => {
                           setIsParagraphStyleMenuOpen(open);
@@ -2920,9 +2940,7 @@ export function App(): React.JSX.Element {
 
                           window.requestAnimationFrame(() => {
                             paragraphStylePreviewHandle.open(
-                              paragraphStylePreviewTriggerId(
-                                selectedParagraphStyleValue
-                              )
+                              paragraphStylePreviewTriggerId(selectedParagraphStyleValue)
                             );
                           });
                         }}
@@ -2940,41 +2958,44 @@ export function App(): React.JSX.Element {
                           </SelectValue>
                         </SelectTrigger>
                         <SelectContent className="min-w-[210px]">
-                          {paragraphStyleOptions.map((option) => {
-                            const previewTriggerId =
-                              paragraphStylePreviewTriggerId(option.id);
-                            return (
-                              <SelectItem
-                                key={option.id}
-                                value={option.id}
-                                className="relative min-w-[190px]"
-                                onPointerEnter={() => {
-                                  paragraphStylePreviewHandle.open(
-                                    previewTriggerId
-                                  );
-                                }}
-                                onFocus={() => {
-                                  paragraphStylePreviewHandle.open(
-                                    previewTriggerId
-                                  );
-                                }}
-                              >
-                                <span className="block truncate">
-                                  {option.name}
-                                </span>
-                                <HoverCardTrigger
-                                  id={previewTriggerId}
-                                  handle={paragraphStylePreviewHandle}
-                                  payload={option}
-                                  delay={0}
-                                  closeDelay={120}
-                                  render={
-                                    <span className="absolute inset-0 block" />
-                                  }
-                                />
-                              </SelectItem>
-                            );
-                          })}
+                          {isParagraphStyleMenuOpen
+                            ? paragraphStyleOptions.map((option) => {
+                                const previewTriggerId = paragraphStylePreviewTriggerId(
+                                  option.id
+                                );
+                                return (
+                                  <SelectItem
+                                    key={option.id}
+                                    value={option.id}
+                                    className="relative min-w-[190px]"
+                                    onPointerEnter={() => {
+                                      paragraphStylePreviewHandle.open(
+                                        previewTriggerId
+                                      );
+                                    }}
+                                    onFocus={() => {
+                                      paragraphStylePreviewHandle.open(
+                                        previewTriggerId
+                                      );
+                                    }}
+                                  >
+                                    <span className="block truncate">
+                                      {option.name}
+                                    </span>
+                                    <HoverCardTrigger
+                                      id={previewTriggerId}
+                                      handle={paragraphStylePreviewHandle}
+                                      payload={option}
+                                      delay={0}
+                                      closeDelay={120}
+                                      render={
+                                        <span className="absolute inset-0 block" />
+                                      }
+                                    />
+                                  </SelectItem>
+                                );
+                              })
+                            : null}
                         </SelectContent>
                       </Select>
                       {isParagraphStyleMenuOpen && previewOption ? (
@@ -3018,6 +3039,7 @@ export function App(): React.JSX.Element {
               </HoverCard>
 
               <Select
+                items={FONT_FAMILY_ITEMS}
                 value={selectedRunStyle?.fontFamily ?? "Calibri"}
                 onValueChange={(value: string | null) => {
                   if (!value) {
@@ -3042,6 +3064,7 @@ export function App(): React.JSX.Element {
               </Select>
 
               <Select
+                items={FONT_SIZE_ITEMS}
                 value={String(Math.round(selectedRunStyle?.fontSizePt ?? 12))}
                 onValueChange={(value: string | null) => {
                   if (!value) {
@@ -3086,6 +3109,7 @@ export function App(): React.JSX.Element {
                   <TooltipContent side="bottom">Line spacing</TooltipContent>
                 </Tooltip>
                 <Select
+                  items={LINE_SPACING_ITEMS}
                   value={selectedLineSpacingValue}
                   onValueChange={(value: string | null) => {
                     if (!value) {
@@ -3382,6 +3406,7 @@ export function App(): React.JSX.Element {
                   Zoom Out
                 </Button>
                 <Select
+                  items={ZOOM_PERCENT_ITEMS}
                   value={String(zoomPercent)}
                   onValueChange={(value: string | null) => {
                     if (!value) {

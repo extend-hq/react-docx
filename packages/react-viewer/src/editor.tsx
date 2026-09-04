@@ -1,5 +1,7 @@
 import * as React from "react";
 import { flushSync } from "react-dom";
+import { startObjectDrag, type ObjectDragFrame } from "./pointer-drag";
+import { copyModelForParagraphEdits, imageDropPositionAtTextOffset, insertImageAtDropPosition } from "./image-drop";
 import { renderToStaticMarkup } from "react-dom/server";
 import { useVirtualizer, useWindowVirtualizer } from "@tanstack/react-virtual";
 import {
@@ -45,6 +47,13 @@ import {
 import { type OoxmlPackage } from "@extend-ai/react-docx-ooxml-core";
 import { serializeDocx } from "@extend-ai/react-docx-serializer";
 import { importDocxBuffer } from "./docx-import";
+import {
+  getFontMetricsRevision,
+  getServerFontMetricsRevision,
+  invalidateFontMetrics,
+  registerFontMetricCache,
+  subscribeFontMetrics,
+} from "./font-metrics";
 import type { ParsedDocxDocument } from "./parsed-docx";
 import {
   applyTextEditingIntent,
@@ -394,7 +403,7 @@ const paragraphEstimatedHeightBySourceXml = new Map<
   Map<number | string, number>
 >();
 const tableEstimatedHeightBySourceXml = new Map<string, Map<number, number>>();
-const tableEstimatedRowHeightsByNode = new WeakMap<
+let tableEstimatedRowHeightsByNode = new WeakMap<
   TableNode,
   Map<number, number[]>
 >();
@@ -456,6 +465,16 @@ const paragraphDominantFontFamilyByParagraph = new WeakMap<
   ParagraphNode,
   string | null
 >();
+
+registerFontMetricCache(() => {
+  paragraphEstimatedHeightBySourceXml.clear();
+  tableEstimatedHeightBySourceXml.clear();
+  textWidthByFontAndValue.clear();
+  estimatedTextAdvanceWidthByFontAndValue.clear();
+  tableEstimatedRowHeightsByNode = new WeakMap();
+  wrappedLineCountByParagraph = new WeakMap();
+  paragraphPretextLayoutSourceCache = new WeakMap();
+});
 
 interface TableSpacingTwips {
   topTwips?: number;
@@ -1368,7 +1387,7 @@ function selectionOffsetsWithinElementDom(
     const textLengthWithoutNumberingLabels = (range: Range): number => {
       const fragment = range.cloneContents();
       fragment
-        .querySelectorAll("[data-docx-numbering-label='true']")
+        .querySelectorAll("[data-docx-numbering-label='true'],[data-docx-image-location]")
         .forEach((label) => {
           label.remove();
         });
@@ -1415,7 +1434,7 @@ function staticRangeOffsetsWithinElementDom(
     const textLengthWithoutNumberingLabels = (range: Range): number => {
       const fragment = range.cloneContents();
       fragment
-        .querySelectorAll("[data-docx-numbering-label='true']")
+        .querySelectorAll("[data-docx-numbering-label='true'],[data-docx-image-location]")
         .forEach((label) => {
           label.remove();
         });
@@ -1468,7 +1487,7 @@ function setSelectionWithinElementByTextOffsetsDom(
       if (
         currentTextNode instanceof Text &&
         currentTextNode.parentElement?.closest(
-          "[data-docx-numbering-label='true']"
+          "[data-docx-numbering-label='true'],[data-docx-image-location]"
         )
       ) {
         currentTextNode = walker.nextNode();
@@ -3638,7 +3657,7 @@ function tableSelectionCoversWholeTable(
 function textLengthFromRange(range: Range): number {
   const fragment = range.cloneContents();
   fragment
-    .querySelectorAll("[data-docx-numbering-label='true']")
+    .querySelectorAll("[data-docx-numbering-label='true'],[data-docx-image-location]")
     .forEach((label) => {
       label.remove();
     });
@@ -3740,6 +3759,7 @@ interface DocxHistoryRestoreRequest {
   nonce: number;
   selection: DocxEditorSelection;
   activeTextRange?: DocxTextRange;
+  textInput?: boolean;
 }
 
 interface DocxEditorTransactionContext {
@@ -3759,6 +3779,7 @@ interface DocxEditorTransactionPatch
   status?: string;
   clearSelectedFormField?: boolean;
   pushHistory?: boolean;
+  textInput?: boolean;
 }
 
 type ParagraphLocation = DocxTextRangeLocation;
@@ -3793,6 +3814,8 @@ export interface DocxSelectedFormField {
 
 export type DocxImageDropTarget = ParagraphLocation & {
   childIndex: number;
+  /** UTF-16 offset inside the target text run. */
+  textOffset?: number;
 };
 
 export type DocxTrackedChangeKind =
@@ -4113,7 +4136,7 @@ export interface DocxEditorController {
   moveFloatingImage: (
     location: DocxImageLocation,
     patch: Partial<NonNullable<ImageRunNode["floating"]>>,
-    options?: { reparentToParagraphNodeIndex?: number }
+    options?: { reparentToParagraphNodeIndex?: number; anchorTextOffset?: number }
   ) => void;
   moveSectionFloatingImage: (
     location: DocxSectionImageLocation,
@@ -4162,7 +4185,7 @@ export interface DocxEditorController {
   setTableFloating: (
     tableIndex: number,
     patch: Partial<NonNullable<NonNullable<TableNode["style"]>["floating"]>>,
-    options?: { moveToNodeIndex?: number }
+    options?: { moveToNodeIndex?: number; anchorTextOffset?: number }
   ) => void;
   moveEmbeddedTableToBody: (
     tableRuntimeKey: string,
@@ -5221,7 +5244,7 @@ function editableTextFromElement(element: HTMLElement): string {
   const clone = element.cloneNode(true) as HTMLElement;
   replaceTabLayoutMarkersWithTabText(clone);
   clone
-    .querySelectorAll("[data-docx-numbering-label='true']")
+    .querySelectorAll("[data-docx-numbering-label='true'],[data-docx-image-location]")
     .forEach((label) => {
       label.remove();
     });
@@ -5869,7 +5892,7 @@ function paragraphHasOnlyWhitespaceText(paragraph: ParagraphNode): boolean {
       return false;
     }
 
-    return child.text.replace(/[\s\u00a0]+/g, "").length === 0;
+    return !/[^\s\u00a0]/.test(child.text);
   });
 }
 
@@ -6281,6 +6304,14 @@ const WRAP_BAND_RECONCILE_TOLERANCE_PX = 2;
 // as bands stop moving; the cap only bounds pathological oscillation.
 const WRAP_BAND_RECONCILE_MAX_PASSES = 24;
 
+interface ObjectWrapDragPreview {
+  imageKey?: string;
+  tableIndex?: number;
+  pageIndex: number;
+  obstacle?: PretextExclusionRect;
+  bandsByPage: Map<number, Map<string, MeasuredWrapBand>>;
+}
+
 // Rendered paragraph-host bands captured once at drag start, in logical
 // (zoom-normalized) pixels relative to the page surface. During a floating
 // image drag these replace estimated flow tops so obstacle intersection
@@ -6364,6 +6395,7 @@ export function resolveForeignWrapExclusionsForFlowRange(
       right: obstacle.right,
       top: Math.max(0, Math.round(obstacle.top - pageFlowTopPx)),
       bottom: Math.max(0, Math.round(obstacle.bottom - pageFlowTopPx)),
+      ...(obstacle.fromDragPreview ? { fromDragPreview: true } : undefined),
     });
   }
 
@@ -6594,6 +6626,9 @@ export function precomputePageSegmentForeignWrapExclusions(
       heightPx: number;
     };
     measuredWrapBands?: Map<string, MeasuredWrapBand>;
+    draggedImageKey?: string;
+    draggedTableIndex?: number;
+    dragObstacle?: PretextExclusionRect;
   }
 ): PretextExclusionRect[][] {
   const segmentWidthPxAt = (nodeIndex: number): number =>
@@ -6617,6 +6652,7 @@ export function precomputePageSegmentForeignWrapExclusions(
 
   const baseFlowHeightPxBySegmentIndex = segments.map((segment) => {
     const node = model.nodes[segment.nodeIndex];
+    if (segment.nodeIndex === interaction?.draggedTableIndex) return 0;
     return estimateRenderedPageSegmentHeightPx(
       node,
       segment,
@@ -6638,14 +6674,87 @@ export function precomputePageSegmentForeignWrapExclusions(
     flowHeightPxBySegmentIndex: number[],
     previousObstacles?: PageFlowFloatingWrapObstacle[]
   ): PageFlowFloatingWrapObstacle[] => {
-    const obstacles: PageFlowFloatingWrapObstacle[] = [];
+    const obstacles: PageFlowFloatingWrapObstacle[] = interaction?.dragObstacle
+      ? [
+          {
+            ...interaction.dragObstacle,
+            sourceNodeIndex: -1,
+            appliesToSourceNode: true,
+          },
+        ]
+      : [];
     for (
       let segmentIndex = 0;
       segmentIndex < segments.length;
       segmentIndex += 1
     ) {
       const segment = segments[segmentIndex];
-      const node = model.nodes[segment.nodeIndex];
+      let node = model.nodes[segment.nodeIndex];
+      if (segment.nodeIndex === interaction?.draggedTableIndex) continue;
+      if (
+        node?.type === "paragraph" &&
+        interaction?.draggedImageKey?.startsWith(`p:${segment.nodeIndex}:`)
+      ) {
+        const childIndex = Number(interaction.draggedImageKey.split(":")[2]);
+        node = {
+          ...node,
+          children: node.children.map((child, index) =>
+            index === childIndex && child.type === "image"
+              ? {
+                  ...child,
+                  floating: {
+                    ...child.floating,
+                    wrapType: "none",
+                    behindDocument: true,
+                  },
+                }
+              : child
+          ),
+        };
+      }
+      const lineRange = segment.paragraphLineRange;
+      const sliceTop =
+        (lineRange?.startLineIndex ?? 0) * (lineRange?.lineHeightPx ?? 0);
+      if (node?.type === "paragraph" && lineRange) {
+        const paragraph = node;
+        const source = buildParagraphPretextLayoutSource(paragraph);
+        const unwrapped = source
+          ? layoutParagraphPretextSource(
+              paragraph,
+              source,
+              paragraphAvailableTextWidthPx(
+                paragraph,
+                segmentWidthPxAt(segment.nodeIndex),
+                numberingDefinitions
+              ),
+              lineRange.lineHeightPx,
+              []
+            )
+          : undefined;
+        node = {
+          ...paragraph,
+          children: paragraph.children.map((child, index) => {
+            if (child.type !== "image" || !child.floating || !unwrapped)
+              return child;
+            const anchorTop =
+              resolveCaretRectAtOffset(
+                unwrapped,
+                paragraphChildAnchorOffset(paragraph, index) + 1
+              )?.top ?? 0;
+            return anchorTop >= sliceTop &&
+              anchorTop < lineRange.endLineIndex * lineRange.lineHeightPx
+              ? child
+              : {
+                  ...child,
+                  floating: {
+                    ...child.floating,
+                    wrapType: "none",
+                    behindDocument: true,
+                  },
+                };
+          }),
+        };
+      }
       if (
         node?.type === "table" &&
         node.style?.floating &&
@@ -6783,9 +6892,14 @@ export function precomputePageSegmentForeignWrapExclusions(
         });
       });
       const flowTopPx =
-        measuredBandAt(`para:${segment.nodeIndex}`)?.topPx ??
-        flowTopPxBySegmentIndex[segmentIndex] ??
-        0;
+        (measuredBandAt(
+          `para:${segment.nodeIndex}:${lineRange?.startLineIndex ?? 0}`
+        )?.topPx ??
+          (!lineRange
+            ? measuredBandAt(`para:${segment.nodeIndex}`)?.topPx
+            : undefined) ??
+          flowTopPxBySegmentIndex[segmentIndex] ??
+          0) - sliceTop;
       obstacles.push(
         ...collectPageFlowWrapObstaclesForParagraph(
           node,
@@ -6840,7 +6954,9 @@ export function precomputePageSegmentForeignWrapExclusions(
   // paragraph reflows around the preview iff its refreshed band
   // pixel-intersects the preview exclusion rect.
   const hasInteractionPreview = Boolean(
-    interaction?.floatingMovePreview || interaction?.resizePreview
+    interaction?.floatingMovePreview ||
+      interaction?.resizePreview ||
+      interaction?.dragObstacle
   );
   // Floating-table exclusions grow the paragraphs that wrap beside them, so
   // static flow tops drift below the base estimates for everything after the
@@ -6960,9 +7076,13 @@ export function precomputePageSegmentForeignWrapExclusions(
       !segmentLineRange ||
       (segmentLineRange.startLineIndex === 0 &&
         segmentLineRange.endLineIndex >= segmentLineRange.totalLineCount);
-    const measuredParagraphBand = segmentCoversWholeParagraph
-      ? measuredBandAt(`para:${segment.nodeIndex}`)
-      : undefined;
+    const measuredParagraphBand =
+      measuredBandAt(
+        `para:${segment.nodeIndex}:${segmentLineRange?.startLineIndex ?? 0}`
+      ) ??
+      (segmentCoversWholeParagraph
+        ? measuredBandAt(`para:${segment.nodeIndex}`)
+        : undefined);
     const flowTopPx =
       measuredParagraphBand?.topPx ??
       flowTopPxBySegmentIndex[segmentIndex] ??
@@ -7159,7 +7279,7 @@ function applyWrappedFloatingInteractionPreviewToParagraph(
   };
 }
 
-const paragraphPretextLayoutSourceCache = new WeakMap<
+let paragraphPretextLayoutSourceCache = new WeakMap<
   ParagraphNode,
   Map<number, ParagraphPretextLayoutSource | null>
 >();
@@ -7944,13 +8064,8 @@ function layoutParagraphPretextSource(
   lineHeightPx: number,
   exclusions?: PretextExclusionRect[]
 ): PretextVariableWidthLayout | undefined {
-  const fallbackFont = resolveMeasureFont(
-    firstRunStyle(paragraph),
-    paragraphBaseFontSizePx(paragraph),
-    source.text
-  );
   const wordBreak = pretextWordBreakModeForText(source.text);
-  const items = buildParagraphPretextLayoutItems(paragraph, source);
+
   // Fragments render with text-indent zeroed (each is its own block), so the
   // paragraph's first-line indent is reserved here instead: a synthetic
   // exclusion narrows the first row's leading interval by the indent.
@@ -7972,6 +8087,23 @@ function layoutParagraphPretextSource(
           },
         ]
       : exclusions;
+  const uniformFont = resolveUniformPretextSourceFont(paragraph, source);
+  if (uniformFont) {
+    return layoutTextWithPretextAroundExclusions(
+      source.text,
+      uniformFont,
+      containerWidthPx,
+      lineHeightPx,
+      layoutExclusions,
+      { wordBreak }
+    );
+  }
+  const fallbackFont = resolveMeasureFont(
+    firstRunStyle(paragraph),
+    paragraphBaseFontSizePx(paragraph),
+    source.text
+  );
+  const items = buildParagraphPretextLayoutItems(paragraph, source);
   const richLayout =
     items.length > 0
       ? layoutItemsWithPretextAroundExclusions(
@@ -8202,11 +8334,7 @@ export function resolveDualWrappedFloatingImageGeometry(
             : baseTopPx) - paragraphTopPx
         )
       : baseTopPx;
-  const imageLeftPx = clampNumber(
-    baseLeftPx + deltaX,
-    0,
-    Math.max(0, safeContainerWidthPx - imageWidthPx)
-  );
+  const imageLeftPx = baseLeftPx + deltaX;
   const rawImageTopPx =
     (hasExplicitBaseTopPx
       ? baseTopPx
@@ -8224,10 +8352,15 @@ export function resolveDualWrappedFloatingImageGeometry(
   // wrap text on both sides instead of swallowing a whole column band.
   const horizontalAlignIsOperative =
     !hasExplicitBaseLeftPx && !Number.isFinite(floating?.xPx);
-  let exclusionLeftPx = Math.max(0, imageLeftPx - distLPx);
-  let exclusionRightPx = Math.min(
-    safeContainerWidthPx,
-    imageLeftPx + imageWidthPx + distRPx
+  let exclusionLeftPx = clampNumber(
+    imageLeftPx - distLPx,
+    0,
+    safeContainerWidthPx
+  );
+  let exclusionRightPx = clampNumber(
+    imageLeftPx + imageWidthPx + distRPx,
+    0,
+    safeContainerWidthPx
   );
   if (wrapType === "topAndBottom") {
     exclusionLeftPx = 0;
@@ -8250,16 +8383,10 @@ export function resolveDualWrappedFloatingImageGeometry(
       0,
       safeContainerWidthPx - exclusionRightPx
     );
-    const spansInteriorGap =
-      exclusionLeftPx > 0 &&
-      exclusionRightPx < safeContainerWidthPx &&
-      leftBandWidthPx >= MIN_DUAL_WRAPPED_INTERIOR_BAND_PX &&
-      rightBandWidthPx >= MIN_DUAL_WRAPPED_INTERIOR_BAND_PX;
-    const spansSideFloat =
-      exclusionLeftPx === 0 || exclusionRightPx === safeContainerWidthPx;
-    if (!spansInteriorGap && !spansSideFloat) {
-      return undefined;
-    }
+    if (leftBandWidthPx < MIN_DUAL_WRAPPED_INTERIOR_BAND_PX)
+      exclusionLeftPx = 0;
+    if (rightBandWidthPx < MIN_DUAL_WRAPPED_INTERIOR_BAND_PX)
+      exclusionRightPx = safeContainerWidthPx;
   }
 
   return {
@@ -8284,6 +8411,7 @@ export function resolveParagraphDualWrappedTextLayout(
   containerWidthPx: number,
   lineHeightPx: number,
   options?: {
+    excludedImageIndex?: number;
     deltaX?: number;
     deltaY?: number;
     widthPxByImageIndex?: Map<number, number>;
@@ -8379,6 +8507,25 @@ export function resolveParagraphDualWrappedTextLayout(
     }
 
     if (
+      unexcludedLayout &&
+      verticalRelativeTo === "line" &&
+      anchorOffset > 0 &&
+      !options?.movePreviewByImageIndex?.has(geometry.imageIndex)
+    ) {
+      const anchorTop =
+        resolveCaretRectAtOffset(unexcludedLayout, anchorOffset + 1)?.top ?? 0;
+      return {
+        ...geometry,
+        imageTopPx: geometry.imageTopPx + anchorTop,
+        exclusion: {
+          ...geometry.exclusion,
+          top: geometry.exclusion.top + anchorTop,
+          bottom: geometry.exclusion.bottom + anchorTop,
+        },
+      };
+    }
+
+    if (
       !unexcludedLayout ||
       wrapType === "topandbottom" ||
       (verticalRelativeTo !== "margin" && verticalRelativeTo !== "page")
@@ -8413,7 +8560,9 @@ export function resolveParagraphDualWrappedTextLayout(
 
   const mergedExclusions = [
     ...(options?.foreignExclusions ?? []),
-    ...anchorAdjustedGeometries.map((geometry) => geometry.exclusion),
+    ...anchorAdjustedGeometries
+      .filter((geometry) => geometry.imageIndex !== options?.excludedImageIndex)
+      .map((geometry) => geometry.exclusion),
   ];
   const layout = resolveParagraphPretextExclusionLayout(
     paragraph,
@@ -9066,20 +9215,28 @@ function paragraphBookmarkNames(paragraph: ParagraphNode): string[] {
   return [...new Set(names)];
 }
 
+const paragraphNoteReferences = new WeakMap<
+  ParagraphNode,
+  Partial<Record<"footnote" | "endnote", number[]>>
+>();
+
 function paragraphReferencedNoteIds(
   paragraph: ParagraphNode,
   noteType: "footnote" | "endnote"
 ): number[] {
+  const cached = paragraphNoteReferences.get(paragraph);
+  if (cached?.[noteType]) return cached[noteType]!;
+  const references: number[] = [];
+  paragraphNoteReferences.set(paragraph, { ...cached, [noteType]: references });
   const sourceXml = paragraph.sourceXml ?? "";
   if (!sourceXml) {
-    return [];
+    return references;
   }
 
   const pattern =
     noteType === "footnote"
       ? new RegExp(FOOTNOTE_REFERENCE_XML_PATTERN.source, "gi")
       : new RegExp(ENDNOTE_REFERENCE_XML_PATTERN.source, "gi");
-  const references: number[] = [];
 
   for (const match of sourceXml.matchAll(pattern)) {
     const rawId = Number(match[1]);
@@ -9128,7 +9285,7 @@ function eventTargetIsInteractiveControl(target: EventTarget | null): boolean {
   }
 
   return Boolean(
-    target.closest("a[href],button,input,select,textarea,[role='checkbox']")
+    target.closest("a[href],button,input,select,textarea,[role='checkbox'],[data-docx-textbox-editor='true']")
   );
 }
 
@@ -10566,7 +10723,7 @@ function estimateTabLeaderWrappedLineCountForParagraph(
   );
 }
 
-const wrappedLineCountByParagraph = new WeakMap<
+let wrappedLineCountByParagraph = new WeakMap<
   ParagraphNode,
   Map<number | string, number>
 >();
@@ -12824,6 +12981,159 @@ interface DocumentPageRange {
   endNodeIndex: number;
 }
 
+// Reuse page structure only when a plain-text edit keeps the line count and
+// height unchanged. Structural edits, rich runs, floats, and geometry changes
+// continue through the full paginator.
+export function createTextEditPaginationMemo(): typeof buildDocumentPageNodeSegments {
+  const entries = new Map<
+    string,
+    {
+      model: DocModel;
+      numberingDefinitions: NumberingDefinitionSet | undefined;
+      pages: DocumentPageNodeSegment[][];
+    }
+  >();
+  const containsFloatingObjects = new WeakMap<object, boolean>();
+  const hasFloatingObjects = (node: DocModel["nodes"][number]): boolean => {
+    const cached = containsFloatingObjects.get(node);
+    if (cached !== undefined) return cached;
+    const result =
+      node.type === "paragraph"
+        ? node.children.some(
+            (child) => child.type === "image" && child.floating
+          )
+        : Boolean(node.style?.floating) ||
+          node.rows.some((row) =>
+            row.cells.some((cell) => cell.nodes.some(hasFloatingObjects))
+          );
+    containsFloatingObjects.set(node, result);
+    return result;
+  };
+  return (model, height, width, numberingDefinitions, metrics, options) => {
+    if (model.nodes.some(hasFloatingObjects)) {
+      return buildDocumentPageNodeSegments(
+        model,
+        height,
+        width,
+        numberingDefinitions,
+        metrics,
+        options
+      );
+    }
+    const key = JSON.stringify([
+      height,
+      width,
+      metrics,
+      getFontMetricsRevision(),
+      {
+        ...options,
+        measuredParagraphOuterHeightsPxByNodeIndex:
+          options?.measuredParagraphOuterHeightsPxByNodeIndex
+            ? [...options.measuredParagraphOuterHeightsPxByNodeIndex]
+            : undefined,
+        precomputedNumberingLabels: options?.precomputedNumberingLabels
+          ? [...options.precomputedNumberingLabels]
+          : undefined,
+      },
+    ]);
+    const cached = entries.get(key);
+    const sameGeometry =
+      cached &&
+      cached.model.metadata === model.metadata &&
+      cached.numberingDefinitions === numberingDefinitions &&
+      cached.model.nodes.length === model.nodes.length &&
+      model.nodes.every((node, index) => {
+        const previous = cached.model.nodes[index];
+        if (node === previous) return true;
+        if (
+          node.type !== "paragraph" ||
+          previous?.type !== "paragraph" ||
+          node.sourceXml !== previous.sourceXml ||
+          JSON.stringify(node.style) !== JSON.stringify(previous.style) ||
+          ![node, previous].every((paragraph) =>
+            paragraph.children.every(
+              (child) =>
+                child.type === "text" &&
+                !child.noteReference &&
+                !/[\r\n\t\f\v\u2028\u2029]/.test(child.text)
+            )
+          ) ||
+          paragraphHasOnlyWhitespaceText(node) !==
+            paragraphHasOnlyWhitespaceText(previous)
+        ) {
+          return false;
+        }
+        const source = buildParagraphPretextLayoutSource(node);
+        const previousSource = buildParagraphPretextLayoutSource(previous);
+        if (
+          !source ||
+          !previousSource ||
+          !resolveUniformPretextSourceFont(node, source) ||
+          !resolveUniformPretextSourceFont(previous, previousSource)
+        )
+          return false;
+        const label = options?.precomputedNumberingLabels?.get(`p:${index}`);
+        if (!label && paragraphHasActiveNumbering(node)) return false;
+        const sectionIndex = resolvePaginationSectionMetricsIndexForNodeIndex(
+          metrics ?? [],
+          index,
+          0
+        );
+        const section = metrics?.[sectionIndex];
+        const contentWidth = section?.pageContentWidthPx ?? width;
+        const pitch = section?.docGridLinePitchPx;
+        return (
+          estimateParagraphLineHeightPx(node, pitch) ===
+            estimateParagraphLineHeightPx(previous, pitch) &&
+          paragraphLineCountWithinWidth(
+            node,
+            contentWidth,
+            numberingDefinitions,
+            label
+          ) ===
+            paragraphLineCountWithinWidth(
+              previous,
+              contentWidth,
+              numberingDefinitions,
+              label
+            ) &&
+          estimateParagraphHeightPx(
+            node,
+            contentWidth,
+            numberingDefinitions,
+            pitch,
+            false,
+            label
+          ) ===
+            estimateParagraphHeightPx(
+              previous,
+              contentWidth,
+              numberingDefinitions,
+              pitch,
+              false,
+              label
+            )
+        );
+      });
+    if (sameGeometry && cached) {
+      cached.model = model;
+      return cached.pages;
+    }
+    const pages = buildDocumentPageNodeSegments(
+      model,
+      height,
+      width,
+      numberingDefinitions,
+      metrics,
+      options
+    );
+    if (entries.size >= 8 && !entries.has(key))
+      entries.delete(entries.keys().next().value!);
+    entries.set(key, { model, numberingDefinitions, pages });
+    return pages;
+  };
+}
+
 function buildDocumentPageRanges(
   nodeCount: number,
   pageBreakStartNodeIndexes: Set<number>
@@ -14936,6 +15246,41 @@ export function buildDocumentPageNodeSegments(
     pages.push(currentPageSegments);
   }
 
+  return keepTextAnchoredTablesWithFollowingParagraph(pages, model);
+}
+
+export function keepTextAnchoredTablesWithFollowingParagraph(
+  pages: DocumentPageNodeSegment[][],
+  model: DocModel
+): DocumentPageNodeSegment[][] {
+  for (let pageIndex = 0; pageIndex < pages.length - 1; pageIndex++) {
+    const current = pages[pageIndex];
+    const next = pages[pageIndex + 1];
+    const first = next[0];
+    const paragraph = first && model.nodes[first.nodeIndex];
+    if (
+      paragraph?.type !== "paragraph" ||
+      (first.paragraphLineRange?.startLineIndex ?? 0) > 0 ||
+      model.metadata.sections?.some(
+        (section) => section.startNodeIndex === first.nodeIndex
+      )
+    )
+      continue;
+    while (current.length) {
+      const last = current[current.length - 1];
+      const table = model.nodes[last.nodeIndex];
+      const anchor =
+        table?.type === "table"
+          ? table.style?.floating?.verticalAnchor
+          : undefined;
+      if (anchor !== "text" || last.nodeIndex + 1 !== next[0].nodeIndex) break;
+      next.unshift(current.pop()!);
+    }
+    if (!current.length) {
+      pages.splice(pageIndex, 1);
+      pageIndex--;
+    }
+  }
   return pages;
 }
 
@@ -15583,7 +15928,7 @@ export function resolveWrappedFloatingImageDropPatch(
     previewGeometry.exclusion.left <= 0 ||
     previewGeometry.exclusion.right >= hostWidth;
   const explicitTopPx = Math.round(
-    movedTop - Math.round(baseFloating.distTPx ?? 0)
+    movedTop - Math.round(baseFloating.distTPx ?? 2)
   );
 
   return {
@@ -15598,8 +15943,8 @@ export function resolveWrappedFloatingImageDropPatch(
       : side,
     xPx: preserveAlignedHorizontalPlacement ? undefined : Math.round(movedLeft),
     yPx: explicitTopPx,
-    distLPx: Math.max(4, Math.round(baseFloating.distLPx ?? 8)),
-    distRPx: Math.max(4, Math.round(baseFloating.distRPx ?? 8)),
+    distLPx: Math.max(0, Math.round(baseFloating.distLPx ?? 8)),
+    distRPx: Math.max(0, Math.round(baseFloating.distRPx ?? 8)),
     distTPx: Math.max(0, Math.round(baseFloating.distTPx ?? 2)),
     distBPx: Math.max(0, Math.round(baseFloating.distBPx ?? 4)),
     horizontalRelativeTo: convertFixedPositionToMoveWithText
@@ -15670,24 +16015,6 @@ function resolveWrappedDropAnchorParagraphHost(
   }
 
   return best;
-}
-
-// A wrapped drag only re-anchors when the drop patch will express the
-// vertical offset in paragraph-local coordinates.
-function wrappedDragCanReanchorToParagraph(
-  floating: Partial<NonNullable<ImageRunNode["floating"]>>
-): boolean {
-  if (!floatingImageMovesWithText(floating)) {
-    return true;
-  }
-
-  const verticalRelativeTo =
-    floating.verticalRelativeTo?.trim().toLowerCase() ?? "";
-  return (
-    verticalRelativeTo === "" ||
-    verticalRelativeTo === "paragraph" ||
-    verticalRelativeTo === "line"
-  );
 }
 
 function resolvePageSpanningAbsoluteFloatingDimensions(
@@ -19165,6 +19492,11 @@ function normalizeStyleRefTarget(value: string): string {
   return value.replace(/\s+/g, " ").trim().toLowerCase();
 }
 
+const styledRunTextByParagraph = new WeakMap<
+  ParagraphNode,
+  Map<string, string | undefined>
+>();
+
 function paragraphStyledRunText(
   paragraph: ParagraphNode,
   styleRefTarget: string
@@ -19177,6 +19509,12 @@ function paragraphStyledRunText(
   const normalizedTarget = normalizeStyleRefTarget(styleRefTarget);
   if (!normalizedTarget) {
     return undefined;
+  }
+  let cached = styledRunTextByParagraph.get(paragraph);
+  if (cached?.has(normalizedTarget)) return cached.get(normalizedTarget);
+  if (!cached) {
+    cached = new Map();
+    styledRunTextByParagraph.set(paragraph, cached);
   }
 
   const textChunks: string[] = [];
@@ -19207,7 +19545,9 @@ function paragraphStyledRunText(
   }
 
   const joined = textChunks.join("").trim();
-  return joined.length > 0 ? joined : undefined;
+  const result = joined.length > 0 ? joined : undefined;
+  setCacheEntry(cached, normalizedTarget, result);
+  return result;
 }
 
 function tabLeaderStyle(
@@ -26618,18 +26958,17 @@ function updateSectionImageFloatingAtLocation(
 export function useDocxEditor(
   options: UseDocxEditorOptions = {}
 ): DocxEditorController {
-  const starterTemplateRef = React.useRef<DocModel>(
+  const [starterTemplate] = React.useState(() =>
     cloneDocModelWithBlockIds(options.starterModel ?? defaultStarterModel)
   );
-  const initialModelRef = React.useRef<DocModel>(
-    cloneDocModelWithBlockIds(
-      options.document?.model ?? starterTemplateRef.current
-    )
+  const starterTemplateRef = React.useRef(starterTemplate);
+  const [initialModel] = React.useState(() =>
+    cloneDocModelWithBlockIds(options.document?.model ?? starterTemplate)
   );
 
   const [editorState, dispatchCanonicalEditorState] = React.useReducer(
     reduceDocxEditorState,
-    initialModelRef.current,
+    initialModel,
     (initialModel): DocxEditorState => ({
       model: cloneDocModelWithBlockIds(initialModel),
       selection: {
@@ -26892,8 +27231,10 @@ export function useDocxEditor(
         window.clearTimeout(selectionSessionTimeoutRef.current);
       }
       selectionSessionTimeoutRef.current = null;
-      selectionSessionRef.current = "idle";
-      setSelectionSessionKind("idle");
+      if (selectionSessionRef.current !== "idle") {
+        selectionSessionRef.current = "idle";
+        setSelectionSessionKind("idle");
+      }
     },
     []
   );
@@ -26912,8 +27253,10 @@ export function useDocxEditor(
         window.clearTimeout(selectionSessionTimeoutRef.current);
       }
       selectionSessionTimeoutRef.current = null;
-      selectionSessionRef.current = kind;
-      setSelectionSessionKind(kind);
+      if (selectionSessionRef.current !== kind) {
+        selectionSessionRef.current = kind;
+        setSelectionSessionKind(kind);
+      }
 
       if (
         Number.isFinite(options?.settleAfterMs) &&
@@ -27235,6 +27578,9 @@ export function useDocxEditor(
       });
     }
 
+    if (loadedEmbeddedFontFacesRef.current.length > 0) {
+      invalidateFontMetrics();
+    }
     loadedEmbeddedFontFacesRef.current = [];
   }, []);
   const loadEmbeddedFontsFromPackage = React.useCallback(
@@ -27286,6 +27632,9 @@ export function useDocxEditor(
         document.fonts.add(fontFace);
       });
       loadedEmbeddedFontFacesRef.current = loadedFontFaces;
+      if (loadedFontFaces.length > 0) {
+        invalidateFontMetrics();
+      }
 
       try {
         await document.fonts.ready;
@@ -27427,6 +27776,7 @@ export function useDocxEditor(
           nonce: nextNonce,
           selection: cloneEditorSelection(next.selection),
           activeTextRange: cloneTextRange(next.activeTextRange),
+          textInput: patch.textInput,
         });
       }
 
@@ -27773,6 +28123,7 @@ export function useDocxEditor(
         const importResult = await importDocxBuffer(buffer, {
           signal: importAbortController.signal,
           transferBuffer: true,
+          useWorker: "required",
         });
         markDocxImportPerformance(workerEndMark);
         measureDocxImportPerformance(
@@ -30340,10 +30691,24 @@ export function useDocxEditor(
     (
       location: DocxImageLocation,
       patch: Partial<NonNullable<ImageRunNode["floating"]>>,
-      options?: { reparentToParagraphNodeIndex?: number }
+      options?: {
+        reparentToParagraphNodeIndex?: number;
+        anchorTextOffset?: number;
+      }
     ): void => {
       applyModelChange((current) => {
-        const next = cloneDocModel(current);
+        const sourceLocation = imageLocationToParagraphLocation(location);
+        const next = copyModelForParagraphEdits(current, [
+          sourceLocation,
+          ...(options?.reparentToParagraphNodeIndex !== undefined
+            ? [
+                {
+                  kind: "paragraph" as const,
+                  nodeIndex: options.reparentToParagraphNodeIndex,
+                },
+              ]
+            : []),
+        ]);
         const { paragraph, tableNode } = getParagraphAtLocation(
           next,
           imageLocationToParagraphLocation(location)
@@ -30352,15 +30717,16 @@ export function useDocxEditor(
           return current;
         }
 
-        const child = paragraph.children[location.childIndex];
-        if (!child || child.type !== "image") {
+        const sourceChild = paragraph.children[location.childIndex];
+        if (!sourceChild || sourceChild.type !== "image") {
           return current;
         }
 
-        child.floating = {
-          ...(child.floating ?? {}),
-          ...patch,
+        const child = {
+          ...sourceChild,
+          floating: { ...sourceChild.floating, ...patch },
         };
+        paragraph.children[location.childIndex] = child;
 
         const reparentNodeIndex = options?.reparentToParagraphNodeIndex;
         const reparentTarget =
@@ -30368,15 +30734,24 @@ export function useDocxEditor(
             ? next.nodes[reparentNodeIndex]
             : undefined;
         if (
-          reparentTarget &&
-          reparentTarget.type === "paragraph" &&
-          reparentTarget !== paragraph
+          reparentTarget?.type === "paragraph" &&
+          (reparentTarget !== paragraph ||
+            options?.anchorTextOffset !== undefined)
         ) {
           paragraph.children.splice(location.childIndex, 1);
-          if (paragraph.children.length === 0) {
+          const target = imageDropPositionAtTextOffset(
+            reparentTarget,
+            options?.anchorTextOffset ?? 0,
+            { fieldText: formFieldDisplayValue }
+          );
+          insertImageAtDropPosition(
+            reparentTarget,
+            child,
+            target.childIndex,
+            target.textOffset
+          );
+          if (paragraph.children.length === 0)
             paragraph.children.push({ type: "text", text: "" });
-          }
-          reparentTarget.children.unshift(child);
           reparentTarget.sourceXml = undefined;
         }
 
@@ -30545,6 +30920,7 @@ export function useDocxEditor(
           sourceParagraphLocation,
           targetParagraphLocation
         ) &&
+        target.textOffset === undefined &&
         (target.childIndex === source.childIndex ||
           target.childIndex === source.childIndex + 1)
       ) {
@@ -30552,7 +30928,10 @@ export function useDocxEditor(
       }
 
       applyModelChange((current) => {
-        const next = cloneDocModel(current);
+        const next = copyModelForParagraphEdits(current, [
+          sourceParagraphLocation,
+          targetParagraphLocation,
+        ]);
         const sourceLookup = getParagraphAtLocation(
           next,
           sourceParagraphLocation
@@ -30575,28 +30954,27 @@ export function useDocxEditor(
 
         const movedImage = {
           ...sourceChild,
-          data: sourceChild.data ? new Uint8Array(sourceChild.data) : undefined,
           floating: sourceChild.floating
             ? { ...sourceChild.floating }
             : undefined,
         };
         sourceParagraph.children.splice(source.childIndex, 1);
 
-        let insertionIndex = Math.max(
-          0,
-          Math.min(target.childIndex, targetParagraph.children.length)
-        );
-        if (
-          sameParagraphLocation(
+        const insertionIndex =
+          target.childIndex -
+          (sameParagraphLocation(
             sourceParagraphLocation,
             targetParagraphLocation
-          ) &&
-          source.childIndex < insertionIndex
-        ) {
-          insertionIndex -= 1;
-        }
+          ) && source.childIndex < target.childIndex
+            ? 1
+            : 0);
 
-        targetParagraph.children.splice(insertionIndex, 0, movedImage);
+        insertImageAtDropPosition(
+          targetParagraph,
+          movedImage,
+          insertionIndex,
+          target.textOffset
+        );
 
         if (sourceParagraph.children.length === 0) {
           sourceParagraph.children.push({ type: "text", text: "" });
@@ -30904,7 +31282,7 @@ export function useDocxEditor(
     (
       tableIndex: number,
       patch: Partial<NonNullable<NonNullable<TableNode["style"]>["floating"]>>,
-      options?: { moveToNodeIndex?: number }
+      options?: { moveToNodeIndex?: number; anchorTextOffset?: number }
     ): void => {
       applyModelChange((current) => {
         const tableNode = current.nodes[tableIndex];
@@ -30912,11 +31290,14 @@ export function useDocxEditor(
           return current;
         }
 
-        const next = cloneDocModel(current);
-        const nextTable = next.nodes[tableIndex];
-        if (!nextTable || nextTable.type !== "table") {
-          return current;
-        }
+        const next = copyModelForParagraphEdits(
+          current,
+          options?.moveToNodeIndex !== undefined
+            ? [{ kind: "paragraph", nodeIndex: options.moveToNodeIndex }]
+            : []
+        );
+        const nextTable = { ...tableNode };
+        next.nodes[tableIndex] = nextTable;
 
         nextTable.style = {
           ...(nextTable.style ?? {}),
@@ -30929,29 +31310,54 @@ export function useDocxEditor(
 
         // Word re-anchors a dragged floating table to the block its drop
         // position lands at, keeping tblpY a small offset from the anchor.
-        const moveToNodeIndex = options?.moveToNodeIndex;
+        let moveToNodeIndex = options?.moveToNodeIndex;
+        const anchorParagraph =
+          moveToNodeIndex !== undefined
+            ? next.nodes[moveToNodeIndex]
+            : undefined;
+        if (
+          anchorParagraph?.type === "paragraph" &&
+          options?.anchorTextOffset !== undefined &&
+          options.anchorTextOffset > 0
+        ) {
+          const split = splitParagraphChildrenAtTextOffsets(
+            anchorParagraph,
+            paragraphText(anchorParagraph),
+            options.anchorTextOffset,
+            options.anchorTextOffset
+          );
+          const after: ParagraphNode = {
+            ...anchorParagraph,
+            blockId: allocateBlockId(),
+            children: split.afterChildren,
+            sourceXml: undefined,
+            style: {
+              ...anchorParagraph.style,
+              spacing: { ...anchorParagraph.style?.spacing, beforeTwips: 0 },
+            },
+          };
+          anchorParagraph.children = split.beforeChildren;
+          anchorParagraph.sourceXml = undefined;
+          anchorParagraph.style = {
+            ...anchorParagraph.style,
+            spacing: { ...anchorParagraph.style?.spacing, afterTwips: 0 },
+          };
+          moveToNodeIndex = (moveToNodeIndex as number) + 1;
+          next.nodes.splice(moveToNodeIndex, 0, after);
+        }
+        const sourceIndex = next.nodes.indexOf(nextTable);
         if (
           moveToNodeIndex !== undefined &&
-          moveToNodeIndex !== tableIndex &&
-          moveToNodeIndex !== tableIndex + 1
+          moveToNodeIndex !== sourceIndex &&
+          moveToNodeIndex !== sourceIndex + 1
         ) {
-          const clampedTarget = clampNumber(
-            moveToNodeIndex,
+          const target = clampNumber(moveToNodeIndex, 0, next.nodes.length);
+          next.nodes.splice(sourceIndex, 1);
+          next.nodes.splice(
+            target > sourceIndex ? target - 1 : target,
             0,
-            next.nodes.length
+            nextTable
           );
-          const extracted = next.nodes.splice(tableIndex, 1)[0];
-          if (extracted) {
-            next.nodes.splice(
-              clampNumber(
-                clampedTarget > tableIndex ? clampedTarget - 1 : clampedTarget,
-                0,
-                next.nodes.length
-              ),
-              0,
-              extracted
-            );
-          }
         }
         return next;
       }, "Moved table");
@@ -31562,10 +31968,8 @@ export function useDocxEditor(
     [applyModelChange]
   );
 
-  // Per-keystroke commit for beforeinput-driven hosts: model text update and
-  // explicit collapsed-range patch in ONE transaction, so the DOM caret is
-  // restored FROM THE MODEL (the explicit range patch forces a
-  // historyRestoreRequest even during an active keyboard session).
+  // Commit text and its resulting caret together. Native editing hosts can
+  // restore this caret before paint without interrupting the typing session.
   const commitParagraphTextAtRange = React.useCallback(
     (
       location: ParagraphLocation,
@@ -31621,6 +32025,7 @@ export function useDocxEditor(
           },
           pushHistory: !coalesce,
           clearSelectedFormField: true,
+          textInput: true,
         };
       });
     },
@@ -31686,6 +32091,7 @@ export function useDocxEditor(
             },
           },
           clearSelectedFormField: true,
+          textInput: true,
         };
       });
     },
@@ -32961,12 +33367,16 @@ export function useDocxPageThumbnails(
     [pageSurfaceRegistryEditor]
   );
 
+  const hasRequestedThumbnails = options.pageIndexes?.length !== 0;
   React.useEffect(
-    () =>
-      subscribeDocxViewerPageSurfaces(pageSurfaceRegistryEditor, () => {
+    () => {
+      if (!hasRequestedThumbnails) return;
+      setPageSurfaceEpoch((current) => current + 1);
+      return subscribeDocxViewerPageSurfaces(pageSurfaceRegistryEditor, () => {
         setPageSurfaceEpoch((current) => current + 1);
-      }),
-    [pageSurfaceRegistryEditor]
+      });
+    },
+    [hasRequestedThumbnails, pageSurfaceRegistryEditor]
   );
 
   const mountedPageElements = React.useMemo(
@@ -35281,6 +35691,11 @@ export function DocxEditorViewer({
   onFormFieldDoubleClick,
   mode = "edit",
 }: DocxEditorViewerProps): React.JSX.Element {
+  const fontMetricsRevision = React.useSyncExternalStore(
+    subscribeFontMetrics,
+    getFontMetricsRevision,
+    getServerFontMetricsRevision
+  );
   const pageSurfaceRegistryOwner = docxViewerPageSurfaceRegistryOwner(editor);
   const trackedChangesEnabled = showTrackedChanges ?? editor.showTrackedChanges;
   const hasTrackedChanges = editor.trackedChanges.length > 0;
@@ -35328,6 +35743,9 @@ export function DocxEditorViewer({
   );
   const viewerRootRef = React.useRef<HTMLDivElement>(null);
   const tableCellDraftsRef = React.useRef<Map<string, string>>(new Map());
+  const plainParagraphHtmlCacheRef = React.useRef(
+    new WeakMap<ParagraphNode, { context: unknown[]; html: string }>()
+  );
   const editableParagraphHtmlPropsRef = React.useRef<
     Map<number, { __html: string }>
   >(new Map());
@@ -35881,15 +36299,9 @@ export function DocxEditorViewer({
       }
     | undefined
   >();
-  const [tableFloatingDragPreview, setTableFloatingDragPreview] =
-    React.useState<
-      | {
-          tableIndex: number;
-          deltaX: number;
-          deltaY: number;
-        }
-      | undefined
-    >();
+  const [objectWrapDragPreview, setObjectWrapDragPreview] = React.useState<ObjectWrapDragPreview>();
+  const objectDragCleanupRef = React.useRef<(() => void) | undefined>(undefined);
+  React.useEffect(() => () => objectDragCleanupRef.current?.(), [editor.documentLoadNonce, editor.model, isReadOnly]);
   const [tableContextMenuState, setTableContextMenuState] = React.useState<
     | (DocxTableContextMenuContext & {
         clientX: number;
@@ -35964,7 +36376,6 @@ export function DocxEditorViewer({
         return;
       }
 
-      setPostImportPaginationUnlocked(true);
       const safeDelayMs = Math.max(
         48,
         Math.round(delayMs ?? PAGINATION_MEASUREMENT_INTERACTION_DEBOUNCE_MS)
@@ -35977,6 +36388,7 @@ export function DocxEditorViewer({
 
       paginationMeasurementResumeTimeoutRef.current = window.setTimeout(() => {
         paginationMeasurementResumeTimeoutRef.current = null;
+        setPostImportPaginationUnlocked(true);
         bumpPaginationMeasurementEpoch();
       }, safeDelayMs + 16);
     },
@@ -36092,7 +36504,6 @@ export function DocxEditorViewer({
     setHoveredEmbeddedTableKey(undefined);
     setFocusedEmbeddedTableKey(undefined);
     setTableMoveDropPreview(undefined);
-    setTableFloatingDragPreview(undefined);
     tableMoveDragRef.current = undefined;
     setTableContextMenuState(undefined);
     setContextMenuState(undefined);
@@ -36261,10 +36672,26 @@ export function DocxEditorViewer({
         Math.round(documentLayout.marginsPx.left),
         Math.round(documentLayout.marginsPx.right),
         trackedChangesEnabled ? "tc1" : "tc0",
+        fontMetricsRevision,
         docNodeContentSignature(paginationSectionMetrics),
       ].join("|"),
-    [documentLayout, paginationSectionMetrics, trackedChangesEnabled]
+    [
+      documentLayout,
+      fontMetricsRevision,
+      paginationSectionMetrics,
+      trackedChangesEnabled,
+    ]
   );
+  React.useEffect(() => {
+    setMeasuredPageContentHeightByIndex((current) => current.length ? [] : current);
+    setMeasuredPageContentIdentityKeysByIndex((current) =>
+      current.length ? [] : current
+    );
+    setMeasuredPageContentValidationByIndex((current) =>
+      current.length ? [] : current
+    );
+    setHasMeasuredBodyFooterOverlap(false);
+  }, [fontMetricsRevision]);
   React.useEffect(() => {
     // Block-keyed measurements were taken under the previous geometry; drop
     // them wholesale when it changes so stale widths cannot steer pagination.
@@ -36343,7 +36770,7 @@ export function DocxEditorViewer({
       pageContentWidthPxByNodeIndex: widthByNodeIndex,
       pageContentHeightPxByNodeIndex: heightByNodeIndex,
     };
-  }, [editor.model.nodes, paginationSectionMetrics]);
+  }, [editor.model.nodes.length, paginationSectionMetrics]);
   const sectionColumnsBySectionIndex = React.useMemo(
     () =>
       documentSections.map((section) =>
@@ -36355,6 +36782,24 @@ export function DocxEditorViewer({
     () => buildParagraphNumberingLabels(editor.model),
     [editor.model]
   );
+  const noteMarkerIndexes = React.useMemo(
+    () => ({
+      footnote: new Map(
+        editor.model.metadata.footnotes?.map((note, index) => [
+          note.id,
+          index + 1,
+        ])
+      ),
+      endnote: new Map(
+        editor.model.metadata.endnotes?.map((note, index) => [
+          note.id,
+          index + 1,
+        ])
+      ),
+    }),
+    [editor.model.metadata.footnotes, editor.model.metadata.endnotes]
+  );
+
   const bookmarkTargetNodeIndexByName = React.useMemo(() => {
     const targets = new Map<string, number>();
     editor.model.nodes.forEach((node, nodeIndex) => {
@@ -36414,6 +36859,12 @@ export function DocxEditorViewer({
     tableDraftLayoutEpoch,
     tableMeasuredRowHeights,
   ]);
+  const textEditPaginationMemo = React.useRef<ReturnType<
+    typeof createTextEditPaginationMemo
+  > | null>(null);
+  if (!textEditPaginationMemo.current)
+    textEditPaginationMemo.current = createTextEditPaginationMemo();
+
   const pageSegmentationPlan = React.useMemo<{
     pages: DocumentPageNodeSegment[][];
     useMeasuredPageContentHeightsForRender: boolean;
@@ -36471,7 +36922,7 @@ export function DocxEditorViewer({
         const buildPagesWithHeights = (
           resolvedPageContentHeights?: number[]
         ): DocumentPageNodeSegment[][] =>
-          buildDocumentPageNodeSegments(
+          textEditPaginationMemo.current!(
             editor.model,
             pageContentHeightPx,
             pageContentWidthPx,
@@ -37632,8 +38083,8 @@ export function DocxEditorViewer({
   React.useEffect(() => {
     if (
       floatingMovePreview ||
+      objectWrapDragPreview ||
       resizePreview ||
-      tableFloatingDragPreview ||
       tableMoveDragRef.current
     ) {
       return;
@@ -37677,6 +38128,8 @@ export function DocxEditorViewer({
         }
         pageHasFloatingObject = true;
         fresh.set(`tbl:${nodeIndex}`, toBand(element.getBoundingClientRect()));
+        const host = element.closest<HTMLElement>("[data-docx-floating-table-host]");
+        if (host) fresh.set(`tblanchor:${nodeIndex}`, toBand(host.getBoundingClientRect()));
       });
 
       bodyElement
@@ -37751,6 +38204,10 @@ export function DocxEditorViewer({
           return;
         }
         fresh.set(`para:${nodeIndex}`, toBand(rect));
+      });
+      bodyElement.querySelectorAll<HTMLElement>("[data-docx-paragraph-host='true'][data-docx-paragraph-kind='paragraph']").forEach(element => {
+        const rect = element.getBoundingClientRect();
+        if (rect.height > 0) fresh.set(`para:${element.dataset.docxParagraphNodeIndex}:${element.dataset.docxParagraphStartLine ?? 0}`, toBand(rect));
       });
     });
 
@@ -37970,11 +38427,20 @@ export function DocxEditorViewer({
   // without an explicit re-measure the cached offsets stay denominated in the
   // old scale — at zoom < 1 that overestimates total height and makes the
   // trailing pages unreachable at any scroll position.
+  const virtualPageHeightSignature = pageSectionInfoByIndex
+    .map(({ layout }) =>
+      Math.round(
+        (layout.pageHeightPx + DOC_PAGE_BREAK_GAP) * virtualizerMeasurementScale
+      )
+    )
+    .join("|");
   React.useLayoutEffect(() => {
     internalElementPageVirtualizer.measure();
     internalWindowPageVirtualizer.measure();
   }, [
-    estimateVirtualPageSize,
+    virtualPageHeightSignature,
+    documentLayout.pageHeightPx,
+    virtualizerMeasurementScale,
     internalElementPageVirtualizer,
     internalWindowPageVirtualizer,
   ]);
@@ -40148,20 +40614,161 @@ export function DocxEditorViewer({
     },
     [editor.model.nodes.length]
   );
+  const objectWrapDragSignatureRef = React.useRef("");
+  const objectWrapDragLatestRef = React.useRef<
+    ObjectWrapDragPreview | undefined
+  >(undefined);
+  const updateObjectWrapDragPreview = React.useCallback(
+    (
+      frame: ObjectDragFrame,
+      source: { imageKey?: string; tableIndex?: number },
+      distances?: {
+        left: number;
+        right: number;
+        top: number;
+        bottom: number;
+        fullWidth?: boolean;
+      }
+    ): void => {
+      const bandsByPage = new Map<number, Map<string, MeasuredWrapBand>>();
+      let pageIndex = -1;
+      let closestDistance = Infinity;
+      let obstacle: PretextExclusionRect | undefined;
+      pageBodyElementsRef.current.forEach((body, index) => {
+        if (!body.isConnected) return;
+        const origin = body.getBoundingClientRect();
+        const scale = resolveViewerMeasurementZoomScale(body, 1);
+        const surface =
+          body
+            .closest("[data-docx-page-surface='true']")
+            ?.getBoundingClientRect() ?? origin;
+        if (
+          surface.bottom < -frame.height ||
+          surface.top > window.innerHeight + frame.height
+        )
+          return;
+        const distance =
+          Math.max(surface.top - frame.top, frame.top - surface.bottom, 0) +
+          Math.max(surface.left - frame.left, frame.left - surface.right, 0);
+        if (distance < closestDistance) {
+          closestDistance = distance;
+          pageIndex = index;
+          if (distances) {
+            const width = origin.width / scale;
+            let left = Math.max(
+              0,
+              (frame.left - origin.left) / scale - distances.left
+            );
+            let right = Math.min(
+              width,
+              (frame.left + frame.width - origin.left) / scale + distances.right
+            );
+            if (distances.fullWidth || left < MIN_DUAL_WRAPPED_INTERIOR_BAND_PX)
+              left = 0;
+            if (
+              distances.fullWidth ||
+              width - right < MIN_DUAL_WRAPPED_INTERIOR_BAND_PX
+            )
+              right = width;
+            obstacle = {
+              left,
+              right,
+              top: (frame.top - origin.top) / scale - distances.top,
+              bottom:
+                (frame.top + frame.height - origin.top) / scale +
+                distances.bottom,
+              fromDragPreview: true,
+            };
+          }
+        }
+        const bands = new Map<string, MeasuredWrapBand>();
+        const record = (key: string, element: HTMLElement): void => {
+          if (!element.isConnected || !body.contains(element)) return;
+          const rect = element.getBoundingClientRect();
+          bands.set(key, {
+            topPx: (rect.top - origin.top) / scale,
+            bottomPx: (rect.bottom - origin.top) / scale,
+            leftPx: (rect.left - origin.left) / scale,
+            rightPx: (rect.right - origin.left) / scale,
+          });
+        };
+        paragraphElementsRef.current.forEach((element, nodeIndex) =>
+          record(`para:${nodeIndex}`, element)
+        );
+        body
+          .querySelectorAll<HTMLElement>(
+            "[data-docx-paragraph-host='true'][data-docx-paragraph-kind='paragraph']"
+          )
+          .forEach((element) => {
+            record(
+              `para:${element.dataset.docxParagraphNodeIndex}:${
+                element.dataset.docxParagraphStartLine ?? 0
+              }`,
+              element
+            );
+          });
+        tableElementsRef.current.forEach((element, nodeIndex) => {
+          record(`tbl:${nodeIndex}`, element);
+          const host = element.closest<HTMLElement>(
+            "[data-docx-floating-table-host]"
+          );
+          if (host) record(`tblanchor:${nodeIndex}`, host);
+        });
+        body
+          .querySelectorAll<HTMLElement>("[data-docx-image-location]")
+          .forEach((element) => {
+            record(`img:${element.dataset.docxImageLocation}`, element);
+          });
+        bandsByPage.set(index, bands);
+      });
+      const preview = { ...source, pageIndex, obstacle, bandsByPage };
+      objectWrapDragLatestRef.current = preview;
+      const signature = JSON.stringify([
+        source,
+        pageIndex,
+        obstacle,
+        [...bandsByPage].map(([index, bands]) => [index, [...bands]]),
+      ]);
+      if (objectWrapDragSignatureRef.current !== signature) {
+        objectWrapDragSignatureRef.current = signature;
+        setObjectWrapDragPreview(preview);
+      }
+    },
+    [resolveViewerMeasurementZoomScale]
+  );
+
+  const clearObjectDragPreview = React.useCallback(
+    (preserveMeasurements = false): void => {
+      if (preserveMeasurements && objectWrapDragLatestRef.current) {
+        const next = new Map(measuredWrapBands);
+        objectWrapDragLatestRef.current.bandsByPage.forEach((bands) => {
+          bands.forEach((band, key) => {
+            if (!key.startsWith("img:")) next.set(key, band);
+          });
+        });
+        setMeasuredWrapBands(next);
+      }
+      objectWrapDragLatestRef.current = undefined;
+      objectWrapDragSignatureRef.current = "";
+      objectDragCleanupRef.current = undefined;
+      setObjectWrapDragPreview(undefined);
+      setFloatingMovePreview(undefined);
+      tableMoveDragRef.current = undefined;
+    },
+    [measuredWrapBands]
+  );
+
   const beginTableMoveDrag = React.useCallback(
     (event: React.PointerEvent<HTMLElement>, tableIndex: number): void => {
-      if (isReadOnly) {
-        return;
-      }
-      if (event.button !== 0 && event.button !== undefined) {
-        return;
-      }
-
+      if (isReadOnly || event.button !== 0) return;
+      const element = tableElementsRef.current.get(tableIndex);
+      const table = editor.model.nodes[tableIndex];
+      if (!element || table?.type !== "table") return;
       event.preventDefault();
       event.stopPropagation();
+      objectDragCleanupRef.current?.();
       selectWholeTable(tableIndex);
       setHoveredTableHandleTableIndex(tableIndex);
-
       tableMoveDragRef.current = {
         pointerId: event.pointerId,
         tableIndex,
@@ -40169,157 +40776,102 @@ export function DocxEditorViewer({
         startY: event.clientY,
         hasMoved: false,
       };
-
-      // Word floats a table dragged by its move handle: the drop commits a
-      // tblpPr position and text wraps around it, instead of reordering the
-      // table between blocks.
-      const zoomScale = resolveViewerMeasurementZoomScale(
-        viewerRootRef.current,
-        1
-      );
-      const tableElementAtStart = tableElementsRef.current.get(tableIndex);
-      const tableRectAtStart = tableElementAtStart?.getBoundingClientRect();
-      const floatingHostRectAtStart = tableElementAtStart
-        ?.closest("[data-docx-floating-table-host]")
-        ?.getBoundingClientRect();
-
-      const onPointerMove = (pointerMoveEvent: PointerEvent): void => {
-        const dragState = tableMoveDragRef.current;
-        if (!dragState || pointerMoveEvent.pointerId !== dragState.pointerId) {
-          return;
-        }
-
-        const movedX = pointerMoveEvent.clientX - dragState.startX;
-        const movedY = pointerMoveEvent.clientY - dragState.startY;
-        if (
-          !dragState.hasMoved &&
-          Math.abs(movedX) + Math.abs(movedY) < TABLE_MOVE_DRAG_THRESHOLD_PX
-        ) {
-          return;
-        }
-
-        dragState.hasMoved = true;
-        setTableFloatingDragPreview({
-          tableIndex: dragState.tableIndex,
-          deltaX: normalizeFloatingDragDeltaForZoom(movedX, zoomScale),
-          deltaY: normalizeFloatingDragDeltaForZoom(movedY, zoomScale),
-        });
-        pointerMoveEvent.preventDefault();
-      };
-
-      const onPointerUp = (pointerUpEvent: PointerEvent): void => {
-        const dragState = tableMoveDragRef.current;
-        if (!dragState || pointerUpEvent.pointerId !== dragState.pointerId) {
-          return;
-        }
-
-        window.removeEventListener("pointermove", onPointerMove);
-        window.removeEventListener("pointerup", onPointerUp);
-        window.removeEventListener("pointercancel", onPointerUp);
-        tableMoveDragRef.current = undefined;
-        const pointerTarget = document.elementFromPoint(
-          pointerUpEvent.clientX,
-          pointerUpEvent.clientY
-        );
-        const tableElement = tableElementsRef.current.get(dragState.tableIndex);
-        const pointerStillOverTable = Boolean(
-          pointerTarget && tableElement?.contains(pointerTarget)
-        );
-        setHoveredTableHandleTableIndex(
-          pointerStillOverTable ? dragState.tableIndex : undefined
-        );
-
-        setTableFloatingDragPreview(undefined);
-        if (!dragState.hasMoved || !tableRectAtStart) {
-          return;
-        }
-
-        const deltaX = normalizeFloatingDragDeltaForZoom(
-          pointerUpEvent.clientX - dragState.startX,
-          zoomScale
-        );
-        const deltaY = normalizeFloatingDragDeltaForZoom(
-          pointerUpEvent.clientY - dragState.startY,
-          zoomScale
-        );
-        const tableNode = editor.model.nodes[dragState.tableIndex];
-        if (!tableNode || tableNode.type !== "table") {
-          return;
-        }
-
-        const currentFloating = tableNode.style?.floating;
-        // Column-local left and flow-anchor-relative top of the table before
-        // the drag. Non-floating tables sit at their indent in normal flow;
-        // floating ones measure against their zero-height anchor host.
-        const baseLeftPx = floatingHostRectAtStart
-          ? (tableRectAtStart.left - floatingHostRectAtStart.left) / zoomScale
-          : twipsToSignedPixels(tableNode.style?.indentTwips) ?? 0;
-        const baseTopPx = floatingHostRectAtStart
-          ? (tableRectAtStart.top - floatingHostRectAtStart.top) / zoomScale
-          : 0;
-
-        // Word re-anchors the dropped table to the block boundary the drop
-        // lands at, so tblpY stays a small offset from the anchor below it
-        // instead of a large negative offset that no exclusion can satisfy.
-        const dropTarget = resolveTableMoveDropTarget(dragState.tableIndex, {
-          x: pointerUpEvent.clientX,
-          y: pointerUpEvent.clientY,
-        });
-        const rootRect = viewerRootRef.current?.getBoundingClientRect();
-        const shouldReanchor =
-          dropTarget !== undefined &&
-          rootRect !== undefined &&
-          dropTarget.targetNodeIndex !== dragState.tableIndex &&
-          dropTarget.targetNodeIndex !== dragState.tableIndex + 1;
-
-        let committedTopPx = baseTopPx + deltaY;
-        if (shouldReanchor && dropTarget && rootRect) {
-          let targetScreenTop = rootRect.top + dropTarget.preview.top;
-          // A non-floating table collapses to zero flow height when it
-          // floats, so anchors below its original position shift up by its
-          // rendered height once the model commits.
-          if (
-            !floatingHostRectAtStart &&
-            dropTarget.targetNodeIndex > dragState.tableIndex
-          ) {
-            targetScreenTop -= tableRectAtStart.height;
-          }
-          const droppedTopScreenPx =
-            tableRectAtStart.top + (pointerUpEvent.clientY - dragState.startY);
-          committedTopPx = (droppedTopScreenPx - targetScreenTop) / zoomScale;
-        }
-        // A negative offset would push the exclusion into the paragraph
-        // above the anchor, inflating that paragraph and shifting the anchor
-        // itself — an estimate feedback loop. Keep the offset anchored below
-        // the drop target instead.
-        committedTopPx = Math.max(0, committedTopPx);
-
-        editor.setTableFloating(
-          dragState.tableIndex,
-          {
-            xTwips: pixelsToTwips(baseLeftPx + deltaX),
-            yTwips: pixelsToTwips(committedTopPx),
-            horizontalAnchor: "margin",
-            verticalAnchor: "text",
-            horizontalAlign: undefined,
-            verticalAlign: undefined,
-            leftFromTextTwips: currentFloating?.leftFromTextTwips ?? 187,
-            rightFromTextTwips: currentFloating?.rightFromTextTwips ?? 187,
-            topFromTextTwips: currentFloating?.topFromTextTwips ?? 0,
-            bottomFromTextTwips: currentFloating?.bottomFromTextTwips ?? 0,
-          },
-          shouldReanchor && dropTarget
-            ? { moveToNodeIndex: dropTarget.targetNodeIndex }
-            : undefined
-        );
-      };
-
-      window.addEventListener("pointermove", onPointerMove);
-      window.addEventListener("pointerup", onPointerUp, { once: true });
-      window.addEventListener("pointercancel", onPointerUp, { once: true });
+      const zoom = resolveViewerMeasurementZoomScale(element, 1);
+      const floating = table.style?.floating;
+      objectDragCleanupRef.current = startObjectDrag({
+        event,
+        element,
+        zoom,
+        resolveElement: () => tableElementsRef.current.get(tableIndex),
+        onFrame: (frame) => {
+          if (tableMoveDragRef.current)
+            tableMoveDragRef.current.hasMoved = true;
+          updateObjectWrapDragPreview(
+            frame,
+            { tableIndex },
+            {
+              left: twipsToPixels(floating?.leftFromTextTwips) ?? 12,
+              right: twipsToPixels(floating?.rightFromTextTwips) ?? 12,
+              top: twipsToPixels(floating?.topFromTextTwips) ?? 0,
+              bottom: twipsToPixels(floating?.bottomFromTextTwips) ?? 0,
+            }
+          );
+        },
+        onCancel: clearObjectDragPreview,
+        onDrop: (frame) => {
+          const anchor = resolveWrappedDropAnchorParagraphHost(
+            element,
+            frame.top,
+            frame.left
+          );
+          const body = anchor?.host
+            .closest("[data-docx-page-surface='true']")
+            ?.querySelector<HTMLElement>("[data-docx-page-body]");
+          const host = tableElementsRef.current
+            .get(tableIndex)
+            ?.closest("[data-docx-floating-table-host]");
+          const anchorRect = anchor?.rect ?? host?.getBoundingClientRect();
+          const bodyRect = body?.getBoundingClientRect();
+          const startLine = Number(
+            anchor?.host.dataset.docxParagraphStartLine ?? 0
+          );
+          const anchorParagraph = anchor
+            ? editor.model.nodes[anchor.nodeIndex]
+            : undefined;
+          const anchorSource =
+            anchorParagraph?.type === "paragraph"
+              ? buildParagraphPretextLayoutSource(anchorParagraph)
+              : undefined;
+          const anchorLayout =
+            anchorParagraph?.type === "paragraph" && anchorSource && anchorRect
+              ? layoutParagraphPretextSource(
+                  anchorParagraph,
+                  anchorSource,
+                  anchorRect.width / zoom,
+                  Number(anchor?.host.dataset.docxParagraphLineHeight) ||
+                    estimateParagraphLineHeightPx(anchorParagraph),
+                  []
+                )
+              : undefined;
+          const anchorTextOffset =
+            startLine > 0
+              ? anchorLayout?.lines[startLine]?.fragments[0]?.startOffset
+              : undefined;
+          clearObjectDragPreview();
+          if (!anchorRect) return;
+          editor.setTableFloating(
+            tableIndex,
+            {
+              xTwips: pixelsToTwips(
+                (frame.left - (bodyRect?.left ?? anchorRect.left)) / zoom
+              ),
+              yTwips: pixelsToTwips((frame.top - anchorRect.top) / zoom),
+              horizontalAnchor: "margin",
+              verticalAnchor: "text",
+              horizontalAlign: undefined,
+              verticalAlign: undefined,
+              leftFromTextTwips: floating?.leftFromTextTwips ?? 180,
+              rightFromTextTwips: floating?.rightFromTextTwips ?? 180,
+              topFromTextTwips: floating?.topFromTextTwips ?? 0,
+              bottomFromTextTwips: floating?.bottomFromTextTwips ?? 0,
+            },
+            anchor
+              ? { moveToNodeIndex: anchor.nodeIndex, anchorTextOffset }
+              : undefined
+          );
+        },
+      });
     },
-    [editor, isReadOnly, resolveTableMoveDropTarget, selectWholeTable]
+    [
+      editor,
+      isReadOnly,
+      selectWholeTable,
+      resolveViewerMeasurementZoomScale,
+      updateObjectWrapDragPreview,
+      clearObjectDragPreview,
+    ]
   );
+
   const closeTableContextMenu = React.useCallback((): void => {
     setTableContextMenuState(undefined);
   }, []);
@@ -40588,12 +41140,21 @@ export function DocxEditorViewer({
         let range: Range | undefined;
         if (typeof documentWithCaret.caretPositionFromPoint === "function") {
           const position = documentWithCaret.caretPositionFromPoint(x, y);
-          if (position) {
+          if (
+            position &&
+            position.offset >= 0 &&
+            position.offset <=
+              (position.offsetNode.nodeType === Node.TEXT_NODE
+                ? position.offsetNode.textContent?.length ?? 0
+                : position.offsetNode.childNodes.length)
+          ) {
             range = document.createRange();
             range.setStart(position.offsetNode, position.offset);
             range.collapse(true);
           }
-        } else if (
+        }
+        if (
+          !range &&
           typeof documentWithCaret.caretRangeFromPoint === "function"
         ) {
           const pointRange = documentWithCaret.caretRangeFromPoint(x, y);
@@ -40619,7 +41180,7 @@ export function DocxEditorViewer({
         while (node) {
           if (
             node instanceof Text &&
-            node.parentElement?.closest("[data-docx-numbering-label='true']")
+            node.parentElement?.closest("[data-docx-numbering-label='true'],[data-docx-image-location]")
           ) {
             node = walker.nextNode();
             continue;
@@ -40830,7 +41391,7 @@ export function DocxEditorViewer({
           if (
             currentTextNode instanceof Text &&
             currentTextNode.parentElement?.closest(
-              "[data-docx-numbering-label='true']"
+              "[data-docx-numbering-label='true'],[data-docx-image-location]"
             )
           ) {
             currentTextNode = walker.nextNode();
@@ -40983,7 +41544,7 @@ export function DocxEditorViewer({
         if (
           currentTextNode instanceof Text &&
           currentTextNode.parentElement?.closest(
-            "[data-docx-numbering-label='true']"
+            "[data-docx-numbering-label='true'],[data-docx-image-location]"
           )
         ) {
           currentTextNode = walker.nextNode();
@@ -41348,8 +41909,8 @@ export function DocxEditorViewer({
       const offset = clampNumber(
         resolveOffsetAtPoint(
           registeredSurface.layout,
-          point.x - surfaceRect.left,
-          point.y - surfaceRect.top
+          (point.x - surfaceRect.left) / resolveEffectiveZoomScale(registeredSurface.element),
+          (point.y - surfaceRect.top) / resolveEffectiveZoomScale(registeredSurface.element)
         ),
         0,
         registeredSurface.textLength
@@ -41415,6 +41976,7 @@ export function DocxEditorViewer({
 
       const referenceElement =
         container instanceof Element ? container : container.parentElement;
+      if (referenceElement?.closest("[data-docx-textbox-editor='true']")) return undefined;
       const paragraphElement = referenceElement?.closest<HTMLElement>(
         "[data-docx-paragraph-kind]"
       );
@@ -42363,7 +42925,7 @@ export function DocxEditorViewer({
       if (!textarea || !textarea.isConnected) {
         return;
       }
-      textarea.focus();
+      textarea.focus({ preventScroll: true });
       const pendingSelection = wrappedParagraphPendingSelectionRef.current;
       const session = activeWrappedParagraphSession;
       const selectionSource =
@@ -42481,6 +43043,80 @@ export function DocxEditorViewer({
       flushActiveRangeFromSelection();
     }, 80);
   }, [flushActiveRangeFromSelection]);
+
+  React.useLayoutEffect(() => {
+    const request = editor.historyRestoreRequest;
+    if (
+      !request?.textInput ||
+      !request.activeTextRange ||
+      request.nonce === appliedHistoryRestoreNonceRef.current ||
+      compositionActiveRef.current
+    ) {
+      return;
+    }
+
+    const { start, end } = request.activeTextRange;
+    const host = resolveParagraphHostElement(start.location);
+    const startPosition = resolveDomPositionFromBoundary(start);
+    const endPosition = resolveDomPositionFromBoundary(end);
+    const selection = window.getSelection();
+    if (
+      !host?.isContentEditable ||
+      !startPosition ||
+      !endPosition ||
+      !selection
+    ) {
+      return;
+    }
+
+    try {
+      // The transaction already committed the canonical range. Restoring only
+      // the DOM caret keeps typing in one session and avoids another render.
+      beginSelectionIntent();
+      const focusedElement = document.activeElement;
+      if (
+        !(focusedElement instanceof HTMLElement) ||
+        !focusedElement.isContentEditable ||
+        !focusedElement.contains(host)
+      ) {
+        const editableRoot =
+          host.closest<HTMLElement>("[contenteditable='true']") ?? host;
+        editableRoot.focus({ preventScroll: true });
+      }
+      if (
+        selection.anchorNode !== startPosition.node ||
+        selection.anchorOffset !== startPosition.offset ||
+        selection.focusNode !== endPosition.node ||
+        selection.focusOffset !== endPosition.offset
+      ) {
+        if (typeof selection.setBaseAndExtent === "function") {
+          selection.setBaseAndExtent(
+            startPosition.node,
+            startPosition.offset,
+            endPosition.node,
+            endPosition.offset
+          );
+        } else {
+          const range = document.createRange();
+          const forward = compareTextRangeBoundaries(start, end) <= 0;
+          const first = forward ? startPosition : endPosition;
+          const last = forward ? endPosition : startPosition;
+          range.setStart(first.node, first.offset);
+          range.setEnd(last.node, last.offset);
+          selection.removeAllRanges();
+          selection.addRange(range);
+        }
+      }
+      appliedHistoryRestoreNonceRef.current = request.nonce;
+    } catch {
+      // Let the deferred restore resolve hosts replaced during pagination.
+    }
+  }, [
+    beginSelectionIntent,
+    editor.historyRestoreRequest,
+    resolveDomPositionFromBoundary,
+    resolveParagraphHostElement,
+  ]);
 
   React.useEffect(() => {
     const restoreRequest = editor.historyRestoreRequest;
@@ -43191,6 +43827,38 @@ export function DocxEditorViewer({
       scheduleCloseActiveHeaderFooterEdit,
       tableContextMenuState,
     ]
+  );
+
+  const onViewerFormFieldDoubleClick = React.useCallback(
+    (event: React.MouseEvent<HTMLDivElement>): void => {
+      if (isReadOnly || !(event.target instanceof Element)) {
+        return;
+      }
+      const fieldElement = event.target.closest("[data-docx-form-field='true']");
+      const paragraphLocation = parseParagraphLocationFromElement(
+        fieldElement?.closest("[data-docx-paragraph-kind]") ?? null
+      );
+      const childIndex = parseDocumentIndexFromAttribute(
+        fieldElement?.getAttribute("data-docx-form-field-child-index") ?? null
+      );
+      if (!paragraphLocation || childIndex === undefined) {
+        return;
+      }
+      const field = getParagraphAtLocation(editor.model, paragraphLocation)
+        .paragraph?.children[childIndex];
+      if (field?.type !== "form-field") {
+        return;
+      }
+
+      // Editable hosts serialize their children, so delegate activation from
+      // the viewer rather than relying on handlers attached to each control.
+      event.preventDefault();
+      event.stopPropagation();
+      const location = { ...paragraphLocation, childIndex };
+      editor.selectFormField(location);
+      onFormFieldDoubleClick?.(location);
+    },
+    [editor.model, editor.selectFormField, isReadOnly, onFormFieldDoubleClick]
   );
 
   const onViewerContextMenu = React.useCallback(
@@ -44816,7 +45484,7 @@ export function DocxEditorViewer({
         const textLengthWithoutNumberingLabels = (range: Range): number => {
           const fragment = range.cloneContents();
           fragment
-            .querySelectorAll("[data-docx-numbering-label='true']")
+            .querySelectorAll("[data-docx-numbering-label='true'],[data-docx-image-location]")
             .forEach((label) => {
               label.remove();
             });
@@ -45580,7 +46248,7 @@ export function DocxEditorViewer({
         return;
       }
       if (
-        targetElement.closest("textarea, input") ||
+        targetElement.closest("textarea, input, [data-docx-textbox-editor='true']") ||
         targetElement.closest("[data-docx-header-footer-region]")
       ) {
         return;
@@ -47079,371 +47747,305 @@ export function DocxEditorViewer({
       isWrappedFloatingImage: boolean,
       isAbsoluteFloatingImage: boolean
     ): void => {
-      if (isReadOnly) {
-        return;
-      }
-
-      if (event.button !== 0) {
-        return;
-      }
       if (
+        isReadOnly ||
+        event.button !== 0 ||
         (event.target as HTMLElement).closest(
           "[data-image-resize-handle='true']"
         )
-      ) {
+      )
         return;
-      }
-
-      const isInlineImage = !isWrappedFloatingImage && !isAbsoluteFloatingImage;
       event.preventDefault();
       event.stopPropagation();
+      objectDragCleanupRef.current?.();
       setSelectedImage(location);
-
+      const element = event.currentTarget;
       const imageKey = imageLocationKey(location);
-      const startX = event.clientX;
-      const startY = event.clientY;
-      const inlineDragActivationThresholdPx = 4;
-      const wrapperElement = event.currentTarget;
-      const wrapperRect = wrapperElement.getBoundingClientRect();
-      const pageSurface = wrapperElement.closest(
-        "[data-docx-page-surface='true']"
-      ) as HTMLElement | null;
-      const pageSurfaceRect = pageSurface?.getBoundingClientRect();
-      const paragraphHost = wrapperElement.closest(
-        "[data-docx-paragraph-host='true']"
-      ) as HTMLElement | null;
-      const paragraphRect = paragraphHost?.getBoundingClientRect();
-      const zoomScale = resolveViewerMeasurementZoomScale(wrapperElement, 1);
-      const baseFloating = image.floating ? { ...image.floating } : {};
-      // The band the image visually starts in; re-anchoring only happens
-      // when the drop lands in a different band than both this and the
-      // current anchor paragraph.
-      const dragStartAnchor =
-        isWrappedFloatingImage && location.kind === "paragraph"
-          ? resolveWrappedDropAnchorParagraphHost(
-              wrapperElement,
-              wrapperRect.top,
-              wrapperRect.left
-            )
-          : undefined;
-
-      let latestDeltaX = 0;
-      let latestDeltaY = 0;
-      let frameId: number | undefined;
-      let inlineDragActivated = false;
-      let latestInlineDropTarget: DocxImageDropTarget | undefined;
-      let latestInlineDropTargetKey: string | undefined;
-
-      const measuredBands = (():
-        | FloatingMovePreviewMeasuredBands
-        | undefined => {
-        if (!isWrappedFloatingImage || !pageSurface || !pageSurfaceRect) {
-          return undefined;
-        }
-
-        const hostByNodeIndex: FloatingMovePreviewMeasuredBands["hostByNodeIndex"] =
-          {};
-        for (const host of Array.from(
-          pageSurface.querySelectorAll(
-            "[data-docx-paragraph-host='true'][data-docx-paragraph-kind='paragraph'][data-docx-paragraph-node-index]"
-          )
-        )) {
-          const nodeIndex = Number.parseInt(
-            host.getAttribute("data-docx-paragraph-node-index") ?? "",
-            10
-          );
-          if (!Number.isFinite(nodeIndex)) {
-            continue;
-          }
-          const rect = (host as HTMLElement).getBoundingClientRect();
-          if (rect.height <= 0) {
-            continue;
-          }
-          hostByNodeIndex[nodeIndex] = {
-            topPx: (rect.top - pageSurfaceRect.top) / zoomScale,
-            bottomPx: (rect.bottom - pageSurfaceRect.top) / zoomScale,
-          };
-        }
-        return Object.keys(hostByNodeIndex).length > 0
-          ? { hostByNodeIndex }
-          : undefined;
-      })();
-
-      const updatePreview = (): void => {
-        setFloatingMovePreview({
-          imageKey,
-          deltaX: latestDeltaX,
-          deltaY: latestDeltaY,
-          measuredBands,
-          ...(paragraphRect
-            ? {
-                baseLeftPx: Math.round(
-                  (wrapperRect.left - paragraphRect.left) / zoomScale
-                ),
-                baseTopPx: Math.round(
-                  (wrapperRect.top - paragraphRect.top) / zoomScale
-                ),
-              }
-            : undefined),
-        });
-      };
-
-      const onPointerMove = (pointerEvent: PointerEvent): void => {
-        latestDeltaX = normalizeFloatingDragDeltaForZoom(
-          pointerEvent.clientX - startX,
-          zoomScale
+      const zoom = resolveViewerMeasurementZoomScale(element, 1);
+      const isInline = !isWrappedFloatingImage && !isAbsoluteFloatingImage;
+      const floating = image.floating;
+      let caret: HTMLDivElement | undefined;
+      const resolveInlineTarget = (
+        frame: ObjectDragFrame
+      ): DocxImageDropTarget | undefined => {
+        const point = { x: frame.clientX, y: frame.clientY };
+        const boundary = resolveBoundaryFromPoint(point);
+        if (!boundary) return undefined;
+        const paragraph = getParagraphAtLocation(
+          editor.model,
+          boundary.location
+        ).paragraph;
+        if (!paragraph) return undefined;
+        const wrapped = wrappedParagraphSurfaceRegistryRef.current.get(
+          paragraphLocationKey(boundary.location)
         );
-        latestDeltaY = normalizeFloatingDragDeltaForZoom(
-          pointerEvent.clientY - startY,
-          zoomScale
+        const layoutSource = wrapped
+          ? buildParagraphPretextLayoutSource(paragraph)
+          : undefined;
+        const run = layoutSource?.runs.find(
+          (candidate) => candidate.endOffset >= boundary.offset
         );
-
-        if (isInlineImage) {
-          if (!inlineDragActivated) {
-            const movementDistancePx =
-              Math.abs(latestDeltaX) + Math.abs(latestDeltaY);
-            if (movementDistancePx < inlineDragActivationThresholdPx) {
-              return;
-            }
-
-            inlineDragActivated = true;
-            draggedImageRef.current = location;
-            setIsDraggingImage(true);
-            setActiveDropTarget(undefined);
-          }
-
-          const candidate = document
-            .elementFromPoint(pointerEvent.clientX, pointerEvent.clientY)
-            ?.closest(
-              "[data-docx-image-drop-zone='true']"
-            ) as HTMLElement | null;
-          const parsedTarget = candidate
-            ? parseImageDropTargetFromDataset(candidate.dataset)
-            : undefined;
-          const parsedTargetKey = parsedTarget
-            ? dropTargetKey(parsedTarget)
-            : undefined;
-
-          if (parsedTargetKey !== latestInlineDropTargetKey) {
-            latestInlineDropTarget = parsedTarget;
-            latestInlineDropTargetKey = parsedTargetKey;
-            setActiveDropTarget(parsedTarget);
-          }
-        }
-
-        if (frameId !== undefined) {
-          window.cancelAnimationFrame(frameId);
-        }
-        frameId = window.requestAnimationFrame(updatePreview);
-      };
-
-      const onPointerUp = (): void => {
-        window.removeEventListener("pointermove", onPointerMove);
-        window.removeEventListener("pointerup", onPointerUp);
-        window.removeEventListener("pointercancel", onPointerUp);
-
-        if (frameId !== undefined) {
-          window.cancelAnimationFrame(frameId);
-        }
-
-        setFloatingMovePreview(undefined);
-
-        if (isInlineImage) {
-          if (inlineDragActivated) {
-            setIsDraggingImage(false);
-            draggedImageRef.current = null;
-            setActiveDropTarget(undefined);
-          }
-
-          if (Math.abs(latestDeltaX) < 1 && Math.abs(latestDeltaY) < 1) {
-            return;
-          }
-
-          if (!inlineDragActivated) {
-            return;
-          }
-
-          if (!latestInlineDropTarget) {
-            return;
-          }
-
-          editor.moveImage(location, latestInlineDropTarget);
-          const sourceParagraphLocation =
-            imageLocationToParagraphLocation(location);
-          const targetParagraphLocation: ParagraphLocation =
-            latestInlineDropTarget.kind === "paragraph"
+        const runIndex = run
+          ? Number(/^run-(\d+)/.exec(run.key)?.[1])
+          : undefined;
+        const position =
+          run && runIndex !== undefined && Number.isFinite(runIndex)
+            ? run.kind === "image"
               ? {
-                  kind: "paragraph",
-                  nodeIndex: latestInlineDropTarget.nodeIndex,
+                  childIndex:
+                    runIndex +
+                    (boundary.offset > (run.startOffset + run.endOffset) / 2
+                      ? 1
+                      : 0),
                 }
               : {
-                  kind: "table-cell",
-                  tableIndex: latestInlineDropTarget.tableIndex,
-                  rowIndex: latestInlineDropTarget.rowIndex,
-                  cellIndex: latestInlineDropTarget.cellIndex,
-                  paragraphIndex: latestInlineDropTarget.paragraphIndex,
-                };
-          const nextChildIndex =
-            sameParagraphLocation(
-              sourceParagraphLocation,
-              targetParagraphLocation
-            ) && location.childIndex < latestInlineDropTarget.childIndex
-              ? latestInlineDropTarget.childIndex - 1
-              : latestInlineDropTarget.childIndex;
-          setSelectedImage({
-            ...latestInlineDropTarget,
-            childIndex: Math.max(0, nextChildIndex),
-          });
-          return;
-        }
-
-        if (Math.abs(latestDeltaX) < 1 && Math.abs(latestDeltaY) < 1) {
-          return;
-        }
-
-        if (isWrappedFloatingImage) {
-          const hostWidth = paragraphRect
-            ? paragraphRect.width / zoomScale
-            : DEFAULT_DOC_PAGE_WIDTH;
-          const imageWidth =
-            image.widthPx ??
-            Math.max(24, Math.round(wrapperRect.width / zoomScale));
-          const imageHeight =
-            image.heightPx ??
-            Math.max(24, Math.round(wrapperRect.height / zoomScale));
-          const baseGeometry = resolveDualWrappedFloatingImageGeometry(
-            image,
-            hostWidth,
-            {
-              widthPx: imageWidth,
-              heightPx: imageHeight,
-              ...(paragraphRect
-                ? {
-                    baseLeftPx: Math.round(
-                      (wrapperRect.left - paragraphRect.left) / zoomScale
-                    ),
-                    baseTopPx: Math.round(
-                      (wrapperRect.top - paragraphRect.top) / zoomScale
-                    ),
-                  }
-                : undefined),
-            }
-          );
-          const movedLeft = clampNumber(
-            (baseGeometry?.imageLeftPx ?? 0) + latestDeltaX,
-            0,
-            Math.max(0, hostWidth - imageWidth)
-          );
-          const movedTop = Math.round(
-            (baseGeometry?.imageTopPx ?? 0) + latestDeltaY
-          );
-          const droppedTopScreenPx = wrapperRect.top + latestDeltaY * zoomScale;
-          const droppedLeftScreenPx =
-            wrapperRect.left + latestDeltaX * zoomScale;
-          const dropAnchor =
-            location.kind === "paragraph" &&
-            wrappedDragCanReanchorToParagraph(baseFloating)
-              ? resolveWrappedDropAnchorParagraphHost(
-                  wrapperElement,
-                  droppedTopScreenPx,
-                  droppedLeftScreenPx
-                )
-              : undefined;
-          if (
-            dropAnchor &&
-            location.kind === "paragraph" &&
-            dropAnchor.nodeIndex !== location.nodeIndex &&
-            dropAnchor.nodeIndex !== dragStartAnchor?.nodeIndex
-          ) {
-            // Crossing a paragraph boundary re-anchors the image to the
-            // paragraph the drop landed in, with offsets recomputed against
-            // the new anchor so the visual position is preserved.
-            const targetHostWidth = dropAnchor.rect.width / zoomScale;
-            const targetMovedLeft = clampNumber(
-              Math.round(
-                (droppedLeftScreenPx - dropAnchor.rect.left) / zoomScale
-              ),
-              0,
-              Math.max(0, targetHostWidth - imageWidth)
-            );
-            const targetMovedTop = Math.round(
-              (droppedTopScreenPx - dropAnchor.rect.top) / zoomScale
-            );
-            editor.moveFloatingImage(
-              location,
-              resolveWrappedFloatingImageDropPatch(
-                image,
-                targetHostWidth,
-                targetMovedLeft,
-                targetMovedTop,
-                {
-                  widthPx: imageWidth,
-                  heightPx: imageHeight,
+                  childIndex: runIndex,
+                  textOffset: Math.max(0, boundary.offset - run.startOffset),
                 }
-              ),
-              { reparentToParagraphNodeIndex: dropAnchor.nodeIndex }
-            );
+            : imageDropPositionAtTextOffset(paragraph, boundary.offset, {
+                fieldText: formFieldDisplayValue,
+              });
+        const target = { ...boundary.location, ...position };
+        let rect: { left: number; top: number; height: number } | undefined;
+        if (wrapped) {
+          const local = resolveCaretRectAtOffset(
+            wrapped.layout,
+            boundary.offset
+          );
+          const origin = wrapped.element.getBoundingClientRect();
+          const scale = resolveViewerMeasurementZoomScale(wrapped.element, 1);
+          if (local)
+            rect = {
+              left: origin.left + local.left * scale,
+              top: origin.top + local.top * scale,
+              height: local.height * scale,
+            };
+        } else {
+          const doc = document as Document & {
+            caretRangeFromPoint?: (x: number, y: number) => Range | null;
+          };
+          const range = doc.caretRangeFromPoint?.(point.x, point.y);
+          const candidate = range?.getBoundingClientRect();
+          if (candidate?.height) rect = candidate;
+        }
+        if (!caret) {
+          caret = document.createElement("div");
+          caret.setAttribute("data-docx-image-drop-caret", "true");
+          Object.assign(caret.style, {
+            position: "fixed",
+            pointerEvents: "none",
+            width: "2px",
+            background: "#2563eb",
+            zIndex: "2147483647",
+          });
+          document.body.appendChild(caret);
+        }
+        Object.assign(
+          caret.style,
+          rect
+            ? {
+                display: "block",
+                left: `${rect.left}px`,
+                top: `${rect.top}px`,
+                height: `${rect.height}px`,
+              }
+            : { display: "none" }
+        );
+        return target;
+      };
+      const clear = (preserveMeasurements = false): void => {
+        caret?.remove();
+        clearObjectDragPreview(preserveMeasurements);
+      };
+      objectDragCleanupRef.current = startObjectDrag({
+        event,
+        element,
+        zoom,
+        resolveElement: () =>
+          viewerRootRef.current?.querySelector<HTMLElement>(
+            `[data-docx-image-location="${imageKey}"]`
+          ) ?? undefined,
+        onFrame: (frame) => {
+          if (isInline) {
+            resolveInlineTarget(frame);
+            return;
+          }
+          updateObjectWrapDragPreview(
+            frame,
+            { imageKey },
+            floating?.wrapType &&
+              floating.wrapType !== "none" &&
+              !floating.behindDocument
+              ? {
+                  left: floating.distLPx ?? 0,
+                  right: floating.distRPx ?? 0,
+                  top: floating.distTPx ?? 0,
+                  bottom: floating.distBPx ?? 0,
+                  fullWidth: floating.wrapType === "topAndBottom",
+                }
+              : undefined
+          );
+        },
+        onCancel: clear,
+        onDrop: (frame) => {
+          if (isInline) {
+            const target = resolveInlineTarget(frame);
+            clear();
+            if (!target) return;
+            editor.moveImage(location, target);
+            const sameParagraph = sameParagraphLocation(location, target);
             setSelectedImage({
-              kind: "paragraph",
-              nodeIndex: dropAnchor.nodeIndex,
-              childIndex: 0,
+              ...target,
+              childIndex:
+                target.childIndex -
+                (sameParagraph && location.childIndex < target.childIndex
+                  ? 1
+                  : 0) +
+                (target.textOffset ? 1 : 0),
             });
             return;
           }
-          editor.moveFloatingImage(
-            location,
-            resolveWrappedFloatingImageDropPatch(
-              image,
-              hostWidth,
-              movedLeft,
-              movedTop,
+          const anchor =
+            location.kind === "paragraph"
+              ? resolveWrappedDropAnchorParagraphHost(
+                  element,
+                  frame.top,
+                  frame.left
+                )
+              : undefined;
+          const host =
+            anchor?.host ??
+            element.closest<HTMLElement>("[data-docx-paragraph-host='true']");
+          const hostRect = host?.getBoundingClientRect();
+          clear(true);
+          if (!hostRect) return;
+          let selectedChildIndex = location.childIndex;
+          if (
+            anchor &&
+            (location.kind !== "paragraph" ||
+              anchor.nodeIndex !== location.nodeIndex)
+          ) {
+            const targetParagraph = editor.model.nodes[anchor.nodeIndex];
+            if (targetParagraph.type === "paragraph")
+              selectedChildIndex = imageDropPositionAtTextOffset(
+                targetParagraph,
+                0
+              ).childIndex;
+          }
+          if (isWrappedFloatingImage) {
+            const startLine = Number(host?.dataset.docxParagraphStartLine ?? 0);
+            const anchorParagraph = anchor
+              ? editor.model.nodes[anchor.nodeIndex]
+              : undefined;
+            const anchorSource =
+              anchorParagraph?.type === "paragraph"
+                ? buildParagraphPretextLayoutSource(anchorParagraph)
+                : undefined;
+            const anchorLayout =
+              anchorParagraph?.type === "paragraph" && anchorSource
+                ? layoutParagraphPretextSource(
+                    anchorParagraph,
+                    anchorSource,
+                    hostRect.width / zoom,
+                    Number(host?.dataset.docxParagraphLineHeight) ||
+                      estimateParagraphLineHeightPx(anchorParagraph),
+                    []
+                  )
+                : undefined;
+            const anchorTextOffset =
+              startLine > 0
+                ? anchorLayout?.lines[startLine]?.fragments[0]?.startOffset
+                : undefined;
+            if (
+              anchorParagraph?.type === "paragraph" &&
+              anchor &&
+              (location.kind !== "paragraph" ||
+                anchor.nodeIndex !== location.nodeIndex ||
+                anchorTextOffset !== undefined)
+            ) {
+              const position = imageDropPositionAtTextOffset(
+                anchorParagraph,
+                anchorTextOffset ?? 0,
+                { fieldText: formFieldDisplayValue }
+              );
+              selectedChildIndex =
+                position.childIndex +
+                (position.textOffset ? 1 : 0) -
+                (location.kind === "paragraph" &&
+                anchor.nodeIndex === location.nodeIndex &&
+                location.childIndex < position.childIndex
+                  ? 1
+                  : 0);
+            }
+            editor.moveFloatingImage(
+              location,
               {
-                widthPx: imageWidth,
-                heightPx: imageHeight,
-              }
-            )
-          );
-          return;
-        }
-
-        if (isAbsoluteFloatingImage) {
-          // The page can shift mid-drag (reflow from preview exclusions,
-          // virtualizer remeasure, scroll), so re-measure the page surface at
-          // drop; the pointerdown capture only serves as a detached fallback.
-          const dropPageSurfaceRect =
-            pageSurface && pageSurface.isConnected
-              ? pageSurface.getBoundingClientRect()
-              : pageSurfaceRect;
-          editor.moveFloatingImage(
-            location,
-            resolveAbsoluteFloatingImageDropPatch(
-              baseFloating,
-              documentLayout,
-              {
-                wrapperRect: normalizeFloatingDropRectForZoom(
-                  wrapperRect,
-                  zoomScale
+                ...resolveWrappedFloatingImageDropPatch(
+                  image,
+                  hostRect.width / zoom,
+                  (frame.left - hostRect.left) / zoom,
+                  (frame.top - hostRect.top) / zoom
                 ),
-                pageSurfaceRect: dropPageSurfaceRect
-                  ? normalizeFloatingDropRectForZoom(
-                      dropPageSurfaceRect,
-                      zoomScale
-                    )
-                  : undefined,
-                deltaX: latestDeltaX,
-                deltaY: latestDeltaY,
-              }
-            )
-          );
-          return;
-        }
-      };
-
-      window.addEventListener("pointermove", onPointerMove);
-      window.addEventListener("pointerup", onPointerUp, { once: true });
-      window.addEventListener("pointercancel", onPointerUp, { once: true });
+                horizontalAlign: undefined,
+                verticalAlign: undefined,
+                horizontalRelativeTo: "column",
+                verticalRelativeTo:
+                  anchorTextOffset !== undefined ? "line" : "paragraph",
+              },
+              anchor
+                ? {
+                    reparentToParagraphNodeIndex: anchor.nodeIndex,
+                    anchorTextOffset,
+                  }
+                : undefined
+            );
+          } else {
+            const surfaceRect = host
+              ?.closest("[data-docx-page-surface='true']")
+              ?.getBoundingClientRect();
+            editor.moveFloatingImage(
+              location,
+              resolveAbsoluteFloatingImageDropPatch(
+                floating ?? {},
+                documentLayout,
+                {
+                  wrapperRect: {
+                    left: frame.left / zoom,
+                    top: frame.top / zoom,
+                    width: frame.width / zoom,
+                    height: frame.height / zoom,
+                  },
+                  pageSurfaceRect: surfaceRect
+                    ? normalizeFloatingDropRectForZoom(surfaceRect, zoom)
+                    : undefined,
+                  deltaX: 0,
+                  deltaY: 0,
+                }
+              ),
+              anchor
+                ? { reparentToParagraphNodeIndex: anchor.nodeIndex }
+                : undefined
+            );
+          }
+          if (anchor) {
+            setSelectedImage({
+              kind: "paragraph",
+              nodeIndex: anchor.nodeIndex,
+              childIndex: selectedChildIndex,
+            });
+          }
+        },
+      });
     },
-    [documentLayout, editor, isReadOnly, resolveViewerMeasurementZoomScale]
+    [
+      documentLayout,
+      editor,
+      isReadOnly,
+      resolveViewerMeasurementZoomScale,
+      resolveBoundaryFromPoint,
+      updateObjectWrapDragPreview,
+      clearObjectDragPreview,
+    ]
   );
 
   const beginDropCapMove = React.useCallback(
@@ -48531,7 +49133,15 @@ export function DocxEditorViewer({
                 src={renderableImageSrc}
                 alt={run.image.alt ?? "DOCX image"}
                 draggable={false}
+                data-docx-image-location={imageLocationKey({ ...location, childIndex: Number(/^run-(\d+)/.exec(run.key)?.[1]) })}
+                onPointerDown={event => {
+                  if (!isReadOnly && run.image) beginFloatingImageMove(event,
+                    { ...location, childIndex: Number(/^run-(\d+)/.exec(run.key)?.[1]) }, run.image, false, false);
+                }}
                 style={{
+                  position: "relative",
+                  zIndex: 3,
+                  touchAction: "none",
                   width: run.image.widthPx
                     ? `${run.image.widthPx}px`
                     : undefined,
@@ -49293,12 +49903,24 @@ export function DocxEditorViewer({
       keyPrefix: string,
       location: ParagraphLocation,
       options?: {
+        paragraphLineRange?: ParagraphLineRange;
         pageFlowTopPx?: number;
         pageFlowForeignExclusions?: PretextExclusionRect[];
         pageLayout?: DocumentLayoutMetrics;
         suppressLikelyFullPageCoverImageKeys?: Set<string>;
       }
     ): React.ReactNode => {
+      const lineRange = options?.paragraphLineRange;
+      const sliceTop = (lineRange?.startLineIndex ?? 0) * (lineRange?.lineHeightPx ?? 0);
+      const sliceEnd = (lineRange?.endLineIndex ?? Infinity) * (lineRange?.lineHeightPx ?? 1);
+      const imageIsInSlice = (childIndex: number): boolean => {
+        if (!lineRange) return true;
+        const source = buildParagraphPretextLayoutSource(paragraph);
+        const unwrapped = source ? layoutParagraphPretextSource(paragraph, source,
+          paragraphAvailableTextWidthPx(paragraph, pageContentWidthPxByNodeIndex.get(nodeIndexFromParagraphLocation(location)) ?? documentContentWidthPx, editor.model.metadata.numberingDefinitions), lineRange.lineHeightPx, []) : undefined;
+        const anchorTop = unwrapped ? resolveCaretRectAtOffset(unwrapped, paragraphChildAnchorOffset(paragraph, childIndex) + 1)?.top ?? 0 : 0;
+        return anchorTop >= sliceTop && anchorTop < sliceEnd;
+      };
       const nodes: React.ReactNode[] = [];
       const checkboxChoiceRow = paragraphLooksLikeCheckboxChoiceRow(paragraph);
       const fallbackTabWidthPx = checkboxChoiceRow
@@ -49398,16 +50020,6 @@ export function DocxEditorViewer({
           }
         });
       };
-      const noteMarkerIndexes = {
-        footnote: new Map<number, number>(),
-        endnote: new Map<number, number>(),
-      };
-      editor.model.metadata.footnotes?.forEach((note, index) => {
-        noteMarkerIndexes.footnote.set(note.id, index + 1);
-      });
-      editor.model.metadata.endnotes?.forEach((note, index) => {
-        noteMarkerIndexes.endnote.set(note.id, index + 1);
-      });
 
       const numberingLabel = paragraphNumberingLabels.get(
         paragraphLocationKey(location)
@@ -49577,18 +50189,20 @@ export function DocxEditorViewer({
         );
       }
 
-      const paragraphLineHeightPx = estimateParagraphLineHeightPx(paragraph);
+      const paragraphLineHeightPx = options?.paragraphLineRange?.lineHeightPx ?? estimateParagraphLineHeightPx(paragraph);
       const manualDualWrappedLayout = !numberingLabel
         ? resolveParagraphDualWrappedTextLayout(
             paragraph,
             paragraphRenderTextWidthPx,
             paragraphLineHeightPx,
             {
+              excludedImageIndex: objectWrapDragPreview?.imageKey?.startsWith(`${paragraphLocationKey(location)}:`)
+                ? Number(objectWrapDragPreview.imageKey.split(":").at(-1)) : undefined,
               widthPxByImageIndex: resizedWidthPxByImageIndex,
               heightPxByImageIndex: resizedHeightPxByImageIndex,
               paragraphTopPx: paragraphPageFlowTopPx,
               pageMarginTopPx: paragraphPageLayout.marginsPx.top,
-              foreignExclusions: options?.pageFlowForeignExclusions,
+              foreignExclusions: options?.pageFlowForeignExclusions?.map(exclusion => ({ ...exclusion, top: exclusion.top + sliceTop, bottom: exclusion.bottom + sliceTop })),
               movePreviewByImageIndex,
               allowNegativeImageTop: movePreviewByImageIndex.size > 0,
             }
@@ -49600,7 +50214,7 @@ export function DocxEditorViewer({
               paragraph,
               paragraphRenderTextWidthPx,
               paragraphLineHeightPx,
-              options?.pageFlowForeignExclusions ?? []
+              (options?.pageFlowForeignExclusions ?? []).map(exclusion => ({ ...exclusion, top: exclusion.top + sliceTop, bottom: exclusion.bottom + sliceTop }))
             )
           : undefined;
       const activeDualWrappedLayout =
@@ -49649,7 +50263,15 @@ export function DocxEditorViewer({
                     src={renderableImageSrc}
                     alt={run.image.alt ?? "DOCX image"}
                     draggable={false}
+                data-docx-image-location={imageLocationKey({ ...location, childIndex: Number(/^run-(\d+)/.exec(run.key)?.[1]) })}
+                onPointerDown={event => {
+                  if (!isReadOnly && run.image) beginFloatingImageMove(event,
+                    { ...location, childIndex: Number(/^run-(\d+)/.exec(run.key)?.[1]) }, run.image, false, false);
+                }}
                     style={{
+                  position: "relative",
+                  zIndex: 3,
+                  touchAction: "none",
                       width: run.image.widthPx
                         ? `${run.image.widthPx}px`
                         : undefined,
@@ -49756,7 +50378,7 @@ export function DocxEditorViewer({
           geometry: DualWrappedFloatingImageGeometry
         ): React.ReactNode => {
           const manualImage = previewParagraph.children[geometry.imageIndex];
-          if (manualImage?.type !== "image") {
+          if (manualImage?.type !== "image" || !imageIsInSlice(geometry.imageIndex)) {
             return null;
           }
 
@@ -49794,7 +50416,7 @@ export function DocxEditorViewer({
                 display: "inline-block",
                 position: "absolute",
                 left: geometry.imageLeftPx,
-                top: geometry.imageTopPx,
+                top: geometry.imageTopPx - sliceTop,
                 width: widthPx ? `${widthPx}px` : undefined,
                 height: heightPx ? `${heightPx}px` : undefined,
                 zIndex: 3,
@@ -50561,35 +51183,36 @@ export function DocxEditorViewer({
             })
             .map((geometry) => geometry.imageIndex)
         );
-        const activeWrappedSource = activeSession
-          ? buildSyntheticPretextLayoutSource(
-              activeSession.text,
-              firstRunStyle(previewParagraph)
-            )
-          : activeDualWrappedLayout.source;
+        const activeWrappedSource =
+          activeSession && activeSession.text !== activeDualWrappedLayout.source.text
+            ? buildSyntheticPretextLayoutSource(
+                activeSession.text,
+                firstRunStyle(previewParagraph)
+              )
+            : activeDualWrappedLayout.source;
         const activeWrappedExclusions = [
           ...(options?.pageFlowForeignExclusions ?? []),
-          ...activeDualWrappedLayout.geometries.map(
-            (geometry) => geometry.exclusion
-          ),
+          ...activeDualWrappedLayout.geometries.map((geometry) => geometry.exclusion),
         ];
-        const activeWrappedLayout = activeSession
-          ? layoutParagraphPretextSource(
-              previewParagraph,
-              activeWrappedSource,
-              paragraphRenderTextWidthPx,
-              activeDualWrappedLayout.lineHeightPx,
-              activeWrappedExclusions
-            ) ?? activeDualWrappedLayout.layout
-          : activeDualWrappedLayout.layout;
+        const activeWrappedLayout =
+          activeWrappedSource !== activeDualWrappedLayout.source
+            ? layoutParagraphPretextSource(
+                previewParagraph,
+                activeWrappedSource,
+                paragraphRenderTextWidthPx,
+                activeDualWrappedLayout.lineHeightPx,
+                activeWrappedExclusions
+              ) ?? activeDualWrappedLayout.layout
+            : activeDualWrappedLayout.layout;
 
         return renderWrappedPretextParagraph({
           location,
           keyPrefix: `${keyPrefix}-dual-wrap-manual`,
           source: activeWrappedSource,
-          layout: activeWrappedLayout,
+          layout: lineRange ? sliceLayoutToLineRange(activeWrappedLayout, lineRange.startLineIndex,
+            lineRange.endLineIndex >= lineRange.totalLineCount ? activeWrappedLayout.lineCount : lineRange.endLineIndex) : activeWrappedLayout,
           lineHeightPx: activeDualWrappedLayout.lineHeightPx,
-          blockHeightPx: resolveDragPreviewAwareWrapBlockHeightPx(
+          blockHeightPx: lineRange ? undefined : resolveDragPreviewAwareWrapBlockHeightPx(
             activeWrappedLayout,
             activeDualWrappedLayout.geometries,
             options?.pageFlowForeignExclusions
@@ -50979,6 +51602,12 @@ export function DocxEditorViewer({
                   contentEditable={!isReadOnly}
                   suppressContentEditableWarning
                   spellCheck={false}
+                  onInput={(event) => event.stopPropagation()}
+                  onKeyDown={(event) => event.stopPropagation()}
+                  onKeyUp={(event) => event.stopPropagation()}
+                  onPaste={(event) => event.stopPropagation()}
+                  onCompositionStart={(event) => event.stopPropagation()}
+                  onCompositionEnd={(event) => event.stopPropagation()}
                   onFocus={(event) => {
                     event.stopPropagation();
                     if (!isReadOnly) {
@@ -51510,6 +52139,7 @@ export function DocxEditorViewer({
                 key={runKey}
                 contentEditable={false}
                 data-docx-form-field="true"
+                data-docx-form-field-child-index={childIndex}
                 data-docx-form-field-type="checkbox"
                 role="checkbox"
                 aria-checked={Boolean(child.checked)}
@@ -51591,6 +52221,7 @@ export function DocxEditorViewer({
                 key={runKey}
                 contentEditable={false}
                 data-docx-form-field="true"
+                data-docx-form-field-child-index={childIndex}
                 data-docx-form-field-type="dropdown"
                 value={selectedValue}
                 onClick={(event) => {
@@ -51650,6 +52281,7 @@ export function DocxEditorViewer({
                   key={runKey}
                   contentEditable={false}
                   data-docx-form-field="true"
+                  data-docx-form-field-child-index={childIndex}
                   data-docx-form-field-type="date"
                   type={compactFieldLayout ? "text" : "date"}
                   value={normalizedDate}
@@ -51692,6 +52324,7 @@ export function DocxEditorViewer({
                   key={runKey}
                   contentEditable={false}
                   data-docx-form-field="true"
+                  data-docx-form-field-child-index={childIndex}
                   data-docx-form-field-type="date"
                   type="text"
                   value={child.value ?? ""}
@@ -51736,6 +52369,7 @@ export function DocxEditorViewer({
                 key={runKey}
                 contentEditable={false}
                 data-docx-form-field="true"
+                data-docx-form-field-child-index={childIndex}
                 data-docx-form-field-type="text"
                 type="text"
                 value={child.value ?? ""}
@@ -51931,6 +52565,7 @@ export function DocxEditorViewer({
       beginImageResize,
       clearTableCellSelection,
       floatingMovePreview,
+      objectWrapDragPreview,
       isDraggingImage,
       openContextMenu,
       onImageDragEnd,
@@ -51949,6 +52584,7 @@ export function DocxEditorViewer({
       onFormFieldDoubleClick,
       isReadOnly,
       paragraphNumberingLabels,
+      noteMarkerIndexes,
       scrollToBookmark,
       documentLayout,
       tocLinkColorByLevel,
@@ -53094,8 +53730,11 @@ export function DocxEditorViewer({
       )
         ? Math.max(0, Math.round(options?.overrideAfterSpacingPx as number))
         : undefined;
+      const hasOnlyAbsoluteImages = hasImage && node.children.every(
+        (child) => child.type !== "image" || shouldRenderAbsoluteFloatingImage(child)
+      );
       const editable =
-        !hasImage &&
+        (!hasImage || hasOnlyAbsoluteImages) &&
         !isReadOnly &&
         options?.forceReadOnly !== true &&
         (!hasPartialLineRange || paragraphSegmentIsActiveEditable) &&
@@ -53277,6 +53916,7 @@ export function DocxEditorViewer({
               nodeIndex,
             },
             {
+              paragraphLineRange: hasPartialLineRange ? paragraphLineRange : undefined,
               pageFlowTopPx: paragraphPageFlowTopPx,
               pageFlowForeignExclusions: options?.pageFlowForeignExclusions,
               pageLayout: resolvedPageLayout,
@@ -53287,8 +53927,46 @@ export function DocxEditorViewer({
         }
         return fallbackParagraphRuns;
       };
+      const canReusePlainParagraphHtml =
+        editable &&
+        !hasPartialLineRange &&
+        !hasImage &&
+        !hasDualWrappedFloatingImage &&
+        !isDraggingImage &&
+        !paragraphHasFormField(node) &&
+        !node.children.some(
+          (child) => child.type === "text" && child.noteReference
+        ) &&
+        (options?.pageFlowForeignExclusions?.length ?? 0) === 0;
+      const plainParagraphHtmlContext = canReusePlainParagraphHtml
+        ? [
+            nodeIndex,
+            fontMetricsRevision,
+            documentContentTheme,
+            editor.model.metadata.numberingDefinitions,
+            numberingLabel?.text,
+            numberingLabel?.imageSrc,
+            paragraphRenderTextWidthPx,
+            commentsEnabled,
+            editor.model.metadata.comments,
+            JSON.stringify(tocLinkColorByLevel),
+          ]
+        : undefined;
+      const cachedPlainParagraph = canReusePlainParagraphHtml
+        ? plainParagraphHtmlCacheRef.current.get(node)
+        : undefined;
+      const reusablePlainParagraph =
+        cachedPlainParagraph &&
+        plainParagraphHtmlContext?.every((value, index) =>
+          Object.is(value, cachedPlainParagraph.context[index])
+        )
+          ? cachedPlainParagraph
+          : undefined;
       const renderedInteractiveParagraphContent =
-        shouldRenderParagraphSegmentWithPretext ? (
+        reusablePlainParagraph ? null : shouldRenderParagraphSegmentWithPretext &&
+          hasDualWrappedFloatingImage ? (
+          getFallbackParagraphRuns()
+        ) : shouldRenderParagraphSegmentWithPretext ? (
           <div
             style={{
               minHeight:
@@ -53345,9 +54023,18 @@ export function DocxEditorViewer({
         ) : (
           getFallbackParagraphRuns()
         );
-      const renderedEditableParagraphHtml = renderStaticHtml(
-        renderedInteractiveParagraphContent
-      );
+      const renderedEditableParagraphHtml =
+        reusablePlainParagraph?.html ??
+        (editable && !hasImage
+          ? renderStaticHtml(renderedInteractiveParagraphContent)
+          : "");
+      if (plainParagraphHtmlContext && !reusablePlainParagraph) {
+        plainParagraphHtmlCacheRef.current.set(node, {
+          context: plainParagraphHtmlContext,
+          html: renderedEditableParagraphHtml,
+        });
+      }
+
 
       return (
         <div
@@ -53367,6 +54054,7 @@ export function DocxEditorViewer({
           data-docx-paragraph-host="true"
           data-docx-paragraph-kind="paragraph"
           data-docx-paragraph-node-index={nodeIndex}
+          data-docx-paragraph-line-height={paragraphSegmentLineHeightPx}
           data-docx-paragraph-start-line={paragraphSegmentStartLine}
           data-docx-paragraph-end-line={paragraphSegmentEndLine}
           data-docx-paragraph-partial-line-range={
@@ -53374,7 +54062,7 @@ export function DocxEditorViewer({
           }
           style={paragraphStyle}
           dangerouslySetInnerHTML={
-            editable
+            editable && !hasImage
               ? stableInnerHtmlProp(
                   editableParagraphHtmlPropsRef.current,
                   nodeIndex,
@@ -54115,7 +54803,7 @@ export function DocxEditorViewer({
             }
           }}
         >
-          {!editable ? renderedInteractiveParagraphContent : null}
+          {!editable || hasImage ? renderedInteractiveParagraphContent : null}
         </div>
       );
     }
@@ -54136,8 +54824,8 @@ export function DocxEditorViewer({
     // page-flow exclusion pipeline, mirroring fixed wrapped images.
     const floatingTablePageLayout = options?.pageLayout ?? documentLayout;
     const floatingTableGeometry =
-      node.style?.floating && !tableRowRange && !tableRowSlice
-        ? resolveFloatingTableGeometry(node, nodeContentWidthPx, {
+      (node.style?.floating || objectWrapDragPreview?.tableIndex === nodeIndex) && !tableRowRange && !tableRowSlice
+        ? resolveFloatingTableGeometry(node.style?.floating ? node : { ...node, style: { ...node.style, floating: {} } }, nodeContentWidthPx, {
             tableWidthPx: estimateFloatingTableWidthPx(
               node,
               nodeContentWidthPx
@@ -54178,6 +54866,20 @@ export function DocxEditorViewer({
 
           if (element) {
             tableElementsRef.current.set(nodeIndex, element);
+            if (floatingTableGeometry) element.style.top = `${floatingTableGeometry.topPx}px`;
+            const anchor = node.style?.floating?.verticalAnchor;
+            const yPx = twipsToSignedPixels(node.style?.floating?.yTwips);
+            const surface = element.closest<HTMLElement>("[data-docx-page-surface='true']");
+            if (floatingTableGeometry && surface && element.parentElement &&
+              yPx !== undefined && (anchor === "page" || anchor === "margin")) {
+              // Resolve fixed anchors after flow has committed so rewrapping
+              // preceding paragraphs cannot feed back into the table position.
+              const scale = resolveViewerMeasurementZoomScale(element, 1);
+              const origin = surface.getBoundingClientRect().top;
+              const hostTop = element.parentElement.getBoundingClientRect().top;
+              element.style.top = `${(origin - hostTop) / scale + yPx +
+                (anchor === "margin" ? floatingTablePageLayout.marginsPx.top : 0)}px`;
+            }
           } else {
             tableElementsRef.current.delete(nodeIndex);
           }
@@ -54195,13 +54897,6 @@ export function DocxEditorViewer({
                 node,
                 twipsToSignedPixels(node.style?.indentTwips) ?? 0
               )),
-          ...(tableFloatingDragPreview?.tableIndex === nodeIndex
-            ? {
-                transform: `translate(${tableFloatingDragPreview.deltaX}px, ${tableFloatingDragPreview.deltaY}px)`,
-                zIndex: 30,
-                opacity: 0.9,
-              }
-            : undefined),
           ...(tableRowSlice
             ? {
                 height: Math.max(
@@ -55104,7 +55799,10 @@ export function DocxEditorViewer({
                                     return;
                                   }
 
-                                  cellEditorElement.focus();
+                                  if (document.activeElement === cellEditorElement) {
+                                    return;
+                                  }
+                                  cellEditorElement.focus({ preventScroll: true });
                                   const paragraphSelector =
                                     `[data-docx-paragraph-kind='table-cell']` +
                                     `[data-docx-table-index='${nodeIndex}']` +
@@ -55528,7 +56226,7 @@ export function DocxEditorViewer({
                                         }
                                       }
 
-                                      window.requestAnimationFrame(() => {
+                                      const applyPendingFocus = (): void => {
                                         const latestPendingFocus =
                                           pendingTableCellFocusRef.current;
                                         if (
@@ -55540,7 +56238,7 @@ export function DocxEditorViewer({
                                           return;
                                         }
 
-                                        element.focus();
+                                        element.focus({ preventScroll: true });
                                         const boundary =
                                           latestPendingFocus.boundary;
                                         const boundaryInCurrentCell = Boolean(
@@ -55652,7 +56350,8 @@ export function DocxEditorViewer({
                                         );
                                         pendingTableCellFocusRef.current =
                                           undefined;
-                                      });
+                                      };
+                                      applyPendingFocus();
                                     }
                                   }}
                                   onInput={(event) => {
@@ -56841,17 +57540,61 @@ export function DocxEditorViewer({
     return renderedTableBlock;
   };
 
+  const objectDragPageRenderCacheRef = React.useRef(
+    new Map<
+      string,
+      {
+        model: DocModel;
+        fontRevision: number;
+        theme: typeof documentContentTheme;
+        preview: ObjectWrapDragPreview | string | undefined;
+        rendered: React.ReactNode[];
+      }
+    >()
+  );
+  if (!objectWrapDragPreview) objectDragPageRenderCacheRef.current.clear();
   const renderNodeSegments = React.useCallback(
     (
       nodeSegments: DocumentPageNodeSegment[],
       options?: {
         pageLayout?: DocumentLayoutMetrics;
+        pageIndex?: number;
         suppressLikelyFullPageCoverImageKeys?: Set<string>;
       }
     ): React.ReactNode[] => {
+      const dragSourceIndex =
+        objectWrapDragPreview?.tableIndex ??
+        (objectWrapDragPreview?.imageKey?.startsWith("p:")
+          ? Number(objectWrapDragPreview.imageKey.split(":")[1])
+          : -1);
+      const dragPagePreview = objectWrapDragPreview?.bandsByPage.has(
+        options?.pageIndex ?? -1
+      )
+        ? objectWrapDragPreview
+        : objectWrapDragPreview &&
+          nodeSegments.some((segment) => segment.nodeIndex === dragSourceIndex)
+        ? "source"
+        : undefined;
+      const cacheKey = JSON.stringify([
+        options?.pageIndex,
+        nodeSegments,
+        options?.pageLayout,
+      ]);
+      const cached = objectDragPageRenderCacheRef.current.get(cacheKey);
+      if (
+        objectWrapDragPreview &&
+        cached?.model === editor.model &&
+        cached.fontRevision === fontMetricsRevision &&
+        cached.theme === documentContentTheme &&
+        cached.preview === dragPagePreview
+      )
+        return cached.rendered;
       const rendered: React.ReactNode[] = [];
       let pageFlowTopPx = 0;
       const resolvedPageLayout = options?.pageLayout ?? documentLayout;
+      const liveWrapBands =
+        objectWrapDragPreview?.bandsByPage.get(options?.pageIndex ?? -1) ??
+        measuredWrapBands;
       const foreignWrapExclusionsBySegmentIndex =
         precomputePageSegmentForeignWrapExclusions(
           nodeSegments,
@@ -56864,7 +57607,13 @@ export function DocxEditorViewer({
           {
             floatingMovePreview,
             resizePreview,
-            measuredWrapBands,
+            measuredWrapBands: liveWrapBands,
+            draggedImageKey: objectWrapDragPreview?.imageKey,
+            draggedTableIndex: objectWrapDragPreview?.tableIndex,
+            dragObstacle:
+              objectWrapDragPreview?.pageIndex === options?.pageIndex
+                ? objectWrapDragPreview?.obstacle
+                : undefined,
           }
         );
 
@@ -57622,12 +58371,14 @@ export function DocxEditorViewer({
         // the exclusions computed above.
         const segmentParagraphLineRange = segment.paragraphLineRange;
         const measuredSegmentFlowTopPx =
-          node.type === "paragraph" &&
-          (!segmentParagraphLineRange ||
-            (segmentParagraphLineRange.startLineIndex === 0 &&
-              segmentParagraphLineRange.endLineIndex >=
-                segmentParagraphLineRange.totalLineCount))
-            ? measuredWrapBands.get(`para:${nodeIndex}`)?.topPx
+          node.type === "table" && node.style?.floating
+            ? liveWrapBands.get(`tblanchor:${nodeIndex}`)?.topPx
+            : node.type === "paragraph" &&
+              (!segmentParagraphLineRange ||
+                (segmentParagraphLineRange.startLineIndex === 0 &&
+                  segmentParagraphLineRange.endLineIndex >=
+                    segmentParagraphLineRange.totalLineCount))
+            ? liveWrapBands.get(`para:${nodeIndex}`)?.topPx
             : undefined;
         rendered.push(
           renderDocumentNode(
@@ -57656,10 +58407,19 @@ export function DocxEditorViewer({
         );
       }
 
+      objectDragPageRenderCacheRef.current.set(cacheKey, {
+        model: editor.model,
+        fontRevision: fontMetricsRevision,
+        theme: documentContentTheme,
+        preview: dragPagePreview,
+        rendered,
+      });
       return rendered;
     },
     [
       activeEditableParagraphSegment,
+      fontMetricsRevision,
+      documentContentTheme,
       beginDropCapMove,
       beginDropCapResize,
       clearObjectSelectionForParagraphEntry,
@@ -57670,6 +58430,7 @@ export function DocxEditorViewer({
       dropCapResizePreview,
       editor,
       floatingMovePreview,
+      objectWrapDragPreview,
       focusDropCapWrappedParagraph,
       hoveredDropCapNodeIndex,
       isReadOnly,
@@ -57772,6 +58533,7 @@ export function DocxEditorViewer({
     () => footnotes.filter((note) => !placedFootnoteIds.has(note.id)),
     [footnotes, placedFootnoteIds]
   );
+
   const renderDocumentNote = React.useCallback(
     (
       note: (typeof footnotes)[number],
@@ -57912,6 +58674,7 @@ export function DocxEditorViewer({
       onDragOver={onCanvasDragOver}
       onDragLeave={onCanvasDragLeave}
       onDrop={(event) => void onCanvasDrop(event)}
+      onDoubleClickCapture={onViewerFormFieldDoubleClick}
       onPointerDownCapture={onViewerPointerDown}
       onPointerMoveCapture={onViewerPointerMove}
       onPointerLeave={onViewerPointerLeave}
@@ -58555,6 +59318,7 @@ export function DocxEditorViewer({
                 ref={(element) => {
                   if (element) {
                     pageBodyElementsRef.current.set(pageIndex, element);
+                    element.dataset.docxPageBody = "true";
                   } else {
                     pageBodyElementsRef.current.delete(pageIndex);
                   }
@@ -58884,6 +59648,7 @@ export function DocxEditorViewer({
                             key={`page-${pageIndex}-section-group-${groupIndex}`}
                           >
                             {renderNodeSegments(group.segments, {
+                              pageIndex,
                               pageLayout,
                               suppressLikelyFullPageCoverImageKeys:
                                 suppressedLikelyFullPageCoverImageKeys,

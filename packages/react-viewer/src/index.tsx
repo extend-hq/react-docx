@@ -183,6 +183,7 @@ export function useDocxModel(file?: ArrayBuffer): UseDocxModelState {
         const { model } = await importDocxBuffer(docxFile, {
           signal: abortController.signal,
           transferBuffer: false,
+          useWorker: "required",
         });
         if (!isCurrent) {
           return;

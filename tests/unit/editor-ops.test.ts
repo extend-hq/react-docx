@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import type { DocModel } from "@extend-ai/react-docx-doc-model";
+import {
+  cloneDocModel,
+  type DocModel,
+  type ParagraphNode,
+} from "@extend-ai/react-docx-doc-model";
 import {
   copyParagraphs,
   parseParagraphsFromClipboard,
@@ -266,6 +270,54 @@ describe("editor-ops", () => {
       type: "text",
       text: " after",
     });
+  });
+
+  it("shares unchanged image data and field settings across text edits", () => {
+    const model = sampleModel();
+    const imageParagraph: ParagraphNode = {
+      type: "paragraph",
+      style: { spacing: { afterTwips: 120 } },
+      children: [
+        { type: "text", text: "Before " },
+        {
+          type: "image",
+          data: new Uint8Array([1, 2, 3]),
+          floating: { wrapType: "square", xPx: 20 },
+        },
+        { type: "text", text: "after" },
+      ],
+    };
+    const fieldParagraph: ParagraphNode = {
+      type: "paragraph",
+      children: [
+        {
+          type: "form-field",
+          fieldType: "dropdown",
+          value: "One",
+          options: [{ displayText: "One", value: "One" }],
+          widget: { name: "Choice" },
+        },
+        { type: "text", text: " text" },
+      ],
+    };
+    model.nodes = [imageParagraph, fieldParagraph];
+    const snapshot = cloneDocModel(model);
+    const editedImage = updateParagraphText(model, 0, "Before more after");
+    const edited = updateParagraphText(editedImage, 1, "One text updated");
+    expect((edited.nodes[0] as ParagraphNode).children[1]).toBe(
+      imageParagraph.children[1]
+    );
+    expect((edited.nodes[1] as ParagraphNode).children[0]).toBe(
+      fieldParagraph.children[0]
+    );
+    expect(model).toEqual(snapshot);
+
+    const formatted = setParagraphHeading(edited, 0, 2);
+    expect(
+      (edited.nodes[0] as ParagraphNode).style?.headingLevel
+    ).toBeUndefined();
+    expect((formatted.nodes[0] as ParagraphNode).style?.headingLevel).toBe(2);
+    expect(model).toEqual(snapshot);
   });
 
   it("updates all table-cell paragraphs without duplicating text into the first paragraph", () => {
@@ -535,6 +587,118 @@ describe("editor-ops", () => {
       text: " updated",
       style: { underline: true },
     });
+  });
+
+  it.each(["cell", "paragraph", "recursive"] as const)(
+    "copies only the edited table cell for %s text updates",
+    (method) => {
+      const model = sampleModel();
+      const target: ParagraphNode = {
+        type: "paragraph",
+        children: [{ type: "text", text: "Cell text" }],
+      };
+      const adjacent: ParagraphNode = {
+        type: "paragraph",
+        children: [{ type: "image", data: new Uint8Array([1, 2, 3]) }],
+      };
+      const table = {
+        type: "table" as const,
+        rows: [
+          {
+            type: "table-row" as const,
+            cells: [
+              { type: "table-cell" as const, nodes: [target] },
+              { type: "table-cell" as const, nodes: [adjacent] },
+            ],
+          },
+          {
+            type: "table-row" as const,
+            cells: [{ type: "table-cell" as const, nodes: [adjacent] }],
+          },
+        ],
+      };
+      model.nodes.push(table);
+      const before = cloneDocModel(model);
+      const edited =
+        method === "cell"
+          ? updateTableCellText(model, 2, 0, 0, "Cell text updated")
+          : (method === "paragraph"
+              ? updateTableCellParagraphText
+              : updateTableCellParagraphTextRecursive)(
+              model,
+              2,
+              0,
+              0,
+              0,
+              "Cell text updated"
+            );
+      const editedTable = edited.nodes[2];
+      expect(editedTable.type).toBe("table");
+      if (editedTable.type !== "table") return;
+      expect(edited.nodes[0]).toBe(model.nodes[0]);
+      expect(edited.metadata).toBe(model.metadata);
+      expect(editedTable.rows[1]).toBe(table.rows[1]);
+      expect(editedTable.rows[0].cells[1]).toBe(table.rows[0].cells[1]);
+      expect(editedTable.rows[0].cells[0].nodes[0]).toMatchObject({
+        children: [{ type: "text", text: "Cell text updated" }],
+      });
+      expect(model).toEqual(before);
+    }
+  );
+
+  it("copies a nested table path and preserves ancestor source patches", () => {
+    const sourceXml = "<w:p><w:r><w:t>Nested text</w:t></w:r></w:p>";
+    const target: ParagraphNode = {
+      type: "paragraph",
+      sourceXml,
+      children: [{ type: "text", text: "Nested text" }],
+    };
+    const nested = {
+      type: "table" as const,
+      sourceXml: `<w:tbl>${sourceXml}</w:tbl>`,
+      rows: [
+        {
+          type: "table-row" as const,
+          cells: [{ type: "table-cell" as const, nodes: [target] }],
+        },
+      ],
+    };
+    const table = {
+      type: "table" as const,
+      sourceXml: `<w:tbl>${nested.sourceXml}</w:tbl>`,
+      rows: [
+        {
+          type: "table-row" as const,
+          cells: [{ type: "table-cell" as const, nodes: [nested] }],
+        },
+      ],
+    };
+    const model = sampleModel();
+    model.nodes.push(table);
+    const before = cloneDocModel(model);
+    const edited = updateTableCellParagraphTextRecursive(
+      model,
+      2,
+      0,
+      0,
+      0,
+      "Nested text updated"
+    );
+    const outer = edited.nodes[2];
+    if (outer.type !== "table") throw new Error("Expected a table");
+    const inner = outer.rows[0].cells[0].nodes[0];
+    if (inner.type !== "table") throw new Error("Expected a nested table");
+    expect(outer).not.toBe(table);
+    expect(inner).not.toBe(nested);
+    expect(outer.sourceXml).toBe(table.sourceXml);
+    expect(inner.sourceXml).toBe(nested.sourceXml);
+    expect(outer.sourceTextPatches).toHaveLength(1);
+    expect(inner.sourceTextPatches).toHaveLength(1);
+    expect(inner.rows[0].cells[0].nodes[0]).toMatchObject({
+      children: [{ type: "text", text: "Nested text updated" }],
+    });
+    expect(edited.nodes[0]).toBe(model.nodes[0]);
+    expect(model).toEqual(before);
   });
 
   it("preserves checkbox form fields when updating paragraph text", () => {

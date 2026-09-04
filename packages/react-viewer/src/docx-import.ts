@@ -16,7 +16,7 @@ export interface DocxImportResult {
 export interface DocxImportOptions {
   signal?: AbortSignal;
   transferBuffer?: boolean;
-  useWorker?: boolean;
+  useWorker?: boolean | "required";
 }
 
 export interface DocxImportWorkerTimings {
@@ -100,31 +100,28 @@ async function importDocxOnMainThread(
   }
 
   const startedAt = performanceNow();
-  const [{ parseDocx }, { buildDocModel, ensureDocModelBlockIds }] =
-    await Promise.all([
-      import("@extend-ai/react-docx-ooxml-core"),
-      import("@extend-ai/react-docx-doc-model"),
-    ]);
-  const pkg = await parseDocx(buffer);
-  const parsedAt = performanceNow();
+  const { buildDocModelFromBytes, ensureDocModelBlockIds } = await import(
+    "@extend-ai/react-docx-doc-model"
+  );
   if (signal?.aborted) {
     throw createAbortError();
   }
 
-  const model = ensureDocModelBlockIds(await buildDocModel(pkg));
+  const result = await buildDocModelFromBytes(buffer);
+  const model = ensureDocModelBlockIds(result.model);
   const finishedAt = performanceNow();
   if (signal?.aborted) {
     throw createAbortError();
   }
 
   return {
-    package: pkg,
+    package: result.package,
     model,
     source: "main-thread",
     timings: {
       totalMs: finishedAt - startedAt,
-      parseMs: parsedAt - startedAt,
-      buildModelMs: finishedAt - parsedAt,
+      parseMs: result.timings.parseMs,
+      buildModelMs: result.timings.buildModelMs,
     },
   };
 }
@@ -145,13 +142,19 @@ export async function importDocxBuffer(
   }
 
   if (!canUseDocxImportWorker(options)) {
+    if (options.useWorker === "required") {
+      throw new Error("DOCX import requires a Web Worker and a worker-compatible WASM source");
+    }
     return importDocxOnMainThread(buffer, options.signal);
   }
 
   let worker: Worker;
   try {
     worker = createDocxImportWorker();
-  } catch {
+  } catch (error) {
+    if (options.useWorker === "required") {
+      throw new Error("Unable to start the DOCX import worker", { cause: error });
+    }
     return importDocxOnMainThread(buffer, options.signal);
   }
 

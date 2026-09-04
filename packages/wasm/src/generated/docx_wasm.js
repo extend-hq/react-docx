@@ -313,6 +313,10 @@ function __wbg_get_imports() {
             const ret = new Uint8Array(getArrayU8FromWasm0(arg0, arg1));
             return addHeapObject(ret);
         },
+        __wbg_now_c1f9831c87b83a0b: function() {
+            const ret = performance.now();
+            return ret;
+        },
         __wbg_parse_246201845d0eb98c: function() { return handleError(function (arg0, arg1) {
             const ret = JSON.parse(getStringFromWasm0(arg0, arg1));
             return addHeapObject(ret);
@@ -332,7 +336,12 @@ function __wbg_get_imports() {
             const ret = JSON.stringify(getObject(arg0));
             return addHeapObject(ret);
         }, arguments); },
-        __wbindgen_cast_0000000000000001: function(arg0, arg1) {
+        __wbindgen_cast_0000000000000001: function(arg0) {
+            // Cast intrinsic for `F64 -> Externref`.
+            const ret = arg0;
+            return addHeapObject(ret);
+        },
+        __wbindgen_cast_0000000000000002: function(arg0, arg1) {
             // Cast intrinsic for `Ref(String) -> Externref`.
             const ret = getStringFromWasm0(arg0, arg1);
             return addHeapObject(ret);

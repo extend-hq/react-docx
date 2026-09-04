@@ -182,10 +182,15 @@ export async function wasmBuildDocModelFromPackage(pkg: WasmOoxmlPackage): Promi
 export async function wasmBuildDocModelFromBytes(bytes: ArrayBuffer | Uint8Array): Promise<{
   package: WasmOoxmlPackage;
   model: unknown;
+  timings: { parseMs: number; buildModelMs: number };
 }> {
   await initWasm();
   const payload = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
-  return build_doc_model_from_bytes(payload) as { package: WasmOoxmlPackage; model: unknown };
+  return build_doc_model_from_bytes(payload) as {
+    package: WasmOoxmlPackage;
+    model: unknown;
+    timings: { parseMs: number; buildModelMs: number };
+  };
 }
 
 export async function wasmSerializeDocx(

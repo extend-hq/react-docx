@@ -15,7 +15,6 @@ import {
   allocateBlockId,
   cloneDocModel,
   cloneParagraphNode,
-  cloneTableNode,
 } from "@extend-ai/react-docx-doc-model";
 
 export {
@@ -351,12 +350,10 @@ function updatedParagraphNodeText(
     return source;
   }
 
-  const paragraph = cloneParagraphNode(source);
-  paragraph.children = distributeTextAcrossParagraphChildren(
-    source,
-    text,
-    options
-  );
+  const paragraph: ParagraphNode = {
+    ...source,
+    children: distributeTextAcrossParagraphChildren(source, text, options),
+  };
   paragraph.sourceTextPatch = sourceTextPatchForUpdate(source, paragraph);
   if (!paragraph.sourceTextPatch) {
     paragraph.sourceXml = undefined;
@@ -417,6 +414,20 @@ function retainTableSourceTextPatch(
 function discardTableSourceXml(table: TableNode): void {
   table.sourceXml = undefined;
   table.sourceTextPatches = undefined;
+}
+
+function copyTableForCellTextEdit(
+  table: TableNode,
+  rowIndex: number,
+  cellIndex: number
+): TableNode {
+  const row = table.rows[rowIndex];
+  const cell = row.cells[cellIndex];
+  const rows = [...table.rows];
+  const cells = [...row.cells];
+  cells[cellIndex] = { ...cell, nodes: [...cell.nodes] };
+  rows[rowIndex] = { ...row, cells };
+  return { ...table, rows };
 }
 
 function directParagraphNodeIndex(
@@ -658,11 +669,7 @@ function distributeTextAcrossParagraphChildren(
 
     textGroups.push(currentGroup);
     currentGroup = [];
-    anchors.push(
-      child.type === "form-field"
-        ? cloneFormFieldRun(child)
-        : cloneImageRun(child)
-    );
+    anchors.push(child);
   }
   textGroups.push(currentGroup);
 
@@ -752,7 +759,7 @@ function distributeTextAcrossParagraphChildren(
       }
 
       if (index < anchors.length) {
-        nextChildren.push(cloneParagraphChildRun(anchors[index]));
+        nextChildren.push(anchors[index]);
       }
     }
 
@@ -805,7 +812,7 @@ function distributeTextAcrossParagraphChildren(
     }
 
     if (index < anchors.length) {
-      nextChildren.push(cloneParagraphChildRun(anchors[index]));
+      nextChildren.push(anchors[index]);
     }
   }
 
@@ -1222,7 +1229,7 @@ export function updateTableCellText(
     return model;
   }
 
-  const tableNode = cloneTableNode(sourceTable);
+  const tableNode = copyTableForCellTextEdit(sourceTable, rowIndex, cellIndex);
   const row = tableNode.rows[rowIndex];
   const cell = row?.cells[cellIndex];
   if (!cell) {
@@ -1316,7 +1323,12 @@ export function updateTableCellParagraphText(
     sourceParagraphNodeIndex === undefined
       ? undefined
       : sourceCell?.nodes[sourceParagraphNodeIndex];
-  if (!sourceCell || !sourceParagraph || sourceParagraph.type !== "paragraph") {
+  if (
+    !sourceCell ||
+    !sourceParagraph ||
+    sourceParagraph.type !== "paragraph" ||
+    sourceParagraphNodeIndex === undefined
+  ) {
     return { ...model, nodes: [...model.nodes] };
   }
   if (paragraphTextEditIsFailClosed(sourceParagraph, text)) {
@@ -1326,29 +1338,17 @@ export function updateTableCellParagraphText(
     return model;
   }
 
-  const tableNode = cloneTableNode(sourceTable);
-  const row = tableNode.rows[rowIndex];
-  const cell = row?.cells[cellIndex];
-  const paragraphNodeIndex = cell
-    ? directParagraphNodeIndex(cell.nodes, paragraphIndex)
-    : undefined;
-  const paragraph =
-    paragraphNodeIndex === undefined
-      ? undefined
-      : cell?.nodes[paragraphNodeIndex];
-
+  const tableNode = copyTableForCellTextEdit(sourceTable, rowIndex, cellIndex);
+  const cell = tableNode.rows[rowIndex].cells[cellIndex];
+  const updatedParagraph = updatedParagraphNodeText(
+    sourceParagraph,
+    text,
+    options
+  );
+  cell.nodes[sourceParagraphNodeIndex] = updatedParagraph;
   if (
-    !cell ||
-    !paragraph ||
-    paragraph.type !== "paragraph" ||
-    paragraphNodeIndex === undefined
+    !retainTableSourceTextPatch(tableNode, sourceParagraph, updatedParagraph)
   ) {
-    return { ...model, nodes: [...model.nodes] };
-  }
-
-  const updatedParagraph = updatedParagraphNodeText(paragraph, text, options);
-  cell.nodes[paragraphNodeIndex] = updatedParagraph;
-  if (!retainTableSourceTextPatch(tableNode, paragraph, updatedParagraph)) {
     discardTableSourceXml(tableNode);
   }
 
@@ -1374,7 +1374,7 @@ export function updateTableCellParagraphTextRecursive(
   const sourceParagraph = sourceCell
     ? recursiveParagraphAtIndex(sourceCell.nodes, paragraphIndex)
     : undefined;
-  if (!sourceParagraph) {
+  if (!sourceCell || !sourceParagraph) {
     return { ...model, nodes: [...model.nodes] };
   }
   if (paragraphTextEditIsFailClosed(sourceParagraph, text)) {
@@ -1384,65 +1384,52 @@ export function updateTableCellParagraphTextRecursive(
     return model;
   }
 
-  const next = cloneDocModel(model);
-  const tableNode = next.nodes[tableIndex];
-  if (!tableNode || tableNode.type !== "table") {
-    return next;
-  }
-
-  const row = tableNode.rows[rowIndex];
-  const cell = row?.cells[cellIndex];
-  if (!cell) {
-    return next;
-  }
-
-  const targetParagraphIndex = Math.max(0, Math.round(paragraphIndex));
-  let paragraphCursor = 0;
-
+  const updatedParagraph = updatedParagraphNodeText(
+    sourceParagraph,
+    text,
+    options
+  );
+  const retainSource = (table: TableNode): void => {
+    if (!retainTableSourceTextPatch(table, sourceParagraph, updatedParagraph)) {
+      discardTableSourceXml(table);
+    }
+  };
   const updateInNodes = (
-    nodes: TableCellContentNode[],
-    ancestorTables: TableNode[]
-  ): boolean => {
+    nodes: TableCellContentNode[]
+  ): TableCellContentNode[] | undefined => {
     for (let nodeIndex = 0; nodeIndex < nodes.length; nodeIndex += 1) {
       const node = nodes[nodeIndex];
-      if (!node) {
-        continue;
+      if (node === sourceParagraph) {
+        const nextNodes = [...nodes];
+        nextNodes[nodeIndex] = updatedParagraph;
+        return nextNodes;
       }
-      if (node.type === "paragraph") {
-        if (paragraphCursor !== targetParagraphIndex) {
-          paragraphCursor += 1;
-          continue;
-        }
-
-        const updatedParagraph = updatedParagraphNodeText(node, text, options);
-        nodes[nodeIndex] = updatedParagraph;
-        ancestorTables.forEach((ancestorTable) => {
-          if (
-            !retainTableSourceTextPatch(ancestorTable, node, updatedParagraph)
-          ) {
-            discardTableSourceXml(ancestorTable);
-          }
-        });
-        return true;
-      }
-
-      ancestorTables.push(node);
-      for (const nestedRow of node.rows) {
-        for (const nestedCell of nestedRow.cells) {
-          if (updateInNodes(nestedCell.nodes, ancestorTables)) {
-            ancestorTables.pop();
-            return true;
-          }
+      if (node.type !== "table") continue;
+      for (let rowIndex = 0; rowIndex < node.rows.length; rowIndex += 1) {
+        const row = node.rows[rowIndex];
+        for (let cellIndex = 0; cellIndex < row.cells.length; cellIndex += 1) {
+          const updatedNodes = updateInNodes(row.cells[cellIndex].nodes);
+          if (!updatedNodes) continue;
+          const table = copyTableForCellTextEdit(node, rowIndex, cellIndex);
+          table.rows[rowIndex].cells[cellIndex].nodes = updatedNodes;
+          retainSource(table);
+          const nextNodes = [...nodes];
+          nextNodes[nodeIndex] = table;
+          return nextNodes;
         }
       }
-      ancestorTables.pop();
     }
-
-    return false;
+    return undefined;
   };
 
-  updateInNodes(cell.nodes, [tableNode]);
-  return next;
+  const updatedNodes = updateInNodes(sourceCell.nodes);
+  if (!updatedNodes) return model;
+  const tableNode = copyTableForCellTextEdit(sourceTable, rowIndex, cellIndex);
+  tableNode.rows[rowIndex].cells[cellIndex].nodes = updatedNodes;
+  retainSource(tableNode);
+  const nextNodes = [...model.nodes];
+  nextNodes[tableIndex] = tableNode;
+  return { ...model, nodes: nextNodes };
 }
 
 function mutateParagraphTextRuns(

@@ -196,6 +196,19 @@ export function segmentTextByDocxScriptFont(
     return [];
   }
 
+  if (/^[\x00-\x7f]+$/.test(text)) {
+    const script = classifyDocxFontScript(text[0], style) ?? "ascii";
+    return [
+      {
+        text,
+        startOffset: 0,
+        endOffset: text.length,
+        script,
+        fontFamily: resolveDocxScriptFontFamily(style, script),
+      },
+    ];
+  }
+
   const tokens: ScriptToken[] = [];
   let offset = 0;
   for (const character of text) {
@@ -236,19 +249,24 @@ export function segmentTextByDocxScriptFont(
   }
 
   const segments: DocxScriptFontSegment[] = [];
+  const families = new Map<DocxFontScript, { family?: string; key?: string }>();
+  let previousFamilyKey: string | undefined;
   for (const token of tokens) {
     const script = token.script ?? fallbackScript;
-    const fontFamily = resolveDocxScriptFontFamily(style, script);
+    let resolved = families.get(script);
+    if (!resolved) {
+      const family = resolveDocxScriptFontFamily(style, script);
+      resolved = { family, key: normalizedFamilyKey(family) };
+      families.set(script, resolved);
+    }
+    const fontFamily = resolved.family;
     const previous = segments[segments.length - 1];
-    if (
-      previous &&
-      normalizedFamilyKey(previous.fontFamily) ===
-        normalizedFamilyKey(fontFamily)
-    ) {
+    if (previous && previousFamilyKey === resolved.key) {
       previous.text += token.text;
       previous.endOffset = token.endOffset;
       continue;
     }
+    previousFamilyKey = resolved.key;
     segments.push({
       text: token.text,
       startOffset: token.startOffset,
@@ -265,9 +283,17 @@ export function resolveDocxTextFontFamily(
   text: string,
   style?: TextStyle
 ): string | undefined {
+  let hasStrongScript = false;
+  for (const character of text) {
+    const script = classifyDocxFontScript(character, style);
+    if (!script) continue;
+    hasStrongScript = true;
+    const family = resolveDocxScriptFontFamily(style, script);
+    if (family) return family;
+  }
   return (
-    segmentTextByDocxScriptFont(text, style).find(
-      (segment) => segment.fontFamily
-    )?.fontFamily ?? normalizeFamily(style?.fontFamily)
+    (text && !hasStrongScript
+      ? resolveDocxScriptFontFamily(style, neutralScript(style))
+      : undefined) ?? normalizeFamily(style?.fontFamily)
   );
 }

@@ -1,6 +1,6 @@
-import { buildDocModel } from "@extend-ai/react-docx-doc-model";
-import { parseDocx } from "@extend-ai/react-docx-ooxml-core";
+import { buildDocModelFromBytes } from "@extend-ai/react-docx-doc-model";
 import { setWasmSource } from "@extend-ai/react-docx-wasm";
+import { collectImportTransferables } from "./import-transferables";
 
 import type {
   DocxImportWorkerRequest,
@@ -46,23 +46,23 @@ self.addEventListener(
         setWasmSource(request.wasmSource);
       }
       const startedAt = performanceNow();
-      const pkg = await parseDocx(request.buffer);
-      const parsedAt = performanceNow();
-      const model = await buildDocModel(pkg);
+      const result = await buildDocModelFromBytes(request.buffer);
       const finishedAt = performanceNow();
       const timings: DocxImportWorkerTimings = {
         totalMs: finishedAt - startedAt,
-        parseMs: parsedAt - startedAt,
-        buildModelMs: finishedAt - parsedAt,
+        parseMs: result.timings.parseMs,
+        buildModelMs: result.timings.buildModelMs,
       };
       const response: DocxImportWorkerResponse = {
         id: request.id,
         type: "success",
-        package: pkg,
-        model,
+        package: result.package,
+        model: result.model,
         timings,
       };
-      self.postMessage(response);
+      self.postMessage(response, {
+        transfer: collectImportTransferables(response),
+      });
     } catch (error) {
       const response: DocxImportWorkerResponse = {
         id: request.id,
