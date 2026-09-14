@@ -1,6 +1,13 @@
 import * as React from "react";
 import { flushSync } from "react-dom";
 import { startObjectDrag, type ObjectDragFrame } from "./pointer-drag";
+import {
+  type ViewerZoomBridge,
+  type ViewerZoomLevel,
+  type ViewerZoomState,
+  normalizeViewerZoomLevel,
+  useViewerZoom,
+} from "./viewer-zoom";
 import { copyModelForParagraphEdits, imageDropPositionAtTextOffset, insertImageAtDropPosition } from "./image-drop";
 import { renderToStaticMarkup } from "react-dom/server";
 import { useVirtualizer, useWindowVirtualizer } from "@tanstack/react-virtual";
@@ -4051,6 +4058,12 @@ export interface DocxEditorController {
   setShowTrackedChanges: (showTrackedChanges: boolean) => void;
   setShowComments: (showComments: boolean) => void;
   syncPaginationInfo: (pagination: DocxPaginationInfo) => void;
+  /** Selects a numeric or responsive viewer zoom level. */
+  setZoom: (level: ViewerZoomLevel) => void;
+  /** Returns the selected zoom level, including an active responsive mode. */
+  getZoom: () => ViewerZoomLevel;
+  /** Returns the currently resolved zoom percentage. */
+  getResolvedZoom: () => number;
   toggleShowTrackedChanges: () => void;
   toggleShowComments: () => void;
   acceptTrackedChange: (
@@ -4227,6 +4240,26 @@ export interface DocxEditorController {
     location: DocxSectionParagraphLocation,
     text: string
   ) => void;
+}
+
+const viewerZoomBridgeByController = new WeakMap<object, ViewerZoomBridge>();
+
+function viewerZoomControllerKey(
+  editor: Pick<DocxEditorController, "syncPaginationInfo">
+): object {
+  return editor.syncPaginationInfo as object;
+}
+
+function setViewerZoomBridge(
+  editor: Pick<DocxEditorController, "syncPaginationInfo">,
+  bridge?: ViewerZoomBridge
+): void {
+  const key = viewerZoomControllerKey(editor);
+  if (bridge) {
+    viewerZoomBridgeByController.set(key, bridge);
+  } else {
+    viewerZoomBridgeByController.delete(key);
+  }
 }
 
 export type DocxTableContextMenuActionId =
@@ -4466,6 +4499,12 @@ export interface DocxEditorViewerProps {
    * Inline styles applied to the outer viewer root.
    */
   style?: React.CSSProperties;
+  /** Controlled numeric percentage or responsive zoom mode. */
+  zoom?: ViewerZoomLevel;
+  /** Initial zoom level when `zoom` is uncontrolled. */
+  defaultZoom?: ViewerZoomLevel;
+  /** Called when the selected level or its resolved percentage changes. */
+  onZoomChange?: (state: ViewerZoomState) => void;
   /**
    * Background color of each rendered page surface.
    *
@@ -27109,6 +27148,10 @@ export function useDocxEditor(
       currentPage: 1,
       totalPages: 1,
     });
+  const fallbackZoomRef = React.useRef<ViewerZoomState>({
+    level: 100,
+    resolvedZoom: 100,
+  });
   const activeImportAbortControllerRef = React.useRef<
     AbortController | undefined
   >(undefined);
@@ -32140,6 +32183,40 @@ export function useDocxEditor(
     []
   );
 
+  const setZoom = React.useCallback(
+    (level: ViewerZoomLevel): void => {
+      const bridge = viewerZoomBridgeByController.get(
+        syncPaginationInfo as object
+      );
+      if (bridge) {
+        bridge.setZoom(level);
+        return;
+      }
+      const normalized = normalizeViewerZoomLevel(level);
+      fallbackZoomRef.current = {
+        level: normalized,
+        resolvedZoom:
+          typeof normalized === "number"
+            ? normalized
+            : fallbackZoomRef.current.resolvedZoom,
+      };
+    },
+    [syncPaginationInfo]
+  );
+  const getZoom = React.useCallback((): ViewerZoomLevel => {
+    return (
+      viewerZoomBridgeByController.get(syncPaginationInfo as object)?.getZoom() ??
+      fallbackZoomRef.current.level
+    );
+  }, [syncPaginationInfo]);
+  const getResolvedZoom = React.useCallback((): number => {
+    return (
+      viewerZoomBridgeByController
+        .get(syncPaginationInfo as object)
+        ?.getResolvedZoom() ?? fallbackZoomRef.current.resolvedZoom
+    );
+  }, [syncPaginationInfo]);
+
   return {
     model,
     documentLoadNonce,
@@ -32181,6 +32258,9 @@ export function useDocxEditor(
     setShowTrackedChanges,
     setShowComments,
     syncPaginationInfo,
+    setZoom,
+    getZoom,
+    getResolvedZoom,
     toggleShowTrackedChanges,
     toggleShowComments,
     acceptTrackedChange,
@@ -35672,6 +35752,9 @@ export function DocxEditorViewer({
   editor,
   className,
   style,
+  zoom,
+  defaultZoom,
+  onZoomChange,
   pageBackgroundColor,
   pageGapBackgroundColor,
   deferInitialPaginationPaint = false,
@@ -37887,6 +37970,35 @@ export function DocxEditorViewer({
     };
   }, [editor.model.nodes, pageNodeSegmentsByPage]);
   const pageCount = pageNodeSegmentsByPage.length;
+  const viewerZoomContentSize = React.useMemo(() => {
+    let width = documentLayout.pageWidthPx;
+    let height = documentLayout.pageHeightPx;
+    pageSectionInfoByIndex.forEach(({ layout }) => {
+      width = Math.max(width, layout.pageWidthPx);
+      height = Math.max(height, layout.pageHeightPx);
+    });
+    if (showTrackedChangeGutter) {
+      width += TRACKED_CHANGE_GUTTER_WIDTH_PX;
+    }
+    return { width, height };
+  }, [documentLayout, pageSectionInfoByIndex, showTrackedChangeGutter]);
+  const onViewerZoomBridgeChange = React.useCallback(
+    (bridge?: ViewerZoomBridge): void => {
+      setViewerZoomBridge(editor, bridge);
+    },
+    [editor.syncPaginationInfo]
+  );
+  const viewerZoom = useViewerZoom({
+    zoom,
+    defaultZoom: defaultZoom ?? editor.getZoom(),
+    onZoomChange,
+    rootRef: viewerRootRef,
+    contentWidth: viewerZoomContentSize.width,
+    contentHeight: viewerZoomContentSize.height,
+    pageSelector: '[data-docx-page-wrapper="true"]',
+    onBridgeChange: onViewerZoomBridgeChange,
+  });
+  const builtInViewerZoomScale = viewerZoom.resolvedZoom / 100;
   const requestedPageIndexes = React.useMemo(
     () =>
       normalizeDocxThumbnailPageIndexes(pageIndexes, pageCount).sort(
@@ -38066,12 +38178,14 @@ export function DocxEditorViewer({
   const resolveViewerMeasurementZoomScale = React.useCallback(
     (rootElement: HTMLElement | null, fallback = 1): number => {
       if (explicitPageVirtualizationZoomScale !== undefined) {
-        return explicitPageVirtualizationZoomScale;
+        return explicitPageVirtualizationZoomScale * builtInViewerZoomScale;
       }
 
-      return rootElement ? resolveEffectiveZoomScale(rootElement) : fallback;
+      return rootElement
+        ? resolveEffectiveZoomScale(rootElement)
+        : fallback * builtInViewerZoomScale;
     },
-    [explicitPageVirtualizationZoomScale]
+    [builtInViewerZoomScale, explicitPageVirtualizationZoomScale]
   );
   // Measured wrap-band reconciliation. Estimated flow tops/heights drift from
   // what the DOM lays out, which lets text overlap floating objects or wrap
@@ -58658,6 +58772,8 @@ export function DocxEditorViewer({
   return (
     <div
       data-testid="docx-editor-viewer"
+      data-docx-zoom-level={viewerZoom.level}
+      data-docx-resolved-zoom={viewerZoom.resolvedZoom}
       ref={viewerRootRef}
       className={className}
       style={{
@@ -58670,6 +58786,7 @@ export function DocxEditorViewer({
             : undefined,
         backgroundColor: pageGapBackgroundColor ?? "transparent",
         ...style,
+        zoom: builtInViewerZoomScale,
       }}
       onDragOver={onCanvasDragOver}
       onDragLeave={onCanvasDragLeave}

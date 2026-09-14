@@ -190,6 +190,25 @@ function FullEditor() {
 }
 ```
 
+## Responsive zoom
+
+Both viewer components accept numeric percentages and responsive zoom modes.
+Responsive modes remain selected while the viewer recalculates their resolved
+percentage as its viewport or page layout changes.
+
+```tsx
+const Viewer = ReactDocxViewer;
+
+<Viewer defaultZoom="fit-width" />
+```
+
+Use `zoom` with `onZoomChange` for a controlled viewer, or `defaultZoom` for an
+uncontrolled viewer. The available modes are `"automatic"`, `"fit-page"`, and
+`"fit-width"`. Custom editor toolbars can use `editor.setZoom(level)`,
+`editor.getZoom()`, and `editor.getResolvedZoom()`. When zooming in or out from
+a responsive mode, calculate the next numeric percentage from
+`editor.getResolvedZoom()` and pass it to `editor.setZoom()`.
+
 `renderPage` supports `canvas`, `blob`, and `imageBitmap` output. Pass `canvas`
 to draw into a caller-owned canvas without an encoding round trip. Its timings
 separate pagination, page mounting, rasterization, and encoding; the parsed

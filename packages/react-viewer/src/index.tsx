@@ -38,6 +38,11 @@ import {
   resolveDocxTextFontFamily,
   segmentTextByDocxScriptFont,
 } from "./script-fonts";
+import {
+  type ViewerZoomLevel,
+  type ViewerZoomState,
+  useViewerZoom,
+} from "./viewer-zoom";
 
 export interface ReactDocxViewerProps {
   /**
@@ -76,6 +81,12 @@ export interface ReactDocxViewerProps {
    * ```
    */
   className?: string;
+  /** Controlled numeric percentage or responsive zoom mode. */
+  zoom?: ViewerZoomLevel;
+  /** Initial zoom level when `zoom` is uncontrolled. */
+  defaultZoom?: ViewerZoomLevel;
+  /** Called when the selected level or its resolved percentage changes. */
+  onZoomChange?: (state: ViewerZoomState) => void;
   /**
    * Layout overrides for the simple read-only renderer.
    *
@@ -478,6 +489,9 @@ export function ReactDocxViewer({
   loadEmbeddedFonts = true,
   pageIndexes,
   className,
+  zoom,
+  defaultZoom,
+  onZoomChange,
   layoutOptions,
   emptyState,
 }: ReactDocxViewerProps): React.JSX.Element {
@@ -539,6 +553,18 @@ export function ReactDocxViewer({
           ),
     [pageIndexes]
   );
+  const viewerRootRef = React.useRef<HTMLDivElement>(null);
+  const viewerZoom = useViewerZoom({
+    zoom,
+    defaultZoom,
+    onZoomChange,
+    rootRef: viewerRootRef,
+    contentWidth:
+      resolvedLayoutOptions?.pageWidth ?? DEFAULT_DOCUMENT_LAYOUT.pageWidthPx,
+    contentHeight:
+      resolvedLayoutOptions?.pageHeight ?? DEFAULT_DOCUMENT_LAYOUT.pageHeightPx,
+    pageSelector: "[data-page-index]",
+  });
 
   if (isLoading) {
     return <div className={className}>Loading DOCX...</div>;
@@ -562,9 +588,12 @@ export function ReactDocxViewer({
 
   return (
     <div
+      ref={viewerRootRef}
       className={className}
       data-testid="react-docx-viewer"
-      style={containerStyle}
+      data-docx-zoom-level={viewerZoom.level}
+      data-docx-resolved-zoom={viewerZoom.resolvedZoom}
+      style={{ ...containerStyle, zoom: viewerZoom.resolvedZoom / 100 }}
     >
       {pages.map((page, pageIndex) =>
         requestedPageIndexSet &&
@@ -1035,6 +1064,12 @@ export {
 } from "./parsed-docx";
 
 export { parseSectionLayout, resolveDocumentLayout } from "./section-layout";
+
+export {
+  type ViewerZoomLevel,
+  type ViewerZoomMode,
+  type ViewerZoomState,
+} from "./viewer-zoom";
 
 export * from "@extend-ai/react-docx-ooxml-core";
 export * from "@extend-ai/react-docx-doc-model";

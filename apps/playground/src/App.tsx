@@ -13,6 +13,8 @@ import {
   type DocxTableContextMenuRenderProps,
   type DocxTextRange,
   type DocxTrackedChangeCardRenderProps,
+  type ViewerZoomLevel,
+  type ViewerZoomState,
   paragraphLetterheadFloatSideAtNodeIndex,
   useDocxBorders,
   useDocxDocumentTheme,
@@ -491,6 +493,13 @@ const ZOOM_PERCENT_ITEMS = ZOOM_PERCENT_OPTIONS.map((value) => ({
   value: String(value),
   label: `${value}%`,
 }));
+
+const ZOOM_ITEMS = [
+  { value: "automatic", label: "Automatic" },
+  { value: "fit-page", label: "Fit page" },
+  { value: "fit-width", label: "Fit width" },
+  ...ZOOM_PERCENT_ITEMS,
+];
 
 const DEFAULT_HEADING_PREVIEW_RUN_STYLE: Record<
   PreviewHeadingLevel,
@@ -1771,7 +1780,7 @@ function parseToolbarSectionColumns(
   };
 }
 
-export function App(): React.JSX.Element {
+function PlaygroundApp(): React.JSX.Element {
   const { theme, resolvedTheme, setTheme } = useTheme();
   const editor = useDocxEditor();
   const { documentTheme, setDocumentTheme } = useDocxDocumentTheme(editor);
@@ -1905,7 +1914,7 @@ export function App(): React.JSX.Element {
     left: number;
     href: string;
   } | null>(null);
-  const [zoomPercent, setZoomPercent] = React.useState<number>(
+  const [zoomPercent, setZoomPercent] = React.useState<ViewerZoomLevel>(
     () => pageLayout.viewportDefaults.zoomPercent
   );
   const [isReadOnly, setIsReadOnly] = React.useState(false);
@@ -2587,7 +2596,6 @@ export function App(): React.JSX.Element {
   );
 
   const isDark = currentTheme === "dark";
-  const zoomScale = zoomPercent / 100;
   const paragraphPreviewSurfaceStyle: React.CSSProperties =
     documentTheme === "dark"
       ? {
@@ -2795,27 +2803,33 @@ export function App(): React.JSX.Element {
   const shiftZoom = React.useCallback((direction: -1 | 1): void => {
     const options = [...ZOOM_PERCENT_OPTIONS];
     setZoomPercent((current) => {
-      const exactIndex = options.findIndex((value) => value === current);
+      const currentPercent =
+        typeof current === "number" ? current : editor.getResolvedZoom();
+      const exactIndex = options.findIndex((value) => value === currentPercent);
       if (exactIndex >= 0) {
         const nextIndex = Math.max(
           0,
           Math.min(options.length - 1, exactIndex + direction)
         );
-        return options[nextIndex] ?? current;
+        return options[nextIndex] ?? currentPercent;
       }
 
       if (direction > 0) {
         return (
-          options.find((value) => value > current) ??
+          options.find((value) => value > currentPercent) ??
           options[options.length - 1] ??
-          current
+          currentPercent
         );
       }
 
       const reverse = [...options].reverse();
-      return reverse.find((value) => value < current) ?? options[0] ?? current;
+      return (
+        reverse.find((value) => value < currentPercent) ??
+        options[0] ??
+        currentPercent
+      );
     });
-  }, []);
+  }, [editor]);
 
   React.useEffect(() => {
     const hasCollapsedSelectionInLink = Boolean(
@@ -3400,13 +3414,16 @@ export function App(): React.JSX.Element {
                 <Button
                   variant="outline"
                   onClick={() => shiftZoom(-1)}
-                  disabled={zoomPercent <= ZOOM_PERCENT_OPTIONS[0]}
+                  disabled={
+                    typeof zoomPercent === "number" &&
+                    zoomPercent <= ZOOM_PERCENT_OPTIONS[0]
+                  }
                 >
                   <ZoomOut />
                   Zoom Out
                 </Button>
                 <Select
-                  items={ZOOM_PERCENT_ITEMS}
+                  items={ZOOM_ITEMS}
                   value={String(zoomPercent)}
                   onValueChange={(value: string | null) => {
                     if (!value) {
@@ -3414,20 +3431,23 @@ export function App(): React.JSX.Element {
                     }
 
                     const parsed = Number(value);
-                    if (!Number.isFinite(parsed)) {
-                      return;
-                    }
-
-                    setZoomPercent(parsed);
+                    setZoomPercent(
+                      Number.isFinite(parsed)
+                        ? parsed
+                        : (value as ViewerZoomLevel)
+                    );
                   }}
                 >
-                  <SelectTrigger className="min-w-[98px] w-auto">
+                  <SelectTrigger
+                    aria-label="Zoom"
+                    className="min-w-[98px] w-auto"
+                  >
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    {ZOOM_PERCENT_OPTIONS.map((value) => (
-                      <SelectItem key={value} value={String(value)}>
-                        {value}%
+                    {ZOOM_ITEMS.map((item) => (
+                      <SelectItem key={item.value} value={item.value}>
+                        {item.label}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -3436,6 +3456,7 @@ export function App(): React.JSX.Element {
                   variant="outline"
                   onClick={() => shiftZoom(1)}
                   disabled={
+                    typeof zoomPercent === "number" &&
                     zoomPercent >=
                     ZOOM_PERCENT_OPTIONS[ZOOM_PERCENT_OPTIONS.length - 1]
                   }
@@ -3530,11 +3551,12 @@ export function App(): React.JSX.Element {
             </div>
           ) : null}
           <div className="flex min-h-full min-w-full w-max justify-center">
-            <div style={{ zoom: zoomScale }}>
+            <div>
               <DocxEditorViewer
                 editor={editor}
+                zoom={zoomPercent}
                 pageGapBackgroundColor={pageGapBackgroundColor}
-                pageVirtualization={{ zoomScale }}
+                pageVirtualization={{}}
                 mode={isReadOnly ? "read-only" : "edit"}
                 showTrackedChanges={showTrackedChanges}
                 renderTrackedChangeCard={renderTrackedChangeCard}
@@ -4024,6 +4046,85 @@ export function App(): React.JSX.Element {
       </div>
     </div>
   );
+}
+
+function ZoomTestHarness(): React.JSX.Element {
+  const editor = useDocxEditor();
+  const [wide, setWide] = React.useState(true);
+  const [level, setLevel] = React.useState<ViewerZoomLevel>("fit-width");
+  const [state, setState] = React.useState<ViewerZoomState>({
+    level,
+    resolvedZoom: 100,
+  });
+  const controlled =
+    new URLSearchParams(window.location.search).get("controlled") === "1";
+  const changeZoom = (next: ViewerZoomLevel): void => {
+    editor.setZoom(next);
+  };
+
+  return (
+    <div style={{ padding: 16 }}>
+      <button type="button" onClick={() => setWide((value) => !value)}>
+        Resize viewport
+      </button>
+      <button type="button" onClick={() => changeZoom("fit-width")}>
+        Fit width
+      </button>
+      <button type="button" onClick={() => changeZoom("fit-page")}>
+        Fit page
+      </button>
+      <button type="button" onClick={() => changeZoom("automatic")}>
+        Automatic
+      </button>
+      <button type="button" onClick={() => changeZoom(125)}>
+        125%
+      </button>
+      <button
+        type="button"
+        onClick={() => changeZoom(editor.getResolvedZoom() + 10)}
+      >
+        Zoom in
+      </button>
+      <button
+        type="button"
+        onClick={() => changeZoom(editor.getResolvedZoom() - 10)}
+      >
+        Zoom out
+      </button>
+      <output data-testid="zoom-state">
+        {state.level}:{state.resolvedZoom}
+      </output>
+      <div
+        data-testid="zoom-viewport"
+        style={{
+          boxSizing: "border-box",
+          width: wide ? 1200 : 600,
+          height: wide ? 900 : 500,
+          padding: 20,
+          overflow: "auto",
+        }}
+      >
+        <DocxEditorViewer
+          editor={editor}
+          mode="read-only"
+          pageVirtualization={{ enabled: false }}
+          {...(controlled ? { zoom: level } : { defaultZoom: "fit-width" })}
+          onZoomChange={(next) => {
+            setState(next);
+            if (controlled) {
+              setLevel(next.level);
+            }
+          }}
+        />
+      </div>
+    </div>
+  );
+}
+
+export function App(): React.JSX.Element {
+  return new URLSearchParams(window.location.search).get("zoom-harness") === "1"
+    ? <ZoomTestHarness />
+    : <PlaygroundApp />;
 }
 
 export default App;
