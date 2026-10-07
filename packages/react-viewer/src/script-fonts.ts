@@ -12,6 +12,7 @@ export interface DocxScriptFontSegment {
   endOffset: number;
   script: DocxFontScript;
   fontFamily?: string;
+  fontSizePt?: number;
 }
 
 const EAST_ASIA_SCRIPT_RE =
@@ -185,7 +186,7 @@ interface ScriptToken {
 }
 
 /**
- * Splits only where the resolved font family changes. UTF-16 offsets remain
+ * Splits where the resolved font family or size changes. UTF-16 offsets remain
  * aligned with DOM selection and pretext layout offsets.
  */
 export function segmentTextByDocxScriptFont(
@@ -205,6 +206,9 @@ export function segmentTextByDocxScriptFont(
         endOffset: text.length,
         script,
         fontFamily: resolveDocxScriptFontFamily(style, script),
+        ...(style?.fontSizeCsPt !== undefined
+          ? { fontSizePt: resolveDocxScriptFontSizePt(style, script) }
+          : {}),
       },
     ];
   }
@@ -260,8 +264,11 @@ export function segmentTextByDocxScriptFont(
       families.set(script, resolved);
     }
     const fontFamily = resolved.family;
+    const fontSizePt = style?.fontSizeCsPt !== undefined
+      ? resolveDocxScriptFontSizePt(style, script)
+      : undefined;
     const previous = segments[segments.length - 1];
-    if (previous && previousFamilyKey === resolved.key) {
+    if (previous && previousFamilyKey === resolved.key && previous.fontSizePt === fontSizePt) {
       previous.text += token.text;
       previous.endOffset = token.endOffset;
       continue;
@@ -273,10 +280,37 @@ export function segmentTextByDocxScriptFont(
       endOffset: token.endOffset,
       script,
       fontFamily,
+      ...(fontSizePt !== undefined ? { fontSizePt } : {}),
     });
   }
 
   return segments;
+}
+
+function resolveDocxScriptFontSizePt(
+  style: TextStyle | undefined,
+  script: DocxFontScript
+): number | undefined {
+  return script === "complexScript"
+    ? style?.fontSizeCsPt ?? style?.fontSizePt
+    : style?.fontSizePt;
+}
+
+export function resolveDocxTextFontSizePt(
+  text: string,
+  style?: TextStyle
+): number | undefined {
+  for (const character of text) {
+    const script = classifyDocxFontScript(character, style);
+    if (script) return resolveDocxScriptFontSizePt(style, script);
+  }
+  return resolveDocxScriptFontSizePt(
+    style,
+    style?.complexScript === true ||
+      (style?.rightToLeft === true && style?.complexScript !== false)
+      ? "complexScript"
+      : "highAnsi"
+  );
 }
 
 export function resolveDocxTextFontFamily(

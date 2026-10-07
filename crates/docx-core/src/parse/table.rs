@@ -2,17 +2,20 @@ use std::collections::HashMap;
 
 use crate::model::{
     ParagraphAlignment, TableCellContentNode, TableCellNode, TableCellNodeType, TableCellStyle,
-    TableCellVerticalAlign, TableLayout, TableNode, TableNodeType, TableRowHeightRule, TableRowNode,
-    TableRowNodeType, TableRowStyle, TableStyle, TextStyle,
+    TableCellVerticalAlign, TableNode, TableNodeType, TableRowHeightRule, TableRowNode,
+    TableRowNodeType, TableRowStyle, TableRowGeometrySource, TableStyle, TableWidthSource, TextStyle,
 };
 use crate::parse::re;
 use crate::parse::context::{
-    default_table_look, ParsedTableLook, ParsedTableProperties, ParsedTableStyleCondition,
+    default_table_look, ParsedTableLook, ParsedTableStyleCondition,
     ParsedTableStyleDefinition, TableConditionalStyleType,
 };
-use crate::parse::paragraph::parse_paragraph_in_table;
+use crate::parse::paragraph::parse_paragraph_with_table_run_style;
 use crate::parse::style::parse_paragraph_align_from_xml;
-use crate::parse::styles::parse_table_box_spacing;
+use crate::parse::styles::{
+    direct_table_property, merge_table_style_properties, parse_table_box_spacing,
+    parse_table_preferred_width, parse_table_style_properties_from_xml, preferred_width_twips,
+};
 use crate::parse::util::{
     merge_table_border_sets, merge_text_styles, normalize_hex_color, parse_table_border_set,
 };
@@ -26,16 +29,26 @@ pub fn parse_table_cell_content(
     context: &crate::parse::context::ParseContext<'_>,
     table_paragraph_spacing: Option<&crate::model::ParagraphSpacing>,
 ) -> Vec<TableCellContentNode> {
+    parse_table_cell_content_with_run_style(cell_xml, context, table_paragraph_spacing, None)
+}
+
+fn parse_table_cell_content_with_run_style(
+    cell_xml: &str,
+    context: &crate::parse::context::ParseContext<'_>,
+    table_paragraph_spacing: Option<&crate::model::ParagraphSpacing>,
+    table_run_style: Option<&TextStyle>,
+) -> Vec<TableCellContentNode> {
     let block_ranges = extract_balanced_tag_blocks_in_order(cell_xml, &["w:p", "w:tbl"]);
     let parsed: Vec<TableCellContentNode> = block_ranges
         .iter()
         .filter_map(|block| {
             let block_xml = &cell_xml[block.start..block.end];
             if block_xml.starts_with("<w:p") || block_xml.starts_with("<W:p") {
-                return Some(TableCellContentNode::Paragraph(parse_paragraph_in_table(
+                return Some(TableCellContentNode::Paragraph(parse_paragraph_with_table_run_style(
                     block_xml,
                     context,
                     table_paragraph_spacing,
+                    table_run_style,
                 )));
             }
             if block_xml.starts_with("<w:tbl") || block_xml.starts_with("<W:tbl") {
@@ -47,10 +60,11 @@ pub fn parse_table_cell_content(
     if !parsed.is_empty() {
         return parsed;
     }
-    vec![TableCellContentNode::Paragraph(parse_paragraph_in_table(
+    vec![TableCellContentNode::Paragraph(parse_paragraph_with_table_run_style(
         "<w:p><w:r><w:t/></w:r></w:p>",
         context,
         table_paragraph_spacing,
+        table_run_style,
     ))]
 }
 
@@ -65,37 +79,26 @@ pub fn parse_table_cell(
     context: &crate::parse::context::ParseContext<'_>,
     table_paragraph_spacing: Option<&crate::model::ParagraphSpacing>,
 ) -> ParsedTableCellResult {
-    let nodes = parse_table_cell_content(cell_xml, context, table_paragraph_spacing);
-    let cell_properties_xml = extract_balanced_tag_blocks(cell_xml, "w:tcPr")
-        .into_iter()
-        .next()
-        .or_else(|| regex_tag(cell_xml, r"(?i)<w:tcPr\b[^>]*/?>"));
+    let mut result = parse_table_cell_geometry(cell_xml);
+    result.cell.nodes = parse_table_cell_content(cell_xml, context, table_paragraph_spacing);
+    result
+}
+
+fn parse_table_cell_geometry(cell_xml: &str) -> ParsedTableCellResult {
+    let cell_properties_xml = direct_table_property(cell_xml, "w:tcPr").map(str::to_string);
     let background_color = cell_properties_xml
         .as_deref()
         .and_then(|xml| regex_capture(xml, r#"(?i)<w:shd\b[^>]*w:fill="([^"]+)""#))
         .as_deref()
         .and_then(|value| normalize_hex_color(Some(value)));
-    let grid_span = cell_properties_xml
+    let grid_span = cell_properties_xml.as_deref()
+        .and_then(|xml| direct_table_property(xml, "w:gridSpan"))
+        .and_then(|tag| parse_integer_attribute(tag, "w:val"));
+    let preferred_width = cell_properties_xml
         .as_deref()
-        .and_then(|xml| regex_capture(xml, r#"(?i)<w:gridSpan\b[^>]*w:val="(\d+)""#))
-        .and_then(|v| v.parse::<i64>().ok());
-    let cell_width_tag = cell_properties_xml
-        .as_deref()
-        .and_then(|xml| regex_tag(xml, r"(?i)<w:tcW\b[^>]*>"));
-    let cell_width_type = cell_width_tag
-        .as_deref()
-        .and_then(|tag| get_attribute(tag, "w:type"))
-        .map(|v| v.to_ascii_lowercase());
-    let width_twips_raw = cell_width_tag
-        .as_deref()
-        .and_then(|tag| parse_integer_attribute(tag, "w:w"));
-    let width_twips = if cell_width_type.as_deref() == Some("dxa")
-        && width_twips_raw.is_some_and(|v| v > 0)
-    {
-        width_twips_raw
-    } else {
-        None
-    };
+        .and_then(|xml| direct_table_property(xml, "w:tcW"))
+        .and_then(parse_table_preferred_width);
+    let width_twips = preferred_width.as_ref().and_then(preferred_width_twips);
     let cell_margin_xml = cell_properties_xml
         .as_deref()
         .and_then(|xml| regex_find(xml, r"(?is)<w:tcMar\b[\s\S]*?</w:tcMar>|<w:tcMar\b[^>]*/?>"));
@@ -123,6 +126,10 @@ pub fn parse_table_cell(
     let v_merge_tag = cell_properties_xml
         .as_deref()
         .and_then(|xml| regex_tag(xml, r"(?i)<w:vMerge\b[^>]*/?>"));
+    let text_direction = cell_properties_xml.as_deref()
+        .and_then(|xml| direct_table_property(xml, "w:textDirection"))
+        .and_then(|tag| get_attribute(tag, "w:val"))
+        .filter(|value| matches!(value.as_str(), "lrTb" | "tbRl" | "btLr" | "lrTbV" | "tbRlV" | "tbLrV"));
     let v_merge_raw = v_merge_tag
         .as_deref()
         .and_then(|tag| get_attribute(tag, "w:val"))
@@ -138,9 +145,11 @@ pub fn parse_table_cell(
     };
     let has_cell_style = background_color.is_some()
         || grid_span.is_some_and(|v| v > 1)
+        || preferred_width.is_some()
         || width_twips.is_some()
         || margin_twips.is_some()
         || vertical_align.is_some()
+        || text_direction.is_some()
         || borders.is_some();
     ParsedTableCellResult {
         cell: TableCellNode {
@@ -152,14 +161,22 @@ pub fn parse_table_cell(
                     row_span: None,
                     v_merge_continuation: None,
                     width_twips,
+                    source_width: Some(TableWidthSource {
+                        preferred_width: preferred_width.clone(),
+                        width_twips,
+                        inherited_preferred_width: None,
+                    }),
+                    preferred_width,
                     margin_twips,
                     vertical_align,
+                    source_text_direction: text_direction.clone(),
+                    text_direction,
                     borders,
                 })
             } else {
                 None
             },
-            nodes,
+            nodes: Vec::new(),
         },
         v_merge,
     }
@@ -169,13 +186,11 @@ pub fn parse_table(
     table_xml: &str,
     context: &crate::parse::context::ParseContext<'_>,
 ) -> TableNode {
-    let table_properties_xml = extract_balanced_tag_blocks(table_xml, "w:tblPr")
-        .into_iter()
-        .next()
-        .or_else(|| regex_tag(table_xml, r"(?i)<w:tblPr\b[^>]*/?>"));
+    let table_properties_xml = direct_table_property(table_xml, "w:tblPr").map(str::to_string);
     let table_style_id = table_properties_xml
         .as_deref()
-        .and_then(|xml| regex_capture(xml, r#"(?i)<w:tblStyle\b[^>]*w:val="([^"]+)""#));
+        .and_then(|xml| direct_table_property(xml, "w:tblStyle"))
+        .and_then(|tag| get_attribute(tag, "w:val"));
     let table_style = table_style_id
         .as_deref()
         .and_then(|id| context.style_sheet.table_style_by_id.get(id));
@@ -191,6 +206,9 @@ pub fn parse_table(
     let explicit_properties = parse_table_style_properties_from_xml(table_properties_xml.as_deref());
     let merged_properties = merge_table_style_properties(style_table_properties.as_ref(), explicit_properties.as_ref());
     let width_twips = merged_properties.as_ref().and_then(|p| p.width_twips);
+    let preferred_width = merged_properties.as_ref().and_then(|p| p.preferred_width.clone());
+    let alignment = merged_properties.as_ref().and_then(|p| p.alignment);
+    let bidi_visual = merged_properties.as_ref().and_then(|p| p.bidi_visual);
     let indent_twips = merged_properties.as_ref().and_then(|p| p.indent_twips);
     let layout = merged_properties.as_ref().and_then(|p| p.layout);
     let cell_spacing_twips = merged_properties.as_ref().and_then(|p| p.cell_spacing_twips);
@@ -203,13 +221,13 @@ pub fn parse_table(
         )
     });
     let explicit_borders = table_borders_xml.and_then(parse_table_border_set);
-    let table_grid_xml = regex_find(table_xml, r"(?is)<w:tblGrid\b[\s\S]*?</w:tblGrid>");
+    let table_grid_xml = direct_table_property(table_xml, "w:tblGrid");
     let column_widths_twips: Vec<i64> = table_grid_xml
         .map(|grid| {
             re::get_unchecked(r"(?i)<w:gridCol\b[^>]*>")
                 .find_iter(grid)
                 .filter_map(|m| parse_integer_attribute(m.as_str(), "w:w"))
-                .filter(|&width| width > 0)
+                .filter(|&width| width >= 0)
                 .collect()
         })
         .unwrap_or_default();
@@ -217,18 +235,36 @@ pub fn parse_table(
         parse_table_look(table_properties_xml.as_deref()),
         style_table_look.as_ref(),
     );
+    let row_blocks = extract_balanced_tag_blocks(table_xml, "w:tr");
+    let source_grid_bound = table_grid_xml.map(|_| column_widths_twips.len() as i64)
+        .unwrap_or_else(|| row_blocks.iter().map(|row| {
+            extract_balanced_tag_blocks(row, "w:tc").iter().fold(0i64, |total, cell| {
+                let span = direct_table_property(cell, "w:tcPr")
+                    .and_then(|xml| direct_table_property(xml, "w:gridSpan"))
+                    .and_then(|tag| parse_integer_attribute(tag, "w:val")).unwrap_or(1).max(1);
+                total.saturating_add(span)
+            })
+        }).max().unwrap_or(0));
     let mut rows: Vec<TableRowNode> = Vec::new();
+    let mut cell_sources_by_row: Vec<Vec<String>> = Vec::new();
     #[derive(Clone, Copy)]
     struct VerticalMergeAnchor {
         row_index: usize,
         cell_index: usize,
     }
     let mut active_vertical_merge_by_column: HashMap<i64, VerticalMergeAnchor> = HashMap::new();
-    for row_xml in extract_balanced_tag_blocks(table_xml, "w:tr") {
-        let row_properties_xml = extract_balanced_tag_blocks(&row_xml, "w:trPr")
-            .into_iter()
-            .next()
-            .or_else(|| regex_tag(&row_xml, r"(?i)<w:trPr\b[^>]*/?>"));
+    for row_xml in row_blocks {
+        let row_properties_xml = direct_table_property(&row_xml, "w:trPr").map(str::to_string);
+        let grid_before = row_properties_xml.as_deref()
+            .and_then(|xml| direct_table_property(xml, "w:gridBefore"))
+            .and_then(|tag| parse_integer_attribute(tag, "w:val")).filter(|value| *value >= 0);
+        let grid_after = row_properties_xml.as_deref()
+            .and_then(|xml| direct_table_property(xml, "w:gridAfter"))
+            .and_then(|tag| parse_integer_attribute(tag, "w:val")).filter(|value| *value >= 0);
+        let width_before = row_properties_xml.as_deref()
+            .and_then(|xml| direct_table_property(xml, "w:wBefore")).and_then(parse_table_preferred_width);
+        let width_after = row_properties_xml.as_deref()
+            .and_then(|xml| direct_table_property(xml, "w:wAfter")).and_then(parse_table_preferred_width);
         let row_background_color = row_properties_xml
             .as_deref()
             .and_then(|xml| regex_capture(xml, r#"(?i)<w:shd\b[^>]*w:fill="([^"]+)""#))
@@ -257,15 +293,17 @@ pub fn parse_table(
         let row_is_header = row_properties_xml
             .as_deref()
             .and_then(|xml| parse_on_off_attribute(xml, "tblHeader"));
-        let parsed_cells: Vec<ParsedTableCellResult> = extract_balanced_tag_blocks(&row_xml, "w:tc")
-            .into_iter()
-            .map(|cell_xml| parse_table_cell(&cell_xml, context, table_paragraph_spacing))
+        let cell_sources = extract_balanced_tag_blocks(&row_xml, "w:tc");
+        let parsed_cells: Vec<ParsedTableCellResult> = cell_sources
+            .iter()
+            .map(|cell_xml| parse_table_cell_geometry(cell_xml))
             .collect();
         if parsed_cells.is_empty() {
             continue;
         }
+        cell_sources_by_row.push(cell_sources);
         let mut cells = Vec::new();
-        let mut column_cursor = 0i64;
+        let mut column_cursor = resolve_table_grid_skip_count(grid_before, source_grid_bound);
         for parsed_cell in parsed_cells {
             let mut cell = parsed_cell.cell;
             let column_span = cell.style.as_ref().and_then(|s| s.grid_span).unwrap_or(1).max(1);
@@ -290,8 +328,12 @@ pub fn parse_table(
                                 row_span: None,
                                 v_merge_continuation: None,
                                 width_twips: None,
+                                preferred_width: None,
+                                source_width: None,
                                 margin_twips: None,
                                 vertical_align: None,
+                                text_direction: None,
+                                source_text_direction: None,
                                 borders: None,
                             });
                             anchor_style.row_span =
@@ -308,8 +350,12 @@ pub fn parse_table(
                     row_span: None,
                     v_merge_continuation: None,
                     width_twips: None,
+                    preferred_width: None,
+                    source_width: None,
                     margin_twips: None,
                     vertical_align: None,
+                    text_direction: None,
+                    source_text_direction: None,
                     borders: None,
                 });
                 style.v_merge_continuation = Some(true);
@@ -324,8 +370,12 @@ pub fn parse_table(
                     row_span: None,
                     v_merge_continuation: None,
                     width_twips: None,
+                    preferred_width: None,
+                    source_width: None,
                     margin_twips: None,
                     vertical_align: None,
+                    text_direction: None,
+                    source_text_direction: None,
                     borders: None,
                 });
                 style.row_span = Some(1);
@@ -347,13 +397,24 @@ pub fn parse_table(
         rows.push(TableRowNode {
             r#type: TableRowNodeType::TableRow,
             cells,
-            style: if row_background_color.is_some()
+            style: if grid_before.is_some() || grid_after.is_some() || width_before.is_some() || width_after.is_some()
+                || row_background_color.is_some()
                 || row_height_twips.is_some()
                 || row_height_rule.is_some()
                 || row_cant_split.is_some()
                 || row_is_header.is_some()
             {
                 Some(TableRowStyle {
+                    grid_before,
+                    grid_after,
+                    source_row_geometry: Some(TableRowGeometrySource {
+                        grid_before,
+                        grid_after,
+                        width_before: width_before.clone(),
+                        width_after: width_after.clone(),
+                    }),
+                    width_before,
+                    width_after,
                     background_color: row_background_color,
                     height_twips: row_height_twips,
                     height_rule: row_height_rule,
@@ -365,7 +426,13 @@ pub fn parse_table(
             },
         });
     }
-    let column_widths_twips = normalize_conflicting_table_grid(column_widths_twips, &mut rows);
+    let column_widths_twips = if rows.iter().any(|row| row.style.as_ref().is_some_and(|style| {
+        style.grid_before.unwrap_or(0) > 0 || style.grid_after.unwrap_or(0) > 0
+    })) {
+        column_widths_twips
+    } else {
+        normalize_conflicting_table_grid(column_widths_twips, &mut rows)
+    };
     let column_count = column_widths_twips
         .len()
         .max(
@@ -373,25 +440,25 @@ pub fn parse_table(
                 .map(|row| {
                     row.cells.iter().fold(0i64, |total, cell| {
                         total + cell.style.as_ref().and_then(|s| s.grid_span).filter(|&v| v > 1).unwrap_or(1)
-                    })
+                    }) + resolve_table_grid_skip_count(row.style.as_ref().and_then(|style| style.grid_before), source_grid_bound)
+                        + resolve_table_grid_skip_count(row.style.as_ref().and_then(|style| style.grid_after), source_grid_bound)
                 })
                 .max()
                 .unwrap_or(0) as usize,
         )
         .max(1) as i64;
-    if let Some(table_style) = table_style {
+    // Resolve cell geometry before parsing text so conditional table formatting
+    // enters the cascade below paragraph, character, and direct run properties.
+    {
         let row_count = rows.len() as i64;
         for (row_index, row) in rows.iter_mut().enumerate() {
-            let mut column_cursor = 0i64;
-            for cell in &mut row.cells {
+            let mut column_cursor = resolve_table_grid_skip_count(row.style.as_ref().and_then(|style| style.grid_before), source_grid_bound);
+            for (cell_index, cell) in row.cells.iter_mut().enumerate() {
                 let column_span = cell.style.as_ref().and_then(|s| s.grid_span).unwrap_or(1).max(1);
                 let start_column_index = column_cursor;
                 let end_column_index = start_column_index + column_span - 1;
                 column_cursor += column_span;
-                if cell.style.as_ref().and_then(|s| s.v_merge_continuation).unwrap_or(false) {
-                    continue;
-                }
-                let condition = resolve_table_condition_for_cell(
+                let condition = table_style.and_then(|table_style| resolve_table_condition_for_cell(
                     table_style,
                     &table_look,
                     row_index as i64,
@@ -399,8 +466,44 @@ pub fn parse_table(
                     start_column_index,
                     end_column_index,
                     column_count,
+                ));
+                cell.nodes = parse_table_cell_content_with_run_style(
+                    &cell_sources_by_row[row_index][cell_index],
+                    context,
+                    table_paragraph_spacing,
+                    condition.as_ref().and_then(|value| value.run_style.as_ref()),
                 );
                 let Some(condition) = condition else { continue };
+                if cell.style.as_ref().and_then(|style| style.preferred_width.as_ref()).is_none() {
+                    if let Some(preferred_width) = condition.cell_preferred_width.as_ref() {
+                        let cell_style = cell.style.get_or_insert(TableCellStyle {
+                            background_color: None,
+                            grid_span: None,
+                            row_span: None,
+                            v_merge_continuation: None,
+                            width_twips: None,
+                            preferred_width: None,
+                            source_width: None,
+                            margin_twips: None,
+                            vertical_align: None,
+                            text_direction: None,
+                            source_text_direction: None,
+                            borders: None,
+                        });
+                        cell_style.preferred_width = Some(preferred_width.clone());
+                        cell_style.width_twips = preferred_width_twips(preferred_width);
+                    }
+                }
+                if let Some(style) = cell.style.as_mut() {
+                    style.source_width = Some(TableWidthSource {
+                        preferred_width: style.preferred_width.clone(),
+                        width_twips: style.width_twips,
+                        inherited_preferred_width: condition.cell_preferred_width.clone(),
+                    });
+                }
+                if cell.style.as_ref().and_then(|s| s.v_merge_continuation).unwrap_or(false) {
+                    continue;
+                }
                 if condition.row_background_color.is_some()
                     && row
                         .style
@@ -409,6 +512,11 @@ pub fn parse_table(
                         .is_none()
                 {
                     let row_style = row.style.get_or_insert(TableRowStyle {
+                        grid_before: None,
+                        grid_after: None,
+                        width_before: None,
+                        width_after: None,
+                        source_row_geometry: None,
                         background_color: None,
                         height_twips: None,
                         height_rule: None,
@@ -435,8 +543,12 @@ pub fn parse_table(
                         row_span: None,
                         v_merge_continuation: None,
                         width_twips: None,
+                        preferred_width: None,
+                        source_width: None,
                         margin_twips: None,
                         vertical_align: None,
+                        text_direction: None,
+                        source_text_direction: None,
                         borders: None,
                     });
                     cell_style.background_color = condition.cell_background_color.clone();
@@ -448,8 +560,12 @@ pub fn parse_table(
                         row_span: None,
                         v_merge_continuation: None,
                         width_twips: None,
+                        preferred_width: None,
+                        source_width: None,
                         margin_twips: None,
                         vertical_align: None,
+                        text_direction: None,
+                        source_text_direction: None,
                         borders: None,
                     });
                     cell_style.borders = merge_table_border_sets(
@@ -457,11 +573,11 @@ pub fn parse_table(
                         cell_style.borders.as_ref(),
                     );
                 }
+                if let Some(text_alignment) = condition.paragraph_text_alignment {
+                    apply_text_alignment_to_table_cell_content(&mut cell.nodes, text_alignment, context);
+                }
                 if let Some(paragraph_align) = condition.paragraph_align {
                     apply_paragraph_alignment_to_table_cell_content(&mut cell.nodes, paragraph_align);
-                }
-                if let Some(ref run_style) = condition.run_style {
-                    apply_run_style_to_table_cell_content(&mut cell.nodes, run_style.clone());
                 }
             }
         }
@@ -472,7 +588,23 @@ pub fn parse_table(
             .and_then(|condition| condition.table_borders.as_ref()),
         explicit_borders.as_ref(),
     );
-    let has_table_style = width_twips.is_some()
+    for row in &mut rows {
+        for cell in &mut row.cells {
+            if let Some(style) = cell.style.as_mut() {
+                style.source_width = Some(TableWidthSource {
+                    preferred_width: style.preferred_width.clone(),
+                    width_twips: style.width_twips,
+                    inherited_preferred_width: style.source_width.as_ref()
+                        .and_then(|source| source.inherited_preferred_width.clone()),
+                });
+            }
+        }
+    }
+    let has_table_style = table_style_id.is_some() || table_grid_xml.is_some()
+        || preferred_width.is_some()
+        || alignment.is_some()
+        || bidi_visual.is_some()
+        || width_twips.is_some()
         || indent_twips.is_some()
         || layout.is_some()
         || cell_spacing_twips.is_some()
@@ -485,12 +617,29 @@ pub fn parse_table(
         rows,
         style: if has_table_style {
             Some(TableStyle {
+                style_id: table_style_id.clone(),
+                source_style_id: table_style_id,
                 width_twips,
+                source_width: Some(TableWidthSource {
+                    preferred_width: preferred_width.clone(),
+                    width_twips,
+                    inherited_preferred_width: style_table_properties.as_ref()
+                        .and_then(|properties| properties.preferred_width.clone()),
+                }),
+                preferred_width,
+                alignment,
+                source_alignment: alignment,
+                source_inherited_alignment: style_table_properties.as_ref()
+                    .and_then(|properties| properties.alignment),
+                bidi_visual,
+                source_bidi_visual: bidi_visual,
+                source_inherited_bidi_visual: style_table_properties.as_ref()
+                    .and_then(|properties| properties.bidi_visual),
                 indent_twips,
                 layout,
                 cell_spacing_twips,
                 cell_margin_twips,
-                column_widths_twips: if column_widths_twips.is_empty() {
+                column_widths_twips: if column_widths_twips.is_empty() && table_grid_xml.is_none() {
                     None
                 } else {
                     Some(column_widths_twips)
@@ -698,8 +847,12 @@ fn normalize_conflicting_table_grid(
                     row_span: None,
                     v_merge_continuation: None,
                     width_twips: None,
+                    preferred_width: None,
+                    source_width: None,
                     margin_twips: None,
                     vertical_align: None,
+                    text_direction: None,
+                    source_text_direction: None,
                     borders: None,
                 });
                 style.grid_span = Some(new_span);
@@ -710,110 +863,6 @@ fn normalize_conflicting_table_grid(
     }
 
     merged.windows(2).map(|pair| pair[1] - pair[0]).collect()
-}
-
-fn parse_table_style_properties_from_xml(
-    table_properties_xml: Option<&str>,
-) -> Option<ParsedTableProperties> {
-    let table_properties_xml = table_properties_xml?;
-    let table_width_tag = regex_tag(table_properties_xml, r"(?i)<w:tblW\b[^>]*>");
-    let table_width_type = table_width_tag
-        .as_deref()
-        .and_then(|tag| get_attribute(tag, "w:type"))
-        .map(|v| v.to_ascii_lowercase());
-    let table_width_raw = table_width_tag
-        .as_deref()
-        .and_then(|tag| parse_integer_attribute(tag, "w:w"));
-    let width_twips = if table_width_type.as_deref() == Some("dxa")
-        && table_width_raw.is_some_and(|v| v > 0)
-    {
-        table_width_raw
-    } else {
-        None
-    };
-    let table_indent_tag = regex_tag(table_properties_xml, r"(?i)<w:tblInd\b[^>]*>");
-    let table_indent_type = table_indent_tag
-        .as_deref()
-        .and_then(|tag| get_attribute(tag, "w:type"))
-        .map(|v| v.to_ascii_lowercase());
-    let table_indent_raw = table_indent_tag
-        .as_deref()
-        .and_then(|tag| parse_integer_attribute(tag, "w:w"));
-    let indent_twips = if table_indent_type.as_deref() == Some("dxa")
-        && table_indent_raw.is_some_and(|v| v != 0)
-    {
-        table_indent_raw
-    } else {
-        None
-    };
-    let table_layout_tag = regex_tag(table_properties_xml, r"(?i)<w:tblLayout\b[^>]*>");
-    let table_layout_raw = table_layout_tag
-        .as_deref()
-        .and_then(|tag| get_attribute(tag, "w:type"))
-        .map(|v| v.to_ascii_lowercase());
-    let layout = match table_layout_raw.as_deref() {
-        Some("fixed") => Some(TableLayout::Fixed),
-        Some("autofit") => Some(TableLayout::Autofit),
-        _ => None,
-    };
-    let table_cell_spacing_tag = regex_tag(table_properties_xml, r"(?i)<w:tblCellSpacing\b[^>]*/?>");
-    let table_cell_spacing_type = table_cell_spacing_tag
-        .as_deref()
-        .and_then(|tag| get_attribute(tag, "w:type"))
-        .map(|v| v.to_ascii_lowercase());
-    let table_cell_spacing_raw = table_cell_spacing_tag
-        .as_deref()
-        .and_then(|tag| parse_integer_attribute(tag, "w:w"));
-    let cell_spacing_twips = if table_cell_spacing_type.as_deref() == Some("dxa")
-        && table_cell_spacing_raw.is_some_and(|v| v >= 0)
-    {
-        table_cell_spacing_raw
-    } else {
-        None
-    };
-    let table_cell_margin_xml = regex_find(
-        table_properties_xml,
-        r"(?is)<w:tblCellMar\b[\s\S]*?</w:tblCellMar>|<w:tblCellMar\b[^>]*/?>",
-    );
-    let cell_margin_twips = table_cell_margin_xml.and_then(parse_table_box_spacing);
-    let floating = parse_floating_table_style(table_properties_xml);
-    Some(ParsedTableProperties {
-        width_twips,
-        indent_twips,
-        layout,
-        cell_spacing_twips,
-        cell_margin_twips,
-        floating,
-    })
-}
-
-fn merge_table_style_properties(
-    inherited: Option<&ParsedTableProperties>,
-    direct: Option<&ParsedTableProperties>,
-) -> Option<ParsedTableProperties> {
-    if inherited.is_none() && direct.is_none() {
-        return None;
-    }
-    Some(ParsedTableProperties {
-        width_twips: direct
-            .and_then(|d| d.width_twips)
-            .or(inherited.and_then(|i| i.width_twips)),
-        indent_twips: direct
-            .and_then(|d| d.indent_twips)
-            .or(inherited.and_then(|i| i.indent_twips)),
-        layout: direct
-            .and_then(|d| d.layout)
-            .or(inherited.and_then(|i| i.layout)),
-        cell_spacing_twips: direct
-            .and_then(|d| d.cell_spacing_twips)
-            .or(inherited.and_then(|i| i.cell_spacing_twips)),
-        floating: direct
-            .and_then(|d| d.floating.clone())
-            .or_else(|| inherited.and_then(|i| i.floating.clone())),
-        cell_margin_twips: direct
-            .and_then(|d| d.cell_margin_twips.clone())
-            .or_else(|| inherited.and_then(|i| i.cell_margin_twips.clone())),
-    })
 }
 
 fn parse_table_look(table_properties_xml: Option<&str>) -> Option<ParsedTableLook> {
@@ -870,58 +919,40 @@ fn merge_table_look(direct: Option<ParsedTableLook>, inherited: Option<&ParsedTa
     merged
 }
 
-fn parse_floating_table_style(
-    table_properties_xml: &str,
-) -> Option<crate::model::TableFloating> {
-    let floating_tag = regex_tag(table_properties_xml, r"(?i)<w:tblpPr\b[^>]*/?>")?;
-    let x_twips = parse_integer_attribute(&floating_tag, "w:tblpX");
-    let y_twips = parse_integer_attribute(&floating_tag, "w:tblpY");
-    let left_from_text_twips = parse_integer_attribute(&floating_tag, "w:leftFromText");
-    let right_from_text_twips = parse_integer_attribute(&floating_tag, "w:rightFromText");
-    let top_from_text_twips = parse_integer_attribute(&floating_tag, "w:topFromText");
-    let bottom_from_text_twips = parse_integer_attribute(&floating_tag, "w:bottomFromText");
-    let horizontal_anchor = get_attribute(&floating_tag, "w:horzAnchor");
-    let vertical_anchor = get_attribute(&floating_tag, "w:vertAnchor");
-    let horizontal_align = super::util::to_image_horizontal_align(
-        get_attribute(&floating_tag, "w:tblpXSpec")
-            .map(|v| v.trim().to_ascii_lowercase())
-            .as_deref()
-            .filter(|v| matches!(*v, "left" | "center" | "right" | "inside" | "outside")),
-    );
-    let vertical_align = super::util::to_image_vertical_align(
-        get_attribute(&floating_tag, "w:tblpYSpec")
-            .map(|v| v.trim().to_ascii_lowercase())
-            .as_deref()
-            .filter(|v| matches!(*v, "top" | "center" | "bottom" | "inside" | "outside")),
-    );
-    if x_twips.is_none()
-        && y_twips.is_none()
-        && left_from_text_twips.is_none()
-        && right_from_text_twips.is_none()
-        && top_from_text_twips.is_none()
-        && bottom_from_text_twips.is_none()
-        && horizontal_anchor.is_none()
-        && vertical_anchor.is_none()
-        && horizontal_align.is_none()
-        && vertical_align.is_none()
-    {
-        return None;
-    }
-    Some(crate::model::TableFloating {
-        x_twips,
-        y_twips,
-        left_from_text_twips,
-        right_from_text_twips,
-        top_from_text_twips,
-        bottom_from_text_twips,
-        horizontal_anchor,
-        vertical_anchor,
-        horizontal_align,
-        vertical_align,
-    })
+pub(crate) fn resolve_table_grid_skip_count(count: Option<i64>, bound: i64) -> i64 {
+    count
+        .filter(|value| *value >= 0 && *value <= bound)
+        .unwrap_or(0)
 }
 
-fn resolve_table_condition_for_cell(
+pub(crate) fn table_grid_column_bound(table: &TableNode) -> i64 {
+    if let Some(widths) = table
+        .style
+        .as_ref()
+        .and_then(|style| style.column_widths_twips.as_ref())
+    {
+        widths.len() as i64
+    } else {
+        table
+            .rows
+            .iter()
+            .map(|row| {
+                row.cells.iter().fold(0i64, |total, cell| {
+                    total.saturating_add(
+                        cell.style
+                            .as_ref()
+                            .and_then(|style| style.grid_span)
+                            .unwrap_or(1)
+                            .max(1),
+                    )
+                })
+            })
+            .max()
+            .unwrap_or(0)
+    }
+}
+
+pub(crate) fn resolve_table_condition_for_cell(
     table_style: &ParsedTableStyleDefinition,
     table_look: &ParsedTableLook,
     row_index: i64,
@@ -1007,9 +1038,14 @@ fn merge_table_conditional_style(
         cell_background_color: direct
             .and_then(|d| d.cell_background_color.clone())
             .or_else(|| inherited.and_then(|i| i.cell_background_color.clone())),
+        cell_preferred_width: direct
+            .and_then(|value| value.cell_preferred_width.clone())
+            .or_else(|| inherited.and_then(|value| value.cell_preferred_width.clone())),
         paragraph_align: direct
             .and_then(|d| d.paragraph_align)
             .or(inherited.and_then(|i| i.paragraph_align)),
+        paragraph_text_alignment: direct.and_then(|value| value.paragraph_text_alignment)
+            .or_else(|| inherited.and_then(|value| value.paragraph_text_alignment)),
         run_style: merge_text_styles(&[
             inherited.and_then(|i| i.run_style.clone()),
             direct.and_then(|d| d.run_style.clone()),
@@ -1027,7 +1063,9 @@ fn merge_table_conditional_style(
     };
     if merged.row_background_color.is_none()
         && merged.cell_background_color.is_none()
+        && merged.cell_preferred_width.is_none()
         && merged.paragraph_align.is_none()
+        && merged.paragraph_text_alignment.is_none()
         && merged.run_style.is_none()
         && merged.table_borders.is_none()
         && merged.cell_borders.is_none()
@@ -1035,6 +1073,59 @@ fn merge_table_conditional_style(
         return None;
     }
     Some(merged)
+}
+
+fn apply_text_alignment_to_table_cell_content(
+    nodes: &mut [TableCellContentNode],
+    table_alignment: crate::model::ParagraphTextAlignment,
+    context: &crate::parse::context::ParseContext<'_>,
+) {
+    for node in nodes {
+        let TableCellContentNode::Paragraph(paragraph) = node else {
+            continue;
+        };
+        let properties = paragraph
+            .source_xml
+            .as_deref()
+            .and_then(|xml| direct_table_property(xml, "w:pPr"))
+            .unwrap_or_default();
+        let direct = super::style::parse_paragraph_text_alignment_from_xml(properties);
+        let explicit_style = direct_table_property(properties, "w:pStyle")
+            .and_then(|tag| get_attribute(tag, "w:val"))
+            .and_then(|id| context.style_sheet.paragraph_style_by_id.get(&id))
+            .filter(|style| style.source_has_text_alignment != Some(false))
+            .and_then(|style| style.text_alignment);
+        let inherited = explicit_style.or(Some(table_alignment));
+        let style = paragraph.style.get_or_insert(crate::model::ParagraphStyle {
+            align: None,
+            text_alignment: None,
+            source_text_alignment: None,
+            source_has_text_alignment: None,
+            source_inherited_text_alignment: None,
+            source_table_text_alignment: None,
+            heading_level: None,
+            style_id: None,
+            style_name: None,
+            numbering: None,
+            spacing: None,
+            indent: None,
+            background_color: None,
+            borders: None,
+            tab_stops: None,
+            contextual_spacing: None,
+            keep_next: None,
+            keep_lines: None,
+            widow_control: None,
+            page_break_before: None,
+            drop_cap: None,
+        });
+        style.text_alignment = direct.or(inherited);
+        style.source_has_text_alignment =
+            Some(direct_table_property(properties, "w:textAlignment").is_some());
+        style.source_text_alignment = style.text_alignment;
+        style.source_inherited_text_alignment = inherited;
+        style.source_table_text_alignment = Some(table_alignment);
+    }
 }
 
 fn paragraph_has_direct_alignment(paragraph: &crate::model::ParagraphNode) -> bool {
@@ -1061,6 +1152,11 @@ fn apply_paragraph_alignment_to_table_cell_content(
                 }
                 let style = paragraph.style.get_or_insert(crate::model::ParagraphStyle {
                     align: None,
+                    text_alignment: None,
+                    source_text_alignment: None,
+                    source_has_text_alignment: None,
+                    source_inherited_text_alignment: None,
+                    source_table_text_alignment: None,
                     heading_level: None,
                     style_id: None,
                     style_name: None,
@@ -1083,37 +1179,6 @@ fn apply_paragraph_alignment_to_table_cell_content(
                 for row in &mut nested_table.rows {
                     for cell in &mut row.cells {
                         apply_paragraph_alignment_to_table_cell_content(&mut cell.nodes, paragraph_align);
-                    }
-                }
-            }
-        }
-    }
-}
-
-fn apply_run_style_to_paragraph(paragraph: &mut crate::model::ParagraphNode, run_style: TextStyle) {
-    for child in &mut paragraph.children {
-        match child {
-            crate::model::ParagraphChildNode::Text(text) => {
-                text.style = merge_text_styles(&[text.style.clone(), Some(run_style.clone())]);
-            }
-            crate::model::ParagraphChildNode::FormField(field) => {
-                field.style = merge_text_styles(&[field.style.clone(), Some(run_style.clone())]);
-            }
-            crate::model::ParagraphChildNode::Image(_) => {}
-        }
-    }
-}
-
-fn apply_run_style_to_table_cell_content(nodes: &mut [TableCellContentNode], run_style: TextStyle) {
-    for node in nodes.iter_mut() {
-        match node {
-            TableCellContentNode::Paragraph(paragraph) => {
-                apply_run_style_to_paragraph(paragraph, run_style.clone());
-            }
-            TableCellContentNode::Table(nested_table) => {
-                for row in &mut nested_table.rows {
-                    for cell in &mut row.cells {
-                        apply_run_style_to_table_cell_content(&mut cell.nodes, run_style.clone());
                     }
                 }
             }

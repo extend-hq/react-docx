@@ -25,7 +25,6 @@ describe("floating table layout", () => {
       "../../packages/react-viewer/src/editor"
     );
 
-    // demo.docx floating table: gridCols 1818 + 1620 twips ≈ 229px
     const table = makeTable({
       columnWidthsTwips: [1818, 1620],
       floating: { yTwips: 1, verticalAnchor: "text" }
@@ -61,9 +60,9 @@ describe("floating table layout", () => {
 
     expect(geometry?.leftPx).toBe(200); // 3000 twips ≈ 200px
     expect(geometry?.topPx).toBe(30); // 450 twips ≈ 30px
-    expect(geometry?.exclusion).toEqual({
-      left: 188, // 200 - 12px leftFromText
-      right: 441, // 200 + 229 + 12px rightFromText
+    expect(geometry?.exclusion.left).toBeCloseTo(200 - 187 / 15);
+    expect(geometry?.exclusion.right).toBeCloseTo(200 + 229 + 187 / 15);
+    expect(geometry?.exclusion).toMatchObject({
       top: 30,
       bottom: 145
     });
@@ -74,8 +73,7 @@ describe("floating table layout", () => {
       "../../packages/react-viewer/src/editor"
     );
 
-    // demo.docx shape: vertAnchor=text tblpY=1, no tblpX -> table sits at the
-    // column left; the left band is a sliver and snaps to the edge.
+    // Without a horizontal offset, the narrow left band snaps to the column edge.
     const table = makeTable({
       floating: {
         yTwips: 1,
@@ -92,7 +90,7 @@ describe("floating table layout", () => {
 
     expect(geometry?.leftPx).toBe(0);
     expect(geometry?.exclusion.left).toBe(0);
-    expect(geometry?.exclusion.right).toBe(241); // 229 + 12px rightFromText
+    expect(geometry?.exclusion.right).toBeCloseTo(229 + 187 / 15);
     expect(geometry?.exclusion.bottom).toBe(120); // 115 + ~5px bottomFromText
   });
 

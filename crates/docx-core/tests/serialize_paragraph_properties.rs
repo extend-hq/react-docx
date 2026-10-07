@@ -60,6 +60,27 @@ fn reserialized_document_xml(pkg: &OoxmlPackage) -> String {
 }
 
 #[test]
+fn cell_text_direction_survives_import_rebuild_edit_and_clear() {
+    let xml = r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:tbl><w:tr><w:tc><w:tcPr><w:textDirection w:val="btLr"/><w:vAlign w:val="center"/></w:tcPr><w:p><w:r><w:t>Label</w:t></w:r></w:p></w:tc></w:tr></w:tbl></w:body></w:document>"#;
+    let pkg = package_with_parts(&[("word/document.xml", xml)]);
+    let model = build_doc_model(&pkg);
+    let DocNode::Table(table) = &model.nodes[0] else { panic!("table") };
+    assert_eq!(table.rows[0].cells[0].style.as_ref().unwrap().text_direction.as_deref(), Some("btLr"));
+    for direction in [Some("btLr"), Some("tbRl"), None] {
+        for retain_source in [true, false] {
+            let mut edited = model.clone();
+            let DocNode::Table(table) = &mut edited.nodes[0] else { panic!("table") };
+            if !retain_source { table.source_xml = None; }
+            table.rows[0].cells[0].style.as_mut().unwrap().text_direction = direction.map(str::to_string);
+            let exported = serialize_doc_model(&edited, Some(&pkg));
+            let reparsed = build_doc_model(&exported);
+            let DocNode::Table(table) = &reparsed.nodes[0] else { panic!("table") };
+            assert_eq!(table.rows[0].cells[0].style.as_ref().unwrap().text_direction.as_deref(), direction);
+        }
+    }
+}
+
+#[test]
 fn reserialized_paragraph_keeps_modeled_ppr_fields() {
     let pkg = package_with_parts(&[("word/document.xml", STYLED_DOCUMENT_XML)]);
     let document_xml = reserialized_document_xml(&pkg);

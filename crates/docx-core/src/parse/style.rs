@@ -1,6 +1,6 @@
 use crate::model::{
     ParagraphDropCap, ParagraphDropCapType, ParagraphSpacing, ParagraphStyle, TextStyle,
-    VerticalAlign,
+    VerticalAlign, ParagraphTextAlignment,
 };
 use crate::parse::context::{ParseContext, ThemeFontMap};
 use crate::parse::re;
@@ -57,6 +57,18 @@ pub fn parse_paragraph_drop_cap_from_xml(
     })
 }
 
+pub(crate) fn parse_paragraph_text_alignment_from_xml(xml: &str) -> Option<ParagraphTextAlignment> {
+    let tag = super::styles::direct_table_property(xml, "w:textAlignment")?;
+    match get_attribute(tag, "w:val")?.to_ascii_lowercase().as_str() {
+        "auto" => Some(ParagraphTextAlignment::Auto),
+        "top" => Some(ParagraphTextAlignment::Top),
+        "center" => Some(ParagraphTextAlignment::Center),
+        "baseline" => Some(ParagraphTextAlignment::Baseline),
+        "bottom" => Some(ParagraphTextAlignment::Bottom),
+        _ => None,
+    }
+}
+
 pub fn parse_paragraph_align_from_xml(xml: &str) -> Option<crate::model::ParagraphAlignment> {
     let alignment = regex_capture(xml, r#"(?i)<w:jc\b[^>]*w:val="([^"]+)""#);
     to_model_alignment(alignment.as_deref())
@@ -76,8 +88,8 @@ pub fn parse_text_style_from_xml(xml: &str, theme_fonts: &ThemeFontMap) -> Optio
     let highlight_match = regex_capture(xml, r#"(?i)<w:highlight\b[^>]*w:val="([^"]+)""#);
     let shading_tag = regex_tag(xml, r"(?i)<w:shd\b[^>]*/?>");
     let character_spacing_match = regex_capture(xml, r#"(?i)<w:spacing\b[^>]*w:val="(-?\d+)""#);
-    let size_match = regex_capture(xml, r#"(?i)<w:sz\b[^>]*w:val="(\d+)""#)
-        .or_else(|| regex_capture(xml, r#"(?i)<w:szCs\b[^>]*w:val="(\d+)""#));
+    let size_match = regex_capture(xml, r#"(?i)<w:sz\b[^>]*w:val="(\d+)""#);
+    let complex_size_match = regex_capture(xml, r#"(?i)<w:szCs\b[^>]*w:val="(\d+)""#);
     let run_fonts_tag = regex_tag(xml, r"(?i)<w:rFonts\b[^>]*/?>").unwrap_or_default();
     let ascii_font = get_attribute(&run_fonts_tag, "w:ascii");
     let h_ansi_font = get_attribute(&run_fonts_tag, "w:hAnsi");
@@ -137,6 +149,7 @@ pub fn parse_text_style_from_xml(xml: &str, theme_fonts: &ThemeFontMap) -> Optio
         highlight: None,
         background_color: None,
         font_size_pt: None,
+        font_size_cs_pt: None,
         font_family: None,
         source_font_family: None,
         font_family_ascii: None,
@@ -239,6 +252,11 @@ pub fn parse_text_style_from_xml(xml: &str, theme_fonts: &ThemeFontMap) -> Optio
         has_any = true;
     } else if let Some(size) = drawing_size_match.and_then(|v| v.parse::<f64>().ok()) {
         style.font_size_pt = Some(size / 100.0);
+        has_any = true;
+    }
+
+    if let Some(size) = complex_size_match.and_then(|v| v.parse::<f64>().ok()) {
+        style.font_size_cs_pt = Some(size / 2.0);
         has_any = true;
     }
 
@@ -409,6 +427,15 @@ pub fn parse_run_style(
     context: &ParseContext<'_>,
     paragraph_style_id: Option<&str>,
 ) -> Option<TextStyle> {
+    parse_run_style_in_table(run_xml, context, paragraph_style_id, None)
+}
+
+pub(crate) fn parse_run_style_in_table(
+    run_xml: &str,
+    context: &ParseContext<'_>,
+    paragraph_style_id: Option<&str>,
+    table_run_style: Option<&TextStyle>,
+) -> Option<TextStyle> {
     let run_style_id = regex_capture(run_xml, r#"(?i)<w:rStyle\b[^>]*w:val="([^"]+)""#);
     let text_box_content = prefer_alternate_content_choice(run_xml);
     let text_box_run_xml = extract_balanced_tag_blocks(&text_box_content, "w:txbxContent")
@@ -425,7 +452,10 @@ pub fn parse_run_style(
     let inherited_run_style = run_style_id
         .as_deref()
         .and_then(|id| context.style_sheet.run_style_by_id.get(id).cloned());
-    let default_run_style = context.style_sheet.default_run_style.clone();
+    let default_run_style = merge_text_styles(&[
+        context.style_sheet.default_run_style.clone(),
+        table_run_style.cloned(),
+    ]);
 
     let toggle_of = |get: fn(&TextStyle) -> Option<bool>| {
         resolve_toggle_property(
@@ -465,11 +495,14 @@ pub fn parse_paragraph_style_in_table(
     context: &ParseContext<'_>,
     table_paragraph_spacing: Option<&ParagraphSpacing>,
 ) -> Option<ParagraphStyle> {
-    let paragraph_properties_xml = extract_balanced_tag_blocks(paragraph_xml, "w:pPr")
-        .into_iter()
-        .next()
-        .or_else(|| regex_tag(paragraph_xml, r"(?i)<w:pPr\b[^>]*/?>"))
-        .unwrap_or_default();
+    let original_paragraph_properties_xml = super::styles::direct_table_property(paragraph_xml, "w:pPr")
+        .unwrap_or_default().to_string();
+    let mut paragraph_properties_xml = original_paragraph_properties_xml.clone();
+    for range in crate::xml::extract_direct_child_tag_ranges(&original_paragraph_properties_xml)
+        .into_iter().rev().filter(|range| range.tag_name.eq_ignore_ascii_case("w:pPrChange"))
+    {
+        paragraph_properties_xml.replace_range(range.start..range.end, "");
+    }
     let alignment_match = regex_capture(
         &paragraph_properties_xml,
         r#"(?i)<w:jc\b[^>]*w:val="([^"]+)""#,
@@ -478,6 +511,7 @@ pub fn parse_paragraph_style_in_table(
         &paragraph_properties_xml,
         r#"(?i)<w:pStyle\b[^>]*w:val="([^"]+)""#,
     );
+    let direct_text_alignment = parse_paragraph_text_alignment_from_xml(&paragraph_properties_xml);
     let direct_spacing = parse_paragraph_spacing_from_xml(&paragraph_properties_xml);
     let direct_indent = parse_paragraph_indent_from_xml(&paragraph_properties_xml);
     let direct_background_color = parse_paragraph_shading_from_xml(&paragraph_properties_xml);
@@ -506,6 +540,10 @@ pub fn parse_paragraph_style_in_table(
     let align = to_model_alignment(alignment_match.as_deref())
         .or_else(|| inherited.and_then(|s| s.align))
         .or_else(|| default_paragraph_style.and_then(|s| s.align));
+    let inherited_text_alignment = inherited.and_then(|style| style.text_alignment)
+        .or_else(|| default_paragraph_style.and_then(|style| style.text_alignment))
+        .or(context.style_sheet.default_paragraph_text_alignment);
+    let text_alignment = direct_text_alignment.or(inherited_text_alignment);
     let heading_level = normalize_heading_level(explicit_style_id.as_deref())
         .or_else(|| inherited.and_then(|s| s.heading_level))
         .or_else(|| default_paragraph_style.and_then(|s| s.heading_level));
@@ -620,6 +658,7 @@ pub fn parse_paragraph_style_in_table(
     let style_name = inherited.map(|s| s.name.clone());
 
     if align.is_none()
+        && text_alignment.is_none()
         && heading_level.is_none()
         && style_id.is_none()
         && style_name.is_none()
@@ -641,6 +680,11 @@ pub fn parse_paragraph_style_in_table(
 
     Some(ParagraphStyle {
         align,
+        text_alignment,
+        source_text_alignment: text_alignment,
+        source_has_text_alignment: Some(super::styles::direct_table_property(&paragraph_properties_xml, "w:textAlignment").is_some()),
+        source_inherited_text_alignment: inherited_text_alignment,
+        source_table_text_alignment: None,
         heading_level,
         style_id,
         style_name,

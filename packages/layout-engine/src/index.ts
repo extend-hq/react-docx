@@ -9,6 +9,11 @@ import type {
   TextStyle
 } from "@extend-ai/react-docx-doc-model";
 
+export * from "./line-metrics";
+export * from "./paragraph-breaks";
+export * from "./table-geometry";
+export * from "./table-width";
+
 export interface LayoutOptions {
   pageWidth?: number;
   pageHeight?: number;

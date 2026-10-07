@@ -19,6 +19,7 @@ export interface TextStyle {
   highlight?: string;
   backgroundColor?: string;
   fontSizePt?: number;
+  fontSizeCsPt?: number;
   /** Resolved single-family fallback retained for backwards compatibility. */
   fontFamily?: string;
   /** @internal Import-time fallback used to detect fontFamily edits. */
@@ -207,8 +208,19 @@ export interface ParagraphTabStop {
   positionTwips?: number;
 }
 
+export type ParagraphTextAlignment = "auto" | "top" | "center" | "baseline" | "bottom";
+
 export interface ParagraphStyle {
   align?: ParagraphAlignment;
+  textAlignment?: ParagraphTextAlignment;
+  /** @internal Imported effective vertical character alignment. */
+  sourceTextAlignment?: ParagraphTextAlignment;
+  /** @internal Whether the imported paragraph had a direct alignment property. */
+  sourceHasTextAlignment?: boolean;
+  /** @internal Inherited alignment exposed when a direct override is cleared. */
+  sourceInheritedTextAlignment?: ParagraphTextAlignment;
+  /** @internal Table-style alignment before paragraph-style overrides. */
+  sourceTableTextAlignment?: ParagraphTextAlignment;
   headingLevel?: HeadingLevel;
   styleId?: string;
   styleName?: string;
@@ -236,12 +248,27 @@ export interface ParagraphStyle {
   };
 }
 
+/** @internal Imported mark layers before paragraph-style inheritance. */
+export interface ParagraphMarkFormattingSource {
+  defaultStyle?: TextStyle;
+  characterStyle?: TextStyle;
+  directStyle?: TextStyle;
+}
+
 export interface ParagraphNode {
   type: "paragraph";
   /** Stable identity for measurement caches; survives edits via cloneParagraph. */
   blockId?: string;
   children: ParagraphChildNode[];
   style?: ParagraphStyle;
+  /** Effective formatting of the paragraph-ending mark. */
+  paragraphMarkStyle?: TextStyle;
+  /** @internal Imported mark formatting used to detect changes. */
+  sourceParagraphMarkStyle?: TextStyle;
+  /** @internal Presence distinguishes imported mark layers from fresh marks. */
+  sourceParagraphMarkFormatting?: ParagraphMarkFormattingSource;
+  /** @internal Original paragraph mark properties retained during regeneration. */
+  sourceParagraphMarkPropertiesXml?: string;
   paragraphMarkDeleted?: boolean;
   sourceXml?: string;
   /** @internal Validated provenance for a surgical plain-text sourceXml patch. */
@@ -286,14 +313,36 @@ export interface TableBorderSet {
   tr2bl?: TableBorderStyle;
 }
 
+/** dxa values are twips; pct values are ordinary percentages. */
+export type TablePreferredWidth =
+  | { type: "dxa"; value: number }
+  | { type: "pct"; value: number }
+  | { type: "auto" }
+  | { type: "nil" };
+
+/** @internal Imported baseline for edits through either width API. */
+export interface TableWidthSource {
+  preferredWidth?: TablePreferredWidth;
+  widthTwips?: number;
+  inheritedPreferredWidth?: TablePreferredWidth;
+}
+
+export type TableAlignment = "left" | "center" | "right";
+
 export interface TableCellStyle {
   backgroundColor?: string;
   gridSpan?: number;
   rowSpan?: number;
   vMergeContinuation?: boolean;
   widthTwips?: number;
+  preferredWidth?: TablePreferredWidth;
+  /** @internal */
+  sourceWidth?: TableWidthSource;
   marginTwips?: TableBoxSpacing;
   verticalAlign?: "top" | "center" | "bottom";
+  textDirection?: "lrTb" | "tbRl" | "btLr" | "lrTbV" | "tbRlV" | "tbLrV";
+  /** @internal */
+  sourceTextDirection?: TableCellStyle["textDirection"];
   borders?: TableBorderSet;
 }
 
@@ -305,7 +354,21 @@ export interface TableCellNode {
   style?: TableCellStyle;
 }
 
+/** @internal Imported baseline for row geometry edits and clears. */
+export interface TableRowGeometrySource {
+  gridBefore?: number;
+  gridAfter?: number;
+  widthBefore?: TablePreferredWidth;
+  widthAfter?: TablePreferredWidth;
+}
+
 export interface TableRowStyle {
+  gridBefore?: number;
+  gridAfter?: number;
+  widthBefore?: TablePreferredWidth;
+  widthAfter?: TablePreferredWidth;
+  /** @internal */
+  sourceRowGeometry?: TableRowGeometrySource;
   backgroundColor?: string;
   heightTwips?: number;
   heightRule?: "auto" | "atLeast" | "exact";
@@ -320,7 +383,23 @@ export interface TableRowNode {
 }
 
 export interface TableStyle {
+  styleId?: string;
+  /** @internal Imported table-style identity used to detect edits and clears. */
+  sourceStyleId?: string;
   widthTwips?: number;
+  preferredWidth?: TablePreferredWidth;
+  /** @internal */
+  sourceWidth?: TableWidthSource;
+  alignment?: TableAlignment;
+  /** @internal Imported effective alignment before editing. */
+  sourceAlignment?: TableAlignment;
+  /** @internal Inherited alignment exposed when a direct override is cleared. */
+  sourceInheritedAlignment?: TableAlignment;
+  bidiVisual?: boolean;
+  /** @internal Imported effective table direction before editing. */
+  sourceBidiVisual?: boolean;
+  /** @internal Inherited direction exposed when a direct override is cleared. */
+  sourceInheritedBidiVisual?: boolean;
   indentTwips?: number;
   layout?: "fixed" | "autofit";
   cellSpacingTwips?: number;
@@ -382,6 +461,9 @@ export interface ParagraphStyleDefinition {
   basedOnId?: string;
   nextStyleId?: string;
   align?: ParagraphAlignment;
+  textAlignment?: ParagraphTextAlignment;
+  /** @internal Whether the style chain owns alignment before document defaults. */
+  sourceHasTextAlignment?: boolean;
   headingLevel?: HeadingLevel;
   numbering?: ParagraphNumbering;
   spacing?: ParagraphSpacing;
@@ -480,6 +562,14 @@ export interface DocumentCommentDefinition {
 }
 
 export interface DocumentCompatibilitySettings {
+  noLeading?: boolean;
+  suppressTopSpacingWP?: boolean;
+  truncateFontHeightsLikeWP6?: boolean;
+  noExtraLineSpacing?: boolean;
+  spaceForUL?: boolean;
+  suppressBottomSpacing?: boolean;
+
+  compatibilityMode?: number;
   suppressSpacingBeforeAfterPageBreak?: boolean;
   usePrinterMetrics?: boolean;
   useFixedHtmlParagraphSpacing?: boolean;
@@ -502,6 +592,11 @@ export interface DocModel {
     footerSections: FooterSection[];
     paragraphStyles: ParagraphStyleDefinition[];
     defaultParagraphStyleId?: string;
+    defaultTabStopTwips?: number;
+    /** @internal Imported settings are authoritative when their values are cleared. */
+    documentSettingsImported?: boolean;
+    /** @internal Import consumed the line-spacing compatibility fields. */
+    lineSpacingCompatibilityImported?: boolean;
     numberingDefinitions?: NumberingDefinitionSet;
     compatibility?: DocumentCompatibilitySettings;
     footnotes?: DocumentNoteDefinition[];

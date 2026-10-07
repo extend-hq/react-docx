@@ -15,6 +15,8 @@ const REL_TYPE_COMMENTS: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments";
 const REL_TYPE_COMMENTS_EXTENDED: &str =
     "http://schemas.microsoft.com/office/2011/relationships/commentsExtended";
+const REL_TYPE_SETTINGS: &str =
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings";
 const RELS_XMLNS: &str = "http://schemas.openxmlformats.org/package/2006/relationships";
 const WORD_MAIN_NS: &str = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
 const OFFICE_REL_NS: &str =
@@ -31,6 +33,32 @@ const COMMENTS_CONTENT_TYPE: &str =
     "application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml";
 const COMMENTS_EXTENDED_CONTENT_TYPE: &str =
     "application/vnd.openxmlformats-officedocument.wordprocessingml.commentsExtended+xml";
+const SETTINGS_CONTENT_TYPE: &str =
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml";
+
+const SETTINGS_TAIL_ORDER: &[&str] = &[
+    "w:defaultTabStop", "w:autoHyphenation", "w:consecutiveHyphenLimit",
+    "w:hyphenationZone", "w:doNotHyphenateCaps", "w:showEnvelope",
+    "w:summaryLength", "w:clickAndTypeStyle", "w:defaultTableStyle",
+    "w:evenAndOddHeaders", "w:bookFoldRevPrinting", "w:bookFoldPrinting",
+    "w:bookFoldPrintingSheets", "w:drawingGridHorizontalSpacing",
+    "w:drawingGridVerticalSpacing", "w:displayHorizontalDrawingGridEvery",
+    "w:displayVerticalDrawingGridEvery", "w:doNotUseMarginsForDrawingGridOrigin",
+    "w:drawingGridHorizontalOrigin", "w:drawingGridVerticalOrigin",
+    "w:doNotShadeFormData", "w:noPunctuationKerning", "w:characterSpacingControl",
+    "w:printTwoOnOne", "w:strictFirstAndLastChars", "w:noLineBreaksAfter",
+    "w:noLineBreaksBefore", "w:savePreviewPicture", "w:doNotValidateAgainstSchema",
+    "w:saveInvalidXml", "w:ignoreMixedContent", "w:alwaysShowPlaceholderText",
+    "w:doNotDemarcateInvalidXml", "w:saveXmlDataOnly", "w:useXSLTWhenSaving",
+    "w:saveThroughXslt", "w:showXMLTags", "w:alwaysMergeEmptyNamespace",
+    "w:updateFields", "w:hdrShapeDefaults", "w:footnotePr", "w:endnotePr",
+    "w:compat", "w:docVars", "w:rsids", "m:mathPr", "w:uiCompat97To2003",
+    "w:attachedSchema", "w:themeFontLang", "w:clrSchemeMapping",
+    "w:doNotIncludeSubdocsInStats", "w:doNotAutoCompressPictures", "w:forceUpgrade",
+    "w:captions", "w:readModeInkLockDown", "sl:schemaLibrary", "w:shapeDefaults",
+    "w:decimalSymbol", "w:listSeparator", "w14:docId", "w14:discardImageEditingData",
+    "w14:defaultImageDpi", "w14:conflictMode", "w15:chartTrackingRefBased", "w15:docId",
+];
 
 const DEFAULT_SECTION_PROPERTIES_XML: &str = r#"<w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="708" w:footer="708" w:gutter="0"/></w:sectPr>"#;
 
@@ -94,6 +122,11 @@ struct ImageSerializationState<'a> {
     relationships: Vec<Relationship>,
     relationship_by_target: HashMap<String, Relationship>,
     pkg: &'a mut OoxmlPackage,
+    paragraph_text_alignment_by_style_id: HashMap<String, ParagraphTextAlignment>,
+    default_paragraph_text_alignment: Option<ParagraphTextAlignment>,
+    paragraph_style_alignment_owners: HashMap<String, ParagraphTextAlignment>,
+    table_styles: HashMap<String, crate::parse::ParsedTableStyleDefinition>,
+    current_table_text_alignment: Option<ParagraphTextAlignment>,
 }
 
 fn escape_xml(text: &str) -> String {
@@ -350,6 +383,14 @@ fn run_properties_xml(style: Option<&TextStyle>) -> String {
             ));
         }
     }
+    if let Some(font_size_pt) = style.font_size_cs_pt {
+        if font_size_pt.is_finite() {
+            fragments.push(format!(
+                r#"<w:szCs w:val="{}"/>"#,
+                (font_size_pt * 2.0).round() as i64
+            ));
+        }
+    }
 
     let has_explicit_font_slots = style.font_family_ascii.is_some()
         || style.font_family_h_ansi.is_some()
@@ -595,7 +636,7 @@ fn on_off_element_xml(tag_name: &str, value: Option<bool>) -> String {
     }
 }
 
-fn paragraph_properties_xml(style: Option<&ParagraphStyle>) -> String {
+fn paragraph_properties_xml(style: Option<&ParagraphStyle>, text_alignment: Option<ParagraphTextAlignment>) -> String {
     let Some(style) = style else {
         return String::new();
     };
@@ -774,6 +815,10 @@ fn paragraph_properties_xml(style: Option<&ParagraphStyle>) -> String {
         ));
     }
 
+    if let Some(text_alignment) = text_alignment {
+        fragments.push(format!(r#"<w:textAlignment w:val="{}"/>"#, paragraph_text_alignment_str(text_alignment)));
+    }
+
     if fragments.is_empty() {
         String::new()
     } else {
@@ -805,10 +850,10 @@ fn table_box_spacing_xml(spacing: Option<&TableBoxSpacing>, wrapper_tag_name: &s
         return String::new();
     };
 
-    let top = twips_to_xml(spacing.top_twips);
-    let right = twips_to_xml(spacing.right_twips);
-    let bottom = twips_to_xml(spacing.bottom_twips);
-    let left = twips_to_xml(spacing.left_twips);
+    let top = twips_to_xml_non_negative(spacing.top_twips);
+    let right = twips_to_xml_non_negative(spacing.right_twips);
+    let bottom = twips_to_xml_non_negative(spacing.bottom_twips);
+    let left = twips_to_xml_non_negative(spacing.left_twips);
 
     let mut edges: Vec<String> = Vec::new();
     if let Some(top) = top {
@@ -2056,6 +2101,643 @@ fn patch_source_paragraph_text(
     Some(patched)
 }
 
+const PARAGRAPH_MARK_TAIL_ORDER: &[&str] = &["w:rPr", "w:sectPr", "w:pPrChange"];
+const MARK_PROPERTY_ORDER: &[&str] = &[
+    "w:ins",
+    "w:del",
+    "w:moveFrom",
+    "w:moveTo",
+    "w14:conflictIns",
+    "w14:conflictDel",
+    "w:rStyle",
+    "w:rFonts",
+    "w:b",
+    "w:bCs",
+    "w:i",
+    "w:iCs",
+    "w:caps",
+    "w:smallCaps",
+    "w:strike",
+    "w:dStrike",
+    "w:outline",
+    "w:shadow",
+    "w:emboss",
+    "w:imprint",
+    "w:noProof",
+    "w:snapToGrid",
+    "w:vanish",
+    "w:webHidden",
+    "w:color",
+    "w:spacing",
+    "w:w",
+    "w:kern",
+    "w:position",
+    "w:sz",
+    "w:szCs",
+    "w:highlight",
+    "w:u",
+    "w:effect",
+    "w:bdr",
+    "w:shd",
+    "w:fitText",
+    "w:vertAlign",
+    "w:rtl",
+    "w:cs",
+    "w:em",
+    "w:lang",
+    "w:eastAsianLayout",
+    "w:specVanish",
+    "w:oMath",
+    "w14:glow",
+    "w14:shadow",
+    "w14:reflection",
+    "w14:textOutline",
+    "w14:textFill",
+    "w14:scene3d",
+    "w14:props3d",
+    "w14:ligatures",
+    "w14:numForm",
+    "w14:numSpacing",
+    "w14:stylisticSets",
+    "w14:cntxtAlts",
+    "w:rPrChange",
+];
+
+fn direct_property_children(xml: &str) -> Vec<(String, crate::xml::TagRange)> {
+    crate::xml::extract_direct_child_tag_ranges(xml)
+        .into_iter()
+        .map(|range| {
+            (
+                range.tag_name,
+                crate::xml::TagRange {
+                    start: range.start,
+                    end: range.end,
+                },
+            )
+        })
+        .collect()
+}
+
+const MARK_MANAGED_PROPERTIES: &[&str] = &[
+    "w:rFonts",
+    "w:b",
+    "w:i",
+    "w:u",
+    "w:strike",
+    "w:color",
+    "w:highlight",
+    "w:shd",
+    "w:sz",
+    "w:szCs",
+    "w:lang",
+    "w:rtl",
+    "w:cs",
+    "w:spacing",
+    "w:vertAlign",
+    "w:bdr",
+];
+
+fn property_attributes(tag_name: &str) -> &'static [&'static str] {
+    match tag_name {
+        "w:rFonts" => &[
+            "w:ascii",
+            "w:hAnsi",
+            "w:eastAsia",
+            "w:cs",
+            "w:asciiTheme",
+            "w:hAnsiTheme",
+            "w:eastAsiaTheme",
+            "w:csTheme",
+            "w:hint",
+        ],
+        "w:lang" => &["w:val", "w:eastAsia", "w:bidi"],
+        "w:shd" => &["w:val", "w:color", "w:fill"],
+        "w:bdr" => &["w:val", "w:color", "w:sz", "w:space", "w:frame", "w:shadow"],
+        _ => &["w:val"],
+    }
+}
+
+fn remove_xml_attribute(tag: &str, name: &str) -> String {
+    let Some((value_start, value_end)) = attribute_value_range(tag, name) else {
+        return tag.to_string();
+    };
+    let mut start = value_start.saturating_sub(1);
+    while start > 0
+        && (tag.as_bytes()[start - 1].is_ascii_whitespace() || tag.as_bytes()[start - 1] == b'=')
+    {
+        start -= 1;
+    }
+    start = start.saturating_sub(name.len());
+    while start > 0 && tag.as_bytes()[start - 1].is_ascii_whitespace() {
+        start -= 1;
+    }
+    let mut updated = tag.to_string();
+    updated.replace_range(start..value_end + 1, "");
+    updated
+}
+
+fn insert_property_child(
+    xml: &str,
+    container: &str,
+    name: &str,
+    child: &str,
+    order: &[&str],
+) -> String {
+    let open_end = opening_tag_end(xml, 0).unwrap_or(xml.len());
+    let opening = &xml[..open_end];
+    if opening.trim_end().ends_with("/>") {
+        return format!(
+            "{}>{child}</{container}>",
+            opening
+                .trim_end()
+                .trim_end_matches('>')
+                .trim_end()
+                .trim_end_matches('/')
+                .trim_end()
+        );
+    }
+    let mut insert_at = xml.rfind(&format!("</{container}>")).unwrap_or(xml.len());
+    if let Some(rank) = order.iter().position(|value| *value == name) {
+        for (other_name, range) in direct_property_children(xml) {
+            if order
+                .iter()
+                .position(|value| *value == other_name)
+                .is_some_and(|other_rank| other_rank > rank)
+            {
+                insert_at = insert_at.min(range.start);
+            }
+        }
+    }
+    let mut updated = xml.to_string();
+    updated.insert_str(insert_at, child);
+    updated
+}
+
+fn merge_mark_properties_xml(source: &str, generated: &str) -> String {
+    let source_children = direct_property_children(source);
+    let generated = generated.to_string();
+    let generated_children = direct_property_children(&generated);
+    let mut consumed = std::collections::HashSet::new();
+    let mut replacements = Vec::new();
+    for (name, range) in source_children {
+        if !MARK_MANAGED_PROPERTIES.contains(&name.as_str()) {
+            continue;
+        }
+        let block = &source[range.start..range.end];
+        let replacement = generated_children
+            .iter()
+            .enumerate()
+            .find(|(index, (other_name, _))| !consumed.contains(index) && *other_name == name);
+        if let Some((index, (_, generated_range))) = replacement {
+            consumed.insert(index);
+            let generated_block = &generated[generated_range.start..generated_range.end];
+            let merged = {
+                let end = opening_tag_end(block, 0).unwrap_or(block.len());
+                let generated_end =
+                    opening_tag_end(generated_block, 0).unwrap_or(generated_block.len());
+                let mut opening = block[..end].to_string();
+                for attribute in property_attributes(&name) {
+                    opening = if let Some(value) =
+                        get_attribute(&generated_block[..generated_end], attribute)
+                    {
+                        set_xml_attribute(&opening, attribute, &value)
+                    } else {
+                        remove_xml_attribute(&opening, attribute)
+                    };
+                }
+                format!("{opening}{}", &block[end..])
+            };
+            replacements.push((range.start, range.end, merged));
+        } else {
+            replacements.push((range.start, range.end, String::new()));
+        }
+    }
+    let mut updated = replace_xml_ranges(source, replacements);
+    for (index, (name, range)) in generated_children.iter().enumerate() {
+        if !consumed.contains(&index) {
+            updated = insert_property_child(
+                &updated,
+                "w:rPr",
+                name,
+                &generated[range.start..range.end],
+                MARK_PROPERTY_ORDER,
+            );
+        }
+    }
+    updated
+}
+
+fn paragraph_mark_properties_xml(style: Option<&TextStyle>) -> String {
+    let order = MARK_PROPERTY_ORDER;
+    let mut generated = run_properties_xml(style);
+    if generated.is_empty() {
+        generated = "<w:rPr/>".to_string();
+    }
+    if let Some(style) = style {
+        for (name, value) in [
+            ("b", style.bold),
+            ("i", style.italic),
+            ("strike", style.strike),
+        ] {
+            if value == Some(false) {
+                generated = insert_property_child(
+                    &generated,
+                    "w:rPr",
+                    &format!("w:{name}"),
+                    &on_off_element_xml(name, value),
+                    order,
+                );
+            }
+        }
+        if style.underline == Some(false) {
+            generated =
+                insert_property_child(&generated, "w:rPr", "w:u", r#"<w:u w:val="none"/>"#, order);
+        }
+        if let Some(spacing) = style.character_spacing_twips {
+            generated = insert_property_child(
+                &generated,
+                "w:rPr",
+                "w:spacing",
+                &format!(r#"<w:spacing w:val="{spacing}"/>"#),
+                order,
+            );
+        }
+    }
+    merge_mark_properties_xml("<w:rPr/>", &generated)
+}
+
+fn paragraph_mark_xml(paragraph: &ParagraphNode, source: Option<&str>) -> String {
+    if paragraph.paragraph_mark_style == paragraph.source_paragraph_mark_style
+        && (source.is_some() || paragraph.source_paragraph_mark_style.is_some())
+    {
+        return source.unwrap_or_default().to_string();
+    }
+    if paragraph.paragraph_mark_style.is_none() && source.is_none() {
+        return String::new();
+    }
+    let generated = paragraph_mark_properties_xml(paragraph.paragraph_mark_style.as_ref());
+    source
+        .map(|source| merge_mark_properties_xml(source, &generated))
+        .unwrap_or(generated)
+}
+
+fn serialized_paragraph_text_alignment(
+    style: &ParagraphStyle,
+    state: &ImageSerializationState<'_>,
+) -> Option<ParagraphTextAlignment> {
+    let effective = style
+        .text_alignment
+        .or(style.source_inherited_text_alignment);
+    let style_id = style.style_id.clone().or_else(|| {
+        style
+            .heading_level
+            .map(|level| format!("Heading{}", heading_level_number(level)))
+    });
+    let inherited = style_id
+        .as_ref()
+        .and_then(|id| state.paragraph_style_alignment_owners.get(id).copied())
+        .or(state.current_table_text_alignment)
+        .or_else(|| {
+            style_id
+                .as_ref()
+                .and_then(|id| state.paragraph_text_alignment_by_style_id.get(id).copied())
+        })
+        .or(state.default_paragraph_text_alignment);
+    let inherited_only = style.text_alignment.is_none()
+        || (style.source_has_text_alignment == Some(false)
+            && style.text_alignment == style.source_text_alignment);
+    if inherited_only && inherited == effective {
+        None
+    } else {
+        effective
+    }
+}
+
+struct TableAlignmentContext {
+    style_id: Option<String>,
+    look: crate::parse::ParsedTableLook,
+    grid_bound: i64,
+    columns: i64,
+    rows: i64,
+}
+
+fn resolve_table_alignment_context(
+    table: &TableNode,
+    state: &ImageSerializationState<'_>,
+    source_xml: Option<&str>,
+) -> TableAlignmentContext {
+    let style_id = table
+        .style
+        .as_ref()
+        .and_then(|style| style.style_id.clone())
+        .or_else(|| {
+            if table
+                .style
+                .as_ref()
+                .is_some_and(|style| style.source_style_id.is_some())
+            {
+                return None;
+            }
+            source_xml
+                .and_then(|xml| crate::parse::direct_table_property(xml, "w:tblPr"))
+                .and_then(|xml| crate::parse::direct_table_property(xml, "w:tblStyle"))
+                .and_then(|tag| get_attribute(tag, "w:val"))
+        });
+    let inherited_look = style_id
+        .as_ref()
+        .and_then(|id| state.table_styles.get(id))
+        .and_then(|style| {
+            style
+                .conditions
+                .get(&crate::parse::TableConditionalStyleType::WholeTable)
+        })
+        .and_then(|condition| condition.table_look.clone());
+    let direct_look = source_xml
+        .and_then(|xml| crate::parse::direct_table_property(xml, "w:tblPr"))
+        .and_then(|xml| crate::parse::direct_table_property(xml, "w:tblLook"))
+        .and_then(|xml| crate::parse::parse_table_look(Some(xml)));
+    let look = direct_look
+        .or(inherited_look)
+        .unwrap_or_else(crate::parse::default_table_look);
+    let grid_bound = crate::parse::table_grid_column_bound(table);
+    let columns = table
+        .rows
+        .iter()
+        .map(|row| {
+            row.cells
+                .iter()
+                .fold(0i64, |total, cell| {
+                    total.saturating_add(
+                        cell.style
+                            .as_ref()
+                            .and_then(|style| style.grid_span)
+                            .unwrap_or(1)
+                            .max(1),
+                    )
+                })
+                .saturating_add(crate::parse::resolve_table_grid_skip_count(
+                    row.style.as_ref().and_then(|style| style.grid_before),
+                    grid_bound,
+                ))
+                .saturating_add(crate::parse::resolve_table_grid_skip_count(
+                    row.style.as_ref().and_then(|style| style.grid_after),
+                    grid_bound,
+                ))
+        })
+        .max()
+        .unwrap_or(0)
+        .max(grid_bound)
+        .max(1);
+    TableAlignmentContext {
+        style_id,
+        look,
+        grid_bound,
+        columns,
+        rows: table.rows.len() as i64,
+    }
+}
+
+fn table_cell_text_alignment(
+    context: &TableAlignmentContext,
+    row: usize,
+    column: i64,
+    span: i64,
+    state: &ImageSerializationState<'_>,
+) -> Option<ParagraphTextAlignment> {
+    let style = context
+        .style_id
+        .as_ref()
+        .and_then(|id| state.table_styles.get(id))?;
+    crate::parse::resolve_table_condition_for_cell(
+        style,
+        &context.look,
+        row as i64,
+        context.rows,
+        column,
+        column + span - 1,
+        context.columns,
+    )
+    .and_then(|condition| condition.paragraph_text_alignment)
+}
+
+fn cell_alignment_context_changed(
+    cell: &TableCellNode,
+    state: &ImageSerializationState<'_>,
+) -> bool {
+    cell.nodes.iter().any(|node| match node {
+        TableCellContentNode::Paragraph(paragraph) => {
+            paragraph.style.as_ref().is_some_and(|style| {
+                style.source_has_text_alignment == Some(false)
+                    && style.text_alignment == style.source_text_alignment
+                    && serialized_paragraph_text_alignment(style, state).is_some()
+            })
+        }
+        TableCellContentNode::Table(table) => {
+            table_alignment_context_changed(table, state, table.source_xml.as_deref())
+        }
+    })
+}
+
+fn table_alignment_context_changed(
+    table: &TableNode,
+    state: &ImageSerializationState<'_>,
+    source: Option<&str>,
+) -> bool {
+    let context = resolve_table_alignment_context(table, state, source);
+    table.rows.iter().enumerate().any(|(row_index, row)| {
+        let bound = context.grid_bound;
+        let mut column = crate::parse::resolve_table_grid_skip_count(
+            row.style.as_ref().and_then(|style| style.grid_before),
+            bound,
+        );
+        row.cells.iter().any(|cell| {
+            let span = cell
+                .style
+                .as_ref()
+                .and_then(|style| style.grid_span)
+                .unwrap_or(1)
+                .max(1);
+            let current = table_cell_text_alignment(&context, row_index, column, span, state);
+            column += span;
+            cell.nodes.iter().any(|node| match node {
+                TableCellContentNode::Paragraph(paragraph) => {
+                    paragraph.style.as_ref().is_some_and(|style| {
+                        if style.source_has_text_alignment != Some(false)
+                            || style.text_alignment != style.source_text_alignment
+                        {
+                            return false;
+                        }
+                        let style_id = style.style_id.as_ref();
+                        let inherited = style_id
+                            .and_then(|id| state.paragraph_style_alignment_owners.get(id).copied())
+                            .or(current)
+                            .or_else(|| {
+                                style_id.and_then(|id| {
+                                    state.paragraph_text_alignment_by_style_id.get(id).copied()
+                                })
+                            })
+                            .or(state.default_paragraph_text_alignment);
+                        inherited
+                            != style
+                                .text_alignment
+                                .or(style.source_inherited_text_alignment)
+                    })
+                }
+                TableCellContentNode::Table(nested) => {
+                    table_alignment_context_changed(nested, state, nested.source_xml.as_deref())
+                }
+            })
+        })
+    })
+}
+
+fn paragraph_properties_with_mark_xml(
+    paragraph: &ParagraphNode,
+    state: &ImageSerializationState<'_>,
+) -> String {
+    let text_alignment = paragraph
+        .style
+        .as_ref()
+        .and_then(|style| serialized_paragraph_text_alignment(style, state));
+    let properties = paragraph_properties_xml(paragraph.style.as_ref(), text_alignment);
+    let mark = paragraph_mark_xml(
+        paragraph,
+        paragraph.source_paragraph_mark_properties_xml.as_deref(),
+    );
+    if mark.is_empty() {
+        return properties;
+    }
+    insert_property_child(
+        if properties.is_empty() {
+            "<w:pPr/>"
+        } else {
+            &properties
+        },
+        "w:pPr",
+        "w:rPr",
+        &mark,
+        PARAGRAPH_MARK_TAIL_ORDER,
+    )
+}
+
+fn patch_source_paragraph_mark(paragraph: &ParagraphNode, source: &str) -> String {
+    if paragraph.paragraph_mark_style == paragraph.source_paragraph_mark_style {
+        return source.to_string();
+    }
+    let ppr_range = direct_property_children(source)
+        .into_iter()
+        .find(|(name, _)| name == "w:pPr")
+        .map(|(_, range)| range);
+    let original_properties = ppr_range
+        .as_ref()
+        .map(|range| &source[range.start..range.end])
+        .unwrap_or("<w:pPr/>");
+    let mark_range = direct_property_children(original_properties)
+        .into_iter()
+        .find(|(name, _)| name == "w:rPr")
+        .map(|(_, range)| range);
+    let mark = paragraph_mark_xml(
+        paragraph,
+        mark_range
+            .as_ref()
+            .map(|range| &original_properties[range.start..range.end]),
+    );
+    let mut properties = original_properties.to_string();
+    if let Some(range) = mark_range {
+        properties.replace_range(range.start..range.end, &mark);
+    } else if !mark.is_empty() {
+        properties = insert_property_child(
+            &properties,
+            "w:pPr",
+            "w:rPr",
+            &mark,
+            PARAGRAPH_MARK_TAIL_ORDER,
+        );
+    }
+    let mut updated = source.to_string();
+    if let Some(range) = ppr_range {
+        updated.replace_range(range.start..range.end, &properties);
+    } else if paragraph.paragraph_mark_style.is_some() {
+        let insert_at = opening_tag_end(source, 0).unwrap_or(0);
+        updated.insert_str(insert_at, &properties);
+    }
+    updated
+}
+fn paragraph_text_alignment_str(value: ParagraphTextAlignment) -> &'static str {
+    match value {
+        ParagraphTextAlignment::Auto => "auto",
+        ParagraphTextAlignment::Top => "top",
+        ParagraphTextAlignment::Center => "center",
+        ParagraphTextAlignment::Baseline => "baseline",
+        ParagraphTextAlignment::Bottom => "bottom",
+    }
+}
+
+fn patch_source_paragraph_text_alignment(
+    paragraph: &ParagraphNode,
+    source: &str,
+    state: &ImageSerializationState<'_>,
+) -> String {
+    let Some(style) = paragraph.style.as_ref() else {
+        return source.to_string();
+    };
+    if style.text_alignment == style.source_text_alignment
+        && (style.source_has_text_alignment.is_none() || style.source_text_alignment.is_none())
+    {
+        return source.to_string();
+    }
+    let range = direct_property_children(source)
+        .into_iter()
+        .find(|(name, _)| name == "w:pPr")
+        .map(|(_, range)| range);
+    let properties = range
+        .as_ref()
+        .map(|range| &source[range.start..range.end])
+        .unwrap_or("<w:pPr/>");
+    let desired = serialized_paragraph_text_alignment(style, state);
+    let current = crate::parse::direct_table_property(properties, "w:textAlignment")
+        .and_then(|tag| get_attribute(tag, "w:val"));
+    if current.as_deref() == desired.map(paragraph_text_alignment_str) {
+        return source.to_string();
+    }
+    let attributes =
+        desired.map(|value| [("w:val", paragraph_text_alignment_str(value).to_string())]);
+    let updated = patch_direct_table_property(
+        properties,
+        "w:pPr",
+        "w:textAlignment",
+        attributes.as_ref().map(|values| values.as_slice()),
+        &[
+            "w:textDirection",
+            "w:textAlignment",
+            "w:textboxTightWrap",
+            "w:outlineLvl",
+            "w:divId",
+            "w:cnfStyle",
+            "w:rPr",
+            "w:sectPr",
+            "w:pPrChange",
+        ],
+    );
+    let mut source = source.to_string();
+    if let Some(range) = range {
+        source.replace_range(range.start..range.end, &updated);
+    } else if desired.is_some() {
+        let end = opening_tag_end(&source, 0).unwrap_or(0);
+        source.insert_str(end, &updated);
+    }
+    source
+}
+
+fn patch_source_paragraph_properties(
+    paragraph: &ParagraphNode,
+    source: &str,
+    state: &ImageSerializationState<'_>,
+) -> String {
+    let marked = patch_source_paragraph_mark(paragraph, source);
+    patch_source_paragraph_text_alignment(paragraph, &marked, state)
+}
+
 fn paragraph_xml(
     paragraph: &ParagraphNode,
     state: &mut ImageSerializationState<'_>,
@@ -2064,10 +2746,10 @@ fn paragraph_xml(
     if let Some(source_xml) = &paragraph.source_xml {
         if let Some(patch_plan) = &paragraph.source_text_patch {
             if let Some(patched) = patch_source_paragraph_text(paragraph, source_xml, patch_plan) {
-                return patched;
+                return patch_source_paragraph_properties(paragraph, &patched, state);
             }
         } else {
-            return source_xml.clone();
+            return patch_source_paragraph_properties(paragraph, source_xml, state);
         }
     }
 
@@ -2126,7 +2808,7 @@ fn paragraph_xml(
     };
     format!(
         "<w:p>{}{}</w:p>",
-        paragraph_properties_xml(paragraph.style.as_ref()),
+        paragraph_properties_with_mark_xml(paragraph, state),
         paragraph_runs
     )
 }
@@ -2198,18 +2880,634 @@ fn patch_table_source_text(
     Some(patched)
 }
 
+const TABLE_PROPERTIES_ORDER: &[&str] = &[
+    "w:tblStyle",
+    "w:tblpPr",
+    "w:tblOverlap",
+    "w:bidiVisual",
+    "w:tblStyleRowBandSize",
+    "w:tblStyleColBandSize",
+    "w:tblW",
+    "w:jc",
+    "w:tblCellSpacing",
+    "w:tblInd",
+    "w:tblBorders",
+    "w:shd",
+    "w:tblLayout",
+    "w:tblCellMar",
+    "w:tblLook",
+    "w:tblCaption",
+    "w:tblDescription",
+    "w:tblPrChange",
+];
+const CELL_PROPERTIES_ORDER: &[&str] = &[
+    "w:cnfStyle",
+    "w:tcW",
+    "w:gridSpan",
+    "w:hMerge",
+    "w:vMerge",
+    "w:tcBorders",
+    "w:shd",
+    "w:noWrap",
+    "w:tcMar",
+    "w:textDirection",
+    "w:tcFitText",
+    "w:vAlign",
+    "w:hideMark",
+    "w:headers",
+    "w:cellIns",
+    "w:cellDel",
+    "w:cellMerge",
+    "w:tcPrChange",
+];
+
+fn effective_table_width(
+    preferred: Option<&TablePreferredWidth>,
+    legacy: Option<i64>,
+    source: Option<&TableWidthSource>,
+) -> Option<TablePreferredWidth> {
+    if let Some(source) = source {
+        if preferred != source.preferred_width.as_ref() {
+            return preferred
+                .cloned()
+                .or_else(|| source.inherited_preferred_width.clone());
+        }
+        if legacy != source.width_twips {
+            return legacy
+                .map(|value| TablePreferredWidth::Dxa {
+                    value: value as f64,
+                })
+                .or_else(|| source.inherited_preferred_width.clone());
+        }
+    }
+    preferred.cloned().or_else(|| {
+        legacy.map(|value| TablePreferredWidth::Dxa {
+            value: value as f64,
+        })
+    })
+}
+
+fn table_width_edit(
+    preferred: Option<&TablePreferredWidth>,
+    legacy: Option<i64>,
+    source: Option<&TableWidthSource>,
+) -> Option<Option<TablePreferredWidth>> {
+    if let Some(source) = source {
+        if preferred != source.preferred_width.as_ref() {
+            return Some(preferred.cloned());
+        }
+        if legacy != source.width_twips {
+            return Some(legacy.map(|value| TablePreferredWidth::Dxa {
+                value: value as f64,
+            }));
+        }
+        None
+    } else {
+        effective_table_width(preferred, legacy, None).map(Some)
+    }
+}
+
+fn table_width_attributes(width: &TablePreferredWidth) -> Option<[(&'static str, String); 2]> {
+    let (kind, value) = match width {
+        TablePreferredWidth::Dxa { value } if value.is_finite() && *value >= 0.0 => (
+            "dxa",
+            if value.fract() == 0.0 {
+                format!("{value:.0}")
+            } else {
+                format!("{}pt", value / 20.0)
+            },
+        ),
+        TablePreferredWidth::Pct { value } if value.is_finite() && *value >= 0.0 => {
+            let fiftieths = value * 50.0;
+            (
+                "pct",
+                if fiftieths.fract() == 0.0 {
+                    format!("{fiftieths:.0}")
+                } else {
+                    format!("{value}%")
+                },
+            )
+        }
+        TablePreferredWidth::Auto => ("auto", "0".to_string()),
+        TablePreferredWidth::Nil => ("nil", "0".to_string()),
+        _ => return None,
+    };
+    Some([("w:w", value), ("w:type", kind.to_string())])
+}
+
+fn table_width_xml(name: &str, width: Option<&TablePreferredWidth>) -> Option<String> {
+    let attributes = table_width_attributes(width?)?;
+    Some(format!(
+        r#"<{name} w:w="{}" w:type="{}"/>"#,
+        attributes[0].1, attributes[1].1
+    ))
+}
+
+fn table_alignment_str(value: TableAlignment) -> &'static str {
+    match value {
+        TableAlignment::Left => "left",
+        TableAlignment::Center => "center",
+        TableAlignment::Right => "right",
+    }
+}
+
+fn patch_direct_table_property(
+    xml: &str,
+    container: &str,
+    name: &str,
+    attributes: Option<&[(&str, String)]>,
+    order: &[&str],
+) -> String {
+    let ranges: Vec<_> = direct_property_children(xml)
+        .into_iter()
+        .filter(|(tag, _)| tag == name)
+        .map(|(_, range)| range)
+        .collect();
+    let Some(attributes) = attributes else {
+        return replace_xml_ranges(
+            xml,
+            ranges
+                .into_iter()
+                .map(|range| (range.start, range.end, String::new()))
+                .collect(),
+        );
+    };
+    if let Some(first) = ranges.first() {
+        let existing = &xml[first.start..first.end];
+        let end = opening_tag_end(existing, 0).unwrap_or(existing.len());
+        let mut tag = existing[..end].to_string();
+        for (attribute, value) in attributes {
+            tag = set_xml_attribute(&tag, attribute, value);
+        }
+        tag.push_str(&existing[end..]);
+        let mut replacements = vec![(first.start, first.end, tag)];
+        replacements.extend(
+            ranges
+                .into_iter()
+                .skip(1)
+                .map(|range| (range.start, range.end, String::new())),
+        );
+        return replace_xml_ranges(xml, replacements);
+    }
+    let mut child = format!("<{name}/>");
+    for (attribute, value) in attributes {
+        child = set_xml_attribute(&child, attribute, value);
+    }
+    insert_property_child(xml, container, name, &child, order)
+}
+
+fn patch_table_properties(
+    xml: &str,
+    container: &str,
+    width_name: &str,
+    width: Option<Option<TablePreferredWidth>>,
+    alignment: Option<Option<TableAlignment>>,
+    bidi: Option<Option<bool>>,
+    order: &[&str],
+) -> String {
+    if width.is_none() && alignment.is_none() && bidi.is_none() {
+        return xml.to_string();
+    }
+    let range = direct_property_children(xml)
+        .into_iter()
+        .find(|(tag, _)| tag == container)
+        .map(|(_, range)| range);
+    let original = range.as_ref().map(|range| &xml[range.start..range.end]);
+    let mut properties = original
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("<{container}/>"));
+    if let Some(width) = width {
+        let current = crate::parse::direct_table_property(&properties, width_name)
+            .and_then(crate::parse::parse_table_preferred_width);
+        if current != width {
+            let attributes = width.as_ref().and_then(table_width_attributes);
+            properties = patch_direct_table_property(
+                &properties,
+                container,
+                width_name,
+                attributes.as_ref().map(|values| values.as_slice()),
+                order,
+            );
+        }
+    }
+    if let Some(alignment) = alignment {
+        let current = crate::parse::direct_table_property(&properties, "w:jc")
+            .and_then(|tag| get_attribute(tag, "w:val"));
+        let desired = alignment.map(|value| table_alignment_str(value).to_string());
+        if current != desired {
+            let attributes = desired.map(|value| [("w:val", value)]);
+            properties = patch_direct_table_property(
+                &properties,
+                container,
+                "w:jc",
+                attributes.as_ref().map(|values| values.as_slice()),
+                order,
+            );
+        }
+    }
+    if let Some(bidi) = bidi {
+        let current = crate::parse::direct_table_property(&properties, "w:bidiVisual")
+            .and_then(|tag| crate::xml::parse_on_off_attribute(tag, "bidiVisual"));
+        if current != bidi {
+            let attributes =
+                bidi.map(|value| [("w:val", if value { "1" } else { "0" }.to_string())]);
+            properties = patch_direct_table_property(
+                &properties,
+                container,
+                "w:bidiVisual",
+                attributes.as_ref().map(|values| values.as_slice()),
+                order,
+            );
+        }
+    }
+    if let Some(range) = range {
+        let mut patched = xml.to_string();
+        patched.replace_range(range.start..range.end, &properties);
+        patched
+    } else if !direct_property_children(&properties).is_empty() {
+        let mut patched = xml.to_string();
+        let end = opening_tag_end(xml, 0).unwrap_or(xml.len());
+        patched.insert_str(end, &properties);
+        patched
+    } else {
+        xml.to_string()
+    }
+}
+
+const ROW_PROPERTIES_ORDER: &[&str] = &[
+    "w:cnfStyle",
+    "w:divId",
+    "w:gridBefore",
+    "w:gridAfter",
+    "w:wBefore",
+    "w:wAfter",
+    "w:cantSplit",
+    "w:trHeight",
+    "w:tblHeader",
+    "w:tblCellSpacing",
+    "w:jc",
+    "w:hidden",
+    "w:ins",
+    "w:del",
+    "w:trPrChange",
+];
+
+fn row_has_source_geometry_edits(row: &TableRowNode) -> bool {
+    let Some(style) = row.style.as_ref() else {
+        return false;
+    };
+    if let Some(source) = style.source_row_geometry.as_ref() {
+        style.grid_before != source.grid_before
+            || style.grid_after != source.grid_after
+            || style.width_before != source.width_before
+            || style.width_after != source.width_after
+    } else {
+        style.grid_before.is_some()
+            || style.grid_after.is_some()
+            || style.width_before.is_some()
+            || style.width_after.is_some()
+    }
+}
+
+fn patch_row_source_geometry(row: &TableRowNode, xml: &str) -> String {
+    if !row_has_source_geometry_edits(row) {
+        return xml.to_string();
+    }
+    let style = row.style.as_ref().unwrap();
+    let source = style.source_row_geometry.as_ref();
+    let range = direct_property_children(xml)
+        .into_iter()
+        .find(|(name, _)| name == "w:trPr")
+        .map(|(_, range)| range);
+    let mut properties = range
+        .as_ref()
+        .map(|range| xml[range.start..range.end].to_string())
+        .unwrap_or_else(|| "<w:trPr/>".to_string());
+    for (name, current, baseline) in [
+        (
+            "w:gridBefore",
+            style.grid_before,
+            source.and_then(|source| source.grid_before),
+        ),
+        (
+            "w:gridAfter",
+            style.grid_after,
+            source.and_then(|source| source.grid_after),
+        ),
+    ] {
+        if (source.is_none() && current.is_none())
+            || (source.is_some() && current == baseline)
+            || current.is_some_and(|value| value < 0)
+        {
+            continue;
+        }
+        let attributes = current.map(|value| [("w:val", value.to_string())]);
+        properties = patch_direct_table_property(
+            &properties,
+            "w:trPr",
+            name,
+            attributes.as_ref().map(|values| values.as_slice()),
+            ROW_PROPERTIES_ORDER,
+        );
+    }
+    for (name, current, baseline) in [
+        (
+            "w:wBefore",
+            style.width_before.as_ref(),
+            source.and_then(|source| source.width_before.as_ref()),
+        ),
+        (
+            "w:wAfter",
+            style.width_after.as_ref(),
+            source.and_then(|source| source.width_after.as_ref()),
+        ),
+    ] {
+        if (source.is_none() && current.is_none()) || (source.is_some() && current == baseline) {
+            continue;
+        }
+        let actual = crate::parse::direct_table_property(&properties, name)
+            .and_then(crate::parse::parse_table_preferred_width);
+        if actual.as_ref() == current {
+            continue;
+        }
+        let attributes = current.and_then(table_width_attributes);
+        properties = patch_direct_table_property(
+            &properties,
+            "w:trPr",
+            name,
+            attributes.as_ref().map(|values| values.as_slice()),
+            ROW_PROPERTIES_ORDER,
+        );
+    }
+    let mut updated = xml.to_string();
+    if let Some(range) = range {
+        updated.replace_range(range.start..range.end, &properties);
+    } else if !direct_property_children(&properties).is_empty() {
+        let end = direct_property_children(xml)
+            .into_iter()
+            .find(|(name, _)| name == "w:tblPrEx")
+            .map(|(_, range)| range.end)
+            .unwrap_or_else(|| opening_tag_end(xml, 0).unwrap_or(0));
+        updated.insert_str(end, &properties);
+    }
+    updated
+}
+
+fn row_has_source_property_edits(row: &TableRowNode) -> bool {
+    row_has_source_geometry_edits(row) || row.cells.iter().any(cell_has_source_property_edits)
+}
+
+fn paragraph_has_source_property_edits(paragraph: &ParagraphNode) -> bool {
+    paragraph.paragraph_mark_style != paragraph.source_paragraph_mark_style
+        || paragraph
+            .style
+            .as_ref()
+            .is_some_and(|style| style.text_alignment != style.source_text_alignment)
+}
+
+fn cell_has_source_property_edits(cell: &TableCellNode) -> bool {
+    cell.style.as_ref().is_some_and(|style| {
+        style.text_direction != style.source_text_direction || table_width_edit(
+            style.preferred_width.as_ref(),
+            style.width_twips,
+            style.source_width.as_ref(),
+        )
+        .is_some()
+    }) || cell.nodes.iter().any(|node| match node {
+        TableCellContentNode::Paragraph(paragraph) => {
+            paragraph_has_source_property_edits(paragraph)
+        }
+        TableCellContentNode::Table(table) => table_has_source_property_edits(table),
+    })
+}
+
+fn table_has_source_property_edits(table: &TableNode) -> bool {
+    table.style.as_ref().is_some_and(|style| {
+        table_width_edit(
+            style.preferred_width.as_ref(),
+            style.width_twips,
+            style.source_width.as_ref(),
+        )
+        .is_some()
+            || style.style_id != style.source_style_id
+            || style.alignment != style.source_alignment
+            || style.bidi_visual != style.source_bidi_visual
+    }) || table.rows.iter().any(row_has_source_property_edits)
+}
+
+fn patch_table_source_properties(
+    table: &TableNode,
+    source_xml: &str,
+    state: &mut ImageSerializationState<'_>,
+) -> Option<String> {
+    let previous = state.current_table_text_alignment;
+    let result = patch_table_source_properties_inner(table, source_xml, state);
+    state.current_table_text_alignment = previous;
+    result
+}
+
+fn patch_table_source_properties_inner(
+    table: &TableNode,
+    source_xml: &str,
+    state: &mut ImageSerializationState<'_>,
+) -> Option<String> {
+    let identity_changed = table
+        .style
+        .as_ref()
+        .is_some_and(|style| style.style_id != style.source_style_id);
+    if !table_has_source_property_edits(table)
+        && !table_alignment_context_changed(table, state, Some(source_xml))
+    {
+        return Some(source_xml.to_string());
+    }
+    let width = table.style.as_ref().and_then(|style| {
+        table_width_edit(
+            style.preferred_width.as_ref(),
+            style.width_twips,
+            style.source_width.as_ref(),
+        )
+    });
+    let alignment = table
+        .style
+        .as_ref()
+        .filter(|style| style.alignment != style.source_alignment)
+        .map(|style| style.alignment);
+    let bidi = table
+        .style
+        .as_ref()
+        .filter(|style| style.bidi_visual != style.source_bidi_visual)
+        .map(|style| style.bidi_visual);
+    let mut source = patch_table_properties(
+        source_xml,
+        "w:tblPr",
+        "w:tblW",
+        width,
+        alignment,
+        bidi,
+        TABLE_PROPERTIES_ORDER,
+    );
+    if let Some(style) = table
+        .style
+        .as_ref()
+        .filter(|style| style.style_id != style.source_style_id)
+    {
+        let range = direct_property_children(&source)
+            .into_iter()
+            .find(|(name, _)| name == "w:tblPr")
+            .map(|(_, range)| range);
+        let properties = range
+            .as_ref()
+            .map(|range| &source[range.start..range.end])
+            .unwrap_or("<w:tblPr/>");
+        let attributes = style
+            .style_id
+            .as_ref()
+            .map(|value| [("w:val", value.clone())]);
+        let properties = patch_direct_table_property(
+            properties,
+            "w:tblPr",
+            "w:tblStyle",
+            attributes.as_ref().map(|values| values.as_slice()),
+            TABLE_PROPERTIES_ORDER,
+        );
+        if let Some(range) = range {
+            source.replace_range(range.start..range.end, &properties);
+        } else if style.style_id.is_some() {
+            let end = opening_tag_end(&source, 0).unwrap_or(0);
+            source.insert_str(end, &properties);
+        }
+    }
+    if !identity_changed
+        && !table.rows.iter().any(row_has_source_property_edits)
+        && !table_alignment_context_changed(table, state, Some(&source))
+    {
+        return Some(source);
+    }
+    let context = resolve_table_alignment_context(table, state, Some(&source));
+    let rows = extract_balanced_tag_ranges(&source, "w:tr");
+    if rows.len() != table.rows.len() {
+        return None;
+    }
+    let mut row_replacements = Vec::new();
+    for (row_index, (range, row)) in rows.into_iter().zip(&table.rows).enumerate() {
+        let patched_row = patch_row_source_geometry(row, &source[range.start..range.end]);
+        let row_xml = patched_row.as_str();
+        let cells = extract_balanced_tag_ranges(row_xml, "w:tc");
+        if cells.len() != row.cells.len() {
+            return None;
+        }
+        let mut cell_replacements = Vec::new();
+        let bound = context.grid_bound;
+        let mut column = crate::parse::resolve_table_grid_skip_count(
+            row.style.as_ref().and_then(|style| style.grid_before),
+            bound,
+        );
+        for (cell_range, cell) in cells.into_iter().zip(&row.cells) {
+            let span = cell
+                .style
+                .as_ref()
+                .and_then(|style| style.grid_span)
+                .unwrap_or(1)
+                .max(1);
+            state.current_table_text_alignment =
+                table_cell_text_alignment(&context, row_index, column, span, state);
+            column += span;
+            let cell_xml = &row_xml[cell_range.start..cell_range.end];
+            let width = cell.style.as_ref().and_then(|style| {
+                table_width_edit(
+                    style.preferred_width.as_ref(),
+                    style.width_twips,
+                    style.source_width.as_ref(),
+                )
+            });
+            let mut patched_cell = patch_table_properties(
+                cell_xml,
+                "w:tcPr",
+                "w:tcW",
+                width,
+                None,
+                None,
+                CELL_PROPERTIES_ORDER,
+            );
+            if let Some(style) = cell.style.as_ref().filter(|style| style.text_direction != style.source_text_direction) {
+                let range = direct_property_children(&patched_cell).into_iter()
+                    .find(|(name, _)| name == "w:tcPr").map(|(_, range)| range);
+                let properties = range.as_ref()
+                    .map(|range| &patched_cell[range.start..range.end]).unwrap_or("<w:tcPr/>");
+                let attributes = style.text_direction.as_ref().map(|value| [("w:val", value.clone())]);
+                let properties = patch_direct_table_property(properties, "w:tcPr", "w:textDirection",
+                    attributes.as_ref().map(|values| values.as_slice()), CELL_PROPERTIES_ORDER);
+                if let Some(range) = range {
+                    patched_cell.replace_range(range.start..range.end, &properties);
+                } else if style.text_direction.is_some() {
+                    let end = opening_tag_end(&patched_cell, 0).unwrap_or(0);
+                    patched_cell.insert_str(end, &properties);
+                }
+            }
+            if identity_changed
+                || cell_alignment_context_changed(cell, state)
+                || cell.nodes.iter().any(|node| match node {
+                    TableCellContentNode::Paragraph(paragraph) => {
+                        paragraph_has_source_property_edits(paragraph)
+                    }
+                    TableCellContentNode::Table(table) => table_has_source_property_edits(table),
+                })
+            {
+                let blocks = crate::xml::extract_balanced_tag_blocks_in_order(
+                    &patched_cell,
+                    &["w:p", "w:tbl"],
+                );
+                if blocks.len() != cell.nodes.len() {
+                    return None;
+                }
+                let mut replacements = Vec::new();
+                for (range, node) in blocks.into_iter().zip(&cell.nodes) {
+                    let source = &patched_cell[range.start..range.end];
+                    let replacement = match node {
+                        TableCellContentNode::Paragraph(paragraph)
+                            if range.tag_name.eq_ignore_ascii_case("w:p") =>
+                        {
+                            patch_source_paragraph_properties(paragraph, source, state)
+                        }
+                        TableCellContentNode::Table(table)
+                            if range.tag_name.eq_ignore_ascii_case("w:tbl") =>
+                        {
+                            patch_table_source_properties(table, source, state)?
+                        }
+                        _ => return None,
+                    };
+                    replacements.push((range.start, range.end, replacement));
+                }
+                patched_cell = replace_xml_ranges(&patched_cell, replacements);
+            }
+            cell_replacements.push((cell_range.start, cell_range.end, patched_cell));
+        }
+        row_replacements.push((
+            range.start,
+            range.end,
+            replace_xml_ranges(row_xml, cell_replacements),
+        ));
+    }
+    Some(replace_xml_ranges(&source, row_replacements))
+}
+
 fn table_xml(table: &TableNode, state: &mut ImageSerializationState<'_>, run_id_ref: &mut i64) -> String {
     if let Some(source_xml) = &table.source_xml {
-        if table.source_text_patches.as_ref().is_some_and(|patches| !patches.is_empty()) {
-            if let Some(patched) = patch_table_source_text(table, source_xml, state, run_id_ref) {
-                return patched;
-            }
+        let source = if table.source_text_patches.as_ref().is_some_and(|patches| !patches.is_empty()) {
+            patch_table_source_text(table, source_xml, state, run_id_ref)
         } else {
-            return source_xml.clone();
+            Some(source_xml.clone())
+        };
+        if let Some(patched) = source.and_then(|source| patch_table_source_properties(table, &source, state)) {
+            return patched;
         }
     }
 
     let mut table_props: Vec<String> = Vec::new();
+    if let Some(style_id) = table.style.as_ref().and_then(|style| style.style_id.as_ref()) {
+        table_props.push(format!(r#"<w:tblStyle w:val="{}"/>"#, escape_xml(style_id)));
+    }
+
     // tblpPr precedes tblW in the tblPr child sequence.
     if let Some(floating) = table.style.as_ref().and_then(|s| s.floating.as_ref()) {
         let mut attrs = String::new();
@@ -2253,12 +3551,17 @@ fn table_xml(table: &TableNode, state: &mut ImageSerializationState<'_>, run_id_
             table_props.push(format!("<w:tblpPr{attrs}/>"));
         }
     }
-    if let Some(table_width_twips) = twips_to_xml(table.style.as_ref().and_then(|s| s.width_twips)) {
-        table_props.push(format!(
-            r#"<w:tblW w:w="{table_width_twips}" w:type="dxa"/>"#
-        ));
-    } else {
-        table_props.push(r#"<w:tblW w:w="0" w:type="auto"/>"#.to_string());
+    let preferred_width = table.style.as_ref().and_then(|style| {
+        effective_table_width(style.preferred_width.as_ref(), style.width_twips, style.source_width.as_ref())
+    });
+    if let Some(xml) = table_width_xml("w:tblW", preferred_width.as_ref()) {
+        table_props.push(xml);
+    }
+    if let Some(alignment) = table.style.as_ref().and_then(|style| style.alignment.or(style.source_inherited_alignment)) {
+        table_props.push(format!(r#"<w:jc w:val="{}"/>"#, table_alignment_str(alignment)));
+    }
+    if let Some(bidi_visual) = table.style.as_ref().and_then(|style| style.bidi_visual.or(style.source_inherited_bidi_visual)) {
+        table_props.push(format!(r#"<w:bidiVisual w:val="{}"/>"#, if bidi_visual { "1" } else { "0" }));
     }
 
     if let Some(table_indent_twips) = twips_to_xml(table.style.as_ref().and_then(|s| s.indent_twips))
@@ -2298,26 +3601,48 @@ fn table_xml(table: &TableNode, state: &mut ImageSerializationState<'_>, run_id_
         table_props.push(table_border_xml);
     }
 
+    table_props.sort_by_key(|xml| {
+        let name = xml[1..].split(|ch: char| ch.is_whitespace() || ch == '/' || ch == '>').next().unwrap_or_default();
+        TABLE_PROPERTIES_ORDER.iter().position(|value| *value == name).unwrap_or(usize::MAX)
+    });
+
     let table_grid_xml = table
         .style
         .as_ref()
         .and_then(|s| s.column_widths_twips.as_ref())
-        .filter(|widths| !widths.is_empty())
         .map(|widths| {
             let cols = widths
                 .iter()
-                .filter_map(|width| twips_to_xml(Some(*width)))
+                .filter_map(|width| twips_to_xml_non_negative(Some(*width)))
                 .map(|width| format!(r#"<w:gridCol w:w="{width}"/>"#))
                 .collect::<String>();
             format!("<w:tblGrid>{cols}</w:tblGrid>")
         })
         .unwrap_or_default();
 
+    let context = resolve_table_alignment_context(table, state, None);
+    let previous_table_alignment = state.current_table_text_alignment;
     let rows = table
         .rows
         .iter()
-        .map(|row| {
+        .enumerate()
+        .map(|(row_index, row)| {
             let mut row_props: Vec<String> = Vec::new();
+            for (name, count) in [
+                ("w:gridBefore", row.style.as_ref().and_then(|style| style.grid_before)),
+                ("w:gridAfter", row.style.as_ref().and_then(|style| style.grid_after)),
+            ] {
+                if let Some(count) = count.filter(|count| *count >= 0) {
+                    row_props.push(format!(r#"<{name} w:val="{count}"/>"#));
+                }
+            }
+            for (name, width) in [
+                ("w:wBefore", row.style.as_ref().and_then(|style| style.width_before.as_ref())),
+                ("w:wAfter", row.style.as_ref().and_then(|style| style.width_after.as_ref())),
+            ] {
+                if let Some(xml) = table_width_xml(name, width) { row_props.push(xml); }
+            }
+
             if let Some(background_color) = row.style.as_ref().and_then(|s| s.background_color.as_ref())
             {
                 let fill = background_color.replace('#', "");
@@ -2357,20 +3682,29 @@ fn table_xml(table: &TableNode, state: &mut ImageSerializationState<'_>, run_id_
                 });
             }
 
+            row_props.sort_by_key(|xml| {
+                let name = xml[1..].split(|ch: char| ch.is_whitespace() || ch == '/' || ch == '>').next().unwrap_or_default();
+                ROW_PROPERTIES_ORDER.iter().position(|value| *value == name).unwrap_or(usize::MAX)
+            });
+
+            let bound = context.grid_bound;
+            let mut column = crate::parse::resolve_table_grid_skip_count(row.style.as_ref().and_then(|style| style.grid_before), bound);
             let cells = row
                 .cells
                 .iter()
                 .map(|cell| {
+                    let span = cell.style.as_ref().and_then(|style| style.grid_span).unwrap_or(1).max(1);
+                    state.current_table_text_alignment = table_cell_text_alignment(&context, row_index, column, span, state);
+                    column += span;
                     let serialized_cells =
                         table_cell_xml_content(&cell.nodes, state, run_id_ref);
 
                     let mut cell_props: Vec<String> = Vec::new();
-                    if let Some(cell_width_twips) =
-                        twips_to_xml(cell.style.as_ref().and_then(|s| s.width_twips))
-                    {
-                        cell_props.push(format!(
-                            r#"<w:tcW w:w="{cell_width_twips}" w:type="dxa"/>"#
-                        ));
+                    let preferred_width = cell.style.as_ref().and_then(|style| {
+                        effective_table_width(style.preferred_width.as_ref(), style.width_twips, style.source_width.as_ref())
+                    });
+                    if let Some(xml) = table_width_xml("w:tcW", preferred_width.as_ref()) {
+                        cell_props.push(xml);
                     }
                     if let Some(background_color) =
                         cell.style.as_ref().and_then(|s| s.background_color.as_ref())
@@ -2408,6 +3742,9 @@ fn table_xml(table: &TableNode, state: &mut ImageSerializationState<'_>, run_id_
                     );
                     if !cell_border_xml.is_empty() {
                         cell_props.push(cell_border_xml);
+                    }
+                    if let Some(direction) = cell.style.as_ref().and_then(|s| s.text_direction.as_deref()) {
+                        cell_props.push(format!(r#"<w:textDirection w:val="{}"/>"#, escape_xml(direction)));
                     }
                     if let Some(vertical_align) =
                         cell.style.as_ref().and_then(|s| s.vertical_align)
@@ -2451,6 +3788,7 @@ fn table_xml(table: &TableNode, state: &mut ImageSerializationState<'_>, run_id_
         })
         .collect::<String>();
 
+    state.current_table_text_alignment = previous_table_alignment;
     format!(
         "<w:tbl><w:tblPr>{}</w:tblPr>{table_grid_xml}{rows}</w:tbl>",
         table_props.join("")
@@ -2499,7 +3837,21 @@ fn create_image_serialization_state<'a>(
         .max(0)
         + 1;
 
+    let styles = crate::parse::parse_style_sheet(base_package);
+    let paragraph_style_alignment_owners = styles.paragraph_style_by_id.iter()
+        .filter(|(_, style)| style.source_has_text_alignment == Some(true))
+        .filter_map(|(id, style)| style.text_alignment.map(|value| (id.clone(), value))).collect();
+    let table_styles = styles.table_style_by_id;
+    let paragraph_text_alignment_by_style_id = styles.paragraph_style_by_id.into_iter()
+        .filter_map(|(id, style)| style.text_alignment.map(|value| (id, value))).collect();
+    let default_paragraph_text_alignment = styles.default_paragraph_style.as_ref()
+        .and_then(|style| style.text_alignment).or(styles.default_paragraph_text_alignment);
     ImageSerializationState {
+        paragraph_style_alignment_owners,
+        table_styles,
+        current_table_text_alignment: None,
+        paragraph_text_alignment_by_style_id,
+        default_paragraph_text_alignment,
         next_image_index: next_image_index.max(1),
         next_relationship_index: next_relationship_index(&relationships),
         relationships,
@@ -3201,6 +4553,359 @@ fn serialize_comment_parts(model: &DocModel, pkg: &mut OoxmlPackage) {
     }
 }
 
+fn upsert_settings_element(
+    xml: &str,
+    container_tag: &str,
+    tag_name: &str,
+    attributes: &[(&str, &str)],
+    matches: impl Fn(&str) -> bool,
+) -> String {
+    for range in extract_balanced_tag_ranges(xml, tag_name) {
+        let Some(open_end) = opening_tag_end(xml, range.start) else {
+            continue;
+        };
+        let opening_tag = &xml[range.start..open_end];
+        if !matches(opening_tag) {
+            continue;
+        }
+        let updated_tag = attributes.iter().fold(opening_tag.to_string(), |tag, (name, value)| {
+            set_xml_attribute(&tag, name, value)
+        });
+        let mut updated = xml.to_string();
+        updated.replace_range(range.start..open_end, &updated_tag);
+        return updated;
+    }
+
+    let attributes_xml = attributes.iter().map(|(name, value)| {
+        format!(r#" {name}="{}""#, escape_xml(value))
+    }).collect::<String>();
+    let child_xml = format!("<{tag_name}{attributes_xml}/>");
+    let Some(container_range) = extract_balanced_tag_ranges(xml, container_tag).into_iter().next() else {
+        return xml.to_string();
+    };
+    let Some(open_end) = opening_tag_end(xml, container_range.start) else {
+        return xml.to_string();
+    };
+    let opening_tag = &xml[container_range.start..open_end];
+    let mut updated = xml.to_string();
+    if opening_tag.trim_end().ends_with("/>") {
+        let expanded = format!(
+            "{}>{child_xml}</{container_tag}>",
+            opening_tag.trim_end().trim_end_matches('>').trim_end().trim_end_matches('/').trim_end(),
+        );
+        updated.replace_range(container_range.start..container_range.end, &expanded);
+        return updated;
+    }
+    let closing_tag = format!("</{container_tag}>");
+    let Some(close_start) = xml[container_range.start..container_range.end].rfind(&closing_tag) else {
+        return xml.to_string();
+    };
+    let mut insert_at = container_range.start + close_start;
+    if container_tag == "w:settings" {
+        if let Some(index) = SETTINGS_TAIL_ORDER.iter().position(|name| *name == tag_name) {
+            for following_tag in &SETTINGS_TAIL_ORDER[index + 1..] {
+                if let Some(range) = extract_balanced_tag_ranges(xml, following_tag).into_iter().next() {
+                    if range.start >= open_end && range.start < insert_at {
+                        insert_at = range.start;
+                    }
+                }
+            }
+        }
+    }
+    updated.insert_str(insert_at, &child_xml);
+    updated
+}
+
+fn remove_settings_element(xml: &str, tag_name: &str, matches: impl Fn(&str) -> bool) -> String {
+    let mut updated = xml.to_string();
+    for range in extract_balanced_tag_ranges(xml, tag_name).into_iter().rev() {
+        let Some(open_end) = opening_tag_end(xml, range.start) else {
+            continue;
+        };
+        if matches(&xml[range.start..open_end]) {
+            updated.replace_range(range.start..range.end, "");
+        }
+    }
+    updated
+}
+
+const COMPAT_PROPERTIES_ORDER: &[&str] = &[
+    "w:useSingleBorderforContiguousCells",
+    "w:wpJustification",
+    "w:noTabHangInd",
+    "w:noLeading",
+    "w:spaceForUL",
+    "w:noColumnBalance",
+    "w:balanceSingleByteDoubleByteWidth",
+    "w:noExtraLineSpacing",
+    "w:doNotLeaveBackslashAlone",
+    "w:ulTrailSpace",
+    "w:doNotExpandShiftReturn",
+    "w:spacingInWholePoints",
+    "w:lineWrapLikeWord6",
+    "w:printBodyTextBeforeHeader",
+    "w:printColBlack",
+    "w:wpSpaceWidth",
+    "w:showBreaksInFrames",
+    "w:subFontBySize",
+    "w:suppressBottomSpacing",
+    "w:suppressTopSpacing",
+    "w:suppressSpacingAtTopOfPage",
+    "w:suppressTopSpacingWP",
+    "w:suppressSpBfAfterPgBrk",
+    "w:swapBordersFacingPages",
+    "w:convMailMergeEsc",
+    "w:truncateFontHeightsLikeWP6",
+    "w:mwSmallCaps",
+    "w:usePrinterMetrics",
+    "w:doNotSuppressParagraphBorders",
+    "w:wrapTrailSpaces",
+    "w:footnoteLayoutLikeWW8",
+    "w:shapeLayoutLikeWW8",
+    "w:alignTablesRowByRow",
+    "w:forgetLastTabAlignment",
+    "w:adjustLineHeightInTable",
+    "w:autoSpaceLikeWord95",
+    "w:noSpaceRaiseLower",
+    "w:doNotUseHTMLParagraphAutoSpacing",
+    "w:layoutRawTableWidth",
+    "w:layoutTableRowsApart",
+    "w:useWord97LineBreakRules",
+    "w:doNotBreakWrappedTables",
+    "w:doNotSnapToGridInCell",
+    "w:selectFldWithFirstOrLastChar",
+    "w:applyBreakingRules",
+    "w:doNotWrapTextWithPunct",
+    "w:doNotUseEastAsianBreakRules",
+    "w:useWord2002TableStyleRules",
+    "w:growAutofit",
+    "w:useFELayout",
+    "w:useNormalStyleForList",
+    "w:doNotUseIndentAsNumberingTabStop",
+    "w:useAltKinsokuLineBreakRules",
+    "w:allowSpaceOfSameStyleInTable",
+    "w:doNotSuppressIndentation",
+    "w:doNotAutofitConstrainedTables",
+    "w:autofitToFirstFixedWidthCell",
+    "w:underlineTabInNumList",
+    "w:displayHangulFixedWidth",
+    "w:splitPgBreakAndParaMark",
+    "w:doNotVertAlignCellWithSp",
+    "w:doNotBreakConstrainedForcedTable",
+    "w:doNotVertAlignInTxbx",
+    "w:useAnsiKerningPairs",
+    "w:cachedColBalance",
+    "w:compatSetting",
+];
+
+fn serialize_document_settings(model: &DocModel, pkg: &mut OoxmlPackage) {
+    let original_compatibility = crate::parse::parse_document_compatibility_settings(pkg);
+    let original_tab_stop = crate::parse::parse_document_default_tab_stop_twips(pkg);
+    let compatibility = model.metadata.compatibility.as_ref();
+    let raw_compatibility_mode = compatibility.and_then(|settings| settings.compatibility_mode);
+    let compatibility_mode = raw_compatibility_mode.filter(|mode| u32::try_from(*mode).is_ok());
+    let even_and_odd_headers = compatibility.and_then(|settings| settings.even_and_odd_headers);
+    let default_tab_stop = model
+        .metadata
+        .default_tab_stop_twips
+        .filter(|value| *value >= 0);
+    let imported_settings = model.metadata.document_settings_imported == Some(true);
+    let mode_changed = (compatibility_mode.is_some()
+        || (imported_settings && raw_compatibility_mode.is_none()))
+        && compatibility_mode
+            != original_compatibility
+                .as_ref()
+                .and_then(|settings| settings.compatibility_mode);
+    let headers_changed = (even_and_odd_headers.is_some() || imported_settings)
+        && even_and_odd_headers
+            != original_compatibility
+                .as_ref()
+                .and_then(|settings| settings.even_and_odd_headers);
+    let tabs_changed = (default_tab_stop.is_some()
+        || (imported_settings && model.metadata.default_tab_stop_twips.is_none()))
+        && default_tab_stop != original_tab_stop;
+    let imported_line_settings = model.metadata.line_spacing_compatibility_imported == Some(true);
+    let line_settings = [
+        (
+            "w:noLeading",
+            compatibility.and_then(|value| value.no_leading),
+            original_compatibility
+                .as_ref()
+                .and_then(|value| value.no_leading),
+        ),
+        (
+            "w:spaceForUL",
+            compatibility.and_then(|value| value.space_for_ul),
+            original_compatibility
+                .as_ref()
+                .and_then(|value| value.space_for_ul),
+        ),
+        (
+            "w:noExtraLineSpacing",
+            compatibility.and_then(|value| value.no_extra_line_spacing),
+            original_compatibility
+                .as_ref()
+                .and_then(|value| value.no_extra_line_spacing),
+        ),
+        (
+            "w:suppressBottomSpacing",
+            compatibility.and_then(|value| value.suppress_bottom_spacing),
+            original_compatibility
+                .as_ref()
+                .and_then(|value| value.suppress_bottom_spacing),
+        ),
+        (
+            "w:suppressTopSpacingWP",
+            compatibility.and_then(|value| value.suppress_top_spacing_wp),
+            original_compatibility
+                .as_ref()
+                .and_then(|value| value.suppress_top_spacing_wp),
+        ),
+        (
+            "w:truncateFontHeightsLikeWP6",
+            compatibility.and_then(|value| value.truncate_font_heights_like_wp6),
+            original_compatibility
+                .as_ref()
+                .and_then(|value| value.truncate_font_heights_like_wp6),
+        ),
+    ];
+    let line_settings_changed = line_settings.iter().any(|(_, current, original)| {
+        (current.is_some() || imported_line_settings) && current != original
+    });
+    if !mode_changed && !headers_changed && !tabs_changed && !line_settings_changed {
+        return;
+    }
+
+    let mut settings_xml = pkg.parts.get("word/settings.xml")
+        .map(|part| part.content.clone())
+        .unwrap_or_else(|| format!(
+            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:settings xmlns:w="{WORD_MAIN_NS}"/>"#,
+        ));
+    if tabs_changed {
+        settings_xml = if let Some(default_tab_stop) = default_tab_stop {
+            let value = default_tab_stop.to_string();
+            upsert_settings_element(
+                &settings_xml,
+                "w:settings",
+                "w:defaultTabStop",
+                &[("w:val", &value)],
+                |_| true,
+            )
+        } else {
+            remove_settings_element(&settings_xml, "w:defaultTabStop", |_| true)
+        };
+    }
+    if headers_changed {
+        settings_xml = if let Some(even_and_odd_headers) = even_and_odd_headers {
+            let value = if even_and_odd_headers { "1" } else { "0" };
+            upsert_settings_element(
+                &settings_xml,
+                "w:settings",
+                "w:evenAndOddHeaders",
+                &[("w:val", value)],
+                |_| true,
+            )
+        } else {
+            remove_settings_element(&settings_xml, "w:evenAndOddHeaders", |_| true)
+        };
+    }
+    if mode_changed {
+        let compat_range = extract_balanced_tag_ranges(&settings_xml, "w:compat")
+            .into_iter()
+            .next();
+        let compat_xml = compat_range
+            .as_ref()
+            .map(|range| &settings_xml[range.start..range.end])
+            .unwrap_or("<w:compat/>");
+        let matches_mode = |tag: &str| {
+            get_attribute(tag, "w:name").as_deref() == Some("compatibilityMode")
+                && get_attribute(tag, "w:uri").as_deref()
+                    == Some("http://schemas.microsoft.com/office/word")
+        };
+        let updated_compat = if let Some(compatibility_mode) = compatibility_mode {
+            let mode = compatibility_mode.to_string();
+            upsert_settings_element(
+                compat_xml,
+                "w:compat",
+                "w:compatSetting",
+                &[
+                    ("w:name", "compatibilityMode"),
+                    ("w:uri", "http://schemas.microsoft.com/office/word"),
+                    ("w:val", &mode),
+                ],
+                matches_mode,
+            )
+        } else {
+            remove_settings_element(compat_xml, "w:compatSetting", matches_mode)
+        };
+        if let Some(range) = compat_range {
+            settings_xml.replace_range(range.start..range.end, &updated_compat);
+        } else {
+            settings_xml =
+                upsert_settings_element(&settings_xml, "w:settings", "w:compat", &[], |_| true);
+            if let Some(range) = extract_balanced_tag_ranges(&settings_xml, "w:compat")
+                .into_iter()
+                .next()
+            {
+                settings_xml.replace_range(range.start..range.end, &updated_compat);
+            }
+        }
+    }
+    if line_settings_changed {
+        let range = extract_balanced_tag_ranges(&settings_xml, "w:settings")
+            .into_iter()
+            .next()
+            .and_then(|settings| {
+                direct_property_children(&settings_xml[settings.start..settings.end])
+                    .into_iter()
+                    .find(|(name, _)| name == "w:compat")
+                    .map(|(_, child)| crate::xml::TagRange {
+                        start: settings.start + child.start,
+                        end: settings.start + child.end,
+                    })
+            });
+        let mut compat = range
+            .as_ref()
+            .map(|range| settings_xml[range.start..range.end].to_string())
+            .unwrap_or_else(|| "<w:compat/>".to_string());
+        for (name, current, original) in line_settings {
+            if (current.is_none() && !imported_line_settings) || current == original {
+                continue;
+            }
+            let attributes =
+                current.map(|value| [("w:val", if value { "1" } else { "0" }.to_string())]);
+            compat = patch_direct_table_property(
+                &compat,
+                "w:compat",
+                name,
+                attributes.as_ref().map(|values| values.as_slice()),
+                COMPAT_PROPERTIES_ORDER,
+            );
+        }
+        if let Some(range) = range {
+            settings_xml.replace_range(range.start..range.end, &compat);
+        } else if !direct_property_children(&compat).is_empty() {
+            settings_xml =
+                upsert_settings_element(&settings_xml, "w:settings", "w:compat", &[], |_| true);
+            if let Some(range) = extract_balanced_tag_ranges(&settings_xml, "w:compat")
+                .into_iter()
+                .next()
+            {
+                settings_xml.replace_range(range.start..range.end, &compat);
+            }
+        }
+    }
+    pkg.parts.insert(
+        "word/settings.xml".to_string(),
+        OoxmlPart {
+            name: "word/settings.xml".to_string(),
+            content: settings_xml,
+        },
+    );
+    ensure_content_type_override(pkg, "word/settings.xml", SETTINGS_CONTENT_TYPE);
+    ensure_document_relationship(pkg, REL_TYPE_SETTINGS, "settings.xml");
+}
+
 fn ensure_document_open_tag(model: &DocModel) -> String {
     let mut open_tag = model.metadata.document_open_tag.clone().unwrap_or_else(|| {
         format!(r#"<w:document xmlns:w="{WORD_MAIN_NS}" xmlns:r="{OFFICE_REL_NS}">"#)
@@ -3281,6 +4986,7 @@ pub fn serialize_doc_model(model: &DocModel, base_package: Option<&OoxmlPackage>
     let mut result = with_document;
     serialize_header_footer_parts(model, &mut result);
     serialize_comment_parts(model, &mut result);
+    serialize_document_settings(model, &mut result);
     result
 }
 

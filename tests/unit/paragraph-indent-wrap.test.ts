@@ -1,12 +1,49 @@
 import { describe, expect, it } from "vitest";
-import type { DocModel, NumberingDefinitionSet } from "@extend-ai/react-docx-doc-model";
+import type { DocModel, NumberingDefinitionSet, TableNode } from "@extend-ai/react-docx-doc-model";
 import {
   buildParagraphNumberingLabels,
   buildDocumentPageNodeSegments,
+  estimateTableRowHeightsPx,
   paragraphLineCountWithinWidth
 } from "../../packages/react-viewer/src/editor";
 
 describe("paragraph indent wrapping", () => {
+  it("invalidates table height estimates when numbering indentation changes", () => {
+    const table: TableNode = {
+      type: "table",
+      style: { layout: "fixed", widthTwips: 3600, columnWidthsTwips: [3600] },
+      rows: [{ type: "table-row", cells: [{ type: "table-cell", nodes: [{
+        type: "paragraph",
+        sourceXml: '<w:p><w:pPr><w:numPr><w:numId w:val="1"/></w:numPr></w:pPr></w:p>',
+        style: { numbering: { numId: 1, ilvl: 0 } },
+        children: [{ type: "text", text: "One two three four five six seven eight. ".repeat(8) }],
+      }] }] }],
+    };
+    const numbering = (leftTwips: number): NumberingDefinitionSet => ({
+      abstracts: [{ abstractNumId: 0, levels: [{
+        ilvl: 0, format: "decimal", text: "%1.", indent: { leftTwips },
+      }] }],
+      instances: [{ numId: 1, abstractNumId: 0 }],
+    });
+    const wide = estimateTableRowHeightsPx(table, 240, numbering(0))[0];
+    const narrow = estimateTableRowHeightsPx(table, 240, numbering(1800))[0];
+    expect(narrow).toBeGreaterThan(wide);
+    expect(estimateTableRowHeightsPx(table, 240, numbering(0))[0]).toBe(wide);
+  });
+
+  it("reserves a positive indent on the first line without narrowing later lines", () => {
+    const paragraph = {
+      type: "paragraph" as const,
+      style: { indent: { firstLineTwips: 720 } },
+      children: [{ type: "text" as const, text: "aaa bbb ccc ddd eee fff" }],
+    };
+    expect(paragraphLineCountWithinWidth(paragraph, 120)).toBe(2);
+    expect(paragraphLineCountWithinWidth({
+      ...paragraph,
+      style: { indent: { leftTwips: 720 } },
+    }, 120)).toBe(3);
+  });
+
   it("treats hanging indents as a first-line-only width change during pagination", () => {
     const model: DocModel = {
       nodes: [

@@ -28,15 +28,86 @@ function footerParagraph(textParts: string[]): ParagraphNode {
   };
 }
 
-function FooterViewer({ model }: { model: DocModel }): React.JSX.Element {
+function FooterViewer({ model, mode = "read-only" }: {
+  model: DocModel;
+  mode?: "read-only" | "edit";
+}): React.JSX.Element {
   const editor = useDocxEditor({ starterModel: model });
   return React.createElement(DocxEditorViewer, {
     editor,
-    mode: "read-only"
+    mode
   });
 }
 
 describe("footer right-tab layout", () => {
+  it("renders complete form values as text in read-only mode and controls in edit mode", () => {
+    const model = cloneDocModel(defaultStarterModel);
+    model.nodes = [{ type: "paragraph", children: [
+      { type: "form-field", fieldType: "text", value: "A long form value that must remain fully visible" },
+      { type: "form-field", fieldType: "dropdown", value: "chosen", options: [{ value: "chosen", displayText: "Selected option" }] },
+      { type: "form-field", fieldType: "date", value: "2026-01-15" },
+      { type: "form-field", fieldType: "checkbox", checked: true },
+      { type: "form-field", fieldType: "text", value: "", placeholder: "Unfilled field prompt" },
+    ] }];
+    const readOnly = renderToStaticMarkup(React.createElement(FooterViewer, { model }));
+    expect(readOnly).not.toMatch(/<(?:input|select)\b/);
+    expect(readOnly).toContain("A long form value that must remain fully visible");
+    expect(readOnly).toContain("Selected option");
+    expect(readOnly).toContain("Unfilled field prompt");
+    expect(readOnly).toContain('aria-checked="true"');
+    const editable = renderToStaticMarkup(React.createElement(FooterViewer, { model, mode: "edit" }));
+    expect(editable).toContain("<input");
+    expect(editable).toContain("<select");
+  });
+
+  it("uses numbering indents over inherited style indents while preserving direct overrides", () => {
+    const model = cloneDocModel(defaultStarterModel);
+    model.metadata.numberingDefinitions = {
+      abstracts: [{ abstractNumId: 0, levels: [{
+        ilvl: 0, format: "decimal", text: "%1.",
+        indent: { leftTwips: 360, hangingTwips: 360 },
+      }] }],
+      instances: [{ numId: 1, abstractNumId: 0 }],
+    };
+    const paragraph: ParagraphNode = {
+      type: "paragraph",
+      style: { numbering: { numId: 1, ilvl: 0 }, indent: { leftTwips: 720 } },
+      sourceXml: '<w:p><w:pPr><w:pStyle w:val="ListParagraph"/><w:numPr><w:numId w:val="1"/></w:numPr></w:pPr><w:r><w:t>Text</w:t></w:r></w:p>',
+      children: [{ type: "text", text: "Text" }],
+    };
+    model.nodes = [{ type: "table", rows: [{ type: "table-row", cells: [{ type: "table-cell", nodes: [paragraph] }] }] }];
+    const inherited = renderToStaticMarkup(React.createElement(FooterViewer, { model }));
+    expect(inherited).toContain("padding-left:24px");
+    paragraph.sourceXml = paragraph.sourceXml!.replace("</w:pPr>", '<w:ind w:left="720"/></w:pPr>');
+    const direct = renderToStaticMarkup(React.createElement(FooterViewer, { model }));
+    expect(direct).toContain("padding-left:48px");
+  });
+
+  it("advances a list tab from the resolved indent and the full marker box", () => {
+    const model = cloneDocModel(defaultStarterModel);
+    model.metadata.numberingDefinitions = {
+      abstracts: [{ abstractNumId: 0, levels: [{
+        ilvl: 0, format: "decimal", text: "%1.", suffix: "tab",
+        indent: { leftTwips: 720, hangingTwips: 360 },
+      }] }],
+      instances: [{ numId: 1, abstractNumId: 0 }],
+    };
+    model.nodes = [{
+      type: "paragraph",
+      style: {
+        numbering: { numId: 1, ilvl: 0 },
+        tabStops: [{ alignment: "left", positionTwips: 1080 }],
+      },
+      children: [{ type: "text", text: "\tAligned text" }],
+    }];
+    const html = renderToStaticMarkup(React.createElement(FooterViewer, { model }));
+    const markerWidth = Number(html.match(/data-docx-numbering-label="true"[^>]*width:([\d.]+)px/)?.[1]);
+    const tabWidth = Number(html.match(/data-docx-tab-char="true"[^>]*width:([\d.]+)px/)?.[1]);
+    expect(markerWidth).toBeGreaterThanOrEqual(24);
+    expect(tabWidth).toBeGreaterThan(0);
+    expect(markerWidth + tabWidth).toBe(48);
+  });
+
   it("renders footer right-tab paragraphs as two aligned zones", () => {
     const model = cloneDocModel(defaultStarterModel);
     model.nodes = [

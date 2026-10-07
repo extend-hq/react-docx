@@ -30,16 +30,16 @@ function createModel(sectionPropertiesXml?: string): DocModel {
 describe("section layout parsing", () => {
   it("extracts page metrics from section properties xml", () => {
     expect(parseSectionLayout(SECTION_PROPERTIES_XML)).toEqual({
-      pageWidthPx: 794,
-      pageHeightPx: 1123,
+      pageWidthPx: 11906 / 15,
+      pageHeightPx: 16838 / 15,
       marginsPx: {
         top: 96,
-        right: 57,
+        right: 849 / 15,
         bottom: 96,
-        left: 57
+        left: 851 / 15
       },
-      headerDistancePx: 47,
-      footerDistancePx: 47,
+      headerDistancePx: 708 / 15,
+      footerDistancePx: 708 / 15,
       // Bare <w:docGrid w:linePitch="360"/> (type "default") stores the pitch
       // but Word applies no line grid, so the viewer must not snap to it.
       docGridLinePitchPx: undefined
@@ -60,14 +60,14 @@ describe("section layout parsing", () => {
     expect(parseSectionLayout(withDefaultGrid).docGridLinePitchPx).toBeUndefined();
   });
 
-  it("normalizes page size dimensions from explicit orientation", () => {
+  it("preserves explicit page dimensions independently of print orientation", () => {
     const landscapeSectionPropertiesXml = SECTION_PROPERTIES_XML.replace(
       '<w:pgSz w:w="11906" w:h="16838"/>',
       '<w:pgSz w:w="11906" w:h="16838" w:orient="landscape"/>'
     );
     expect(parseSectionLayout(landscapeSectionPropertiesXml)).toMatchObject({
-      pageWidthPx: 1123,
-      pageHeightPx: 794
+      pageWidthPx: 11906 / 15,
+      pageHeightPx: 16838 / 15
     });
 
     const alreadyLandscapeSectionPropertiesXml = SECTION_PROPERTIES_XML.replace(
@@ -75,22 +75,22 @@ describe("section layout parsing", () => {
       '<w:pgSz w:w="16838" w:h="11906" w:orient="landscape"/>'
     );
     expect(parseSectionLayout(alreadyLandscapeSectionPropertiesXml)).toMatchObject({
-      pageWidthPx: 1123,
-      pageHeightPx: 794
+      pageWidthPx: 16838 / 15,
+      pageHeightPx: 11906 / 15
     });
   });
 
   it("resolves document layout from model metadata", () => {
     expect(resolveDocumentLayout(createModel(SECTION_PROPERTIES_XML))).toMatchObject({
-      pageWidthPx: 794,
-      pageHeightPx: 1123,
+      pageWidthPx: 11906 / 15,
+      pageHeightPx: 16838 / 15,
       marginsPx: {
         top: 96,
-        right: 57,
+        right: 849 / 15,
         bottom: 96,
-        left: 57
+        left: 851 / 15
       },
-      footerDistancePx: 47
+      footerDistancePx: 708 / 15
     });
   });
 });

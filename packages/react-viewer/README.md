@@ -4,8 +4,8 @@ React-first DOCX viewing and editing components for rendering `.docx` files in a
 
 `@extend-ai/react-docx` gives you:
 
-- A simple read-only viewer for rendering `.docx` files or prebuilt document models
-- A richer editor/controller API for building custom DOCX editing UIs
+- A shared viewer for read-only previews and editable documents
+- A controller API for import/export and custom DOCX editing UIs
 - Pagination, page layout, theme, tracked-change, form-field, and thumbnail hooks
 - Configurable page surface and inter-page background colors
 - A dark read-only night-reader mode that inverts document content while preserving image hues
@@ -51,13 +51,10 @@ You can also call `initWasm()` (optionally with a source) ahead of time to warm 
 
 ## Main Entry Points
 
-The package exports two useful levels of API:
-
-1. `ReactDocxViewer`
-   A lightweight read-only viewer when you just want to render a document.
-
-2. `useDocxEditor` + `DocxEditorViewer`
-   The full controller/view split for editable or highly customized experiences.
+Use `useDocxEditor` + `DocxEditorViewer` for both read-only and editable
+experiences. The hook manages document state, import/export, and editing
+commands; the component renders the document. Set `mode="read-only"` for
+view-only use or `mode="edit"` for editing.
 
 It also re-exports lower-level document/model/layout/serializer APIs, so you can work below the UI layer when needed.
 
@@ -65,36 +62,41 @@ It also re-exports lower-level document/model/layout/serializer APIs, so you can
 
 ### Read-only viewer
 
-Use `ReactDocxViewer` when you want the smallest integration surface.
+Starting in v0.10.0, the intended pattern for read-only viewing is
+`useDocxEditor` with `DocxEditorViewer mode="read-only"`. Use the same component
+with `mode="edit"` when editing is needed.
 
 ```tsx
-import * as React from "react";
-import { ReactDocxViewer } from "@extend-ai/react-docx";
+import { DocxEditorViewer, useDocxEditor } from "@extend-ai/react-docx";
 
 export function ReadOnlyDocxExample() {
-  const [file, setFile] = React.useState<ArrayBuffer | undefined>();
+  const editor = useDocxEditor();
 
   return (
     <div style={{ display: "grid", gap: 12 }}>
       <input
         type="file"
         accept=".docx"
-        onChange={async (event) => {
-          const nextFile = event.target.files?.[0];
-          setFile(nextFile ? await nextFile.arrayBuffer() : undefined);
+        onChange={(event) => {
+          const file = event.target.files?.[0];
+          if (file) {
+            void editor.importDocxFile(file);
+          }
         }}
       />
 
-      <ReactDocxViewer
-        file={file}
-        emptyState="Choose a DOCX file to preview."
-      />
+      <DocxEditorViewer editor={editor} mode="read-only" />
     </div>
   );
 }
 ```
 
-You can also pass a `model` instead of a raw `.docx` file if you already have a normalized document model.
+For an already parsed document, initialize the controller with
+`useDocxEditor({ document })`. For a prebuilt document model, use
+`useDocxEditor({ starterModel: model })`. To start from a raw buffer, call
+`parseDocxForViewer(buffer)` and pass the resulting `document` to the hook.
+These options set the initial document; use `editor.importDocxFile(file)` to
+load a different document into an existing controller.
 
 ### Full editor/viewer
 
@@ -192,14 +194,16 @@ function FullEditor() {
 
 ## Responsive zoom
 
-Both viewer components accept numeric percentages and responsive zoom modes.
+`DocxEditorViewer` accepts numeric percentages and responsive zoom modes.
 Responsive modes remain selected while the viewer recalculates their resolved
 percentage as its viewport or page layout changes.
 
 ```tsx
-const Viewer = ReactDocxViewer;
-
-<Viewer defaultZoom="fit-width" />
+<DocxEditorViewer
+  editor={editor}
+  mode="read-only"
+  defaultZoom="fit-width"
+/>
 ```
 
 Use `zoom` with `onZoomChange` for a controlled viewer, or `defaultZoom` for an
@@ -216,6 +220,33 @@ document timings separately expose file reading, parsing, model construction,
 and embedded-font loading. Use `loadEmbeddedFonts: "defer"` to load fonts later
 through `document.loadEmbeddedFonts()`. The renderer also accepts an existing
 `DocModel` directly when the OOXML package is not needed.
+
+## Caller fonts
+
+Fonts embedded in a DOCX load automatically by default. Caller-provided fonts
+must be available in `document.fonts` before layout uses them. When adding or
+removing fonts after parsing or mounting, call `refreshDocxFontMetrics()` after
+the change to refresh cached text measurements and mounted viewers.
+
+```tsx
+import { refreshDocxFontMetrics } from "@extend-ai/react-docx";
+
+async function attachViewerFont(face: FontFace) {
+  await face.load();
+  document.fonts.add(face);
+  refreshDocxFontMetrics();
+
+  return () => {
+    document.fonts.delete(face);
+    refreshDocxFontMetrics();
+  };
+}
+```
+
+Provide matching font data and descriptors for each required weight and style.
+The caller owns loading and cleanup. Load fonts before creating a standalone
+`createDocxThumbnailRenderer`; after changing fonts, dispose and recreate that
+renderer to refresh its captured pagination.
 
 ## Thumbnail Hook
 

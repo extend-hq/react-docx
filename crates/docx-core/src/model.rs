@@ -127,6 +127,8 @@ pub struct TextStyle {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub font_size_pt: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub font_size_cs_pt: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub font_family: Option<String>,
     /// Import-time `font_family` value used to distinguish a later edit through
     /// the backwards-compatible single-family API from the preserved slots.
@@ -662,12 +664,32 @@ pub struct ParagraphDropCap {
     pub vertical_space_twips: Option<i64>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ParagraphTextAlignment {
+    Auto,
+    Top,
+    Center,
+    Baseline,
+    Bottom,
+}
+
 /// Mirrors TypeScript `ParagraphStyle`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ParagraphStyle {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub align: Option<ParagraphAlignment>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text_alignment: Option<ParagraphTextAlignment>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_text_alignment: Option<ParagraphTextAlignment>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_has_text_alignment: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_inherited_text_alignment: Option<ParagraphTextAlignment>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_table_text_alignment: Option<ParagraphTextAlignment>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub heading_level: Option<HeadingLevel>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -718,6 +740,18 @@ pub struct ParagraphSourceTextPatch {
     pub runs: Vec<ParagraphSourceTextPatchRun>,
 }
 
+/// Imported paragraph-mark default, character-style, and direct layers.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ParagraphMarkFormattingSource {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_style: Option<TextStyle>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub character_style: Option<TextStyle>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub direct_style: Option<TextStyle>,
+}
+
 /// Mirrors TypeScript `ParagraphNode`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -727,6 +761,14 @@ pub struct ParagraphNode {
     pub children: Vec<ParagraphChildNode>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub style: Option<ParagraphStyle>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub paragraph_mark_style: Option<TextStyle>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_paragraph_mark_style: Option<TextStyle>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_paragraph_mark_formatting: Option<ParagraphMarkFormattingSource>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_paragraph_mark_properties_xml: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub paragraph_mark_deleted: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -803,6 +845,36 @@ pub enum TableCellVerticalAlign {
     Bottom,
 }
 
+/// Preferred width with an explicit measurement kind.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum TablePreferredWidth {
+    Dxa { value: f64 },
+    Pct { value: f64 },
+    Auto,
+    Nil,
+}
+
+/// Imported width baseline used to distinguish edits to either width API.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TableWidthSource {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preferred_width: Option<TablePreferredWidth>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub width_twips: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inherited_preferred_width: Option<TablePreferredWidth>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TableAlignment {
+    Left,
+    Center,
+    Right,
+}
+
 /// Mirrors TypeScript `TableCellStyle`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -818,9 +890,17 @@ pub struct TableCellStyle {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub width_twips: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub preferred_width: Option<TablePreferredWidth>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_width: Option<TableWidthSource>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub margin_twips: Option<TableBoxSpacing>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vertical_align: Option<TableCellVerticalAlign>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text_direction: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_text_direction: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub borders: Option<TableBorderSet>,
 }
@@ -862,10 +942,34 @@ pub enum TableRowHeightRule {
     Exact,
 }
 
+/// Imported row geometry used to distinguish a clear from an omitted legacy field.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TableRowGeometrySource {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grid_before: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grid_after: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub width_before: Option<TablePreferredWidth>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub width_after: Option<TablePreferredWidth>,
+}
+
 /// Mirrors TypeScript `TableRowStyle`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TableRowStyle {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grid_before: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grid_after: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub width_before: Option<TablePreferredWidth>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub width_after: Option<TablePreferredWidth>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_row_geometry: Option<TableRowGeometrySource>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub background_color: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -936,7 +1040,27 @@ pub struct TableFloating {
 #[serde(rename_all = "camelCase")]
 pub struct TableStyle {
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub style_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_style_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub width_twips: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preferred_width: Option<TablePreferredWidth>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_width: Option<TableWidthSource>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alignment: Option<TableAlignment>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_alignment: Option<TableAlignment>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_inherited_alignment: Option<TableAlignment>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bidi_visual: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_bidi_visual: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_inherited_bidi_visual: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub indent_twips: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1034,6 +1158,10 @@ pub struct ParagraphStyleDefinition {
     pub next_style_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub align: Option<ParagraphAlignment>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text_alignment: Option<ParagraphTextAlignment>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_has_text_alignment: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub heading_level: Option<HeadingLevel>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1203,6 +1331,20 @@ pub struct DocumentCommentDefinition {
 #[serde(rename_all = "camelCase")]
 pub struct DocumentCompatibilitySettings {
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub no_leading: Option<bool>,
+    #[serde(rename = "suppressTopSpacingWP", skip_serializing_if = "Option::is_none")]
+    pub suppress_top_spacing_wp: Option<bool>,
+    #[serde(rename = "truncateFontHeightsLikeWP6", skip_serializing_if = "Option::is_none")]
+    pub truncate_font_heights_like_wp6: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub no_extra_line_spacing: Option<bool>,
+    #[serde(rename = "spaceForUL", skip_serializing_if = "Option::is_none")]
+    pub space_for_ul: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub suppress_bottom_spacing: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compatibility_mode: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub suppress_spacing_before_after_page_break: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub use_printer_metrics: Option<bool>,
@@ -1237,6 +1379,12 @@ pub struct DocModelMetadata {
     pub paragraph_styles: Vec<ParagraphStyleDefinition>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_paragraph_style_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_tab_stop_twips: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub document_settings_imported: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line_spacing_compatibility_imported: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub numbering_definitions: Option<NumberingDefinitionSet>,
     #[serde(skip_serializing_if = "Option::is_none")]

@@ -14,8 +14,24 @@ import type {
 import {
   allocateBlockId,
   cloneDocModel,
+  cloneParagraphMarkFormatting,
   cloneParagraphNode,
 } from "@extend-ai/react-docx-doc-model";
+
+export {
+  planTableGridColumnDeletion,
+  planTableGridColumnInsertion,
+  tableCellPhysicalGridRange,
+  tableCellsIntersectingGridRange,
+  tablePhysicalGridColumnCount,
+} from "./table-grid";
+export type {
+  TableCellPhysicalGridRange,
+  TableGridColumnDeletionPlan,
+  TableGridColumnDeletionRowPlan,
+  TableGridColumnInsertionPlan,
+  TableGridColumnInsertionRowPlan,
+} from "./table-grid";
 
 export {
   acceptParagraphRevision,
@@ -43,12 +59,15 @@ export interface UpdateTextOptions {
 
 function paragraphFromText(
   text: string,
-  options?: InsertParagraphOptions
+  options?: InsertParagraphOptions,
+  template?: ParagraphNode
 ): ParagraphNode {
+  const clonedTemplate = template ? cloneParagraphNode(template) : undefined;
   return {
     type: "paragraph",
     blockId: allocateBlockId(),
-    style: options?.paragraphStyle,
+    style: options?.paragraphStyle ?? clonedTemplate?.style,
+    paragraphMarkStyle: clonedTemplate?.paragraphMarkStyle,
     children: [{ type: "text", text, style: options?.runStyle }],
   };
 }
@@ -1096,33 +1115,8 @@ function cloneParagraph(paragraph: ParagraphNode): ParagraphNode {
   // Copies are new blocks: they must not share measurement identity with the
   // original, so they get a fresh id instead of inheriting one.
   return {
-    type: "paragraph",
+    ...cloneParagraphNode(paragraph),
     blockId: allocateBlockId(),
-    style: paragraph.style ? { ...paragraph.style } : undefined,
-    sourceXml: paragraph.sourceXml,
-    sourceTextPatch: paragraph.sourceTextPatch
-      ? {
-          runs: paragraph.sourceTextPatch.runs.map((run) => ({
-            style: cloneTextStyle(run.style),
-            link: run.link,
-            noteReference: run.noteReference
-              ? { ...run.noteReference }
-              : undefined,
-          })),
-        }
-      : undefined,
-    sourceRunProvenance: paragraph.sourceRunProvenance
-      ? {
-          runs: paragraph.sourceRunProvenance.runs.map((run) => ({
-            style: cloneTextStyle(run.style),
-            link: run.link,
-            noteReference: run.noteReference
-              ? { ...run.noteReference }
-              : undefined,
-          })),
-        }
-      : undefined,
-    children: paragraph.children.map(cloneParagraphChildRun),
   };
 }
 
@@ -1249,9 +1243,11 @@ export function updateTableCellText(
 
   if (paragraphEntries.length === 0) {
     cell.nodes.push(
-      paragraphFromText(incomingParagraphTexts[0] ?? "", {
-        runStyle: cloneTextStyle(options?.insertedStyle),
-      })
+      ...incomingParagraphTexts.map((paragraphText) =>
+        paragraphFromText(paragraphText, {
+          runStyle: cloneTextStyle(options?.insertedStyle),
+        })
+      )
     );
     discardTableSourceXml(tableNode);
     return next;
@@ -1285,9 +1281,11 @@ export function updateTableCellText(
       paragraphIndex += 1
     ) {
       cell.nodes.push(
-        paragraphFromText(incomingParagraphTexts[paragraphIndex] ?? "", {
-          runStyle: cloneTextStyle(options?.insertedStyle),
-        })
+        paragraphFromText(
+          incomingParagraphTexts[paragraphIndex] ?? "",
+          { runStyle: cloneTextStyle(options?.insertedStyle) },
+          paragraphEntries.at(-1)?.node
+        )
       );
     }
   }
@@ -1620,6 +1618,11 @@ export function serializeParagraphsForClipboard(
     paragraphs.map((paragraph) => ({
       type: "paragraph",
       style: paragraph.style ?? undefined,
+      paragraphMarkStyle: paragraph.paragraphMarkStyle,
+      sourceParagraphMarkStyle: paragraph.sourceParagraphMarkStyle,
+      sourceParagraphMarkPropertiesXml: paragraph.sourceParagraphMarkPropertiesXml,
+      sourceParagraphMarkFormatting: paragraph.sourceParagraphMarkFormatting,
+      paragraphMarkDeleted: paragraph.paragraphMarkDeleted,
       sourceXml: paragraph.sourceXml,
       children: paragraph.children.map((run) =>
         run.type === "text"
@@ -1840,6 +1843,22 @@ export function parseParagraphsFromClipboard(
       normalized.push({
         type: "paragraph",
         style: value.style ? { ...value.style } : undefined,
+        paragraphMarkStyle: cloneTextStyle(value.paragraphMarkStyle),
+        sourceParagraphMarkStyle: cloneTextStyle(value.sourceParagraphMarkStyle),
+        sourceParagraphMarkPropertiesXml:
+          typeof value.sourceParagraphMarkPropertiesXml === "string"
+            ? value.sourceParagraphMarkPropertiesXml
+            : undefined,
+        sourceParagraphMarkFormatting:
+          value.sourceParagraphMarkFormatting &&
+          typeof value.sourceParagraphMarkFormatting === "object" &&
+          !Array.isArray(value.sourceParagraphMarkFormatting)
+            ? cloneParagraphMarkFormatting(value.sourceParagraphMarkFormatting)
+            : undefined,
+        paragraphMarkDeleted:
+          typeof value.paragraphMarkDeleted === "boolean"
+            ? value.paragraphMarkDeleted
+            : undefined,
         sourceXml:
           typeof value.sourceXml === "string" ? value.sourceXml : undefined,
         children: children.length > 0 ? children : [{ type: "text", text: "" }],

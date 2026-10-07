@@ -36,6 +36,7 @@ import {
 } from "./image-render";
 import {
   resolveDocxTextFontFamily,
+  resolveDocxTextFontSizePt,
   segmentTextByDocxScriptFont,
 } from "./script-fonts";
 import {
@@ -44,6 +45,10 @@ import {
   useViewerZoom,
 } from "./viewer-zoom";
 
+/**
+ * @deprecated Since v0.10.0, use DocxEditorViewerProps with mode="read-only"
+ * and a controller from useDocxEditor.
+ */
 export interface ReactDocxViewerProps {
   /**
    * Raw `.docx` file contents to parse and render.
@@ -232,6 +237,7 @@ function runTextStyle(run: LayoutRun, text?: string): React.CSSProperties {
   if (run.kind === "image") {
     return {};
   }
+  const fontSizePt = resolveDocxTextFontSizePt(text ?? run.text, run.style);
 
   const hasScriptVerticalAlign =
     run.style?.verticalAlign === "superscript" ||
@@ -255,10 +261,10 @@ function runTextStyle(run: LayoutRun, text?: string): React.CSSProperties {
     textDecoration,
     color: run.style?.color,
     backgroundColor: resolveHighlightColor(run.style?.highlight),
-    fontSize: run.style?.fontSizePt
+    fontSize: fontSizePt
       ? `${Number(
           (
-            run.style.fontSizePt *
+            fontSizePt *
             (hasScriptVerticalAlign ? SCRIPT_FONT_SCALE : 1)
           ).toFixed(3)
         )}pt`
@@ -284,7 +290,12 @@ function renderRunText(
   return segments.map((segment, index) => (
     <span
       key={`${run.id}-script-${index}`}
-      style={{ fontFamily: segment.fontFamily }}
+      style={{
+        fontFamily: segment.fontFamily,
+        fontSize: segment.fontSizePt !== undefined
+          ? `${segment.fontSizePt * (run.style?.verticalAlign ? SCRIPT_FONT_SCALE : 1)}pt`
+          : undefined,
+      }}
     >
       {segment.text}
     </span>
@@ -482,6 +493,10 @@ function renderBlock(block: LayoutBlock): React.JSX.Element {
   );
 }
 
+/**
+ * @deprecated Since v0.10.0, use DocxEditorViewer with mode="read-only"
+ * and a controller from useDocxEditor.
+ */
 export function ReactDocxViewer({
   file,
   model,
@@ -1062,6 +1077,8 @@ export {
   type ParsedDocxDocument,
   type ParsedDocxPerformanceTimings,
 } from "./parsed-docx";
+
+export { invalidateFontMetrics as refreshDocxFontMetrics } from "./font-metrics";
 
 export { parseSectionLayout, resolveDocumentLayout } from "./section-layout";
 

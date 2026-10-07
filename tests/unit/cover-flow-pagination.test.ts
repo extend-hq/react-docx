@@ -91,7 +91,7 @@ describe("cover page natural-flow pagination", () => {
     expect(spacerLineHeightPx).toBeGreaterThanOrEqual(30);
     expect(spacerLineHeightPx).toBeLessThanOrEqual(36);
 
-    // Wrapping paragraphs keep the wrap-compensation scale.
+    // Without browser font metrics, the fallback estimates remain deterministic.
     const textLineHeightPx = estimateParagraphLineHeightPx(
       textParagraph("Some heading text", 20) as ParagraphNode
     );

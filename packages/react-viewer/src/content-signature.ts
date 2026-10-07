@@ -79,7 +79,7 @@ function fnv1aAppendValue(hash: number, value: unknown): number {
   }
 
   let next = fnv1aAppend(hash, "~o");
-  for (const key of Object.keys(value as Record<string, unknown>)) {
+  for (const key of Object.keys(value as Record<string, unknown>).sort()) {
     const entry = (value as Record<string, unknown>)[key];
     if (entry === undefined) {
       continue;
@@ -122,6 +122,7 @@ interface ThumbnailRelevantMetadata {
   endnotes?: unknown;
   documentBackgroundColor?: unknown;
   compatibility?: unknown;
+  defaultTabStopTwips?: number;
   headerSections?: unknown;
   footerSections?: unknown;
 }
@@ -149,6 +150,7 @@ export function docModelThumbnailMetadataSignature(metadata: object): string {
   hash = fnv1aAppendValue(hash, relevant.endnotes);
   hash = fnv1aAppendValue(hash, relevant.documentBackgroundColor);
   hash = fnv1aAppendValue(hash, relevant.compatibility);
+  hash = fnv1aAppendValue(hash, relevant.defaultTabStopTwips);
   const signature = (hash >>> 0).toString(36);
   metadataSignatureCache.set(metadata, signature);
   return signature;

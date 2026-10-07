@@ -74,6 +74,10 @@ pub fn parse_document_xml(document_xml: &str, context: &ParseContext<'_>) -> Vec
                 note_reference: None,
             })],
             style: None,
+            paragraph_mark_style: None,
+            source_paragraph_mark_style: None,
+            source_paragraph_mark_formatting: None,
+            source_paragraph_mark_properties_xml: None,
             paragraph_mark_deleted: None,
             source_xml: None,
             source_text_patch: None,
@@ -151,5 +155,35 @@ mod tests {
         };
         let nodes = parse_document_xml(xml, &context);
         assert_eq!(nodes.len(), 1);
+    }
+
+    #[test]
+    fn drawing_text_stays_out_of_the_anchor_paragraph() {
+        let xml = r#"<w:body><w:p><w:r><w:t>Before</w:t></w:r><w:r><w:drawing><wpg:wgp><wps:wsp><wps:txbx><w:txbxContent><w:p><w:r><w:t>Shape story</w:t></w:r></w:p></w:txbxContent></wps:txbx></wps:wsp></wpg:wgp></w:drawing></w:r><w:r><w:t>After</w:t></w:r></w:p></w:body>"#;
+        let context = ParseContext {
+            relationships: HashMap::new(),
+            content_types: ContentTypeLookup::default(),
+            parts: &HashMap::new(),
+            binary_assets: &HashMap::new(),
+            style_sheet: ParsedStyleSheet::empty(),
+            warnings: RefCell::new(Vec::new()),
+        };
+        let nodes = parse_document_xml(xml, &context);
+        let DocNode::Paragraph(paragraph) = &nodes[0] else { panic!("paragraph") };
+        let text: String = paragraph.children.iter().filter_map(|child| match child {
+            ParagraphChildNode::Text(run) => Some(run.text.as_str()),
+            _ => None,
+        }).collect();
+        assert_eq!(text, "BeforeAfter");
+        assert_eq!(paragraph.source_xml.as_deref(), Some(&xml[8..xml.len() - 9]));
+
+        let with_control = xml.replace("<w:r><w:t>Shape story</w:t></w:r>",
+            "<w:sdt><w:sdtPr><w:text/></w:sdtPr><w:sdtContent><w:r><w:t>Shape story</w:t></w:r></w:sdtContent></w:sdt>");
+        let nodes = parse_document_xml(&with_control, &context);
+        let DocNode::Paragraph(paragraph) = &nodes[0] else { panic!("paragraph") };
+        assert!(!paragraph.children.iter().any(|child| matches!(child, ParagraphChildNode::FormField(_))));
+        let nodes = parse_document_xml("<w:body><w:p><w:sdt><w:sdtPr><w:text/></w:sdtPr><w:sdtContent><w:r><w:t>Body control</w:t></w:r></w:sdtContent></w:sdt></w:p></w:body>", &context);
+        let DocNode::Paragraph(paragraph) = &nodes[0] else { panic!("paragraph") };
+        assert!(paragraph.children.iter().any(|child| matches!(child, ParagraphChildNode::FormField(_))));
     }
 }

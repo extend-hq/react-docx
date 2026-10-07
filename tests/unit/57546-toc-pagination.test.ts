@@ -6,8 +6,6 @@ import { parseDocx } from "@extend-ai/react-docx-ooxml-core";
 import {
   buildDocumentPageNodeSegments,
   paragraphLineCountWithinWidth,
-  resolveFooterPaginationReservePx,
-  resolveHeaderPaginationReservePx,
 } from "../../packages/react-viewer/src/editor";
 import { resolveDocumentLayout } from "../../packages/react-viewer/src/section-layout";
 
@@ -29,25 +27,16 @@ describe("57546 TOC pagination", () => {
       const layout = resolveDocumentLayout(model);
       const pageContentWidthPx =
         layout.pageWidthPx - layout.marginsPx.left - layout.marginsPx.right;
-      const headerReservePx = resolveHeaderPaginationReservePx(
-        model.metadata.headerSections ?? [],
-        layout
-      );
-      const footerReservePx = resolveFooterPaginationReservePx(
-        model.metadata.footerSections ?? [],
-        layout
-      );
-      const pageContentHeightPx = Math.max(
-        120,
-        layout.pageHeightPx -
-          layout.marginsPx.top -
-          layout.marginsPx.bottom -
-          headerReservePx -
-          footerReservePx
-      );
+      // Keep the body region fixed to isolate tab wrapping from header and footer flow.
+      const pageContentHeightPx = 832;
 
       const longTocEntry = model.nodes[29];
       expect(longTocEntry?.type).toBe("paragraph");
+      if (longTocEntry?.type === "paragraph") {
+        const run = longTocEntry.children.find((child) => child.type === "text");
+        expect(run?.style?.fontSizePt).toBe(12);
+        expect(run?.style?.fontSizeCsPt).toBe(10);
+      }
       expect(
         longTocEntry && longTocEntry.type === "paragraph"
           ? paragraphLineCountWithinWidth(
@@ -84,7 +73,11 @@ describe("57546 TOC pagination", () => {
       const secondPageNodeIndexes = new Set(
         (pages[1] ?? []).map((segment) => segment.nodeIndex)
       );
-      expect(secondPageNodeIndexes.has(48)).toBe(true);
+      const thirdPageNodeIndexes = new Set(
+        (pages[2] ?? []).map((segment) => segment.nodeIndex)
+      );
+      expect(secondPageNodeIndexes.has(48)).toBe(false);
+      expect(thirdPageNodeIndexes.has(48)).toBe(true);
       expect(pages.length).toBeLessThanOrEqual(70);
     }
   );

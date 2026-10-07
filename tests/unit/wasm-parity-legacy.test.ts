@@ -14,7 +14,10 @@ import {
 
 function stableStringify(value: unknown): string {
   return JSON.stringify(value, (_key, current) => {
-    if (_key === "sourceRunProvenance") {
+    if (
+      _key === "sourceRunProvenance" ||
+      _key === "sourceParagraphMarkFormatting"
+    ) {
       return undefined;
     }
     if (current instanceof Map) {

@@ -13,6 +13,93 @@ pub struct TaggedRange {
     pub tag_name: String,
 }
 
+pub fn extract_direct_child_tag_ranges(xml: &str) -> Vec<TaggedRange> {
+    fn token_end(xml: &str, start: usize) -> Option<usize> {
+        let mut quote = None;
+        for (offset, byte) in xml.as_bytes().iter().copied().enumerate().skip(start) {
+            if let Some(active) = quote {
+                if byte == active {
+                    quote = None;
+                }
+            } else if byte == b'\'' || byte == b'"' {
+                quote = Some(byte);
+            } else if byte == b'>' {
+                return Some(offset + 1);
+            }
+        }
+        None
+    }
+    let Some(root_start) = xml.find('<') else {
+        return Vec::new();
+    };
+    let Some(mut cursor) = token_end(xml, root_start) else {
+        return Vec::new();
+    };
+    let mut children = Vec::new();
+    let mut depth = 0usize;
+    let mut pending: Option<(String, usize)> = None;
+    while let Some(relative_start) = xml[cursor..].find('<') {
+        let start = cursor + relative_start;
+        if xml[start..].starts_with("<!--") {
+            let Some(end) = xml[start..].find("-->") else {
+                break;
+            };
+            cursor = start + end + 3;
+            continue;
+        }
+        if xml[start..].starts_with("<![CDATA[") {
+            let Some(end) = xml[start..].find("]]>") else {
+                break;
+            };
+            cursor = start + end + 3;
+            continue;
+        }
+        let Some(end) = token_end(xml, start) else {
+            break;
+        };
+        let token = &xml[start..end];
+        cursor = end;
+        if token.starts_with("<?") || token.starts_with("<!") {
+            continue;
+        }
+        if token.starts_with("</") {
+            if depth == 0 {
+                break;
+            }
+            depth -= 1;
+            if depth == 0 {
+                if let Some((tag_name, start)) = pending.take() {
+                    children.push(TaggedRange {
+                        start,
+                        end,
+                        tag_name,
+                    });
+                }
+            }
+        } else {
+            let tag_name = token[1..]
+                .split(|ch: char| ch.is_whitespace() || ch == '/' || ch == '>')
+                .next()
+                .unwrap_or_default()
+                .to_string();
+            if token.trim_end().ends_with("/>") {
+                if depth == 0 {
+                    children.push(TaggedRange {
+                        start,
+                        end,
+                        tag_name,
+                    });
+                }
+            } else {
+                if depth == 0 {
+                    pending = Some((tag_name, start));
+                }
+                depth += 1;
+            }
+        }
+    }
+    children
+}
 pub type ParagraphAlignment = &'static str;
 
 fn is_word_char(byte: u8) -> bool {

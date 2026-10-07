@@ -1,7 +1,13 @@
 use crate::model::DocumentCompatibilitySettings;
 use crate::package::OoxmlPackage;
 use super::colors::normalize_hex_color;
-use crate::xml::{extract_balanced_tag_blocks, parse_on_off_attribute};
+use crate::xml::{extract_balanced_tag_blocks, get_attribute, parse_integer_attribute, parse_on_off_attribute};
+
+pub fn parse_document_default_tab_stop_twips(pkg: &OoxmlPackage) -> Option<i64> {
+    let settings_xml = pkg.parts.get("word/settings.xml")?.content.as_str();
+    let tab_stop_tag = super::scan::find_tag_token(settings_xml, "w:defaultTabStop")?;
+    parse_integer_attribute(&tab_stop_tag, "w:val").filter(|value| *value >= 0)
+}
 
 /// Mirrors TypeScript `extractBodyXml`.
 fn extract_body_xml(document_xml: &str) -> &str {
@@ -60,8 +66,8 @@ pub fn parse_document_page_count_from_app_properties(pkg: &OoxmlPackage) -> Opti
 /// Mirrors TypeScript `parseFirstOnOffSetting`.
 fn parse_first_on_off_setting(settings_xml: &str, tag_names: &[&str]) -> Option<bool> {
     for tag_name in tag_names {
-        if let Some(parsed) = parse_on_off_attribute(settings_xml, tag_name) {
-            return Some(parsed);
+        if let Some(tag) = super::styles::direct_table_property(settings_xml, &format!("w:{tag_name}")) {
+            return parse_on_off_attribute(tag, tag_name);
         }
     }
     None
@@ -81,14 +87,29 @@ pub fn parse_document_compatibility_settings(
         return None;
     }
 
-    let compat_xml = extract_balanced_tag_blocks(settings_xml, "w:compat")
-        .into_iter()
-        .next()
-        .or_else(|| super::scan::find_tag_token(settings_xml, "w:compat"))?;
+    let settings_root = extract_balanced_tag_blocks(settings_xml, "w:settings")
+        .into_iter().next().unwrap_or_else(|| settings_xml.to_string());
+    let compat_xml = super::styles::direct_table_property(&settings_root, "w:compat")
+        .unwrap_or_default();
 
-    if compat_xml.is_empty() {
-        return None;
-    }
+    let compatibility_mode = super::scan::find_all_tag_tokens(&compat_xml, "w:compatSetting")
+        .into_iter()
+        .find_map(|tag| {
+            if get_attribute(&tag, "w:name").as_deref() != Some("compatibilityMode")
+                || get_attribute(&tag, "w:uri").as_deref()
+                    != Some("http://schemas.microsoft.com/office/word")
+            {
+                return None;
+            }
+            get_attribute(&tag, "w:val")?.parse::<u32>().ok().map(i64::from)
+        });
+
+    let no_leading = parse_first_on_off_setting(compat_xml, &["noLeading"]);
+    let suppress_top_spacing_wp = parse_first_on_off_setting(compat_xml, &["suppressTopSpacingWP"]);
+    let truncate_font_heights_like_wp6 = parse_first_on_off_setting(compat_xml, &["truncateFontHeightsLikeWP6"]);
+    let no_extra_line_spacing = parse_first_on_off_setting(compat_xml, &["noExtraLineSpacing"]);
+    let space_for_ul = parse_first_on_off_setting(compat_xml, &["spaceForUL"]);
+    let suppress_bottom_spacing = parse_first_on_off_setting(compat_xml, &["suppressBottomSpacing"]);
 
     let suppress_spacing_before_after_page_break =
         parse_first_on_off_setting(&compat_xml, &["suppressSpBfAfterPgBrk"]);
@@ -107,9 +128,16 @@ pub fn parse_document_compatibility_settings(
         ],
     );
     let even_and_odd_headers =
-        parse_first_on_off_setting(settings_xml, &["evenAndOddHeaders"]);
+        parse_first_on_off_setting(&settings_root, &["evenAndOddHeaders"]);
 
-    if suppress_spacing_before_after_page_break.is_none()
+    if no_leading.is_none()
+        && suppress_top_spacing_wp.is_none()
+        && truncate_font_heights_like_wp6.is_none()
+        && no_extra_line_spacing.is_none()
+        && space_for_ul.is_none()
+        && suppress_bottom_spacing.is_none()
+        && compatibility_mode.is_none()
+        && suppress_spacing_before_after_page_break.is_none()
         && use_printer_metrics.is_none()
         && use_fixed_html_paragraph_spacing.is_none()
         && do_not_break_wrapped_tables.is_none()
@@ -120,6 +148,14 @@ pub fn parse_document_compatibility_settings(
     }
 
     Some(DocumentCompatibilitySettings {
+        no_leading,
+        suppress_top_spacing_wp,
+        truncate_font_heights_like_wp6,
+        no_extra_line_spacing,
+        space_for_ul,
+        suppress_bottom_spacing,
+
+        compatibility_mode,
         suppress_spacing_before_after_page_break,
         use_printer_metrics,
         use_fixed_html_paragraph_spacing,

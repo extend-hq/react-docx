@@ -244,9 +244,11 @@ export function createTransactionalEditorStateReducer<
 
     return {
       model: nextModel,
-      selection: nextSelection,
-      activeTextRange: nextTextRange,
-      pendingRunStyle: nextPendingStyle,
+      selection: selectionChanged ? nextSelection : state.selection,
+      activeTextRange: textRangeChanged ? nextTextRange : state.activeTextRange,
+      pendingRunStyle: pendingStyleChanged
+        ? nextPendingStyle
+        : state.pendingRunStyle,
       history,
     };
   };

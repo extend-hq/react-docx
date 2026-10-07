@@ -9,6 +9,7 @@ use super::document::parse_document_xml;
 use super::metadata::{
     extract_document_open_tag, extract_section_properties_xml, parse_document_background_color,
     parse_document_compatibility_settings, parse_document_page_count_from_app_properties,
+    parse_document_default_tab_stop_twips,
 };
 use super::numbering::parse_numbering_definitions;
 use super::relationships::parse_part_relationships;
@@ -35,6 +36,7 @@ pub fn build_doc_model(pkg: &OoxmlPackage) -> DocModel {
     let document_background_color = parse_document_background_color(resolved_document_xml);
     let document_page_count = parse_document_page_count_from_app_properties(pkg);
     let compatibility = parse_document_compatibility_settings(pkg);
+    let default_tab_stop_twips = parse_document_default_tab_stop_twips(pkg);
     let section_properties_xml = extract_section_properties_xml(resolved_document_xml);
     let content_types = parse_content_types(pkg);
     let style_sheet = parse_style_sheet(pkg);
@@ -112,6 +114,9 @@ pub fn build_doc_model(pkg: &OoxmlPackage) -> DocModel {
                 .map(clone_paragraph_style_definition)
                 .collect(),
             default_paragraph_style_id: style_sheet.default_paragraph_style_id.clone(),
+            default_tab_stop_twips,
+            document_settings_imported: pkg.parts.contains_key("word/settings.xml").then_some(true),
+            line_spacing_compatibility_imported: pkg.parts.contains_key("word/settings.xml").then_some(true),
             numbering_definitions: numbering_definitions
                 .as_ref()
                 .map(clone_numbering_definitions),

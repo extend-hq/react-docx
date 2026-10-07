@@ -6,7 +6,7 @@ use crate::model::{
     ParagraphNumbering, ParagraphSpacing, ParagraphStyle, ParagraphStyleDefinition,
     ParagraphTabStop, ParagraphTabStopAlignment, ParagraphTabStopLeader, TableBorderSet,
     TableBorderStyle, TableBoxSpacing, TableFloating, TableLayout, TextRunBorderStyle,
-    TextStyle, VerticalAlign,
+    TableAlignment, TablePreferredWidth, TextStyle, VerticalAlign, ParagraphTextAlignment,
 };
 use crate::package::OoxmlPackage;
 use super::colors::normalize_hex_color;
@@ -36,6 +36,7 @@ struct RawStyleDefinition {
     based_on_id: Option<String>,
     next_style_id: Option<String>,
     align: Option<ParagraphAlignment>,
+    text_alignment: Option<ParagraphTextAlignment>,
     heading_level: Option<HeadingLevel>,
     numbering: Option<ParagraphNumbering>,
     spacing: Option<ParagraphSpacing>,
@@ -502,6 +503,9 @@ pub fn parse_table_border_set(xml: &str) -> Option<TableBorderSet> {
 
 fn has_table_properties(properties: &ParsedTableProperties) -> bool {
     properties.width_twips.is_some()
+        || properties.preferred_width.is_some()
+        || properties.alignment.is_some()
+        || properties.bidi_visual.is_some()
         || properties.indent_twips.is_some()
         || properties.layout.is_some()
         || properties.cell_spacing_twips.is_some()
@@ -574,27 +578,78 @@ pub fn parse_floating_table_style(
     })
 }
 
+pub(crate) fn direct_table_property<'a>(xml: &'a str, name: &str) -> Option<&'a str> {
+    crate::xml::extract_direct_child_tag_ranges(xml)
+        .into_iter()
+        .find(|range| range.tag_name.eq_ignore_ascii_case(name))
+        .map(|range| &xml[range.start..range.end])
+}
+
+pub(crate) fn parse_table_preferred_width(tag: &str) -> Option<TablePreferredWidth> {
+    let raw = get_attribute(tag, "w:w").unwrap_or_else(|| "0".to_string());
+    let raw = raw.trim();
+    if let Some(percent) = raw.strip_suffix('%') {
+        let value = percent.trim().parse::<f64>().ok()?;
+        return (value.is_finite() && value >= 0.0).then_some(TablePreferredWidth::Pct { value });
+    }
+    match get_attribute(tag, "w:type").as_deref().unwrap_or("dxa") {
+        "auto" => Some(TablePreferredWidth::Auto),
+        "nil" => Some(TablePreferredWidth::Nil),
+        "pct" => {
+            let value = raw.parse::<i64>().ok()? as f64 / 50.0;
+            (value >= 0.0).then_some(TablePreferredWidth::Pct { value })
+        }
+        "dxa" => {
+            let value = if let Ok(value) = raw.parse::<i64>() {
+                value as f64
+            } else {
+                let units = [
+                    ("mm", 1440.0 / 25.4),
+                    ("cm", 1440.0 / 2.54),
+                    ("in", 1440.0),
+                    ("pt", 20.0),
+                    ("pc", 240.0),
+                    ("pi", 240.0),
+                ];
+                let (number, factor) = units.iter().find_map(|(suffix, factor)| {
+                    raw.strip_suffix(suffix).map(|number| (number, *factor))
+                })?;
+                number.parse::<f64>().ok()? * factor
+            };
+            (value.is_finite() && value >= 0.0).then_some(TablePreferredWidth::Dxa { value })
+        }
+        _ => None,
+    }
+}
+
+pub(crate) fn preferred_width_twips(width: &TablePreferredWidth) -> Option<i64> {
+    match width {
+        TablePreferredWidth::Dxa { value } if value.is_finite() && *value >= 0.0 => {
+            Some(value.round() as i64)
+        }
+        _ => None,
+    }
+}
+
 /// Mirrors TypeScript `parseTableStylePropertiesFromXml`.
 pub fn parse_table_style_properties_from_xml(
     table_properties_xml: Option<&str>,
 ) -> Option<ParsedTableProperties> {
     let table_properties_xml = table_properties_xml?;
 
-    let table_width_tag = super::scan::find_tag_token(table_properties_xml, "w:tblW");
-    let table_width_type = table_width_tag
-        .as_deref()
-        .and_then(|tag| get_attribute(tag, "w:type"))
-        .map(|value| value.to_ascii_lowercase());
-    let table_width_raw = table_width_tag
-        .as_deref()
-        .and_then(|tag| parse_integer_attribute(tag, "w:w"));
-    let width_twips = if table_width_type.as_deref() == Some("dxa")
-        && table_width_raw.is_some_and(|value| value > 0)
-    {
-        table_width_raw
-    } else {
-        None
-    };
+    let preferred_width = direct_table_property(table_properties_xml, "w:tblW")
+        .and_then(parse_table_preferred_width);
+    let width_twips = preferred_width.as_ref().and_then(preferred_width_twips);
+    let alignment = direct_table_property(table_properties_xml, "w:jc")
+        .and_then(|tag| get_attribute(tag, "w:val"))
+        .and_then(|value| match value.as_str() {
+            "left" => Some(TableAlignment::Left),
+            "center" => Some(TableAlignment::Center),
+            "right" => Some(TableAlignment::Right),
+            _ => None,
+        });
+    let bidi_visual = direct_table_property(table_properties_xml, "w:bidiVisual")
+        .and_then(|tag| parse_on_off_attribute(tag, "bidiVisual"));
 
     let table_indent_tag = super::scan::find_tag_token(table_properties_xml, "w:tblInd");
     let table_indent_type = table_indent_tag
@@ -651,6 +706,9 @@ pub fn parse_table_style_properties_from_xml(
 
     let properties = ParsedTableProperties {
         width_twips,
+        preferred_width,
+        alignment,
+        bidi_visual,
         indent_twips,
         layout,
         cell_spacing_twips,
@@ -665,7 +723,7 @@ pub fn parse_table_style_properties_from_xml(
     }
 }
 
-fn merge_table_style_properties(
+pub(crate) fn merge_table_style_properties(
     inherited: Option<&ParsedTableProperties>,
     direct: Option<&ParsedTableProperties>,
 ) -> Option<ParsedTableProperties> {
@@ -673,10 +731,18 @@ fn merge_table_style_properties(
         return None;
     }
 
+    let preferred_width = direct
+        .and_then(|value| value.preferred_width.clone())
+        .or_else(|| inherited.and_then(|value| value.preferred_width.clone()));
     let merged = ParsedTableProperties {
-        width_twips: direct
-            .and_then(|value| value.width_twips)
-            .or_else(|| inherited.and_then(|value| value.width_twips)),
+        width_twips: preferred_width.as_ref().and_then(preferred_width_twips),
+        preferred_width,
+        alignment: direct
+            .and_then(|value| value.alignment)
+            .or_else(|| inherited.and_then(|value| value.alignment)),
+        bidi_visual: direct
+            .and_then(|value| value.bidi_visual)
+            .or_else(|| inherited.and_then(|value| value.bidi_visual)),
         indent_twips: direct
             .and_then(|value| value.indent_twips)
             .or_else(|| inherited.and_then(|value| value.indent_twips)),
@@ -853,10 +919,9 @@ pub fn parse_table_conditional_style_from_xml(
         return None;
     }
 
-    let table_properties_xml = extract_balanced_tag_blocks(xml, "w:tblPr")
-        .into_iter()
-        .next()
-        .unwrap_or_default();
+    let table_properties_xml = direct_table_property(xml, "w:tblPr")
+        .unwrap_or_default()
+        .to_string();
     let paragraph_properties_xml = extract_balanced_tag_blocks(xml, "w:pPr")
         .into_iter()
         .next()
@@ -865,12 +930,16 @@ pub fn parse_table_conditional_style_from_xml(
         .into_iter()
         .next()
         .unwrap_or_default();
-    let cell_properties_xml = extract_balanced_tag_blocks(xml, "w:tcPr")
-        .into_iter()
-        .next()
-        .unwrap_or_default();
+    let cell_properties_xml = direct_table_property(xml, "w:tcPr")
+        .unwrap_or_default()
+        .to_string();
+    let cell_preferred_width = direct_table_property(&cell_properties_xml, "w:tcW")
+        .and_then(parse_table_preferred_width);
     let run_properties_xml = resolve_style_properties_block(xml, "w:rPr");
     let table_look = parse_table_look(Some(&table_properties_xml));
+    let paragraph_text_alignment = super::style::parse_paragraph_text_alignment_from_xml(
+        direct_table_property(xml, "w:pPr").unwrap_or_default(),
+    );
     let paragraph_align = map_alignment(
         super::scan::find_attribute_value_in_tag(&paragraph_properties_xml, "w:jc", "w:val")
             .as_deref(),
@@ -907,7 +976,9 @@ pub fn parse_table_conditional_style_from_xml(
 
     if row_background_color.is_none()
         && cell_background_color.is_none()
+        && cell_preferred_width.is_none()
         && paragraph_align.is_none()
+        && paragraph_text_alignment.is_none()
         && run_style.is_none()
         && table_borders.is_none()
         && cell_borders.is_none()
@@ -920,7 +991,9 @@ pub fn parse_table_conditional_style_from_xml(
     Some(ParsedTableStyleCondition {
         row_background_color,
         cell_background_color,
+        cell_preferred_width,
         paragraph_align,
+        paragraph_text_alignment,
         run_style,
         table_borders,
         cell_borders,
@@ -944,9 +1017,14 @@ fn merge_table_conditional_style(
         cell_background_color: direct
             .and_then(|value| value.cell_background_color.clone())
             .or_else(|| inherited.and_then(|value| value.cell_background_color.clone())),
+        cell_preferred_width: direct
+            .and_then(|value| value.cell_preferred_width.clone())
+            .or_else(|| inherited.and_then(|value| value.cell_preferred_width.clone())),
         paragraph_align: direct
             .and_then(|value| value.paragraph_align)
             .or_else(|| inherited.and_then(|value| value.paragraph_align)),
+        paragraph_text_alignment: direct.and_then(|value| value.paragraph_text_alignment)
+            .or_else(|| inherited.and_then(|value| value.paragraph_text_alignment)),
         run_style: merge_text_styles(
             inherited.and_then(|value| value.run_style.clone()),
             direct.and_then(|value| value.run_style.clone()),
@@ -971,7 +1049,9 @@ fn merge_table_conditional_style(
 
     if merged.row_background_color.is_none()
         && merged.cell_background_color.is_none()
+        && merged.cell_preferred_width.is_none()
         && merged.paragraph_align.is_none()
+        && merged.paragraph_text_alignment.is_none()
         && merged.run_style.is_none()
         && merged.table_borders.is_none()
         && merged.cell_borders.is_none()
@@ -998,6 +1078,7 @@ pub fn merge_text_styles(
         highlight: None,
         background_color: None,
         font_size_pt: None,
+        font_size_cs_pt: None,
         font_family: None,
         source_font_family: None,
         font_family_ascii: None,
@@ -1047,6 +1128,9 @@ pub fn merge_text_styles(
         }
         if style.font_size_pt.is_some() {
             merged.font_size_pt = style.font_size_pt;
+        }
+        if style.font_size_cs_pt.is_some() {
+            merged.font_size_cs_pt = style.font_size_cs_pt;
         }
         if style.font_family.is_some() {
             merged.font_family = style.font_family.clone();
@@ -1128,6 +1212,7 @@ pub fn merge_text_styles(
         || merged.highlight.is_some()
         || merged.background_color.is_some()
         || merged.font_size_pt.is_some()
+        || merged.font_size_cs_pt.is_some()
         || merged.font_family.is_some()
         || merged.source_font_family.is_some()
         || merged.font_family_ascii.is_some()
@@ -1493,8 +1578,8 @@ pub fn parse_text_style_from_xml(xml: &str, theme_fonts: &ThemeFontMap) -> Optio
     let shading_tag = super::scan::find_tag_token(xml, "w:shd");
     let character_spacing_match =
         super::scan::find_attribute_value_in_tag(xml, "w:spacing", "w:val");
-    let size_match = super::scan::find_attribute_value_in_tag(xml, "w:sz", "w:val")
-        .or_else(|| super::scan::find_attribute_value_in_tag(xml, "w:szCs", "w:val"));
+    let size_match = super::scan::find_attribute_value_in_tag(xml, "w:sz", "w:val");
+    let complex_size_match = super::scan::find_attribute_value_in_tag(xml, "w:szCs", "w:val");
     let run_fonts_tag = super::scan::find_tag_token(xml, "w:rFonts").unwrap_or_default();
     let ascii_font = get_attribute(&run_fonts_tag, "w:ascii");
     let h_ansi_font = get_attribute(&run_fonts_tag, "w:hAnsi");
@@ -1535,6 +1620,7 @@ pub fn parse_text_style_from_xml(xml: &str, theme_fonts: &ThemeFontMap) -> Optio
         highlight: None,
         background_color: None,
         font_size_pt: None,
+        font_size_cs_pt: None,
         font_family: None,
         source_font_family: None,
         font_family_ascii: None,
@@ -1619,6 +1705,9 @@ pub fn parse_text_style_from_xml(xml: &str, theme_fonts: &ThemeFontMap) -> Optio
         style.font_size_pt = Some(size_raw / 2.0);
     } else if let Some(size_raw) = drawing_size_match.and_then(|raw| raw.parse::<f64>().ok()) {
         style.font_size_pt = Some(size_raw / 100.0);
+    }
+    if let Some(size_raw) = complex_size_match.and_then(|raw| raw.parse::<f64>().ok()) {
+        style.font_size_cs_pt = Some(size_raw / 2.0);
     }
 
     style.font_family_ascii = ascii_font.clone();
@@ -1957,6 +2046,10 @@ pub fn parse_style_sheet(pkg: &OoxmlPackage) -> ParsedStyleSheet {
         let paragraph_defaults = resolve_style_properties_block(&doc_defaults_xml, "w:pPr");
         let default_paragraph_has_num_pr = super::scan::contains_tag(&paragraph_defaults, "w:numPr");
         let align = parse_paragraph_align_from_xml(&paragraph_defaults);
+        let text_alignment = super::style::parse_paragraph_text_alignment_from_xml(
+            direct_table_property(&doc_defaults_xml, "w:pPrDefault")
+                .and_then(|xml| direct_table_property(xml, "w:pPr")).unwrap_or_default(),
+        );
         let spacing = parse_paragraph_spacing_from_xml(&paragraph_defaults);
         let indent = parse_paragraph_indent_from_xml(&paragraph_defaults);
         let background_color = parse_paragraph_shading_from_xml(&paragraph_defaults);
@@ -1975,6 +2068,7 @@ pub fn parse_style_sheet(pkg: &OoxmlPackage) -> ParsedStyleSheet {
         let page_break_before = parse_on_off_attribute(&paragraph_defaults, "pageBreakBefore");
 
         if align.is_none()
+            && text_alignment.is_none()
             && spacing.is_none()
             && indent.is_none()
             && background_color.is_none()
@@ -1991,6 +2085,11 @@ pub fn parse_style_sheet(pkg: &OoxmlPackage) -> ParsedStyleSheet {
         } else {
             Some(ParagraphStyle {
                 align,
+                text_alignment,
+                source_text_alignment: None,
+                source_has_text_alignment: None,
+                source_inherited_text_alignment: None,
+                source_table_text_alignment: None,
                 heading_level: None,
                 style_id: None,
                 style_name: None,
@@ -2056,6 +2155,9 @@ pub fn parse_style_sheet(pkg: &OoxmlPackage) -> ParsedStyleSheet {
                 based_on_id: get_attribute(&based_on_tag, "w:val"),
                 next_style_id: get_attribute(&next_tag, "w:val"),
                 align: parse_paragraph_align_from_xml(&paragraph_properties_xml),
+                text_alignment: super::style::parse_paragraph_text_alignment_from_xml(
+                    direct_table_property(&style_xml, "w:pPr").unwrap_or_default(),
+                ),
                 heading_level,
                 numbering: if style_has_paragraph_num_pr && parsed_style_numbering.is_none() {
                     Some(ParagraphNumbering { num_id: 0, ilvl: 0 })
@@ -2203,6 +2305,8 @@ pub fn parse_style_sheet(pkg: &OoxmlPackage) -> ParsedStyleSheet {
             based_on_id: style.based_on_id.clone(),
             next_style_id: style.next_style_id.clone(),
             align: style.align.or(inherited.as_ref().and_then(|value| value.align)),
+            text_alignment: style.text_alignment.or(inherited.as_ref().and_then(|value| value.text_alignment)),
+            source_has_text_alignment: Some(style.text_alignment.or(inherited.as_ref().and_then(|value| value.text_alignment)).is_some()),
             heading_level: style
                 .heading_level
                 .or(inherited.as_ref().and_then(|value| value.heading_level)),
@@ -2281,6 +2385,10 @@ pub fn parse_style_sheet(pkg: &OoxmlPackage) -> ParsedStyleSheet {
             )
         })
         .collect();
+
+    for style in &mut paragraph_styles {
+        style.text_alignment = style.text_alignment.or(default_paragraph_style.as_ref().and_then(|style| style.text_alignment));
+    }
 
     paragraph_styles.sort_by(|left, right| {
         let left_priority = left.ui_priority.unwrap_or(9999);
@@ -2393,6 +2501,11 @@ pub fn parse_style_sheet(pkg: &OoxmlPackage) -> ParsedStyleSheet {
     let merged_default_paragraph_style = resolved_default_paragraph_style.as_ref().map(|resolved| {
         ParagraphStyle {
             align: resolved.align.or(default_paragraph_style.as_ref().and_then(|value| value.align)),
+            text_alignment: resolved.text_alignment.or(default_paragraph_style.as_ref().and_then(|value| value.text_alignment)),
+            source_text_alignment: None,
+            source_has_text_alignment: None,
+            source_inherited_text_alignment: None,
+            source_table_text_alignment: None,
             heading_level: resolved.heading_level,
             style_id: default_paragraph_style_id.clone(),
             style_name: Some(resolved.name.clone()),
@@ -2493,6 +2606,7 @@ pub fn parse_style_sheet(pkg: &OoxmlPackage) -> ParsedStyleSheet {
         run_style_by_id,
         table_style_by_id,
         table_paragraph_spacing_by_style_id,
+        default_paragraph_text_alignment: default_paragraph_style.as_ref().and_then(|style| style.text_alignment),
         default_paragraph_style: merged_default_paragraph_style,
         default_paragraph_style_id,
         default_run_style: merge_text_styles(

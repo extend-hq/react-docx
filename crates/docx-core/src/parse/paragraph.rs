@@ -8,7 +8,7 @@ use crate::model::{
 use crate::parse::context::ParseContext;
 use crate::parse::re;
 use crate::parse::images::parse_run_images;
-use crate::parse::style::{parse_paragraph_style_in_table, parse_run_style};
+use crate::parse::style::{parse_paragraph_style_in_table, parse_run_style_in_table};
 use crate::parse::util::{
     decode_hex_code_point, decode_xml_attribute, normalize_legacy_form_display_value,
     on_off_value_to_boolean, parse_on_off_tag_value, parse_relationships_from_parts, prefer_alternate_content_choice,
@@ -354,6 +354,7 @@ fn parse_legacy_form_field_from_range(
     runs: &[ParagraphRunToken],
     context: &ParseContext<'_>,
     paragraph_style_id: Option<&str>,
+    table_run_style: Option<&TextStyle>,
     start_run_index: usize,
     separate_run_index: Option<usize>,
     end_run_index: usize,
@@ -394,7 +395,9 @@ fn parse_legacy_form_field_from_range(
         })
         .or_else(|| runs.get(start_run_index))
         .map(|r| r.xml.as_str());
-    let style = style_run_xml.and_then(|xml| parse_run_style(xml, context, paragraph_style_id));
+    let style = style_run_xml.and_then(|xml| {
+        parse_run_style_in_table(xml, context, paragraph_style_id, table_run_style)
+    });
     let link = runs
         .get(start_run_index..=end_run_index.min(runs.len().saturating_sub(1)))
         .and_then(|slice| slice.iter().find_map(|r| r.link.clone()));
@@ -655,6 +658,7 @@ fn parse_legacy_paragraph_form_field_tokens(
     runs: &[ParagraphRunToken],
     context: &ParseContext<'_>,
     paragraph_style_id: Option<&str>,
+    table_run_style: Option<&TextStyle>,
 ) -> Vec<ParagraphFormFieldToken> {
     if runs.is_empty() {
         return Vec::new();
@@ -710,6 +714,7 @@ fn parse_legacy_paragraph_form_field_tokens(
                     runs,
                     context,
                     paragraph_style_id,
+                    table_run_style,
                     current.0,
                     current.1,
                     run_index,
@@ -734,6 +739,7 @@ fn parse_form_field_from_sdt_xml(
     sdt_xml: &str,
     context: &ParseContext<'_>,
     paragraph_style_id: Option<&str>,
+    table_run_style: Option<&TextStyle>,
     link: Option<String>,
 ) -> Option<FormFieldRunNode> {
     let sdt_properties_xml = extract_balanced_tag_blocks(sdt_xml, "w:sdtPr")
@@ -793,7 +799,7 @@ fn parse_form_field_from_sdt_xml(
         .next();
     let style = first_run_xml
         .as_deref()
-        .and_then(|xml| parse_run_style(xml, context, paragraph_style_id));
+        .and_then(|xml| parse_run_style_in_table(xml, context, paragraph_style_id, table_run_style));
     let content_text = parse_run_text(&sdt_content_xml);
     let trimmed_content_text = content_text.trim();
 
@@ -987,12 +993,29 @@ pub fn parse_paragraph_form_field_tokens(
     paragraph_style_id: Option<&str>,
     runs: Option<&[ParagraphRunToken]>,
 ) -> Vec<ParagraphFormFieldToken> {
+    parse_paragraph_form_field_tokens_in_table(paragraph_xml, context, paragraph_style_id, runs, None)
+}
+
+fn parse_paragraph_form_field_tokens_in_table(
+    paragraph_xml: &str,
+    context: &ParseContext<'_>,
+    paragraph_style_id: Option<&str>,
+    runs: Option<&[ParagraphRunToken]>,
+    table_run_style: Option<&TextStyle>,
+) -> Vec<ParagraphFormFieldToken> {
     let paragraph_runs: Vec<ParagraphRunToken> = runs
         .map(|r| r.to_vec())
         .unwrap_or_else(|| parse_paragraph_runs(paragraph_xml, context));
+    let story_runs: Vec<_> = paragraph_runs.iter().map(|run| ParagraphRunToken {
+        xml: strip_text_box_content(&run.xml),
+        ..run.clone()
+    }).collect();
     let legacy_tokens =
-        parse_legacy_paragraph_form_field_tokens(paragraph_xml, &paragraph_runs, context, paragraph_style_id);
-    let sdt_ranges = extract_balanced_tag_ranges(paragraph_xml, "w:sdt");
+        parse_legacy_paragraph_form_field_tokens(paragraph_xml, &story_runs, context, paragraph_style_id, table_run_style);
+    let text_box_ranges = extract_balanced_tag_ranges(paragraph_xml, "w:txbxContent");
+    let sdt_ranges: Vec<_> = extract_balanced_tag_ranges(paragraph_xml, "w:sdt").into_iter()
+        .filter(|range| !text_box_ranges.iter().any(|story| range.start >= story.start && range.end <= story.end))
+        .collect();
     if sdt_ranges.is_empty() {
         return legacy_tokens;
     }
@@ -1020,7 +1043,7 @@ pub fn parse_paragraph_form_field_tokens(
                     && href.is_some()
             })
             .and_then(|(_, href)| href.clone());
-        if let Some(field) = parse_form_field_from_sdt_xml(sdt_xml, context, paragraph_style_id, link) {
+        if let Some(field) = parse_form_field_from_sdt_xml(sdt_xml, context, paragraph_style_id, table_run_style, link) {
             sdt_tokens.push(ParagraphFormFieldToken {
                 start: range.start,
                 end: range.end,
@@ -1039,17 +1062,57 @@ fn parse_paragraph_mark_run_style(
     paragraph_xml: &str,
     context: &ParseContext<'_>,
     paragraph_style_id: Option<&str>,
+    table_run_style: Option<&TextStyle>,
 ) -> Option<TextStyle> {
-    let paragraph_properties_xml = extract_balanced_tag_blocks(paragraph_xml, "w:pPr")
+    let paragraph_properties_xml = super::styles::direct_table_property(paragraph_xml, "w:pPr")
+        .unwrap_or_default()
+        .to_string();
+    let mark_run_properties_xml =
+        crate::xml::extract_direct_child_tag_ranges(&paragraph_properties_xml)
+            .into_iter()
+            .find(|range| range.tag_name.eq_ignore_ascii_case("w:rPr"))
+            .map(|range| paragraph_properties_xml[range.start..range.end].to_string())
+            .unwrap_or_default();
+    let mut effective_mark_run_properties_xml = mark_run_properties_xml.clone();
+    for range in crate::xml::extract_direct_child_tag_ranges(&mark_run_properties_xml)
         .into_iter()
-        .next()
-        .unwrap_or_default();
-    let mark_run_properties_xml = extract_balanced_tag_blocks(&paragraph_properties_xml, "w:rPr")
+        .rev()
+        .filter(|range| range.tag_name.eq_ignore_ascii_case("w:rPrChange"))
+    {
+        effective_mark_run_properties_xml.replace_range(range.start..range.end, "");
+    }
+    let synthetic_mark_run_xml = format!("<w:r>{}</w:r>", effective_mark_run_properties_xml);
+    parse_run_style_in_table(&synthetic_mark_run_xml, context, paragraph_style_id, table_run_style)
+}
+
+fn parse_paragraph_mark_formatting(
+    source_mark: Option<&str>,
+    context: &ParseContext<'_>,
+    table_run_style: Option<&TextStyle>,
+) -> crate::model::ParagraphMarkFormattingSource {
+    let source_mark = source_mark.unwrap_or("<w:rPr/>");
+    let mut current = source_mark.to_string();
+    for range in crate::xml::extract_direct_child_tag_ranges(source_mark)
         .into_iter()
-        .next()
-        .unwrap_or_default();
-    let synthetic_mark_run_xml = format!("<w:r>{}</w:r>", mark_run_properties_xml);
-    parse_run_style(&synthetic_mark_run_xml, context, paragraph_style_id)
+        .rev()
+        .filter(|range| range.tag_name.eq_ignore_ascii_case("w:rPrChange"))
+    {
+        current.replace_range(range.start..range.end, "");
+    }
+    let character_style = super::styles::direct_table_property(&current, "w:rStyle")
+        .and_then(|tag| get_attribute(tag, "w:val"))
+        .and_then(|id| context.style_sheet.run_style_by_id.get(&id).cloned());
+    crate::model::ParagraphMarkFormattingSource {
+        default_style: super::util::merge_text_styles(&[
+            context.style_sheet.default_run_style.clone(),
+            table_run_style.cloned(),
+        ]),
+        character_style,
+        direct_style: super::style::parse_text_style_from_xml(
+            &current,
+            &context.style_sheet.theme_fonts,
+        ),
+    }
 }
 
 pub fn parse_paragraph(paragraph_xml: &str, context: &ParseContext<'_>) -> ParagraphNode {
@@ -1061,16 +1124,47 @@ pub fn parse_paragraph_in_table(
     context: &ParseContext<'_>,
     table_paragraph_spacing: Option<&crate::model::ParagraphSpacing>,
 ) -> ParagraphNode {
+    parse_paragraph_with_table_run_style(paragraph_xml, context, table_paragraph_spacing, None)
+}
+
+pub(crate) fn parse_paragraph_with_table_run_style(
+    paragraph_xml: &str,
+    context: &ParseContext<'_>,
+    table_paragraph_spacing: Option<&crate::model::ParagraphSpacing>,
+    table_run_style: Option<&TextStyle>,
+) -> ParagraphNode {
     let mut children: Vec<ParagraphChildNode> = Vec::new();
     let paragraph_style =
         parse_paragraph_style_in_table(paragraph_xml, context, table_paragraph_spacing);
-    let paragraph_mark_deleted = re::get_unchecked(r"(?is)<w:pPr\b[\s\S]*?<w:rPr\b[\s\S]*?<w:del\b").is_match(paragraph_xml);
+    let paragraph_mark_style = parse_paragraph_mark_run_style(
+        paragraph_xml,
+        context,
+        paragraph_style.as_ref().and_then(|style| style.style_id.as_deref()),
+        table_run_style,
+    );
+    let paragraph_properties_xml = super::styles::direct_table_property(paragraph_xml, "w:pPr")
+        .unwrap_or_default()
+        .to_string();
+    let source_paragraph_mark_properties_xml =
+        crate::xml::extract_direct_child_tag_ranges(&paragraph_properties_xml)
+            .into_iter()
+            .find(|range| range.tag_name.eq_ignore_ascii_case("w:rPr"))
+            .map(|range| paragraph_properties_xml[range.start..range.end].to_string());
+    let source_paragraph_mark_formatting = parse_paragraph_mark_formatting(
+        source_paragraph_mark_properties_xml.as_deref(),
+        context,
+        table_run_style,
+    );
+    let paragraph_mark_deleted = source_paragraph_mark_properties_xml
+        .as_deref()
+        .is_some_and(|xml| super::styles::direct_table_property(xml, "w:del").is_some());
     let runs = parse_paragraph_runs(paragraph_xml, context);
-    let form_field_tokens = parse_paragraph_form_field_tokens(
+    let form_field_tokens = parse_paragraph_form_field_tokens_in_table(
         paragraph_xml,
         context,
         paragraph_style.as_ref().and_then(|s| s.style_id.as_deref()),
         Some(&runs),
+        table_run_style,
     );
 
     enum ContentToken<'a> {
@@ -1115,10 +1209,11 @@ pub fn parse_paragraph_in_table(
                 children.push(ParagraphChildNode::FormField(token.field.clone()));
             }
             ContentToken::Run { token: run, .. } => {
-                let style = parse_run_style(
+                let style = parse_run_style_in_table(
                     &run.xml,
                     context,
                     paragraph_style.as_ref().and_then(|s| s.style_id.as_deref()),
+                    table_run_style,
                 );
                 if let Some(active_x_field) =
                     parse_run_active_x_checkbox_field(&run.xml, context, style.clone(), run.link.clone())
@@ -1127,11 +1222,9 @@ pub fn parse_paragraph_in_table(
                     continue;
                 }
                 let images = parse_run_images(&run.xml, context);
-                let run_xml_for_text = if images.iter().any(|image| image.synthetic_text_box.unwrap_or(false)) {
-                    strip_text_box_content(&run.xml)
-                } else {
-                    run.xml.clone()
-                };
+                // Text boxes own a separate story, including when their drawing
+                // renders as a group or cannot be represented as an image.
+                let run_xml_for_text = strip_text_box_content(&run.xml);
                 let parsed_tokens = parse_run_text_tokens(&run_xml_for_text);
                 for token in parsed_tokens {
                     if token.text.is_empty() && token.note_reference.is_none() {
@@ -1159,11 +1252,7 @@ pub fn parse_paragraph_in_table(
         children.push(ParagraphChildNode::Text(TextRunNode {
             r#type: TextRunNodeType::Text,
             text: String::new(),
-            style: parse_paragraph_mark_run_style(
-                paragraph_xml,
-                context,
-                paragraph_style.as_ref().and_then(|s| s.style_id.as_deref()),
-            ),
+            style: paragraph_mark_style.clone(),
             link: None,
             note_reference: None,
         }));
@@ -1185,6 +1274,10 @@ pub fn parse_paragraph_in_table(
     ParagraphNode {
         r#type: ParagraphNodeType::Paragraph,
         style: paragraph_style,
+        paragraph_mark_style: paragraph_mark_style.clone(),
+        source_paragraph_mark_style: paragraph_mark_style,
+        source_paragraph_mark_formatting: Some(source_paragraph_mark_formatting),
+        source_paragraph_mark_properties_xml,
         paragraph_mark_deleted: if paragraph_mark_deleted { Some(true) } else { None },
         children,
         source_xml: Some(paragraph_xml.to_string()),

@@ -3,7 +3,7 @@ use std::collections::HashMap;
 
 use crate::model::{
     ParagraphSpacing, ParagraphStyle, ParagraphStyleDefinition, TableBoxSpacing, TableBorderSet,
-    TableFloating, TableLayout, TextStyle,
+    TableFloating, TableLayout, TableAlignment, TablePreferredWidth, TextStyle,
 };
 use crate::package::OoxmlPart;
 
@@ -81,6 +81,9 @@ pub struct ParsedTableLook {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ParsedTableProperties {
     pub width_twips: Option<i64>,
+    pub preferred_width: Option<TablePreferredWidth>,
+    pub alignment: Option<TableAlignment>,
+    pub bidi_visual: Option<bool>,
     pub indent_twips: Option<i64>,
     pub layout: Option<TableLayout>,
     pub cell_spacing_twips: Option<i64>,
@@ -93,7 +96,9 @@ pub struct ParsedTableProperties {
 pub struct ParsedTableStyleCondition {
     pub row_background_color: Option<String>,
     pub cell_background_color: Option<String>,
+    pub cell_preferred_width: Option<TablePreferredWidth>,
     pub paragraph_align: Option<crate::model::ParagraphAlignment>,
+    pub paragraph_text_alignment: Option<crate::model::ParagraphTextAlignment>,
     pub run_style: Option<TextStyle>,
     pub table_borders: Option<TableBorderSet>,
     pub cell_borders: Option<TableBorderSet>,
@@ -124,6 +129,7 @@ pub struct ParsedStyleSheet {
     /// paragraph styles for every paragraph inside a styled table.
     pub table_paragraph_spacing_by_style_id: HashMap<String, ParagraphSpacing>,
     pub default_paragraph_style: Option<ParagraphStyle>,
+    pub default_paragraph_text_alignment: Option<crate::model::ParagraphTextAlignment>,
     pub default_paragraph_style_id: Option<String>,
     pub default_run_style: Option<TextStyle>,
     pub theme_fonts: ThemeFontMap,
@@ -145,6 +151,7 @@ pub fn empty_style_sheet() -> ParsedStyleSheet {
         table_style_by_id: HashMap::new(),
         table_paragraph_spacing_by_style_id: HashMap::new(),
         default_paragraph_style: None,
+        default_paragraph_text_alignment: None,
         default_paragraph_style_id: None,
         default_run_style: None,
         theme_fonts: ThemeFontMap::default(),

@@ -7,6 +7,7 @@ import type {
   ParagraphBorderSet,
   ParagraphBorderStyle,
   ParagraphIndent,
+  ParagraphMarkFormattingSource,
   ParagraphNode,
   ParagraphNumbering,
   ParagraphSpacing,
@@ -17,6 +18,9 @@ import type {
   TableBoxSpacing,
   TableCellContentNode,
   TableNode,
+  TablePreferredWidth,
+  TableWidthSource,
+  TableRowStyle,
   TableStyle,
   TextStyle,
 } from "./types";
@@ -103,6 +107,7 @@ function cloneParagraphStyle(
     spacing: cloneParagraphSpacing(style.spacing),
     indent: cloneParagraphIndent(style.indent),
     borders: cloneParagraphBorderSet(style.borders),
+    tabStops: style.tabStops?.map((stop) => ({ ...stop })),
     dropCap: style.dropCap
       ? {
           ...style.dropCap,
@@ -120,6 +125,18 @@ function cloneTextStyle(style?: TextStyle): TextStyle | undefined {
     : undefined;
 }
 
+export function cloneParagraphMarkFormatting(
+  formatting?: ParagraphMarkFormattingSource
+): ParagraphMarkFormattingSource | undefined {
+  return formatting
+    ? {
+        defaultStyle: cloneTextStyle(formatting.defaultStyle),
+        characterStyle: cloneTextStyle(formatting.characterStyle),
+        directStyle: cloneTextStyle(formatting.directStyle),
+      }
+    : undefined;
+}
+
 export function cloneParagraphNode(paragraph: ParagraphNode): ParagraphNode {
   return cloneParagraph(paragraph);
 }
@@ -133,6 +150,12 @@ function cloneParagraph(paragraph: ParagraphNode): ParagraphNode {
     type: "paragraph",
     blockId: paragraph.blockId,
     style: cloneParagraphStyle(paragraph.style),
+    paragraphMarkStyle: cloneTextStyle(paragraph.paragraphMarkStyle),
+    sourceParagraphMarkStyle: cloneTextStyle(paragraph.sourceParagraphMarkStyle),
+    sourceParagraphMarkFormatting: cloneParagraphMarkFormatting(
+      paragraph.sourceParagraphMarkFormatting
+    ),
+    sourceParagraphMarkPropertiesXml: paragraph.sourceParagraphMarkPropertiesXml,
     paragraphMarkDeleted: paragraph.paragraphMarkDeleted,
     sourceXml: paragraph.sourceXml,
     sourceTextPatch: paragraph.sourceTextPatch
@@ -310,6 +333,35 @@ function cloneTableFloatingStyle(
   };
 }
 
+function cloneTablePreferredWidth(
+  width?: TablePreferredWidth
+): TablePreferredWidth | undefined {
+  return width ? { ...width } : undefined;
+}
+
+function cloneTableWidthSource(
+  source?: TableWidthSource
+): TableWidthSource | undefined {
+  return source ? {
+    ...source,
+    preferredWidth: cloneTablePreferredWidth(source.preferredWidth),
+    inheritedPreferredWidth: cloneTablePreferredWidth(source.inheritedPreferredWidth),
+  } : undefined;
+}
+
+function cloneTableRowStyle(style?: TableRowStyle): TableRowStyle | undefined {
+  return style ? {
+    ...style,
+    widthBefore: cloneTablePreferredWidth(style.widthBefore),
+    widthAfter: cloneTablePreferredWidth(style.widthAfter),
+    sourceRowGeometry: style.sourceRowGeometry ? {
+      ...style.sourceRowGeometry,
+      widthBefore: cloneTablePreferredWidth(style.sourceRowGeometry.widthBefore),
+      widthAfter: cloneTablePreferredWidth(style.sourceRowGeometry.widthAfter),
+    } : undefined,
+  } : undefined;
+}
+
 function cloneTable(table: TableNode): TableNode {
   return {
     type: "table",
@@ -321,7 +373,17 @@ function cloneTable(table: TableNode): TableNode {
     })),
     style: table.style
       ? {
+          styleId: table.style.styleId,
+          sourceStyleId: table.style.sourceStyleId,
           widthTwips: table.style.widthTwips,
+          preferredWidth: cloneTablePreferredWidth(table.style.preferredWidth),
+          sourceWidth: cloneTableWidthSource(table.style.sourceWidth),
+          alignment: table.style.alignment,
+          sourceAlignment: table.style.sourceAlignment,
+          sourceInheritedAlignment: table.style.sourceInheritedAlignment,
+          bidiVisual: table.style.bidiVisual,
+          sourceBidiVisual: table.style.sourceBidiVisual,
+          sourceInheritedBidiVisual: table.style.sourceInheritedBidiVisual,
           indentTwips: table.style.indentTwips,
           layout: table.style.layout,
           cellSpacingTwips: table.style.cellSpacingTwips,
@@ -335,12 +397,14 @@ function cloneTable(table: TableNode): TableNode {
       : undefined,
     rows: table.rows.map((row) => ({
       type: "table-row",
-      style: row.style ? { ...row.style } : undefined,
+      style: cloneTableRowStyle(row.style),
       cells: row.cells.map((cell) => ({
         type: "table-cell",
         style: cell.style
           ? {
               ...cell.style,
+              preferredWidth: cloneTablePreferredWidth(cell.style.preferredWidth),
+              sourceWidth: cloneTableWidthSource(cell.style.sourceWidth),
               marginTwips: cloneTableBoxSpacing(cell.style.marginTwips),
               borders: cloneTableBorderSet(cell.style.borders),
             }
@@ -435,6 +499,9 @@ export function cloneDocModel(model: DocModel): DocModel {
         borders: cloneParagraphBorderSet(style.borders),
       })),
       defaultParagraphStyleId: model.metadata.defaultParagraphStyleId,
+      defaultTabStopTwips: model.metadata.defaultTabStopTwips,
+      documentSettingsImported: model.metadata.documentSettingsImported,
+      lineSpacingCompatibilityImported: model.metadata.lineSpacingCompatibilityImported,
       numberingDefinitions: cloneNumberingDefinitions(
         model.metadata.numberingDefinitions
       ),

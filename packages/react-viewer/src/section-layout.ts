@@ -70,6 +70,12 @@ export function twipsToPixels(twips?: number): number | undefined {
   return Math.max(0, Math.round((twips as number) / TWIPS_PER_PIXEL));
 }
 
+function sectionTwipsToPixels(twips?: number): number | undefined {
+  return Number.isFinite(twips)
+    ? Math.max(0, (twips as number) / TWIPS_PER_PIXEL)
+    : undefined;
+}
+
 function readTwipsAttribute(tagXml: string | undefined, attribute: string): number | undefined {
   if (!tagXml) {
     return undefined;
@@ -241,27 +247,34 @@ export function parseSectionLayout(sectionPropertiesXml?: string): DocumentLayou
   const pageMarginTag = sectionPropertiesXml.match(/<w:pgMar\b[^>]*>/i)?.[0];
   const docGridTag = sectionPropertiesXml.match(/<w:docGrid\b[^>]*\/?>/i)?.[0];
 
+  const pageWidthTwips = readTwipsAttribute(pageSizeTag, "w:w");
+  const pageHeightTwips = readTwipsAttribute(pageSizeTag, "w:h");
   const rawPageWidthPx =
-    twipsToPixels(readTwipsAttribute(pageSizeTag, "w:w")) ?? DEFAULT_DOCUMENT_LAYOUT.pageWidthPx;
+    sectionTwipsToPixels(pageWidthTwips) ?? DEFAULT_DOCUMENT_LAYOUT.pageWidthPx;
   const rawPageHeightPx =
-    twipsToPixels(readTwipsAttribute(pageSizeTag, "w:h")) ?? DEFAULT_DOCUMENT_LAYOUT.pageHeightPx;
+    sectionTwipsToPixels(pageHeightTwips) ?? DEFAULT_DOCUMENT_LAYOUT.pageHeightPx;
+  // Explicit dimensions define layout coordinates independently of print
+  // orientation. Only infer orientation for an incomplete page size.
   const pageSize = resolvePageSizeForOrientation({
     widthPx: rawPageWidthPx,
     heightPx: rawPageHeightPx,
-    orientation: readStringAttribute(pageSizeTag, "w:orient"),
+    orientation:
+      pageWidthTwips !== undefined && pageHeightTwips !== undefined
+        ? undefined
+        : readStringAttribute(pageSizeTag, "w:orient"),
   });
   const topMarginPx =
-    twipsToPixels(readTwipsAttribute(pageMarginTag, "w:top")) ?? DEFAULT_DOCUMENT_LAYOUT.marginsPx.top;
+    sectionTwipsToPixels(readTwipsAttribute(pageMarginTag, "w:top")) ?? DEFAULT_DOCUMENT_LAYOUT.marginsPx.top;
   const rightMarginPx =
-    twipsToPixels(readTwipsAttribute(pageMarginTag, "w:right")) ?? DEFAULT_DOCUMENT_LAYOUT.marginsPx.right;
+    sectionTwipsToPixels(readTwipsAttribute(pageMarginTag, "w:right")) ?? DEFAULT_DOCUMENT_LAYOUT.marginsPx.right;
   const bottomMarginPx =
-    twipsToPixels(readTwipsAttribute(pageMarginTag, "w:bottom")) ?? DEFAULT_DOCUMENT_LAYOUT.marginsPx.bottom;
+    sectionTwipsToPixels(readTwipsAttribute(pageMarginTag, "w:bottom")) ?? DEFAULT_DOCUMENT_LAYOUT.marginsPx.bottom;
   const leftMarginPx =
-    twipsToPixels(readTwipsAttribute(pageMarginTag, "w:left")) ?? DEFAULT_DOCUMENT_LAYOUT.marginsPx.left;
+    sectionTwipsToPixels(readTwipsAttribute(pageMarginTag, "w:left")) ?? DEFAULT_DOCUMENT_LAYOUT.marginsPx.left;
   const headerDistancePx =
-    twipsToPixels(readTwipsAttribute(pageMarginTag, "w:header")) ?? DEFAULT_DOCUMENT_LAYOUT.headerDistancePx;
+    sectionTwipsToPixels(readTwipsAttribute(pageMarginTag, "w:header")) ?? DEFAULT_DOCUMENT_LAYOUT.headerDistancePx;
   const footerDistancePx =
-    twipsToPixels(readTwipsAttribute(pageMarginTag, "w:footer")) ?? DEFAULT_DOCUMENT_LAYOUT.footerDistancePx;
+    sectionTwipsToPixels(readTwipsAttribute(pageMarginTag, "w:footer")) ?? DEFAULT_DOCUMENT_LAYOUT.footerDistancePx;
   // Word only snaps lines to the document grid for explicit grid types.
   // A bare <w:docGrid w:linePitch="..."/> (type "default") stores the pitch
   // but applies no grid, and Word writes that boilerplate into most documents.

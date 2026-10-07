@@ -10,12 +10,13 @@ import { normalizeDocModel } from "./normalize";
 import type { DocModel } from "./types";
 
 export * from "./types";
+export { resolveTableGridSkipCount, tableGridColumnBound, tableRowGridSkipCount } from "./table-grid";
 export {
   allocateBlockId,
   collectDuplicateDocModelBlockIds,
   ensureDocModelBlockIds
 } from "./block-id";
-export { cloneDocModel, cloneParagraphNode, cloneTableNode } from "./clone";
+export { cloneDocModel, cloneParagraphMarkFormatting, cloneParagraphNode, cloneTableNode } from "./clone";
 export { deepFreezeDocModel } from "./freeze";
 export { normalizeDocModel } from "./normalize";
 

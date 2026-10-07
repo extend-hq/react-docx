@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
-import type { FooterSection } from "@extend-ai/react-docx-doc-model";
+import type { FooterSection, ImageRunNode } from "@extend-ai/react-docx-doc-model";
 import {
+  buildPaginationSectionMetrics,
   resolveFooterPaginationReservePx,
+  resolveHeaderPaginationReservePx,
   resolveMeasuredBodyRenderedBottomPx,
   resolveMeasuredPageContentHeightPx,
   resolvePageContentHeightPxForPageSegments,
@@ -66,6 +68,84 @@ function floatingFooterImageParagraph(
 }
 
 describe("footer pagination reserve", () => {
+  it("excludes behind-text header artwork from flow and body reserves", () => {
+    const overlay = floatingFooterImageParagraph(0, 400, true).children[0];
+    const paragraph = {
+      ...footerParagraph("Header"),
+      children: [
+        ...footerParagraph("Header").children,
+        { ...overlay, widthPx: 800, floating: { ...overlay.floating, verticalRelativeTo: "paragraph" as const } },
+      ],
+    };
+    expect(resolveHeaderPaginationReservePx([{
+      partName: "header", referenceType: "default", nodes: [paragraph],
+    }], {
+      pageWidthPx: 800, pageHeightPx: 1100,
+      marginsPx: { left: 60, right: 60, top: 100, bottom: 60 },
+      headerDistancePx: 40,
+    })).toBe(0);
+  });
+
+  it("ignores inactive inherited first and even header variants during pagination", () => {
+    const layout = {
+      pageWidthPx: 800, pageHeightPx: 1100,
+      marginsPx: { left: 60, right: 60, top: 100, bottom: 60 },
+      headerDistancePx: 40, footerDistancePx: 40,
+    };
+    const properties = '<w:sectPr><w:pgSz w:w="12000" w:h="16500"/><w:pgMar w:top="1500" w:right="900" w:bottom="900" w:left="900" w:header="600" w:footer="600"/></w:sectPr>';
+    const section = {
+      startNodeIndex: 0, sectionPropertiesXml: properties,
+      headerSections: [{
+        partName: "header", referenceType: "first",
+        nodes: [floatingFooterImageParagraph(100, 100, false)],
+      }], footerSections: [],
+    };
+    expect(buildPaginationSectionMetrics([section], layout)[0].pageContentHeightPx).toBe(940);
+    expect(buildPaginationSectionMetrics([{
+      ...section, sectionPropertiesXml: properties.replace('</w:sectPr>', '<w:titlePg/></w:sectPr>'),
+    }], layout)[0].pageContentHeightPx).toBeLessThan(940);
+    const evenSection = { ...section, headerSections: [{ ...section.headerSections[0], referenceType: "even" }] };
+    expect(buildPaginationSectionMetrics([evenSection], layout)[0].pageContentHeightPx).toBe(940);
+    expect(buildPaginationSectionMetrics([evenSection], layout, true)[0].pageContentHeightPx).toBeLessThan(940);
+  });
+
+  it("ignores a formatted empty footer even when its distance enters the body", () => {
+    const paragraph = {
+      ...footerParagraph(""),
+      paragraphMarkStyle: { fontFamily: "Arial", fontSizePt: 11 },
+      style: { spacing: { lineTwips: 240, lineRule: "auto" as const } },
+    };
+    expect(resolveFooterPaginationReservePx([{
+      partName: "word/footer1.xml", referenceType: "default", nodes: [paragraph],
+    }], {
+      pageWidthPx: 800, pageHeightPx: 1100,
+      marginsPx: { left: 60, right: 60, top: 160, bottom: 60 },
+      footerDistancePx: 90,
+    })).toBe(0);
+  });
+
+  it("measures a mixed-axis header float against the page without adding it to flow height", () => {
+    const base = floatingFooterImageParagraph(100, 30, false);
+    const image: ImageRunNode = {
+      ...base.children[0],
+      floating: {
+        ...base.children[0].floating,
+        horizontalRelativeTo: "column",
+        wrapType: "square",
+      },
+    };
+    const paragraph = { ...base, children: [image] };
+    const sections = [{ partName: "word/header1.xml", referenceType: "first", nodes: [paragraph] }];
+    const layout = {
+      pageWidthPx: 800, pageHeightPx: 1100,
+      marginsPx: { left: 60, right: 60, top: 160, bottom: 60 },
+      headerDistancePx: 40,
+    };
+    expect(resolveHeaderPaginationReservePx(sections, layout)).toBe(0);
+    image.floating!.yPx = 180;
+    expect(resolveHeaderPaginationReservePx(sections, layout)).toBeGreaterThanOrEqual(50);
+  });
+
   it("reserves body height when footer content would rise into the bottom margin", () => {
     const footerSections: FooterSection[] = [
       {

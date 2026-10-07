@@ -39,6 +39,7 @@ pub use images::{
 pub use metadata::{
     extract_document_open_tag, extract_section_properties_xml, parse_document_background_color,
     parse_document_compatibility_settings, parse_document_page_count_from_app_properties,
+    parse_document_default_tab_stop_twips,
 };
 pub use numbering::{
     parse_css_point_value, parse_numbering_definitions, parse_numbering_level_definition,
@@ -57,6 +58,7 @@ pub use style::{
     parse_paragraph_align_from_xml, parse_paragraph_drop_cap_from_xml, parse_paragraph_style,
     parse_run_style, parse_text_style_from_xml,
 };
+pub(crate) use styles::{direct_table_property, parse_table_preferred_width};
 pub use styles::{
     clone_numbering_definitions, clone_paragraph_style_definition, merge_text_styles,
     normalize_heading_level, parse_floating_table_style, parse_paragraph_border_set_from_xml,
@@ -66,6 +68,7 @@ pub use styles::{
     parse_table_conditional_style_from_xml, parse_table_look, parse_table_style_properties_from_xml,
     parse_text_run_border_style, parse_theme_colors, parse_theme_fonts,
 };
+pub(crate) use table::{resolve_table_condition_for_cell, resolve_table_grid_skip_count, table_grid_column_bound};
 pub use table::{parse_table, parse_table_cell, parse_table_cell_content, ParsedTableCellResult};
 pub use util::{
     emu_to_pixels, merge_text_styles as util_merge_text_styles, normalize_hex_color as util_normalize_hex_color,

@@ -106,6 +106,14 @@ async function renderTableWidthPx(documentXml: string): Promise<number | undefin
 }
 
 describe("table width border bleed", () => {
+  it("preserves an absolute grid that deliberately extends beyond the text margins", async () => {
+    const xml = BORDERED_DOCUMENT_XML.replaceAll("10800", "11400").replace(
+      "<w:tblPr>",
+      '<w:tblPr><w:tblInd w:w="-300" w:type="dxa"/>'
+    );
+    await expect(renderTableWidthPx(xml)).resolves.toBe(760);
+  });
+
   it("shrinks collapsed content-width tables so the outer right border stays inside the page box", async () => {
     await expect(renderTableWidthPx(BORDERED_DOCUMENT_XML)).resolves.toBe(719);
   });

@@ -135,6 +135,7 @@ pub fn merge_text_styles(styles: &[Option<TextStyle>]) -> Option<TextStyle> {
         highlight: None,
         background_color: None,
         font_size_pt: None,
+        font_size_cs_pt: None,
         font_family: None,
         source_font_family: None,
         font_family_ascii: None,
@@ -186,6 +187,9 @@ pub fn merge_text_styles(styles: &[Option<TextStyle>]) -> Option<TextStyle> {
         }
         if style.font_size_pt.is_some() {
             merged.font_size_pt = style.font_size_pt;
+        }
+        if style.font_size_cs_pt.is_some() {
+            merged.font_size_cs_pt = style.font_size_cs_pt;
         }
         if style.font_family.is_some() {
             merged.font_family = style.font_family.clone();
