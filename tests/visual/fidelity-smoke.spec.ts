@@ -550,3 +550,121 @@ test("applies and toggles toolbar styles on each new selection", async ({
     )
     .toBe(true);
 });
+
+const VERTICAL_SELECTION_CONTENT_TYPES_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+  <Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
+</Types>`;
+
+const VERTICAL_SELECTION_DOCUMENT_RELATIONSHIPS_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+</Relationships>`;
+
+const VERTICAL_SELECTION_STYLES_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/></w:style>
+  <w:style w:type="paragraph" w:styleId="Heading2">
+    <w:name w:val="heading 2"/>
+    <w:basedOn w:val="Normal"/>
+    <w:next w:val="Normal"/>
+    <w:pPr><w:spacing w:before="240" w:after="120"/></w:pPr>
+    <w:rPr><w:b/><w:sz w:val="28"/></w:rPr>
+  </w:style>
+</w:styles>`;
+
+function verticalSelectionDocx(): Buffer {
+  const paragraph = (text: string, style?: string) =>
+    `<w:p>${
+      style ? `<w:pPr><w:pStyle w:val="${style}"/></w:pPr>` : ""
+    }<w:r><w:t>${text}</w:t></w:r></w:p>`;
+  const documentXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    ${paragraph("Section heading", "Heading2")}
+    ${paragraph("Alpha paragraph")}
+    ${paragraph("Bravo paragraph")}
+    ${paragraph("Charlie paragraph")}
+    ${paragraph("Delta paragraph")}
+    <w:sectPr>
+      <w:pgSz w:w="12240" w:h="15840"/>
+      <w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="708" w:footer="708" w:gutter="0"/>
+    </w:sectPr>
+  </w:body>
+</w:document>`;
+  return Buffer.from(
+    createZip([
+      {
+        name: "[Content_Types].xml",
+        content: VERTICAL_SELECTION_CONTENT_TYPES_XML,
+      },
+      { name: "_rels/.rels", content: ROOT_RELATIONSHIPS_XML },
+      {
+        name: "word/_rels/document.xml.rels",
+        content: VERTICAL_SELECTION_DOCUMENT_RELATIONSHIPS_XML,
+      },
+      { name: "word/styles.xml", content: VERTICAL_SELECTION_STYLES_XML },
+      { name: "word/document.xml", content: documentXml },
+    ])
+  );
+}
+
+test("extends the selection across paragraphs with Shift+ArrowUp/Down", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page.locator('input[type="file"][accept*=".doc"]').setInputFiles({
+    name: "vertical-selection.docx",
+    mimeType:
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    buffer: verticalSelectionDocx(),
+  });
+
+  const paragraph = (nodeIndex: number) =>
+    page
+      .locator(
+        `[data-docx-paragraph-kind="paragraph"][data-docx-paragraph-node-index="${nodeIndex}"]`
+      )
+      .first();
+  await expect(paragraph(4)).toContainText("Delta paragraph", {
+    timeout: 20_000,
+  });
+  const activeRange = () =>
+    page.evaluate(() => {
+      const range = (window as any).__DOCX_TEST_HOOKS__.getActionState()
+        .activeTextRange;
+      return range
+        ? [
+            range.start.location.nodeIndex,
+            range.start.offset,
+            range.end.location.nodeIndex,
+            range.end.offset,
+          ]
+        : null;
+    });
+
+  // Regular paragraphs: each press moves one paragraph, in both directions.
+  await selectTextOffsets(paragraph(1), 0, 0);
+  await page.keyboard.press("Shift+ArrowDown");
+  await expect.poll(activeRange).toEqual([1, 0, 2, 0]);
+  await page.keyboard.press("Shift+ArrowDown");
+  await expect.poll(activeRange).toEqual([1, 0, 3, 0]);
+  await page.keyboard.press("Shift+ArrowUp");
+  await expect.poll(activeRange).toEqual([1, 0, 2, 0]);
+  await page.keyboard.press("Backspace");
+  await expect(paragraph(1)).toHaveText("Bravo paragraph");
+
+  // From a heading on the wrapped-paragraph route: the textarea takes the
+  // first step into the next paragraph, and the next press keeps extending.
+  await expect(
+    paragraph(0).locator('[data-docx-wrapped-paragraph-root="true"]')
+  ).toHaveCount(1);
+  await selectTextOffsets(paragraph(0), 0, 0);
+  await page.keyboard.press("Shift+ArrowDown");
+  await expect.poll(activeRange).toEqual([0, 0, 1, 0]);
+  await page.keyboard.press("Shift+ArrowDown");
+  await expect.poll(activeRange).toEqual([0, 0, 2, 0]);
+});
