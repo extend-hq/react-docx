@@ -47595,6 +47595,140 @@ export function DocxEditorViewer({
     ]
   );
 
+  // Shift+ArrowUp/Down across paragraphs. Each paragraph is its own editing
+  // host, so the native extension stops at the host edge, and once focus is
+  // on the viewer root (cross-paragraph selections) it moves the DOM
+  // selection out of the paragraphs and the range is lost. This moves the
+  // focus boundary one line, into the next paragraph when it is on the edge
+  // line, and applies it the way Shift+click does.
+  const extendSelectionVertically = React.useCallback(
+    (direction: 1 | -1): boolean => {
+      const selection = window.getSelection();
+      if (!selection?.anchorNode || !selection.focusNode) {
+        return false;
+      }
+      const anchor = resolveParagraphBoundaryFromSelectionPoint(
+        selection.anchorNode,
+        selection.anchorOffset
+      );
+      const focus = resolveParagraphBoundaryFromSelectionPoint(
+        selection.focusNode,
+        selection.focusOffset
+      );
+      // Tables keep their own cell selection.
+      if (
+        !anchor ||
+        !focus ||
+        anchor.location.kind !== "paragraph" ||
+        focus.location.kind !== "paragraph"
+      ) {
+        return false;
+      }
+      // Once the selection spans paragraphs the key is always handled here,
+      // even when it can't move, so the native extension never drops it.
+      const spansParagraphs = !sameParagraphLocation(
+        anchor.location,
+        focus.location
+      );
+
+      const lineRectsOf = (element: Element): DOMRect[] => {
+        const range = document.createRange();
+        range.selectNodeContents(element);
+        return Array.from(range.getClientRects()).filter(
+          (rect) => rect.width > 0 && rect.height > 0
+        );
+      };
+      const caretRange = document.createRange();
+      try {
+        caretRange.setStart(selection.focusNode, selection.focusOffset);
+      } catch {
+        return spansParagraphs;
+      }
+      caretRange.collapse(true);
+      const caretRect =
+        caretRange.getClientRects()[0] ?? caretRange.getBoundingClientRect();
+      const focusHost = resolveParagraphHostElement(focus.location);
+      if (!caretRect || caretRect.height <= 0 || !focusHost) {
+        return spansParagraphs;
+      }
+      const focusLines = lineRectsOf(focusHost);
+      const edgeLine =
+        direction > 0 ? focusLines[focusLines.length - 1] : focusLines[0];
+      const caretMiddle = caretRect.top + caretRect.height / 2;
+      const onEdgeLine =
+        !edgeLine ||
+        (caretMiddle >= edgeLine.top - 1 && caretMiddle <= edgeLine.bottom + 1);
+
+      let target: DocxTextRangeBoundary | undefined;
+      if (!onEdgeLine) {
+        // Another line in the same paragraph.
+        if (!spansParagraphs) {
+          return false;
+        }
+        target = resolveBoundaryFromPoint({
+          x: caretRect.left,
+          y: caretMiddle + direction * caretRect.height,
+        });
+        if (
+          !target ||
+          !sameParagraphLocation(target.location, focus.location)
+        ) {
+          return true;
+        }
+      } else {
+        // First (or last) line of the next (or previous) paragraph.
+        let next: ParagraphLocation | undefined;
+        if (direction > 0) {
+          next = nextParagraphLocation(editor.model, focus.location);
+        } else {
+          for (
+            let nodeIndex = focus.location.nodeIndex - 1;
+            nodeIndex >= 0 && !next;
+            nodeIndex -= 1
+          ) {
+            next = lastParagraphLocationInNode(editor.model, nodeIndex);
+          }
+        }
+        const nextParagraph =
+          next?.kind === "paragraph"
+            ? getParagraphAtLocation(editor.model, next).paragraph
+            : undefined;
+        const nextHost = next ? resolveParagraphHostElement(next) : undefined;
+        if (!next || !nextParagraph || !nextHost) {
+          return spansParagraphs;
+        }
+        nextHost.scrollIntoView({ block: "nearest" });
+        const nextLines = lineRectsOf(nextHost);
+        const line =
+          direction > 0 ? nextLines[0] : nextLines[nextLines.length - 1];
+        const candidate = line
+          ? resolveBoundaryFromPoint({
+              x: clampNumber(caretRect.left, line.left, line.right),
+              y: line.top + line.height / 2,
+            })
+          : undefined;
+        target =
+          candidate && sameParagraphLocation(candidate.location, next)
+            ? candidate
+            : {
+                location: next,
+                offset: direction > 0 ? 0 : paragraphText(nextParagraph).length,
+              };
+      }
+
+      viewerRootRef.current?.focus({ preventScroll: true });
+      setSelectionFromDocxBoundaries(anchor, target);
+      return true;
+    },
+    [
+      editor,
+      resolveBoundaryFromPoint,
+      resolveParagraphBoundaryFromSelectionPoint,
+      resolveParagraphHostElement,
+      setSelectionFromDocxBoundaries,
+    ]
+  );
+
   const onViewerKeyDown = React.useCallback(
     (event: React.KeyboardEvent<HTMLDivElement>): void => {
       commandSelectionGuardRef.current = undefined;
@@ -47676,6 +47810,24 @@ export function DocxEditorViewer({
         }
       }
 
+      if (
+        !isReadOnly &&
+        (event.key === "ArrowDown" || event.key === "ArrowUp") &&
+        event.shiftKey &&
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.altKey &&
+        !event.defaultPrevented &&
+        // The wrapped-paragraph textarea handles its own lines and the first
+        // step into the next paragraph.
+        document.activeElement !== wrappedParagraphTextareaRef.current &&
+        extendSelectionVertically(event.key === "ArrowDown" ? 1 : -1)
+      ) {
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+
       const isSelectAll =
         (event.key === "a" || event.key === "A") &&
         (event.ctrlKey || event.metaKey);
@@ -47702,6 +47854,7 @@ export function DocxEditorViewer({
     },
     [
       editor,
+      extendSelectionVertically,
       handleDeleteAcrossTableCellSelection,
       isReadOnly,
       resolveParagraphBoundaryFromSelectionPoint,
