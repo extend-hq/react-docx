@@ -626,7 +626,8 @@ fn paragraph_alignment_str(align: ParagraphAlignment) -> &'static str {
         ParagraphAlignment::Left => "left",
         ParagraphAlignment::Center => "center",
         ParagraphAlignment::Right => "right",
-        ParagraphAlignment::Justify => "justify",
+        // ST_Jc has no "justify"; "both" is the OOXML value for justified text.
+        ParagraphAlignment::Justify => "both",
     }
 }
 

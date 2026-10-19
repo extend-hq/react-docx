@@ -160,3 +160,19 @@ fn hyperlink_relationship_target_is_not_double_escaped() {
     assert!(rels_xml.contains(r#"Target="https://example.com/a?b=1&amp;c=2""#));
     assert!(!rels_xml.contains("&amp;amp;"));
 }
+
+const JUSTIFIED_DOCUMENT_XML: &str = r#"<?xml version="1.0"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:pPr><w:jc w:val="both"/></w:pPr><w:r><w:t>Justified text</w:t></w:r></w:p>
+    <w:sectPr/>
+  </w:body>
+</w:document>"#;
+
+#[test]
+fn reserialized_justified_paragraph_uses_ooxml_both() {
+    let pkg = package_with_parts(&[("word/document.xml", JUSTIFIED_DOCUMENT_XML)]);
+    let document_xml = reserialized_document_xml(&pkg);
+    assert!(document_xml.contains(r#"<w:jc w:val="both"/>"#), "{document_xml}");
+    assert!(!document_xml.contains(r#"w:val="justify""#), "{document_xml}");
+}
