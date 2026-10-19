@@ -1,5 +1,11 @@
 # @extend-ai/react-docx
 
+## 0.11.1
+
+### Patch Changes
+
+- 4e76349: Extend the text selection across paragraphs with Shift+ArrowUp/Down.
+
 ## 0.11.0
 
 ### Minor Changes
