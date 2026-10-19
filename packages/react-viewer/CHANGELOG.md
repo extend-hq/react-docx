@@ -1,5 +1,11 @@
 # @extend-ai/react-docx
 
+## 0.11.2
+
+### Patch Changes
+
+- Serialize justified paragraphs with the correct OOXML alignment value.
+
 ## 0.11.1
 
 ### Patch Changes
