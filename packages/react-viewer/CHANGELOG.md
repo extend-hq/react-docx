@@ -1,5 +1,11 @@
 # @extend-ai/react-docx
 
+## 0.11.3
+
+### Patch Changes
+
+- Enable context menus in read-only mode with Copy and custom renderers while blocking editing commands and preserving native text selection.
+
 ## 0.11.2
 
 ### Patch Changes

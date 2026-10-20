@@ -44173,6 +44173,9 @@ export function DocxEditorViewer({
       actionId: DocxTableContextMenuActionId,
       providedContext?: DocxTableContextMenuContext
     ): void => {
+      if (isReadOnly) {
+        return;
+      }
       const context = providedContext ?? tableContextMenuState;
       if (!context) {
         return;
@@ -44220,7 +44223,7 @@ export function DocxEditorViewer({
 
       closeTableContextMenu();
     },
-    [closeTableContextMenu, editor, tableContextMenuState]
+    [closeTableContextMenu, editor, isReadOnly, tableContextMenuState]
   );
   const tableContextMenuActions = React.useMemo(
     () => [...DEFAULT_TABLE_CONTEXT_MENU_ACTIONS],
@@ -47410,7 +47413,7 @@ export function DocxEditorViewer({
 
   const onViewerContextMenu = React.useCallback(
     (event: React.MouseEvent<HTMLDivElement>): void => {
-      if (isReadOnly || event.defaultPrevented) {
+      if (event.defaultPrevented) {
         return;
       }
 
@@ -47458,8 +47461,10 @@ export function DocxEditorViewer({
           return;
         }
 
-        clearTableCellSelection();
-        setSelectionFromDocxBoundaries(boundary, boundary);
+        if (!isReadOnly) {
+          clearTableCellSelection();
+          setSelectionFromDocxBoundaries(boundary, boundary);
+        }
         resolvedRange = {
           start: {
             location: cloneTextRangeLocation(boundary.location),
@@ -47470,7 +47475,7 @@ export function DocxEditorViewer({
             offset: boundary.offset,
           },
         };
-      } else if (resolvedRange) {
+      } else if (resolvedRange && !isReadOnly) {
         clearTableCellSelection();
         editor.setActiveTextRange(resolvedRange);
       }
@@ -47483,9 +47488,13 @@ export function DocxEditorViewer({
 
       event.preventDefault();
       event.stopPropagation();
+      const tableContext = isReadOnly
+        ? parseTableCellLocationFromElement(target)
+        : undefined;
       openContextMenu(
         {
-          kind: "text",
+          kind: tableContext ? "table" : "text",
+          tableContext,
           activeTextRange: resolvedRange
             ? normalizeTextRange(resolvedRange)
             : undefined,
@@ -48027,7 +48036,7 @@ export function DocxEditorViewer({
 
   const resolveContextMenuActions = React.useCallback(
     (context: DocxContextMenuContext): DocxContextMenuAction[] => {
-      if (context.kind === "table") {
+      if (context.kind === "table" && !isReadOnly) {
         return tableContextMenuActions.map((action) => ({
           id: action.id,
           label: action.label,
@@ -48052,6 +48061,10 @@ export function DocxEditorViewer({
             (action.id === "cut" || action.id === "copy") && !hasExpandedRange,
         })
       );
+
+      if (isReadOnly) {
+        return clipboardActions.filter((action) => action.id === "copy");
+      }
 
       if (context.kind !== "image") {
         return clipboardActions;
@@ -48151,7 +48164,7 @@ export function DocxEditorViewer({
         ...layerActions,
       ];
     },
-    [tableContextMenuActions]
+    [isReadOnly, tableContextMenuActions]
   );
 
   const runContextMenuAction = React.useCallback(
@@ -48159,6 +48172,9 @@ export function DocxEditorViewer({
       actionId: DocxContextMenuActionId | (string & {}),
       providedContext?: DocxContextMenuContext
     ): void => {
+      if (isReadOnly && actionId !== "copy") {
+        return;
+      }
       const isTableAction = (
         value: DocxContextMenuActionId | (string & {})
       ): value is DocxTableContextMenuActionId =>
@@ -48645,7 +48661,7 @@ export function DocxEditorViewer({
             if (!hasExpandedRange) {
               break;
             }
-            if (currentRange) {
+            if (currentRange && !isReadOnly) {
               restoreDomSelectionFromRange(currentRange);
             }
             const selectedText = resolveSelectedTextForRange(currentRange);
@@ -48822,6 +48838,7 @@ export function DocxEditorViewer({
       editor,
       focusWrappedParagraphRange,
       focusWrappedParagraphTextarea,
+      isReadOnly,
       replaceExpandedSelectionWithText,
       resolveActiveRangeFromDomSelection,
       runTableContextMenuAction,
@@ -55111,15 +55128,13 @@ export function DocxEditorViewer({
                 }
               }}
               onContextMenu={(event) => {
-                if (isReadOnly) {
-                  return;
-                }
-
                 event.preventDefault();
                 event.stopPropagation();
-                clearTableCellSelection();
-                setSelectedSectionImageKey(undefined);
-                setSelectedImage(manualImageLocation);
+                if (!isReadOnly) {
+                  clearTableCellSelection();
+                  setSelectedSectionImageKey(undefined);
+                  setSelectedImage(manualImageLocation);
+                }
                 openContextMenu(
                   {
                     kind: "image",
@@ -55422,15 +55437,13 @@ export function DocxEditorViewer({
                 }
               }}
               onContextMenu={(event) => {
-                if (isReadOnly) {
-                  return;
-                }
-
                 event.preventDefault();
                 event.stopPropagation();
-                clearTableCellSelection();
-                setSelectedSectionImageKey(undefined);
-                setSelectedImage(manualImageLocation);
+                if (!isReadOnly) {
+                  clearTableCellSelection();
+                  setSelectedSectionImageKey(undefined);
+                  setSelectedImage(manualImageLocation);
+                }
                 openContextMenu(
                   {
                     kind: "image",
@@ -55684,15 +55697,13 @@ export function DocxEditorViewer({
                 }
               }}
               onContextMenu={(event) => {
-                if (isReadOnly) {
-                  return;
-                }
-
                 event.preventDefault();
                 event.stopPropagation();
-                clearTableCellSelection();
-                setSelectedSectionImageKey(undefined);
-                setSelectedImage(manualImageLocation);
+                if (!isReadOnly) {
+                  clearTableCellSelection();
+                  setSelectedSectionImageKey(undefined);
+                  setSelectedImage(manualImageLocation);
+                }
                 openContextMenu(
                   {
                     kind: "image",
@@ -56271,15 +56282,17 @@ export function DocxEditorViewer({
                 }
               }}
               onContextMenu={(event) => {
-                if (isReadOnly || behavesAsDecorativeBehindTextBackground) {
+                if (behavesAsDecorativeBehindTextBackground) {
                   return;
                 }
 
                 event.preventDefault();
                 event.stopPropagation();
-                clearTableCellSelection();
-                setSelectedSectionImageKey(undefined);
-                setSelectedImage(imageLocation);
+                if (!isReadOnly) {
+                  clearTableCellSelection();
+                  setSelectedSectionImageKey(undefined);
+                  setSelectedImage(imageLocation);
+                }
                 openContextMenu(
                   {
                     kind: "image",
@@ -56708,9 +56721,11 @@ export function DocxEditorViewer({
                 onContextMenu={(event) => {
                   event.preventDefault();
                   event.stopPropagation();
-                  clearTableCellSelection();
-                  setSelectedSectionImageKey(undefined);
-                  setSelectedImage(imageLocation);
+                  if (!isReadOnly) {
+                    clearTableCellSelection();
+                    setSelectedSectionImageKey(undefined);
+                    setSelectedImage(imageLocation);
+                  }
                   openContextMenu(
                     {
                       kind: "image",
@@ -66046,7 +66061,7 @@ export function DocxEditorViewer({
           }}
         />
       ) : null}
-      {!isReadOnly
+      {contextMenuState || tableContextMenuState
         ? (() => {
             const hasCustomContextMenuState = Boolean(contextMenuState);
             const hasTableContextMenuState = Boolean(tableContextMenuState);
@@ -66054,7 +66069,7 @@ export function DocxEditorViewer({
               return null;
             }
 
-            if (hasCustomContextMenuState || renderContextMenu) {
+            if (hasCustomContextMenuState || renderContextMenu || isReadOnly) {
               const tableContext = tableContextMenuState
                 ? ({
                     tableIndex: tableContextMenuState.tableIndex,

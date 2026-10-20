@@ -10,6 +10,7 @@ __pycache__/
 playwright-report
 test-results
 .playwright-cli/
+.playwright-mcp/
 .artifacts/
 .word-oracle-private/
 tmp-image2.wmf
