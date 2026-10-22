@@ -221,6 +221,22 @@ and embedded-font loading. Use `loadEmbeddedFonts: "defer"` to load fonts later
 through `document.loadEmbeddedFonts()`. The renderer also accepts an existing
 `DocModel` directly when the OOXML package is not needed.
 
+## Examples
+
+See `@extend-ai/react-docx` in action in these live [Extend UI](https://www.extend.ai/ui) examples. Click a screenshot to open the demo and integration docs.
+
+### [DOCX Viewer](https://www.extend.ai/ui/docs/components/docx-viewer)
+
+Preview paginated documents with zoom and page navigation.
+
+[![DOCX viewer with a paginated document and zoom controls](https://raw.githubusercontent.com/extend-hq/react-docx/main/docs/readme-assets/extend-ui-docx-viewer.png)](https://www.extend.ai/ui/docs/components/docx-viewer)
+
+### [DOCX Editor](https://www.extend.ai/ui/docs/components/docx-editor)
+
+Try the experimental editor with document formatting, tracked changes, and export.
+
+[![DOCX editor with a document and formatting toolbar](https://raw.githubusercontent.com/extend-hq/react-docx/main/docs/readme-assets/extend-ui-docx-editor.png)](https://www.extend.ai/ui/docs/components/docx-editor)
+
 ## Caller fonts
 
 Fonts embedded in a DOCX load automatically by default. Caller-provided fonts
