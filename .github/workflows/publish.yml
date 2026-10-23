@@ -24,9 +24,15 @@ jobs:
       NPM_TOKEN_FALLBACK_ENABLED: ${{ vars.NPM_PUBLISH_USE_TOKEN == 'true' && 'true' || 'false' }}
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
+
+      - name: Set up Node
+        uses: actions/setup-node@v7.1.0
+        with:
+          node-version: '24.22.1'
+          registry-url: https://registry.npmjs.org
 
       - name: Read workspace package metadata
         id: meta
@@ -94,16 +100,10 @@ jobs:
           NODE
 
       - name: Set up pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6.1.0
         with:
           version: 9.15.0
-
-      - name: Set up Node
-        uses: actions/setup-node@v6
-        with:
-          node-version: "24"
-          cache: pnpm
-          registry-url: https://registry.npmjs.org
+          cache: true
 
       - name: Check npm publish state
         id: npm_state

@@ -26,7 +26,7 @@ jobs:
       contents: read
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7.0.1
 
       - name: Download immutable private corpus artifact
         uses: actions/download-artifact@v4
@@ -36,16 +36,16 @@ jobs:
           run-id: ${{ vars.WORD_ORACLE_PRIVATE_ARTIFACT_RUN_ID }}
           github-token: ${{ github.token }}
 
+      - name: Set up Node
+        uses: actions/setup-node@v7.1.0
+        with:
+          node-version: '24.22.1'
+
       - name: Set up pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6.1.0
         with:
           version: 9.15.0
-
-      - name: Set up Node
-        uses: actions/setup-node@v6
-        with:
-          node-version: "24"
-          cache: pnpm
+          cache: true
 
       - name: Set up Python
         uses: actions/setup-python@v6

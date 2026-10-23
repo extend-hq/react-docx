@@ -62,10 +62,20 @@
     "overrides": {
       "lodash": "4.18.1",
       "picomatch@>=4.0.0 <4.0.4": "4.0.4",
-      "vite": "6.4.2"
+      "vite": "6.4.4"
     },
     "patchedDependencies": {
       "@chenglou/pretext@0.0.8": "patches/@chenglou__pretext@0.0.8.patch"
+    }
+  },
+  "engines": {
+    "node": ">=22.23.4 <23 || >=24.22.1 <25"
+  },
+  "devEngines": {
+    "runtime": {
+      "name": "node",
+      "version": ">=22.23.4 <23 || >=24.22.1 <25",
+      "onFail": "error"
     }
   }
 }
