@@ -2,4 +2,4 @@
 # behavior cannot drift between fidelity-gate runs.
 # Requires Python 3.12 or newer.
 numpy==2.5.1
-Pillow==12.3.0
+Pillow==13.0.0
