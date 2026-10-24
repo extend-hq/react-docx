@@ -51267,17 +51267,19 @@ export function DocxEditorViewer({
         0,
         Math.min(boundaryRowIndex, rowHeights.length - 2)
       );
+      // Measured heights as they are: resizing one row must not grow the rows
+      // that are shorter than 24px.
       const startingHeights = rowHeights.map((height) =>
-        Number.isFinite(height) && height > 0
-          ? Math.max(24, Math.round(height))
-          : 24
+        Number.isFinite(height) && height > 0 ? Math.round(height) : 24
       );
       const topStart = startingHeights[safeBoundary] ?? 0;
       if (topStart <= 0) {
         return;
       }
 
-      const minimumHeightPx = 24;
+      // 24px as before, or the row's own height when it is already shorter:
+      // dragging a 16px row up must not grow it to 24px.
+      const minimumHeightPx = Math.min(24, topStart);
       const startY = event.clientY;
       let latestHeights = startingHeights;
       let frameId: number | undefined;
@@ -51321,7 +51323,10 @@ export function DocxEditorViewer({
           window.cancelAnimationFrame(frameId);
         }
 
-        commitHeights();
+        // A click without a drag leaves the rows as they are.
+        if (latestHeights !== startingHeights) {
+          commitHeights();
+        }
         if (resizeHandle.releasePointerCapture) {
           try {
             resizeHandle.releasePointerCapture(
@@ -59990,7 +59995,19 @@ export function DocxEditorViewer({
                     : 24
                 )
               : normalizedRowHeightsPx;
-          const tableRowBoundaryOffsetsPx = rowBoundarySourceHeightsPx.reduce(
+          // The row resize handles use the measured heights as they are, so
+          // they sit on the row borders: single-line rows at Word metrics are
+          // shorter than 24px. Rows of 24px or more get the same positions.
+          const rowHandleHeightsPx =
+            measuredRowHeightsPx &&
+            measuredRowHeightsPx.length === node.rows.length
+              ? measuredRowHeightsPx.map((value) =>
+                  Number.isFinite(value) && (value as number) > 0
+                    ? (value as number)
+                    : 24
+                )
+              : normalizedRowHeightsPx;
+          const tableRowBoundaryOffsetsPx = rowHandleHeightsPx.reduce(
             (offsets: number[], rowHeightPx: number) => {
               const previous = offsets[offsets.length - 1] ?? 0;
               offsets.push(previous + rowHeightPx);
@@ -62340,6 +62357,23 @@ export function DocxEditorViewer({
                         hoveredTableResizeHandle.boundaryIndex ===
                           boundaryRowIndex;
                       const isHot = isResizing || isHovered;
+                      // The handle sits on top of the cells. Next to rows
+                      // shorter than 24px a full-size hit area would cover
+                      // their text and take the clicks meant for it, so it
+                      // leaves at least 8px of the shorter adjacent row free.
+                      // Rows of 24px or more keep the full hit area.
+                      const hitSizePx = Math.min(
+                        TABLE_RESIZE_HANDLE_HIT_SIZE,
+                        Math.max(
+                          6,
+                          Math.floor(
+                            Math.min(
+                              rowHandleHeightsPx[boundaryRowIndex] ?? 24,
+                              rowHandleHeightsPx[boundaryRowIndex + 1] ?? 24
+                            ) - 8
+                          )
+                        )
+                      );
 
                       return (
                         <span
@@ -62351,10 +62385,10 @@ export function DocxEditorViewer({
                             width: `${resolvedTableWidthPx}px`,
                             top: `${
                               topPx -
-                              TABLE_RESIZE_HANDLE_HIT_SIZE / 2 +
+                              hitSizePx / 2 +
                               TABLE_RESIZE_HANDLE_ALIGNMENT_OFFSET_PX
                             }px`,
-                            height: TABLE_RESIZE_HANDLE_HIT_SIZE,
+                            height: hitSizePx,
                             cursor: "row-resize",
                             zIndex: 5,
                             touchAction: "none",
@@ -62444,7 +62478,7 @@ export function DocxEditorViewer({
                             const startingHeights =
                               measuredRows.length > 0
                                 ? measuredRows
-                                : rowBoundarySourceHeightsPx;
+                                : rowHandleHeightsPx;
                             beginTableRowResize(
                               event,
                               nodeIndex,
