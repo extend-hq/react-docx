@@ -217,9 +217,9 @@ importers:
       '@chenglou/pretext':
         specifier: ^0.0.8
         version: 0.0.8(patch_hash=4bpai3ljegzxf3kheyn3xjnikm)
-      '@tanstack/react-virtual':
-        specifier: ^3.14.14
-        version: 3.14.14(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
+      csstype:
+        specifier: ^3.1.0
+        version: 3.2.3
       fast-png:
         specifier: ^8.0.0
         version: 8.0.0
@@ -232,6 +232,16 @@ importers:
       utif:
         specifier: ^3.1.0
         version: 3.1.0
+    devDependencies:
+      '@tanstack/react-virtual':
+        specifier: ^3.14.14
+        version: 3.14.14(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
+      preact:
+        specifier: ^10.29.8
+        version: 10.29.8(preact-render-to-string@6.8.2)
+      preact-render-to-string:
+        specifier: ^6.6.6
+        version: 6.8.2(preact@10.29.8)
 
   packages/serializer:
     dependencies:
@@ -3477,6 +3487,19 @@ packages:
   powershell-utils@0.1.0:
     resolution: {integrity: sha512-dM0jVuXJPsDN6DvRpea484tCUaMiXWjuCn++HGTqUWzGDjv5tZkEZldAJ/UMlqRYGFrD/etByo4/xOuC/snX2A==}
     engines: {node: '>=20'}
+
+  preact-render-to-string@6.8.2:
+    resolution: {integrity: sha512-Hdx7cKD3AMYgt795TdddBpUbuGEFoL/VeA6s7VrBt9Gjt0r6rCy5wMp5xkDjQ9cbKj62frHsEx1x8yV6EjoOpg==}
+    peerDependencies:
+      preact: '>=10 || >= 11.0.0-0'
+
+  preact@10.29.8:
+    resolution: {integrity: sha512-ej2aVZ+vZ8WO7tvlQWRM9N63A0KzF9q4mWJfDUHgYaIofWY9hu74QdnQrjoPMmZi2/nZ5gN0bJCQF49xQqx09Q==}
+    peerDependencies:
+      preact-render-to-string: '>=5'
+    peerDependenciesMeta:
+      preact-render-to-string:
+        optional: true
 
   prettier@2.8.8:
     resolution: {integrity: sha512-tdN8qQGvNjw4CHbY+XXk0JgCXn9QiF21a55rBe5LJAU+kDyC4WQn4+awm2Xfk2lQMk5fKup9XgzTZtGkjBdP9Q==}
@@ -7221,6 +7244,14 @@ snapshots:
       source-map-js: 1.2.1
 
   powershell-utils@0.1.0: {}
+
+  preact-render-to-string@6.8.2(preact@10.29.8):
+    dependencies:
+      preact: 10.29.8(preact-render-to-string@6.8.2)
+
+  preact@10.29.8(preact-render-to-string@6.8.2):
+    optionalDependencies:
+      preact-render-to-string: 6.8.2(preact@10.29.8)
 
   prettier@2.8.8: {}
 

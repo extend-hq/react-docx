@@ -17,15 +17,30 @@ const workspaceSourceAliases = {
 };
 
 export default defineConfig({
+  build: {
+    rollupOptions: {
+      input: {
+        main: path.resolve(__dirname, "index.html"),
+        vanilla: path.resolve(__dirname, "vanilla.html"),
+      },
+    },
+  },
+  worker: { format: "es" },
   plugins: [react(), tsconfigPaths(), tailwindcss()],
   optimizeDeps: {
-    exclude: Object.keys(workspaceSourceAliases),
+    exclude: [
+      ...Object.keys(workspaceSourceAliases),
+      "@extend-ai/react-docx/vanilla",
+      "@extend-ai/react-docx/internal",
+    ],
   },
   resolve: {
     dedupe: ["react", "react-dom"],
-    alias: {
-      "@": path.resolve(__dirname, "./src"),
-      ...workspaceSourceAliases,
-    },
+    alias: [
+      { find: /^@extend-ai\/react-docx\/vanilla$/, replacement: path.resolve(workspaceRoot, "packages/react-viewer/dist/vanilla.js") },
+      { find: /^@extend-ai\/react-docx\/internal$/, replacement: path.resolve(workspaceRoot, "packages/react-viewer/dist/internal.js") },
+      { find: "@", replacement: path.resolve(__dirname, "./src") },
+      ...Object.entries(workspaceSourceAliases).map(([find, replacement]) => ({ find, replacement })),
+    ],
   },
 });

@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Explore the DOCX viewer with its JavaScript API." />
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="/vanilla/style.css" />
+    <title>Vanilla JS · DOCX Playground</title>
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="site-header">
+        <a class="brand" href="/" aria-label="Return to the React playground">
+          <span class="brand-mark" aria-hidden="true">D</span>
+          <span>DOCX <span class="brand-muted">Playground</span></span>
+        </a>
+        <a class="back-link" href="/"><span aria-hidden="true">←</span> React playground</a>
+      </header>
+
+      <main class="main-content">
+        <section class="page-intro" aria-labelledby="page-title">
+          <div>
+            <div class="eyebrow"><span class="eyebrow-dot"></span> JAVASCRIPT PLAYGROUND</div>
+            <h1 id="page-title">Documents for plain JavaScript.</h1>
+            <p>Open a document and explore the viewer's imperative API.</p>
+          </div>
+          <div class="entry-label"><span>IMPORT FROM</span><code>@extend-ai/react-docx/vanilla</code></div>
+        </section>
+
+        <section class="workspace" aria-label="Document viewer">
+          <div class="workspace-toolbar">
+            <div class="toolbar-primary">
+              <button class="button button-primary" id="open-file" type="button">
+                <svg aria-hidden="true" viewBox="0 0 20 20"><path d="M3 6.5a2 2 0 0 1 2-2h3l1.5 1.7H15a2 2 0 0 1 2 2v6.3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M10 13V8.5m-2 2 2-2 2 2"/></svg>
+                Open document
+              </button>
+              <input id="file-input" type="file" accept=".docx,.doc,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/msword" hidden />
+              <button class="button button-quiet" id="load-sample" type="button">Load sample</button>
+              <span class="toolbar-divider" aria-hidden="true"></span>
+              <form class="url-form" id="url-form">
+                <label class="sr-only" for="document-url">Document URL</label>
+                <input id="document-url" type="text" inputmode="url" placeholder="Document URL" />
+                <button class="button button-quiet" type="submit">Open URL</button>
+              </form>
+            </div>
+            <div class="toolbar-options">
+              <label class="check-option"><input id="read-only" type="checkbox" /><span>Read only</span></label>
+              <label class="check-option"><input id="dark-mode" type="checkbox" /><span>Dark document</span></label>
+            </div>
+          </div>
+
+          <div class="document-meta">
+            <div class="document-label">
+              <span class="document-icon" aria-hidden="true">▤</span>
+              <div><strong id="file-name">Document</strong><span id="page-count">Preparing viewer</span></div>
+            </div>
+            <div class="status" id="status" role="status" aria-live="polite"><span class="status-dot"></span><span id="status-text">Starting</span></div>
+          </div>
+
+          <div class="viewer-stage" id="viewer-stage"><div class="viewer-canvas"><div id="viewer"></div></div></div>
+
+          <div class="workspace-footer">
+            <div class="footer-actions">
+              <button class="button button-quiet" id="undo" type="button" disabled>Undo</button>
+              <button class="button button-quiet" id="redo" type="button" disabled>Redo</button>
+              <span class="toolbar-divider" aria-hidden="true"></span>
+              <button class="button button-icon" id="zoom-out" type="button" aria-label="Zoom out" disabled>−</button>
+              <output id="zoom" aria-label="Zoom level">100%</output>
+              <button class="button button-icon" id="zoom-in" type="button" aria-label="Zoom in" disabled>+</button>
+              <button class="button button-text" id="fit-width" type="button" disabled>Fit width</button>
+            </div>
+            <button class="button button-quiet" id="export" type="button" disabled>Export DOCX</button>
+          </div>
+        </section>
+        <p class="page-note" id="message" role="status" aria-live="polite">Choose a document, or edit the sample to get started.</p>
+      </main>
+    </div>
+    <script type="module" src="/vanilla/main.js"></script>
+  </body>
+</html>

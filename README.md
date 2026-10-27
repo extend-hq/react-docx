@@ -1,6 +1,6 @@
 # react-docx
 
-`react-docx` is a React-first DOCX viewer and editor built as a monorepo.
+`react-docx` is a DOCX viewer and editor for JavaScript and React applications, built as a monorepo.
 
 The main package is [`@extend-ai/react-docx`](./packages/react-viewer), which gives you:
 
@@ -16,10 +16,10 @@ The main package is [`@extend-ai/react-docx`](./packages/react-viewer), which gi
 For application code, you usually want the main package:
 
 ```bash
-pnpm add @extend-ai/react-docx react react-dom
+pnpm add @extend-ai/react-docx
 ```
 
-`react` and `react-dom` are peer dependencies.
+For React integrations, also install `react` and `react-dom`. The vanilla entry bundles Preact and does not require React.
 
 ## Main Entry Points
 
@@ -31,6 +31,32 @@ view-only use or `mode="edit"` for editing.
 It also re-exports the internal document/model/layout/serializer packages, so you can work below the UI layer when needed.
 
 ## Quick Start
+
+### Vanilla JavaScript
+
+Use the `/vanilla` entry with a browser bundler such as Vite:
+
+```html
+<input id="file" type="file" accept=".docx,.doc" />
+<div id="viewer"></div>
+<script type="module" src="/main.js"></script>
+```
+
+```js
+import { createDocxViewer } from "@extend-ai/react-docx/vanilla";
+
+const viewer = createDocxViewer(document.getElementById("viewer"), {
+  height: 600,
+  emptyState: "Choose a document to preview.",
+});
+
+document.getElementById("file").addEventListener("change", (event) => {
+  const file = event.currentTarget.files?.[0];
+  if (file) viewer.setOptions({ file });
+});
+```
+
+The same entry supports URL loading, editing, controller subscriptions, and custom DOM content. See the [vanilla API documentation](packages/react-viewer/README.md#vanilla-javascript) or run the playground and open `/vanilla.html`.
 
 ### Read-only viewer
 

@@ -1,7 +1,7 @@
 {
   "name": "@extend-ai/react-docx",
   "version": "0.11.3",
-  "description": "React components/hooks for DOCX viewing",
+  "description": "JavaScript and React viewers for DOCX documents",
   "license": "MIT",
   "type": "module",
   "repository": {
@@ -29,6 +29,16 @@
       "import": "./dist/index.js",
       "require": "./dist/index.cjs"
     },
+    "./vanilla": {
+      "types": "./dist/vanilla.d.ts",
+      "import": "./dist/vanilla.js",
+      "require": "./dist/vanilla.cjs"
+    },
+    "./internal": {
+      "types": "./dist/internal.d.ts",
+      "import": "./dist/internal.js",
+      "require": "./dist/internal.cjs"
+    },
     "./docx_wasm_bg.wasm": "./dist/docx_wasm_bg.wasm",
     "./package.json": "./package.json"
   },
@@ -42,11 +52,20 @@
     "react": ">=18",
     "react-dom": ">=18"
   },
+  "peerDependenciesMeta": {
+    "react": { "optional": true },
+    "react-dom": { "optional": true }
+  },
   "dependencies": {
     "@chenglou/pretext": "^0.0.8",
-    "@tanstack/react-virtual": "^3.14.14",
+    "csstype": "^3.1.0",
     "fast-png": "^8.0.0",
     "utif": "^3.1.0"
+  },
+  "devDependencies": {
+    "@tanstack/react-virtual": "^3.14.14",
+    "preact": "^10.29.8",
+    "preact-render-to-string": "^6.6.6"
   },
   "scripts": {
     "build": "tsup --config tsup.config.ts",
