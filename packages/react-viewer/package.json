@@ -1,6 +1,6 @@
 {
   "name": "@extend-ai/react-docx",
-  "version": "0.11.3",
+  "version": "0.12.0",
   "description": "JavaScript and React viewers for DOCX documents",
   "license": "MIT",
   "type": "module",
@@ -53,8 +53,12 @@
     "react-dom": ">=18"
   },
   "peerDependenciesMeta": {
-    "react": { "optional": true },
-    "react-dom": { "optional": true }
+    "react": {
+      "optional": true
+    },
+    "react-dom": {
+      "optional": true
+    }
   },
   "dependencies": {
     "@chenglou/pretext": "^0.0.8",

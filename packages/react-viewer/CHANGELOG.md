@@ -1,5 +1,11 @@
 # @extend-ai/react-docx
 
+## 0.12.0
+
+### Minor Changes
+
+- a9ecee6: Add a vanilla JavaScript viewer entry with a bundled Preact renderer, an imperative controller API, and a standalone playground demo. Improve wrapped-text editing and dark read-only document contrast.
+
 ## 0.11.3
 
 ### Patch Changes
