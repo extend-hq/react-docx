@@ -21,7 +21,37 @@ pnpm add @extend-ai/react-docx
 
 For React integrations, also install `react` and `react-dom`. The vanilla entry bundles Preact and does not require React.
 
+## WebAssembly and Vite
+
+DOCX parsing and export use a WebAssembly binary shipped with the package. It loads on demand, and most bundlers can resolve it automatically. To host it at a specific URL, copy the binary to your application's public directory:
+
+```bash
+cp node_modules/@extend-ai/react-docx/dist/docx_wasm_bg.wasm public/docx_wasm_bg.wasm
+```
+
+Configure that URL before the first parse or export:
+
+```js
+import { setWasmSource } from "@extend-ai/react-docx/vanilla";
+
+setWasmSource("/docx_wasm_bg.wasm");
+```
+
+The binary is also available as `@extend-ai/react-docx/docx_wasm_bg.wasm`. The [package README](packages/react-viewer/README.md#webassembly-asset) covers other supported sources and worker behavior.
+
+For Vite development, exclude the vanilla entry from dependency optimization so Vite can resolve the import worker:
+
+```js
+import { defineConfig } from "vite";
+
+export default defineConfig({
+  optimizeDeps: { exclude: ["@extend-ai/react-docx/vanilla"] },
+});
+```
+
 ## Main Entry Points
+
+Use `@extend-ai/react-docx/vanilla` for the imperative JavaScript viewer.
 
 Use `useDocxEditor` + `DocxEditorViewer` for both read-only and editable
 experiences. The hook manages document state, import/export, and editing
@@ -34,20 +64,33 @@ It also re-exports the internal document/model/layout/serializer packages, so yo
 
 ### Vanilla JavaScript
 
-Use the `/vanilla` entry with a browser bundler such as Vite:
+Use the vanilla entry in a browser app with a bundler such as Vite. Add a container and a file input:
 
 ```html
 <input id="file" type="file" accept=".docx,.doc" />
-<div id="viewer"></div>
+<output id="status" aria-live="polite"></output>
+<div id="viewer" style="height: 600px; overflow: auto"></div>
 <script type="module" src="/main.js"></script>
 ```
+
+Create a viewer, observe its state, and allow a local document to replace the initial URL:
 
 ```js
 import { createDocxViewer } from "@extend-ai/react-docx/vanilla";
 
 const viewer = createDocxViewer(document.getElementById("viewer"), {
-  height: 600,
-  emptyState: "Choose a document to preview.",
+  src: "/document.docx",
+});
+
+const status = document.getElementById("status");
+const unsubscribe = viewer.subscribe((controller) => {
+  if (controller.error) {
+    status.textContent = controller.error.message;
+  } else if (controller.isLoading) {
+    status.textContent = "Loading document…";
+  } else {
+    status.textContent = controller.hasDocument ? controller.fileName : "No document open";
+  }
 });
 
 document.getElementById("file").addEventListener("change", (event) => {
@@ -56,7 +99,27 @@ document.getElementById("file").addEventListener("change", (event) => {
 });
 ```
 
-The same entry supports URL loading, editing, controller subscriptions, and custom DOM content. See the [vanilla API documentation](packages/react-viewer/README.md#vanilla-javascript) or run the playground and open `/vanilla.html`.
+The viewer defaults to read-only. Set `mode: "edit"` to enable editing, and use the current controller to run commands after the document loads:
+
+```js
+viewer.setOptions({ mode: "edit" });
+
+const controller = viewer.getController();
+if (controller?.hasDocument && !controller.isLoading) {
+  controller.exportDocx();
+}
+```
+
+When removing the viewer, unsubscribe and release its resources:
+
+```js
+unsubscribe();
+viewer.destroy();
+```
+
+`file` accepts a `File`, `Blob`, or `ArrayBuffer`. A `src` URL must be accessible to the browser; cross-origin URLs need appropriate CORS headers. See the [vanilla API documentation](packages/react-viewer/README.md#vanilla-javascript) for source changes, custom content, zoom, and more.
+
+To try the standalone demo, run `pnpm dev` from this repository and open `/vanilla.html` on the local playground URL.
 
 ### Read-only viewer
 

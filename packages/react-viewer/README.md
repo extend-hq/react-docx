@@ -45,12 +45,12 @@ import { setWasmSource } from "@extend-ai/react-docx";
 setWasmSource(wasmUrl);
 ```
 
-Configured string, URL, bytes, and `WebAssembly.Module` sources are forwarded into the DOCX import worker. `Response` sources are supported on the main thread; imports automatically avoid the worker for those.
+Configured string, URL, Request URL, bytes, and `WebAssembly.Module` sources are forwarded into the DOCX import worker. `Response` sources are supported on the main thread; imports automatically avoid the worker for those.
 
 You can also call `initWasm()` (optionally with a source) ahead of time to warm the module before the first document is opened.
 Vanilla applications can import `setWasmSource` and `initWasm` from `@extend-ai/react-docx/vanilla`. The React and vanilla entries share the same WASM configuration.
 
-In Vite development, exclude the vanilla entry from dependency optimization so Vite can resolve the import worker asset:
+In Vite development, exclude the vanilla entry from dependency optimization so Vite can resolve the import worker asset. Production builds do not need this setting:
 
 ```ts
 import { defineConfig } from "vite";
@@ -77,11 +77,12 @@ It also re-exports lower-level document/model/layout/serializer APIs, so you can
 
 Mount a viewer in an existing element using a browser bundler such as Vite. The viewer uses a bundled Preact renderer and creates a `div` in the regular DOM.
 
-The repository playground includes a standalone JavaScript demo at `/vanilla.html`.
+Run `pnpm dev` from the repository root and open `/vanilla.html` on the local playground URL to try the standalone demo.
+
+#### Open a document from a URL
 
 ```html
-<input id="file" type="file" accept=".docx,.doc" />
-<div id="viewer"></div>
+<div id="viewer" style="height: 600px; overflow: auto"></div>
 <script type="module" src="/main.js"></script>
 ```
 
@@ -89,7 +90,37 @@ The repository playground includes a standalone JavaScript demo at `/vanilla.htm
 import { createDocxViewer } from "@extend-ai/react-docx/vanilla";
 
 const viewer = createDocxViewer(document.getElementById("viewer"), {
-  height: 600,
+  src: "/document.docx",
+});
+```
+
+The URL must be accessible to the browser. A document on another origin needs appropriate CORS headers. The viewer defaults to `mode: "read-only"`; use `mode: "edit"` to enable editing.
+
+You can also construct an instance directly:
+
+```js
+import { DocxViewer } from "@extend-ai/react-docx/vanilla";
+
+const viewer = new DocxViewer(document.getElementById("viewer"), {
+  src: "/document.docx",
+  mode: "edit",
+});
+```
+
+#### Open a local document
+
+This example starts with an empty viewer and loads a document selected by the user:
+
+```html
+<input id="file" type="file" accept=".docx,.doc" />
+<div id="viewer" style="height: 600px; overflow: auto"></div>
+<script type="module" src="/main.js"></script>
+```
+
+```js
+import { createDocxViewer } from "@extend-ai/react-docx/vanilla";
+
+const viewer = createDocxViewer(document.getElementById("viewer"), {
   emptyState: "Choose a document to preview.",
 });
 
@@ -99,11 +130,11 @@ document.getElementById("file").addEventListener("change", (event) => {
 });
 ```
 
-`file` accepts a `File`, `Blob`, or `ArrayBuffer`. To load a URL instead, pass `{ src: "/document.docx" }`; cross-origin URLs need appropriate CORS headers. Supplying `file` clears `src`, and supplying `src` clears `file`. An explicit `fileName` remains in effect until changed or cleared with `fileName: undefined`.
+`file` accepts a `File`, `Blob`, or `ArrayBuffer`. A `File` uses its own name by default; a `Blob` or `ArrayBuffer` uses `document.docx` unless `fileName` is supplied. An explicit `fileName` must end in `.docx` or `.doc`.
 
-You can also construct an instance directly with `new DocxViewer(container, options)`. The default mode is `"read-only"`; set `mode: "edit"` to enable editing.
+#### Read state and control the viewer
 
-Subscribe to controller changes to follow loading and errors or build your own controls:
+Subscribe to loading, errors, pagination, editing, and other controller updates:
 
 ```js
 const unsubscribe = viewer.subscribe((controller) => {
@@ -115,19 +146,54 @@ const unsubscribe = viewer.subscribe((controller) => {
     console.log(controller.fileName, controller.currentPage, controller.totalPages);
   }
 });
+```
 
+Read the current controller when invoking commands. For example, after the document has loaded:
+
+```js
 viewer.setOptions({ mode: "edit" });
-viewer.getController()?.exportDocx();
 
+const controller = viewer.getController();
+if (controller?.hasDocument && !controller.isLoading) {
+  controller.setZoom("fit-width");
+  controller.exportDocx();
+}
+```
+
+`exportDocx()` downloads the current document in the browser. The controller also exposes commands such as `undo()`, `redo()`, and `setDocumentTheme()`.
+
+Change options or load another document with `setOptions`:
+
+```js
+viewer.setOptions({ mode: "read-only", pageGapBackgroundColor: "#f3f4f6" });
+viewer.setOptions({ src: "/another-document.docx", fileName: undefined });
+```
+
+Supplying `file` clears the previous `src`, and supplying `src` clears the previous `file`. Passing both in the same update throws. An explicit `fileName` remains in effect until changed or cleared with `fileName: undefined`. Changing the source, its name, parsed document, or starter model creates a fresh controller; other viewer options update the existing viewer.
+
+The `initialDocumentTheme` option applies when a controller is created. To change the current document's theme and retain it when loading another source:
+
+```js
+viewer.setOptions({ initialDocumentTheme: "dark" });
+viewer.getController()?.setDocumentTheme("dark");
+```
+
+When the viewer is no longer needed, unsubscribe and release its resources:
+
+```js
 unsubscribe();
 viewer.destroy();
 ```
 
-`getController()` returns the latest `DocxVanillaViewerController`, or `null` before it is available and after destruction. Read it again when invoking commands. `subscribe(listener)` delivers the current controller immediately when available and reports subsequent updates; its return value unsubscribes the listener. The controller includes the editor's commands and state, plus `isLoading`, `error`, and `hasDocument`.
+`createDocxViewer` returns an instance with these methods:
 
-`setOptions(options)` merges options into the current configuration. Changing the source, source name, parsed document, or starter model creates a fresh controller. Appearance and interaction options update the existing viewer. `reload()` resets the controller and reloads the current source. `destroy()` unmounts the viewer, removes its element, and releases listeners; it is safe to call more than once.
+- `getController()` returns the latest `DocxVanillaViewerController`, or `null` before it is available and after destruction. The controller includes the editor's commands and state, plus `isLoading`, `error`, and `hasDocument`.
+- `subscribe(listener)` reports controller updates and immediately calls the listener when a controller is available. It returns an unsubscribe function; updates can be coalesced.
+- `setOptions(options)` merges new options into the current configuration.
+- `reload()` discards the current viewer state and reloads the configured source.
+- `destroy()` unmounts the viewer, removes its element, and releases listeners. It is safe to call more than once.
 
-`DocxVanillaViewerOptions` supports viewer options such as page virtualization, zoom, themes, page colors, tracked changes, comments, and context menus. `emptyState`, `loadingState`, `errorState`, and custom card and context-menu renderers accept text or DOM nodes. `parseDocxForViewer` is also available from the vanilla entry for applications that want to parse once and initialize the viewer with `document`.
+`DocxVanillaViewerOptions` supports page virtualization, zoom, themes, page colors, tracked changes, comments, and context menus. `emptyState`, `loadingState`, `errorState`, and custom card and context-menu renderers accept text or DOM nodes. The vanilla entry also exports `parseDocxForViewer`, `setWasmSource`, and `initWasm`.
 
 ### Read-only viewer
 
