@@ -4,8 +4,8 @@
   "version": "0.0.8",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc -p tsconfig.json --noEmit && vite build",
+    "dev": "pnpm --filter @extend-ai/react-docx build && vite",
+    "build": "pnpm --filter @extend-ai/react-docx build && tsc -p tsconfig.json --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },

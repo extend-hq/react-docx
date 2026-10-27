@@ -2872,6 +2872,12 @@ function PlaygroundApp(): React.JSX.Element {
           <CardContent className="space-y-3">
             <div className="flex flex-wrap items-center gap-2">
               <div className="ml-auto flex items-center gap-3">
+                <a
+                  href="/vanilla.html"
+                  className="text-xs font-medium text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+                >
+                  Vanilla JS demo
+                </a>
                 <span className="text-xs text-muted-foreground">
                   {editor.status}
                 </span>

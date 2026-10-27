@@ -3,6 +3,7 @@ import { createClippedBodyRectReader } from "./body-measurement";
 import { tableRowHasWholeMergeGeometry } from "./table-row-measurement";
 import { bodyAutomaticParagraphSpacingPx } from "./paragraph-auto-spacing";
 import * as React from "react";
+import type { Properties as CssProperties } from "csstype";
 import { flushSync } from "react-dom";
 import {
   applyTextareaTextEdit,
@@ -102,6 +103,7 @@ import {
   type PaginationPageStartReason,
 } from "@extend-ai/react-docx-layout-core";
 import { importDocxBuffer } from "./docx-import";
+import { canUseConfiguredWasmSourceInWorker } from "./wasm-source";
 import {
   getFontMetricsRevision,
   getServerFontMetricsRevision,
@@ -233,7 +235,7 @@ const HIGHLIGHT_TO_CSS: Record<string, string> = {
 
 export type DocxDocumentTheme = "light" | "dark";
 export type DocxHeadingStyleMap = Partial<
-  Record<HeadingLevel, React.CSSProperties>
+  Record<HeadingLevel, CssProperties<string | number>>
 >;
 
 const DEFAULT_WORD_HEADING_STYLES: Record<HeadingLevel, React.CSSProperties> = {
@@ -4407,7 +4409,7 @@ export interface DocxEditorController {
   registerPendingExportModelTransformer: (
     transformer?: (model: DocModel) => DocModel
   ) => void;
-  setStatus: React.Dispatch<React.SetStateAction<string>>;
+  setStatus: (value: string | ((previous: string) => string)) => void;
   setDocumentTheme: (theme: DocxDocumentTheme) => void;
   setShowTrackedChanges: (showTrackedChanges: boolean) => void;
   setShowComments: (showComments: boolean) => void;
@@ -4989,7 +4991,7 @@ export interface DocxTrackedChangeCardRenderProps {
   /** Zero-based page index that owns the card. */
   pageIndex: number;
   /** Positioning style computed by the viewer. Apply this to the card root. */
-  style: React.CSSProperties;
+  style: CssProperties<string | number>;
   /** Accept this change. Unsupported or stale markup fails closed. */
   accept: () => DocxAnnotationCommandResult;
   /** Reject this change. Unsupported or stale markup fails closed. */
@@ -5010,7 +5012,7 @@ export interface DocxCommentCardRenderProps {
   /** Zero-based page index that owns the card. */
   pageIndex: number;
   /** Positioning style computed by the viewer. Apply this to the card root. */
-  style: React.CSSProperties;
+  style: CssProperties<string | number>;
   /** Mark the comment resolved or reopen it. */
   setResolved: (resolved: boolean) => DocxAnnotationCommandResult;
 }
@@ -30447,6 +30449,8 @@ export function useDocxEditor(
   React.useEffect(() => {
     return () => {
       activeImportAbortControllerRef.current?.abort();
+      activeImportAbortControllerRef.current = undefined;
+      embeddedFontLoadNonceRef.current += 1;
       unloadEmbeddedFonts();
     };
   }, [unloadEmbeddedFonts]);
@@ -30922,7 +30926,7 @@ export function useDocxEditor(
         const importResult = await importDocxBuffer(buffer, {
           signal: importAbortController.signal,
           transferBuffer: true,
-          useWorker: "required",
+          useWorker: canUseConfiguredWasmSourceInWorker() ? "required" : false,
         });
         markDocxImportPerformance(workerEndMark);
         measureDocxImportPerformance(
@@ -30935,6 +30939,7 @@ export function useDocxEditor(
 
         markDocxImportPerformance(fontsStartMark);
         await loadEmbeddedFontsFromPackage(pkg);
+        if (importAbortController.signal.aborted) return;
         markDocxImportPerformance(fontsEndMark);
         measureDocxImportPerformance(
           `${traceName}:fonts`,
@@ -46253,7 +46258,12 @@ export function DocxEditorViewer({
               anchorOffset: session.anchorOffset,
             }
           : undefined;
-      if (!selectionSource) {
+      if (
+        !selectionSource ||
+        compositionActiveRef.current ||
+        (document.activeElement === textarea && !pendingSelection) ||
+        normalizeTextareaText(selectionSource.text) !== textarea.value
+      ) {
         return;
       }
       if (
@@ -49044,7 +49054,18 @@ export function DocxEditorViewer({
   React.useEffect(() => {
     const textarea = wrappedParagraphTextareaRef.current;
     const session = activeWrappedParagraphSession;
-    if (!textarea || !session) {
+    const pendingSelection = wrappedParagraphPendingSelectionRef.current;
+    if (
+      !textarea ||
+      !session ||
+      session.isComposing ||
+      compositionActiveRef.current ||
+      normalizeTextareaText(session.text) !== textarea.value ||
+      (pendingSelection?.locationKey === session.locationKey &&
+        (pendingSelection.text !== session.text ||
+          pendingSelection.start !== session.selectionStart ||
+          pendingSelection.end !== session.selectionEnd))
+    ) {
       return;
     }
 
@@ -64109,6 +64130,7 @@ export function DocxEditorViewer({
           height: pageVisualHeightPx,
           minHeight: pageVisualHeightPx,
           backgroundColor: resolvedPageSurfaceBackgroundColor,
+          color: isNightReaderMode ? "#000000" : pageSurfaceBaseStyle.color,
           position: "relative",
           ...pageMarginPaddingStyle(pageLayout.marginsPx),
         };

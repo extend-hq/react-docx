@@ -21,7 +21,9 @@
       "@extend-ai/react-docx-editor-ops": ["packages/editor-ops/src/index.ts"],
       "@extend-ai/react-docx-wasm": ["packages/wasm/src/index.ts"],
       "@extend-ai/react-docx-serializer": ["packages/serializer/src/index.ts"],
-      "@extend-ai/react-docx": ["packages/react-viewer/src/index.tsx"]
+      "@extend-ai/react-docx": ["packages/react-viewer/src/index.tsx"],
+      "@extend-ai/react-docx/vanilla": ["packages/react-viewer/src/vanilla.tsx"],
+      "@extend-ai/react-docx/internal": ["packages/react-viewer/src/internal.ts"]
     }
   }
 }

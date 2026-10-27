@@ -1,6 +1,6 @@
 # @extend-ai/react-docx
 
-React-first DOCX viewing and editing components for rendering `.docx` files in a browser.
+JavaScript and React viewing and editing components for rendering `.docx` files in a browser.
 
 `@extend-ai/react-docx` gives you:
 
@@ -14,10 +14,10 @@ React-first DOCX viewing and editing components for rendering `.docx` files in a
 ## Install
 
 ```bash
-pnpm add @extend-ai/react-docx react react-dom
+pnpm add @extend-ai/react-docx
 ```
 
-`react` and `react-dom` are peer dependencies.
+For the React entry, install `react` and `react-dom` as well. The vanilla entry bundles Preact and does not require React.
 
 ## WebAssembly Asset
 
@@ -48,8 +48,21 @@ setWasmSource(wasmUrl);
 Configured string, URL, bytes, and `WebAssembly.Module` sources are forwarded into the DOCX import worker. `Response` sources are supported on the main thread; imports automatically avoid the worker for those.
 
 You can also call `initWasm()` (optionally with a source) ahead of time to warm the module before the first document is opened.
+Vanilla applications can import `setWasmSource` and `initWasm` from `@extend-ai/react-docx/vanilla`. The React and vanilla entries share the same WASM configuration.
+
+In Vite development, exclude the vanilla entry from dependency optimization so Vite can resolve the import worker asset:
+
+```ts
+import { defineConfig } from "vite";
+
+export default defineConfig({
+  optimizeDeps: { exclude: ["@extend-ai/react-docx/vanilla"] },
+});
+```
 
 ## Main Entry Points
+
+`@extend-ai/react-docx/vanilla` exports `createDocxViewer`, the `DocxViewer` instance class, and utilities for JavaScript applications.
 
 Use `useDocxEditor` + `DocxEditorViewer` for both read-only and editable
 experiences. The hook manages document state, import/export, and editing
@@ -59,6 +72,62 @@ view-only use or `mode="edit"` for editing.
 It also re-exports lower-level document/model/layout/serializer APIs, so you can work below the UI layer when needed.
 
 ## Quick Start
+
+### Vanilla JavaScript
+
+Mount a viewer in an existing element using a browser bundler such as Vite. The viewer uses a bundled Preact renderer and creates a `div` in the regular DOM.
+
+The repository playground includes a standalone JavaScript demo at `/vanilla.html`.
+
+```html
+<input id="file" type="file" accept=".docx,.doc" />
+<div id="viewer"></div>
+<script type="module" src="/main.js"></script>
+```
+
+```js
+import { createDocxViewer } from "@extend-ai/react-docx/vanilla";
+
+const viewer = createDocxViewer(document.getElementById("viewer"), {
+  height: 600,
+  emptyState: "Choose a document to preview.",
+});
+
+document.getElementById("file").addEventListener("change", (event) => {
+  const file = event.currentTarget.files?.[0];
+  if (file) viewer.setOptions({ file });
+});
+```
+
+`file` accepts a `File`, `Blob`, or `ArrayBuffer`. To load a URL instead, pass `{ src: "/document.docx" }`; cross-origin URLs need appropriate CORS headers. Supplying `file` clears `src`, and supplying `src` clears `file`. An explicit `fileName` remains in effect until changed or cleared with `fileName: undefined`.
+
+You can also construct an instance directly with `new DocxViewer(container, options)`. The default mode is `"read-only"`; set `mode: "edit"` to enable editing.
+
+Subscribe to controller changes to follow loading and errors or build your own controls:
+
+```js
+const unsubscribe = viewer.subscribe((controller) => {
+  if (controller.isLoading) {
+    console.log("Loading document");
+  } else if (controller.error) {
+    console.error(controller.error);
+  } else if (controller.hasDocument) {
+    console.log(controller.fileName, controller.currentPage, controller.totalPages);
+  }
+});
+
+viewer.setOptions({ mode: "edit" });
+viewer.getController()?.exportDocx();
+
+unsubscribe();
+viewer.destroy();
+```
+
+`getController()` returns the latest `DocxVanillaViewerController`, or `null` before it is available and after destruction. Read it again when invoking commands. `subscribe(listener)` delivers the current controller immediately when available and reports subsequent updates; its return value unsubscribes the listener. The controller includes the editor's commands and state, plus `isLoading`, `error`, and `hasDocument`.
+
+`setOptions(options)` merges options into the current configuration. Changing the source, source name, parsed document, or starter model creates a fresh controller. Appearance and interaction options update the existing viewer. `reload()` resets the controller and reloads the current source. `destroy()` unmounts the viewer, removes its element, and releases listeners; it is safe to call more than once.
+
+`DocxVanillaViewerOptions` supports viewer options such as page virtualization, zoom, themes, page colors, tracked changes, comments, and context menus. `emptyState`, `loadingState`, `errorState`, and custom card and context-menu renderers accept text or DOM nodes. `parseDocxForViewer` is also available from the vanilla entry for applications that want to parse once and initialize the viewer with `document`.
 
 ### Read-only viewer
 
