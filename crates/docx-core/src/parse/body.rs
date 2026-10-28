@@ -1,8 +1,24 @@
-use crate::parse::re;
 /// Mirrors TypeScript `extractBodyXml`.
 pub fn extract_body_xml(document_xml: &str) -> String {
-    let re = re::get_unchecked(r"(?is)<w:body\b[^>]*>([\s\S]*?)</w:body>");
-    re.captures(document_xml)
-        .and_then(|caps| caps.get(1).map(|m| m.as_str().to_string()))
-        .unwrap_or_else(|| document_xml.to_string())
+    body_xml(document_xml).to_owned()
+}
+
+pub(crate) fn body_xml(document_xml: &str) -> &str {
+    let Some(open) = super::scan::find_tag_token_ref(document_xml, "w:body") else {
+        return document_xml;
+    };
+    let start = open.as_ptr() as usize - document_xml.as_ptr() as usize + open.len();
+    let remainder = &document_xml[start..];
+    if let Some(end) = remainder.find("</w:body>") {
+        return &remainder[..end];
+    }
+    let mut cursor = 0;
+    while let Some(offset) = remainder[cursor..].find("</") {
+        let end = cursor + offset;
+        if super::scan::starts_with_ignore_ascii_case(&remainder[end..], "</w:body>") {
+            return &remainder[..end];
+        }
+        cursor = end + 2;
+    }
+    document_xml
 }

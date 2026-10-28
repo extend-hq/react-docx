@@ -1,11 +1,10 @@
 use std::collections::HashMap;
 
-use base64::{engine::general_purpose::STANDARD, Engine as _};
 use crate::model::{
     ImageHorizontalAlign, ImageVerticalAlign, ParagraphAlignment, ParagraphBorderSet,
-    ParagraphBorderStyle, ParagraphIndent, ParagraphLineRule, ParagraphSpacing,
-    ParagraphTabStop, ParagraphTabStopAlignment, ParagraphTabStopLeader, TableBorderSet,
-    TableBorderStyle, TextRunBorderStyle, TextStyle,
+    ParagraphBorderStyle, ParagraphIndent, ParagraphLineRule, ParagraphSpacing, ParagraphTabStop,
+    ParagraphTabStopAlignment, ParagraphTabStopLeader, TableBorderSet, TableBorderStyle,
+    TextRunBorderStyle, TextStyle,
 };
 use crate::package::OoxmlPart;
 use crate::parse::context::{ContentTypeLookup, ThemeColorMap, ThemeFontMap};
@@ -14,17 +13,22 @@ use crate::xml::{
     decode_xml_entities, extract_balanced_tag_blocks, get_attribute, normalize_alignment,
     parse_integer_attribute, parse_on_off_attribute,
 };
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 
 pub fn regex_capture(xml: &str, pattern: &str) -> Option<String> {
+    if xml.is_empty() {
+        return None;
+    }
     re::get(pattern)?
         .captures(xml)
         .and_then(|caps| caps.get(1).map(|m| m.as_str().to_string()))
 }
 
 pub fn regex_capture_tag(xml: &str, pattern: &str) -> Option<String> {
-    re::get(pattern)?
-        .find(xml)
-        .map(|m| m.as_str().to_string())
+    if xml.is_empty() {
+        return None;
+    }
+    re::get(pattern)?.find(xml).map(|m| m.as_str().to_string())
 }
 
 pub fn normalize_hex_color(value: Option<&str>) -> Option<String> {
@@ -91,12 +95,16 @@ pub fn normalize_heading_level(value: Option<&str>) -> Option<crate::model::Head
 }
 
 pub fn prefer_alternate_content_choice(xml: &str) -> String {
+    active_xml(xml).into_owned()
+}
+
+pub(crate) fn active_xml(xml: &str) -> std::borrow::Cow<'_, str> {
     if !xml.contains("<mc:AlternateContent") {
-        return xml.to_string();
+        return std::borrow::Cow::Borrowed(xml);
     }
 
     let re = re::get_unchecked(r"(?is)<mc:AlternateContent\b[\s\S]*?</mc:AlternateContent>");
-    re.replace_all(xml, |caps: &regex_lite::Captures| {
+    re.replace_all(xml, |caps: &regex::Captures| {
         let alternate_xml = &caps[0];
         let choice_re = re::get_unchecked(r"(?is)<mc:Choice\b[\s\S]*?</mc:Choice>");
         let Some(choice_xml) = choice_re.find(alternate_xml) else {
@@ -110,7 +118,6 @@ pub fn prefer_alternate_content_choice(xml: &str) -> String {
             .replace(&without_open, "")
             .to_string()
     })
-    .to_string()
 }
 
 pub fn resolve_style_properties_block(style_xml: &str, tag_name: &str) -> String {
@@ -121,11 +128,14 @@ pub fn resolve_style_properties_block(style_xml: &str, tag_name: &str) -> String
         return balanced;
     }
 
-    regex_capture_tag(style_xml, &format!(r"(?i)<{tag_name}\b[^>]*/?>"))
-        .unwrap_or_default()
+    regex_capture_tag(style_xml, &format!(r"(?i)<{tag_name}\b[^>]*/?>")).unwrap_or_default()
 }
 
 pub fn merge_text_styles(styles: &[Option<TextStyle>]) -> Option<TextStyle> {
+    merge_text_style_refs(&styles.iter().map(Option::as_ref).collect::<Vec<_>>())
+}
+
+pub(crate) fn merge_text_style_refs(styles: &[Option<&TextStyle>]) -> Option<TextStyle> {
     let mut merged = TextStyle {
         bold: None,
         italic: None,
@@ -169,123 +179,122 @@ pub fn merge_text_styles(styles: &[Option<TextStyle>]) -> Option<TextStyle> {
     };
     let mut has_any = false;
 
-    for style in styles.iter().flatten() {
+    for style in styles.iter().rev().flatten() {
         has_any = true;
-        if style.bold.is_some() {
+        if merged.bold.is_none() {
             merged.bold = style.bold;
         }
-        if style.italic.is_some() {
+        if merged.italic.is_none() {
             merged.italic = style.italic;
         }
-        if style.underline.is_some() {
+        if merged.underline.is_none() {
             merged.underline = style.underline;
         }
-        if style.strike.is_some() {
+        if merged.strike.is_none() {
             merged.strike = style.strike;
         }
-        if style.all_caps.is_some() {
+        if merged.all_caps.is_none() {
             merged.all_caps = style.all_caps;
         }
-        if style.small_caps.is_some() {
+        if merged.small_caps.is_none() {
             merged.small_caps = style.small_caps;
         }
-        if style.color.is_some() {
+        if merged.color.is_none() {
             merged.color = style.color.clone();
         }
-        if style.highlight.is_some() {
+        if merged.highlight.is_none() {
             merged.highlight = style.highlight.clone();
         }
-        if style.background_color.is_some() {
+        if merged.background_color.is_none() {
             merged.background_color = style.background_color.clone();
         }
-        if style.font_size_pt.is_some() {
+        if merged.font_size_pt.is_none() {
             merged.font_size_pt = style.font_size_pt;
         }
-        if style.font_size_cs_pt.is_some() {
+        if merged.font_size_cs_pt.is_none() {
             merged.font_size_cs_pt = style.font_size_cs_pt;
         }
-        if style.font_family.is_some() {
+        if merged.font_family.is_none() {
             merged.font_family = style.font_family.clone();
         }
-        if style.source_font_family.is_some() {
+        if merged.source_font_family.is_none() {
             merged.source_font_family = style.source_font_family.clone();
         }
-        if style.font_family_ascii.is_some() {
+        if merged.font_family_ascii.is_none() {
             merged.font_family_ascii = style.font_family_ascii.clone();
         }
-        if style.font_family_h_ansi.is_some() {
+        if merged.font_family_h_ansi.is_none() {
             merged.font_family_h_ansi = style.font_family_h_ansi.clone();
         }
-        if style.font_family_east_asia.is_some() {
+        if merged.font_family_east_asia.is_none() {
             merged.font_family_east_asia = style.font_family_east_asia.clone();
         }
-        if style.font_family_cs.is_some() {
+        if merged.font_family_cs.is_none() {
             merged.font_family_cs = style.font_family_cs.clone();
         }
-        if style.font_theme_ascii.is_some() {
+        if merged.font_theme_ascii.is_none() {
             merged.font_theme_ascii = style.font_theme_ascii.clone();
         }
-        if style.font_theme_h_ansi.is_some() {
+        if merged.font_theme_h_ansi.is_none() {
             merged.font_theme_h_ansi = style.font_theme_h_ansi.clone();
         }
-        if style.font_theme_east_asia.is_some() {
+        if merged.font_theme_east_asia.is_none() {
             merged.font_theme_east_asia = style.font_theme_east_asia.clone();
         }
-        if style.font_theme_cs.is_some() {
+        if merged.font_theme_cs.is_none() {
             merged.font_theme_cs = style.font_theme_cs.clone();
         }
-        if style.resolved_font_family_ascii.is_some() {
+        if merged.resolved_font_family_ascii.is_none() {
             merged.resolved_font_family_ascii = style.resolved_font_family_ascii.clone();
         }
-        if style.resolved_font_family_h_ansi.is_some() {
+        if merged.resolved_font_family_h_ansi.is_none() {
             merged.resolved_font_family_h_ansi = style.resolved_font_family_h_ansi.clone();
         }
-        if style.resolved_font_family_east_asia.is_some() {
-            merged.resolved_font_family_east_asia =
-                style.resolved_font_family_east_asia.clone();
+        if merged.resolved_font_family_east_asia.is_none() {
+            merged.resolved_font_family_east_asia = style.resolved_font_family_east_asia.clone();
         }
-        if style.resolved_font_family_cs.is_some() {
+        if merged.resolved_font_family_cs.is_none() {
             merged.resolved_font_family_cs = style.resolved_font_family_cs.clone();
         }
-        if style.font_hint.is_some() {
+        if merged.font_hint.is_none() {
             merged.font_hint = style.font_hint.clone();
         }
-        if style.language.is_some() {
+        if merged.language.is_none() {
             merged.language = style.language.clone();
         }
-        if style.language_east_asia.is_some() {
+        if merged.language_east_asia.is_none() {
             merged.language_east_asia = style.language_east_asia.clone();
         }
-        if style.language_bidi.is_some() {
+        if merged.language_bidi.is_none() {
             merged.language_bidi = style.language_bidi.clone();
         }
-        if style.right_to_left.is_some() {
+        if merged.right_to_left.is_none() {
             merged.right_to_left = style.right_to_left;
         }
-        if style.complex_script.is_some() {
+        if merged.complex_script.is_none() {
             merged.complex_script = style.complex_script;
         }
-        if style.character_scale_percent.is_some() || style.source_character_scale.is_some() {
+        if merged.character_scale_percent.is_none() && merged.source_character_scale.is_none() {
             merged.character_scale_percent = style.character_scale_percent;
             merged.source_character_scale = style.source_character_scale.clone();
         }
-        if style.character_spacing_twips.is_some() {
+        if merged.character_spacing_twips.is_none() {
             merged.character_spacing_twips = style.character_spacing_twips;
         }
-        if style.kerning_min_font_size_pt.is_some() {
+        if merged.kerning_min_font_size_pt.is_none() {
             merged.kerning_min_font_size_pt = style.kerning_min_font_size_pt;
         }
-        if style.ligatures.is_some() {
+        if merged.ligatures.is_none() {
             merged.ligatures = style.ligatures;
         }
-        if style.contextual_alternates.is_some() {
+        if merged.contextual_alternates.is_none() {
             merged.contextual_alternates = style.contextual_alternates;
         }
-        if style.vertical_align.is_some() {
+        if merged.vertical_align.is_none() {
             merged.vertical_align = style.vertical_align;
         }
-        if let Some(ref border) = style.run_border {
-            merged.run_border = Some(border.clone());
+        if merged.run_border.is_none() {
+            merged.run_border = style.run_border.clone();
         }
     }
 
@@ -391,7 +400,9 @@ pub fn merge_paragraph_border_style(
         space_pt: direct
             .and_then(|d| d.space_pt)
             .or(inherited.and_then(|i| i.space_pt)),
-        frame: direct.and_then(|d| d.frame).or(inherited.and_then(|i| i.frame)),
+        frame: direct
+            .and_then(|d| d.frame)
+            .or(inherited.and_then(|i| i.frame)),
         shadow: direct
             .and_then(|d| d.shadow)
             .or(inherited.and_then(|i| i.shadow)),
@@ -406,12 +417,30 @@ pub fn merge_paragraph_border_sets(
         return None;
     }
     let merged = ParagraphBorderSet {
-        top: merge_paragraph_border_style(inherited.and_then(|i| i.top.as_ref()), direct.and_then(|d| d.top.as_ref())),
-        right: merge_paragraph_border_style(inherited.and_then(|i| i.right.as_ref()), direct.and_then(|d| d.right.as_ref())),
-        bottom: merge_paragraph_border_style(inherited.and_then(|i| i.bottom.as_ref()), direct.and_then(|d| d.bottom.as_ref())),
-        left: merge_paragraph_border_style(inherited.and_then(|i| i.left.as_ref()), direct.and_then(|d| d.left.as_ref())),
-        between: merge_paragraph_border_style(inherited.and_then(|i| i.between.as_ref()), direct.and_then(|d| d.between.as_ref())),
-        bar: merge_paragraph_border_style(inherited.and_then(|i| i.bar.as_ref()), direct.and_then(|d| d.bar.as_ref())),
+        top: merge_paragraph_border_style(
+            inherited.and_then(|i| i.top.as_ref()),
+            direct.and_then(|d| d.top.as_ref()),
+        ),
+        right: merge_paragraph_border_style(
+            inherited.and_then(|i| i.right.as_ref()),
+            direct.and_then(|d| d.right.as_ref()),
+        ),
+        bottom: merge_paragraph_border_style(
+            inherited.and_then(|i| i.bottom.as_ref()),
+            direct.and_then(|d| d.bottom.as_ref()),
+        ),
+        left: merge_paragraph_border_style(
+            inherited.and_then(|i| i.left.as_ref()),
+            direct.and_then(|d| d.left.as_ref()),
+        ),
+        between: merge_paragraph_border_style(
+            inherited.and_then(|i| i.between.as_ref()),
+            direct.and_then(|d| d.between.as_ref()),
+        ),
+        bar: merge_paragraph_border_style(
+            inherited.and_then(|i| i.bar.as_ref()),
+            direct.and_then(|d| d.bar.as_ref()),
+        ),
     };
     if merged.top.is_none()
         && merged.right.is_none()
@@ -459,14 +488,30 @@ pub fn merge_table_border_sets(
         return None;
     }
     let merged = TableBorderSet {
-        top: direct.and_then(|d| d.top.clone()).or_else(|| inherited.and_then(|i| i.top.clone())),
-        right: direct.and_then(|d| d.right.clone()).or_else(|| inherited.and_then(|i| i.right.clone())),
-        bottom: direct.and_then(|d| d.bottom.clone()).or_else(|| inherited.and_then(|i| i.bottom.clone())),
-        left: direct.and_then(|d| d.left.clone()).or_else(|| inherited.and_then(|i| i.left.clone())),
-        inside_h: direct.and_then(|d| d.inside_h.clone()).or_else(|| inherited.and_then(|i| i.inside_h.clone())),
-        inside_v: direct.and_then(|d| d.inside_v.clone()).or_else(|| inherited.and_then(|i| i.inside_v.clone())),
-        tl2br: direct.and_then(|d| d.tl2br.clone()).or_else(|| inherited.and_then(|i| i.tl2br.clone())),
-        tr2bl: direct.and_then(|d| d.tr2bl.clone()).or_else(|| inherited.and_then(|i| i.tr2bl.clone())),
+        top: direct
+            .and_then(|d| d.top.clone())
+            .or_else(|| inherited.and_then(|i| i.top.clone())),
+        right: direct
+            .and_then(|d| d.right.clone())
+            .or_else(|| inherited.and_then(|i| i.right.clone())),
+        bottom: direct
+            .and_then(|d| d.bottom.clone())
+            .or_else(|| inherited.and_then(|i| i.bottom.clone())),
+        left: direct
+            .and_then(|d| d.left.clone())
+            .or_else(|| inherited.and_then(|i| i.left.clone())),
+        inside_h: direct
+            .and_then(|d| d.inside_h.clone())
+            .or_else(|| inherited.and_then(|i| i.inside_h.clone())),
+        inside_v: direct
+            .and_then(|d| d.inside_v.clone())
+            .or_else(|| inherited.and_then(|i| i.inside_v.clone())),
+        tl2br: direct
+            .and_then(|d| d.tl2br.clone())
+            .or_else(|| inherited.and_then(|i| i.tl2br.clone())),
+        tr2bl: direct
+            .and_then(|d| d.tr2bl.clone())
+            .or_else(|| inherited.and_then(|i| i.tr2bl.clone())),
     };
     if merged.top.is_none()
         && merged.right.is_none()
@@ -499,7 +544,10 @@ pub fn decode_xml_attribute(value: Option<&str>) -> Option<String> {
 }
 
 pub fn decode_hex_code_point(value: Option<&str>) -> Option<String> {
-    let value = value?.trim().trim_start_matches("0x").trim_start_matches("0X");
+    let value = value?
+        .trim()
+        .trim_start_matches("0x")
+        .trim_start_matches("0X");
     if value.is_empty() || !value.chars().all(|c| c.is_ascii_hexdigit()) {
         return None;
     }
@@ -538,10 +586,7 @@ pub fn escape_xml_text(value: &str) -> String {
 }
 
 pub fn svg_data_uri(svg: &str) -> String {
-    format!(
-        "data:image/svg+xml;charset=utf-8,{}",
-        urlencoding_like(svg)
-    )
+    format!("data:image/svg+xml;charset=utf-8,{}", urlencoding_like(svg))
 }
 
 fn urlencoding_like(value: &str) -> String {
@@ -573,7 +618,11 @@ pub fn content_type_for_part(part_name: &str, content_types: &ContentTypeLookup)
     if let Some(override_type) = content_types
         .override_by_part_name
         .get(part_name)
-        .or_else(|| content_types.override_by_part_name.get(&format!("/{part_name}")))
+        .or_else(|| {
+            content_types
+                .override_by_part_name
+                .get(&format!("/{part_name}"))
+        })
     {
         return Some(override_type.clone());
     }
@@ -595,15 +644,18 @@ pub fn content_type_for_part(part_name: &str, content_types: &ContentTypeLookup)
         .default_by_extension
         .get(&extension)
         .cloned()
-        .or_else(|| mime_by_extension.get(extension.as_str()).map(|s| (*s).to_string()))
+        .or_else(|| {
+            mime_by_extension
+                .get(extension.as_str())
+                .map(|s| (*s).to_string())
+        })
 }
 
 pub fn resolve_part_path(base_part_name: &str, target: &str) -> String {
     if target.is_empty() {
         return String::new();
     }
-    if re::get_unchecked(r"(?i)^[a-z][a-z0-9+.-]*:").is_match(target) || target.starts_with('#')
-    {
+    if re::get_unchecked(r"(?i)^[a-z][a-z0-9+.-]*:").is_match(target) || target.starts_with('#') {
         return target.to_string();
     }
     if target.starts_with('/') {
@@ -647,14 +699,21 @@ pub fn parse_relationships_from_parts(
     let re = re::get_unchecked(r"(?i)<Relationship\b[^>]*>");
     for mat in re.find_iter(&relationships_part.content) {
         let tag = mat.as_str();
-        let Some(id) = get_attribute(tag, "Id") else { continue };
-        let Some(target) = get_attribute(tag, "Target") else { continue };
+        let Some(id) = get_attribute(tag, "Id") else {
+            continue;
+        };
+        let Some(target) = get_attribute(tag, "Target") else {
+            continue;
+        };
         map.insert(id, resolve_part_path(part_name, &target));
     }
     map
 }
 
-pub fn is_windows_metafile_content_type(content_type: Option<&str>, part_name: Option<&str>) -> bool {
+pub fn is_windows_metafile_content_type(
+    content_type: Option<&str>,
+    part_name: Option<&str>,
+) -> bool {
     if let Some(normalized) = content_type.map(|value| value.trim().to_ascii_lowercase()) {
         if matches!(
             normalized.as_str(),
@@ -674,7 +733,10 @@ pub fn is_windows_metafile_content_type(content_type: Option<&str>, part_name: O
     )
 }
 
-pub fn rasterize_windows_metafile_to_png_data_uri(_bytes: &[u8], _part_name: Option<&str>) -> Option<String> {
+pub fn rasterize_windows_metafile_to_png_data_uri(
+    _bytes: &[u8],
+    _part_name: Option<&str>,
+) -> Option<String> {
     None
 }
 
@@ -751,8 +813,12 @@ pub fn resolve_drawing_color_from_xml(
     theme_colors: &ThemeColorMap,
 ) -> Option<(String, Option<f64>)> {
     let color_xml = color_xml?;
-    let srgb = normalize_hex_color(regex_capture(color_xml, r#"(?i)<a:srgbClr\b[^>]*val="([^"]+)""#).as_deref());
-    let sys = normalize_hex_color(regex_capture(color_xml, r#"(?i)<a:sysClr\b[^>]*lastClr="([^"]+)""#).as_deref());
+    let srgb = normalize_hex_color(
+        regex_capture(color_xml, r#"(?i)<a:srgbClr\b[^>]*val="([^"]+)""#).as_deref(),
+    );
+    let sys = normalize_hex_color(
+        regex_capture(color_xml, r#"(?i)<a:sysClr\b[^>]*lastClr="([^"]+)""#).as_deref(),
+    );
     let scheme_token = regex_capture(color_xml, r#"(?i)<a:schemeClr\b[^>]*val="([^"]+)""#)
         .map(|t| t.trim().to_ascii_lowercase());
     let scheme = scheme_token.as_ref().and_then(|token| {
@@ -778,9 +844,8 @@ pub fn parse_paragraph_spacing_from_xml(xml: &str) -> Option<ParagraphSpacing> {
     if xml.is_empty() {
         return None;
     }
-    let spacing_tag = regex_capture_tag(xml, r"(?i)<w:spacing\b[^>]*/?>")?;
-    let line_rule_raw = get_attribute(&spacing_tag, "w:lineRule")
-        .map(|v| v.to_ascii_lowercase());
+    let spacing_tag = super::scan::find_tag_token_ref(xml, "w:spacing")?;
+    let line_rule_raw = get_attribute(&spacing_tag, "w:lineRule").map(|v| v.to_ascii_lowercase());
     let line_rule = match line_rule_raw.as_deref() {
         Some("auto") => Some(ParagraphLineRule::Auto),
         Some("exact") => Some(ParagraphLineRule::Exact),
@@ -790,8 +855,12 @@ pub fn parse_paragraph_spacing_from_xml(xml: &str) -> Option<ParagraphSpacing> {
     let spacing = ParagraphSpacing {
         before_twips: parse_integer_attribute(&spacing_tag, "w:before"),
         after_twips: parse_integer_attribute(&spacing_tag, "w:after"),
-        before_auto_spacing: super::styles::parse_on_off_value(get_attribute(&spacing_tag, "w:beforeAutospacing").as_deref()),
-        after_auto_spacing: super::styles::parse_on_off_value(get_attribute(&spacing_tag, "w:afterAutospacing").as_deref()),
+        before_auto_spacing: super::styles::parse_on_off_value(
+            get_attribute(&spacing_tag, "w:beforeAutospacing").as_deref(),
+        ),
+        after_auto_spacing: super::styles::parse_on_off_value(
+            get_attribute(&spacing_tag, "w:afterAutospacing").as_deref(),
+        ),
         line_twips: parse_integer_attribute(&spacing_tag, "w:line"),
         line_rule,
     };
@@ -811,7 +880,7 @@ pub fn parse_paragraph_indent_from_xml(xml: &str) -> Option<ParagraphIndent> {
     if xml.is_empty() {
         return None;
     }
-    let indent_tag = regex_capture_tag(xml, r"(?i)<w:ind\b[^>]*/?>")?;
+    let indent_tag = super::scan::find_tag_token_ref(xml, "w:ind")?;
     let indent = ParagraphIndent {
         left_twips: parse_integer_attribute(&indent_tag, "w:left"),
         right_twips: parse_integer_attribute(&indent_tag, "w:right"),
@@ -832,7 +901,7 @@ pub fn parse_paragraph_shading_from_xml(xml: &str) -> Option<String> {
     if xml.is_empty() {
         return None;
     }
-    let shading_tag = regex_capture_tag(xml, r"(?i)<w:shd\b[^>]*/?>")?;
+    let shading_tag = super::scan::find_tag_token_ref(xml, "w:shd")?;
     normalize_hex_color(get_attribute(&shading_tag, "w:fill").as_deref())
 }
 
@@ -845,7 +914,11 @@ pub fn parse_text_run_border_style(tag_xml: Option<&str>) -> Option<TextRunBorde
     let size_eighth_pt = parse_integer_attribute(tag_xml, "w:sz").map(|v| v as f64);
     let space_pt = parse_integer_attribute(tag_xml, "w:space").map(|v| v as f64);
     let raw_color = get_attribute(tag_xml, "w:color");
-    let color = if raw_color.as_deref().map(|c| c.eq_ignore_ascii_case("auto")).unwrap_or(false) {
+    let color = if raw_color
+        .as_deref()
+        .map(|c| c.eq_ignore_ascii_case("auto"))
+        .unwrap_or(false)
+    {
         None
     } else {
         normalize_hex_color(raw_color.as_deref())
@@ -875,7 +948,11 @@ pub fn parse_paragraph_border_style(tag_xml: Option<&str>) -> Option<ParagraphBo
     let size_eighth_pt = parse_integer_attribute(tag_xml, "w:sz").map(|v| v as f64);
     let space_pt = parse_integer_attribute(tag_xml, "w:space").map(|v| v as f64);
     let raw_color = get_attribute(tag_xml, "w:color");
-    let color = if raw_color.as_deref().map(|c| c.eq_ignore_ascii_case("auto")).unwrap_or(false) {
+    let color = if raw_color
+        .as_deref()
+        .map(|c| c.eq_ignore_ascii_case("auto"))
+        .unwrap_or(false)
+    {
         Some("#000000".to_string())
     } else {
         normalize_hex_color(raw_color.as_deref())
@@ -903,20 +980,45 @@ pub fn parse_paragraph_border_set_from_xml(xml: &str) -> Option<ParagraphBorderS
     let paragraph_border_xml = extract_balanced_tag_blocks(xml, "w:pBdr")
         .into_iter()
         .next()
-        .or_else(|| regex_capture_tag(xml, r"(?i)<w:pBdr\b[^>]*/?>"))?;
+        .or_else(|| super::scan::find_tag_token_ref(xml, "w:pBdr").map(str::to_owned))?;
     if paragraph_border_xml.is_empty() {
         return None;
     }
-    let top = parse_paragraph_border_style(regex_capture_tag(&paragraph_border_xml, r"(?i)<w:top\b[^>]*/?>").as_deref());
-    let right = parse_paragraph_border_style(regex_capture_tag(&paragraph_border_xml, r"(?i)<w:right\b[^>]*/?>").as_deref());
-    let bottom = parse_paragraph_border_style(regex_capture_tag(&paragraph_border_xml, r"(?i)<w:bottom\b[^>]*/?>").as_deref());
-    let left = parse_paragraph_border_style(regex_capture_tag(&paragraph_border_xml, r"(?i)<w:left\b[^>]*/?>").as_deref());
-    let between = parse_paragraph_border_style(regex_capture_tag(&paragraph_border_xml, r"(?i)<w:between\b[^>]*/?>").as_deref());
-    let bar = parse_paragraph_border_style(regex_capture_tag(&paragraph_border_xml, r"(?i)<w:bar\b[^>]*/?>").as_deref());
-    if top.is_none() && right.is_none() && bottom.is_none() && left.is_none() && between.is_none() && bar.is_none() {
+    let top = parse_paragraph_border_style(
+        super::scan::find_tag_token_ref(&paragraph_border_xml, "w:top").as_deref(),
+    );
+    let right = parse_paragraph_border_style(
+        super::scan::find_tag_token_ref(&paragraph_border_xml, "w:right").as_deref(),
+    );
+    let bottom = parse_paragraph_border_style(
+        super::scan::find_tag_token_ref(&paragraph_border_xml, "w:bottom").as_deref(),
+    );
+    let left = parse_paragraph_border_style(
+        super::scan::find_tag_token_ref(&paragraph_border_xml, "w:left").as_deref(),
+    );
+    let between = parse_paragraph_border_style(
+        super::scan::find_tag_token_ref(&paragraph_border_xml, "w:between").as_deref(),
+    );
+    let bar = parse_paragraph_border_style(
+        super::scan::find_tag_token_ref(&paragraph_border_xml, "w:bar").as_deref(),
+    );
+    if top.is_none()
+        && right.is_none()
+        && bottom.is_none()
+        && left.is_none()
+        && between.is_none()
+        && bar.is_none()
+    {
         return None;
     }
-    Some(ParagraphBorderSet { top, right, bottom, left, between, bar })
+    Some(ParagraphBorderSet {
+        top,
+        right,
+        bottom,
+        left,
+        between,
+        bar,
+    })
 }
 
 pub fn parse_table_border_style(tag_xml: Option<&str>) -> Option<TableBorderStyle> {
@@ -927,7 +1029,11 @@ pub fn parse_table_border_style(tag_xml: Option<&str>) -> Option<TableBorderStyl
     }
     let size_eighth_pt = parse_integer_attribute(tag_xml, "w:sz").map(|v| v as f64);
     let raw_color = get_attribute(tag_xml, "w:color");
-    let color = if raw_color.as_deref().map(|c| c.eq_ignore_ascii_case("auto")).unwrap_or(false) {
+    let color = if raw_color
+        .as_deref()
+        .map(|c| c.eq_ignore_ascii_case("auto"))
+        .unwrap_or(false)
+    {
         Some("#000000".to_string())
     } else {
         normalize_hex_color(raw_color.as_deref())
@@ -940,20 +1046,41 @@ pub fn parse_table_border_style(tag_xml: Option<&str>) -> Option<TableBorderStyl
 }
 
 pub fn parse_table_border_set(xml: &str) -> Option<TableBorderSet> {
-    let top = parse_table_border_style(regex_capture_tag(xml, r"(?i)<w:top\b[^>]*/?>").as_deref());
-    let right = parse_table_border_style(regex_capture_tag(xml, r"(?i)<w:right\b[^>]*/?>").as_deref());
-    let bottom = parse_table_border_style(regex_capture_tag(xml, r"(?i)<w:bottom\b[^>]*/?>").as_deref());
-    let left = parse_table_border_style(regex_capture_tag(xml, r"(?i)<w:left\b[^>]*/?>").as_deref());
-    let inside_h = parse_table_border_style(regex_capture_tag(xml, r"(?i)<w:insideH\b[^>]*/?>").as_deref());
-    let inside_v = parse_table_border_style(regex_capture_tag(xml, r"(?i)<w:insideV\b[^>]*/?>").as_deref());
-    let tl2br = parse_table_border_style(regex_capture_tag(xml, r"(?i)<w:tl2br\b[^>]*/?>").as_deref());
-    let tr2bl = parse_table_border_style(regex_capture_tag(xml, r"(?i)<w:tr2bl\b[^>]*/?>").as_deref());
-    if top.is_none() && right.is_none() && bottom.is_none() && left.is_none()
-        && inside_h.is_none() && inside_v.is_none() && tl2br.is_none() && tr2bl.is_none()
+    let top = parse_table_border_style(super::scan::find_tag_token_ref(xml, "w:top").as_deref());
+    let right =
+        parse_table_border_style(super::scan::find_tag_token_ref(xml, "w:right").as_deref());
+    let bottom =
+        parse_table_border_style(super::scan::find_tag_token_ref(xml, "w:bottom").as_deref());
+    let left = parse_table_border_style(super::scan::find_tag_token_ref(xml, "w:left").as_deref());
+    let inside_h =
+        parse_table_border_style(super::scan::find_tag_token_ref(xml, "w:insideH").as_deref());
+    let inside_v =
+        parse_table_border_style(super::scan::find_tag_token_ref(xml, "w:insideV").as_deref());
+    let tl2br =
+        parse_table_border_style(super::scan::find_tag_token_ref(xml, "w:tl2br").as_deref());
+    let tr2bl =
+        parse_table_border_style(super::scan::find_tag_token_ref(xml, "w:tr2bl").as_deref());
+    if top.is_none()
+        && right.is_none()
+        && bottom.is_none()
+        && left.is_none()
+        && inside_h.is_none()
+        && inside_v.is_none()
+        && tl2br.is_none()
+        && tr2bl.is_none()
     {
         return None;
     }
-    Some(TableBorderSet { top, right, bottom, left, inside_h, inside_v, tl2br, tr2bl })
+    Some(TableBorderSet {
+        top,
+        right,
+        bottom,
+        left,
+        inside_h,
+        inside_v,
+        tl2br,
+        tr2bl,
+    })
 }
 
 pub fn normalize_tab_stop_alignment(value: Option<&str>) -> Option<ParagraphTabStopAlignment> {
@@ -1014,16 +1141,14 @@ pub fn parse_paragraph_tab_stops_from_xml(xml: &str) -> Vec<ParagraphTabStop> {
 /// when its element is absent. Returns `None` when the properties block has no
 /// `w:numPr` at all. Callers use this to distinguish an ilvl-only override
 /// (level change on a style-provided list) from numbering removal (numId=0).
-pub fn parse_paragraph_numbering_parts_from_xml(
-    xml: &str,
-) -> Option<(Option<i64>, Option<i64>)> {
+pub fn parse_paragraph_numbering_parts_from_xml(xml: &str) -> Option<(Option<i64>, Option<i64>)> {
     if xml.is_empty() {
         return None;
     }
     let numbering_xml = extract_balanced_tag_blocks(xml, "w:numPr")
         .into_iter()
         .next()
-        .or_else(|| regex_capture_tag(xml, r"(?i)<w:numPr\b[^>]*/?>"))?;
+        .or_else(|| super::scan::find_tag_token_ref(xml, "w:numPr").map(str::to_owned))?;
     if numbering_xml.is_empty() {
         return None;
     }
@@ -1041,7 +1166,7 @@ pub fn parse_paragraph_numbering_from_xml(xml: &str) -> Option<crate::model::Par
     let numbering_xml = extract_balanced_tag_blocks(xml, "w:numPr")
         .into_iter()
         .next()
-        .or_else(|| regex_capture_tag(xml, r"(?i)<w:numPr\b[^>]*/?>"))?;
+        .or_else(|| super::scan::find_tag_token_ref(xml, "w:numPr").map(str::to_owned))?;
     if numbering_xml.is_empty() {
         return None;
     }

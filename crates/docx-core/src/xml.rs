@@ -13,31 +13,31 @@ pub struct TaggedRange {
     pub tag_name: String,
 }
 
-pub fn extract_direct_child_tag_ranges(xml: &str) -> Vec<TaggedRange> {
-    fn token_end(xml: &str, start: usize) -> Option<usize> {
-        let mut quote = None;
-        for (offset, byte) in xml.as_bytes().iter().copied().enumerate().skip(start) {
-            if let Some(active) = quote {
-                if byte == active {
-                    quote = None;
-                }
-            } else if byte == b'\'' || byte == b'"' {
-                quote = Some(byte);
-            } else if byte == b'>' {
-                return Some(offset + 1);
+pub(crate) fn tag_token_end(xml: &str, start: usize) -> Option<usize> {
+    let mut quote = None;
+    for (offset, byte) in xml.as_bytes().iter().copied().enumerate().skip(start) {
+        if let Some(active) = quote {
+            if byte == active {
+                quote = None;
             }
+        } else if byte == b'\'' || byte == b'"' {
+            quote = Some(byte);
+        } else if byte == b'>' {
+            return Some(offset + 1);
         }
-        None
     }
+    None
+}
+
+fn visit_direct_child_tags(xml: &str, mut visit: impl FnMut(usize, usize, &str) -> bool) {
     let Some(root_start) = xml.find('<') else {
-        return Vec::new();
+        return;
     };
-    let Some(mut cursor) = token_end(xml, root_start) else {
-        return Vec::new();
+    let Some(mut cursor) = tag_token_end(xml, root_start) else {
+        return;
     };
-    let mut children = Vec::new();
     let mut depth = 0usize;
-    let mut pending: Option<(String, usize)> = None;
+    let mut pending: Option<(&str, usize)> = None;
     while let Some(relative_start) = xml[cursor..].find('<') {
         let start = cursor + relative_start;
         if xml[start..].starts_with("<!--") {
@@ -54,7 +54,7 @@ pub fn extract_direct_child_tag_ranges(xml: &str) -> Vec<TaggedRange> {
             cursor = start + end + 3;
             continue;
         }
-        let Some(end) = token_end(xml, start) else {
+        let Some(end) = tag_token_end(xml, start) else {
             break;
         };
         let token = &xml[start..end];
@@ -68,37 +68,57 @@ pub fn extract_direct_child_tag_ranges(xml: &str) -> Vec<TaggedRange> {
             }
             depth -= 1;
             if depth == 0 {
-                if let Some((tag_name, start)) = pending.take() {
-                    children.push(TaggedRange {
-                        start,
-                        end,
-                        tag_name,
-                    });
+                if let Some((name, start)) = pending.take() {
+                    if !visit(start, end, name) {
+                        break;
+                    }
                 }
             }
         } else {
-            let tag_name = token[1..]
-                .split(|ch: char| ch.is_whitespace() || ch == '/' || ch == '>')
-                .next()
-                .unwrap_or_default()
-                .to_string();
-            if token.trim_end().ends_with("/>") {
-                if depth == 0 {
-                    children.push(TaggedRange {
-                        start,
-                        end,
-                        tag_name,
-                    });
+            if depth == 0 {
+                let name = token[1..]
+                    .split(|ch: char| ch.is_whitespace() || ch == '/' || ch == '>')
+                    .next()
+                    .unwrap_or_default();
+                if token.ends_with("/>") {
+                    if !visit(start, end, name) {
+                        break;
+                    }
+                } else {
+                    pending = Some((name, start));
                 }
-            } else {
-                if depth == 0 {
-                    pending = Some((tag_name, start));
-                }
+            }
+            if !token.ends_with("/>") {
                 depth += 1;
             }
         }
     }
+}
+
+pub fn extract_direct_child_tag_ranges(xml: &str) -> Vec<TaggedRange> {
+    let mut children = Vec::new();
+    visit_direct_child_tags(xml, |start, end, name| {
+        children.push(TaggedRange {
+            start,
+            end,
+            tag_name: name.to_owned(),
+        });
+        true
+    });
     children
+}
+
+pub(crate) fn direct_child_tag<'a>(xml: &'a str, name: &str) -> Option<&'a str> {
+    let mut found = None;
+    visit_direct_child_tags(xml, |start, end, tag| {
+        if tag.eq_ignore_ascii_case(name) {
+            found = Some(&xml[start..end]);
+            false
+        } else {
+            true
+        }
+    });
+    found
 }
 pub type ParagraphAlignment = &'static str;
 
@@ -187,16 +207,7 @@ fn try_match_opening_tag(xml: &str, start: usize, tag_name: &str) -> Option<usiz
         return None;
     }
 
-    let mut index = after_tag;
-    while index < xml_bytes.len() {
-        let byte = xml_bytes[index];
-        if byte == b'>' {
-            return Some(index + 1);
-        }
-        index += 1;
-    }
-
-    None
+    tag_token_end(xml, after_tag)
 }
 
 fn is_self_closing_tag(token: &str) -> bool {
@@ -208,32 +219,26 @@ fn is_self_closing_tag(token: &str) -> bool {
     index >= 2 && bytes[index - 2] == b'/' && bytes[index - 1] == b'>'
 }
 
-fn find_tag_tokens(xml: &str, tag_name: &str) -> Vec<(usize, usize, bool)> {
-    let mut tokens = Vec::new();
+fn find_tag_tokens<'a>(
+    xml: &'a str,
+    tag_name: &'a str,
+) -> impl Iterator<Item = (usize, usize, bool)> + 'a {
     let mut index = 0;
-
-    while index < xml.len() {
-        if xml.as_bytes()[index] != b'<' {
-            index += 1;
-            continue;
+    std::iter::from_fn(move || {
+        while let Some(offset) = xml[index..].find('<') {
+            let start = index + offset;
+            if let Some(end) = try_match_closing_tag(xml, start, tag_name) {
+                index = end;
+                return Some((start, end, true));
+            }
+            if let Some(end) = try_match_opening_tag(xml, start, tag_name) {
+                index = end;
+                return Some((start, end, false));
+            }
+            index = start + 1;
         }
-
-        if let Some(end) = try_match_closing_tag(xml, index, tag_name) {
-            tokens.push((index, end, true));
-            index = end;
-            continue;
-        }
-
-        if let Some(end) = try_match_opening_tag(xml, index, tag_name) {
-            tokens.push((index, end, false));
-            index = end;
-            continue;
-        }
-
-        index += 1;
-    }
-
-    tokens
+        None
+    })
 }
 
 fn decode_xml_entity(entity: &str) -> Option<String> {
@@ -355,13 +360,12 @@ pub fn extract_balanced_tag_blocks_in_order(xml: &str, tag_names: &[&str]) -> Ve
     });
 
     let mut top_level_ranges: Vec<TaggedRange> = Vec::new();
+    let mut covered_end = 0;
     for range in ranges {
-        let nested_inside_parent = top_level_ranges.iter().any(|parent_range| {
-            range.start >= parent_range.start && range.end <= parent_range.end
-        });
-        if nested_inside_parent {
+        if range.end <= covered_end {
             continue;
         }
+        covered_end = range.end;
         top_level_ranges.push(range);
     }
 
@@ -394,9 +398,7 @@ fn find_namespaced_tag_attributes(xml: &str, tag_name: &str) -> Option<String> {
         while cursor < xml_bytes.len() {
             let byte = xml_bytes[cursor];
             if byte == b'>' {
-                let attributes = xml[after_prefix..cursor]
-                    .trim_end_matches('/')
-                    .to_string();
+                let attributes = xml[after_prefix..cursor].trim_end_matches('/').to_string();
                 return Some(attributes);
             }
             cursor += 1;
@@ -525,44 +527,39 @@ pub fn normalize_alignment(raw_alignment: Option<&str>) -> Option<ParagraphAlign
 }
 
 pub fn get_attribute(tag_xml: &str, attribute: &str) -> Option<String> {
-    let attribute_bytes = attribute.as_bytes();
-    let xml_bytes = tag_xml.as_bytes();
-    let mut index = 0;
-
-    while index < xml_bytes.len() {
-        if !tag_xml.is_char_boundary(index) {
-            index += 1;
+    let bytes = tag_xml.as_bytes();
+    let mut cursor = 0;
+    while let Some(offset) = tag_xml[cursor..].find('=') {
+        let equals = cursor + offset;
+        let mut name_end = equals;
+        while name_end > 0 && bytes[name_end - 1].is_ascii_whitespace() {
+            name_end -= 1;
+        }
+        let mut name_start = name_end;
+        while name_start > 0
+            && !bytes[name_start - 1].is_ascii_whitespace()
+            && !matches!(bytes[name_start - 1], b'<' | b'>' | b'/' | b'"' | b'\'')
+        {
+            name_start -= 1;
+        }
+        let mut quote_start = equals + 1;
+        while quote_start < bytes.len() && bytes[quote_start].is_ascii_whitespace() {
+            quote_start += 1;
+        }
+        let Some(&quote) = bytes.get(quote_start) else {
+            return None;
+        };
+        if quote != b'"' && quote != b'\'' {
+            cursor = equals + 1;
             continue;
         }
-        let remaining = &tag_xml[index..];
-        if starts_with_ignore_ascii_case(remaining, attribute)
-            && xml_bytes
-                .get(index + attribute_bytes.len())
-                .is_some_and(|byte| *byte == b'=')
-        {
-            let quote_start = index + attribute_bytes.len() + 1;
-            let quote = xml_bytes.get(quote_start)?;
-            if *quote != b'"' && *quote != b'\'' {
-                index += 1;
-                continue;
-            }
-
-            let value_start = quote_start + 1;
-            let mut value_end = value_start;
-            while value_end < xml_bytes.len() && xml_bytes[value_end] != *quote {
-                value_end += 1;
-            }
-
-            if value_end >= xml_bytes.len() {
-                return None;
-            }
-
-            return Some(tag_xml[value_start..value_end].to_string());
+        let start = quote_start + 1;
+        let end = start + tag_xml[start..].find(quote as char)?;
+        if bytes[name_start..name_end].eq_ignore_ascii_case(attribute.as_bytes()) {
+            return Some(tag_xml[start..end].to_owned());
         }
-
-        index += 1;
+        cursor = end + 1;
     }
-
     None
 }
 
@@ -609,7 +606,13 @@ mod tests {
     fn extract_balanced_tag_ranges_matches_self_closing_tag() {
         let xml = "<w:br/>";
         let ranges = extract_balanced_tag_ranges(xml, "w:br");
-        assert_eq!(ranges, vec![TagRange { start: 0, end: xml.len() }]);
+        assert_eq!(
+            ranges,
+            vec![TagRange {
+                start: 0,
+                end: xml.len()
+            }]
+        );
     }
 
     #[test]
@@ -683,7 +686,10 @@ mod tests {
             parse_on_off_attribute(r#"<w:b w:val="false"/>"#, "b"),
             Some(false)
         );
-        assert_eq!(parse_on_off_attribute(r#"<w:i w:val="0"/>"#, "i"), Some(false));
+        assert_eq!(
+            parse_on_off_attribute(r#"<w:i w:val="0"/>"#, "i"),
+            Some(false)
+        );
     }
 
     #[test]

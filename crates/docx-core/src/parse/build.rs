@@ -8,8 +8,8 @@ use super::context::ParseContext;
 use super::document::parse_document_xml;
 use super::metadata::{
     extract_document_open_tag, extract_section_properties_xml, parse_document_background_color,
-    parse_document_compatibility_settings, parse_document_page_count_from_app_properties,
-    parse_document_default_tab_stop_twips,
+    parse_document_compatibility_settings, parse_document_default_tab_stop_twips,
+    parse_document_page_count_from_app_properties,
 };
 use super::numbering::parse_numbering_definitions;
 use super::relationships::parse_part_relationships;
@@ -22,19 +22,33 @@ use super::styles::{
 };
 
 pub fn build_doc_model(pkg: &OoxmlPackage) -> DocModel {
+    let _style_cache = super::style::run_style_cache_scope();
     let document_id = crate::structured::package_identity(pkg);
     let normalized = super::namespaces::normalized_package(pkg);
     let pkg = &normalized;
     let mut warnings = pkg.warnings.clone();
-    warnings.extend(crate::source_graph::preserved_features(pkg).into_iter().map(|feature| {
-        format!("{}: {} occurrence(s) of {} have support level {}", feature.part_name, feature.occurrences, feature.feature, feature.support)
-    }));
+    warnings.extend(
+        crate::source_graph::preserved_features(pkg)
+            .into_iter()
+            .map(|feature| {
+                format!(
+                    "{}: {} occurrence(s) of {} have support level {}",
+                    feature.part_name, feature.occurrences, feature.feature, feature.support
+                )
+            }),
+    );
     let main_part = crate::package::main_document_part_name(pkg);
-    let source_part_names = ["footnotes", "endnotes", "comments"].into_iter().map(|kind| (kind.to_string(), crate::package::related_document_part_name(pkg, kind))).chain(std::iter::once(("document".into(), main_part.clone()))).collect();
-    let document_xml = pkg
-        .parts
-        .get(&main_part)
-        .map(|part| part.content.as_str());
+    let source_part_names = ["footnotes", "endnotes", "comments"]
+        .into_iter()
+        .map(|kind| {
+            (
+                kind.to_string(),
+                crate::package::related_document_part_name(pkg, kind),
+            )
+        })
+        .chain(std::iter::once(("document".into(), main_part.clone())))
+        .collect();
+    let document_xml = pkg.parts.get(&main_part).map(|part| part.content.as_str());
     if document_xml.is_none() {
         warnings.push("Missing word/document.xml".to_string());
     }
@@ -126,8 +140,14 @@ pub fn build_doc_model(pkg: &OoxmlPackage) -> DocModel {
                 .collect(),
             default_paragraph_style_id: style_sheet.default_paragraph_style_id.clone(),
             default_tab_stop_twips,
-            document_settings_imported: crate::package::related_document_part(pkg, "settings").is_some().then_some(true),
-            line_spacing_compatibility_imported: crate::package::related_document_part(pkg, "settings").is_some().then_some(true),
+            document_settings_imported: crate::package::related_document_part(pkg, "settings")
+                .is_some()
+                .then_some(true),
+            line_spacing_compatibility_imported: crate::package::related_document_part(
+                pkg, "settings",
+            )
+            .is_some()
+            .then_some(true),
             numbering_definitions: numbering_definitions
                 .as_ref()
                 .map(clone_numbering_definitions),
@@ -152,18 +172,7 @@ fn clone_notes_if_non_empty(
         return None;
     }
 
-    Some(
-        notes
-            .into_iter()
-            .map(|note| DocumentNoteDefinition {
-                id: note.id,
-                text: note.text,
-                nodes: note
-                    .nodes
-                    .map(|nodes| nodes.iter().map(|node| node.clone()).collect()),
-            })
-            .collect(),
-    )
+    Some(notes)
 }
 
 #[cfg(test)]

@@ -3,18 +3,18 @@ use crate::model::{
     ImageVerticalAlign, ImageWrapText, ImageWrapType,
 };
 use crate::parse::colors::normalize_hex_color;
-use crate::parse::re;
 use crate::parse::context::ParseContext;
+use crate::parse::re;
 use crate::parse::relationships::{bytes_to_base64, content_type_for_part};
 use crate::parse::shapes::{
     parse_text_box_layout, parse_text_box_paragraphs, render_standalone_word_shape_svg,
     render_text_box_svg,
 };
 use crate::parse::util::{
-    clamp, clamp_i64, emu_to_pixels, escape_xml_text, is_windows_metafile_content_type,
-    prefer_alternate_content_choice, rasterize_windows_metafile_to_png_data_uri, regex_capture,
-    regex_capture_tag, svg_data_uri, to_image_horizontal_align, to_image_vertical_align,
-    windows_metafile_to_svg_data_uri,
+    active_xml as prefer_alternate_content_choice, clamp, clamp_i64, emu_to_pixels,
+    escape_xml_text, is_windows_metafile_content_type, rasterize_windows_metafile_to_png_data_uri,
+    regex_capture, regex_capture_tag, svg_data_uri, to_image_horizontal_align,
+    to_image_vertical_align, windows_metafile_to_svg_data_uri,
 };
 use crate::xml::{
     decode_xml_entities, extract_balanced_tag_blocks, extract_balanced_tag_blocks_in_order,
@@ -72,8 +72,8 @@ pub fn css_length_to_pixels(value: Option<&str>) -> Option<f64> {
     if value.is_empty() {
         return None;
     }
-    let caps = re::get_unchecked(r"(?i)(-?[0-9]+(?:\.[0-9]+)?)\s*(px|pt|in|cm|mm)\b")
-        .captures(value)?;
+    let caps =
+        re::get_unchecked(r"(?i)(-?[0-9]+(?:\.[0-9]+)?)\s*(px|pt|in|cm|mm)\b").captures(value)?;
     css_length_value_and_unit_to_pixels(caps.get(1)?.as_str(), caps.get(2)?.as_str())
 }
 
@@ -137,10 +137,14 @@ fn parse_wp_wrap_text(wrap_text_raw: Option<&str>) -> Option<ImageWrapText> {
 
 pub fn parse_floating_anchor_from_run_xml(run_xml: &str) -> Option<ImageFloating> {
     let anchor_tag = regex_capture_tag(run_xml, r"(?i)<wp:anchor\b[^>]*>")?;
-    let position_h_block =
-        regex_capture(run_xml, r"(?is)(<wp:positionH\b[^>]*>[\s\S]*?</wp:positionH>)");
-    let position_v_block =
-        regex_capture(run_xml, r"(?is)(<wp:positionV\b[^>]*>[\s\S]*?</wp:positionV>)");
+    let position_h_block = regex_capture(
+        run_xml,
+        r"(?is)(<wp:positionH\b[^>]*>[\s\S]*?</wp:positionH>)",
+    );
+    let position_v_block = regex_capture(
+        run_xml,
+        r"(?is)(<wp:positionV\b[^>]*>[\s\S]*?</wp:positionV>)",
+    );
     let position_h_tag = position_h_block
         .as_deref()
         .and_then(|block| regex_capture_tag(block, r"(?i)<wp:positionH\b[^>]*>"));
@@ -242,11 +246,7 @@ pub fn parse_floating_anchor_from_run_xml(run_xml: &str) -> Option<ImageFloating
         dist_b_px,
         wrap_type,
         wrap_text,
-        behind_document: if behind_document {
-            Some(true)
-        } else {
-            None
-        },
+        behind_document: if behind_document { Some(true) } else { None },
         z_index,
     })
 }
@@ -254,18 +254,14 @@ pub fn parse_floating_anchor_from_run_xml(run_xml: &str) -> Option<ImageFloating
 pub fn parse_drawing_image_css_filter(run_xml: &str) -> Option<String> {
     let mut filters = Vec::new();
 
-    if re::get(r"(?i)<a14:artisticPastelsSmooth\b")
-        .is_some_and(|re| re.is_match(run_xml))
-    {
-        filters.extend([
-            "saturate(0.76)",
-            "contrast(0.94)",
-            "brightness(1.04)",
-        ]);
+    if re::get(r"(?i)<a14:artisticPastelsSmooth\b").is_some_and(|re| re.is_match(run_xml)) {
+        filters.extend(["saturate(0.76)", "contrast(0.94)", "brightness(1.04)"]);
     }
 
-    let color_temperature_raw =
-        regex_capture(run_xml, r#"(?i)<a14:colorTemperature\b[^>]*colorTemp="(\d+)""#);
+    let color_temperature_raw = regex_capture(
+        run_xml,
+        r#"(?i)<a14:colorTemperature\b[^>]*colorTemp="(\d+)""#,
+    );
     if let Some(raw) = color_temperature_raw.as_deref() {
         if let Ok(color_temperature) = raw.parse::<f64>() {
             if color_temperature.is_finite() {
@@ -336,7 +332,11 @@ pub fn parse_drawing_image_crop(run_xml: &str) -> Option<ImageCrop> {
     .flatten()
     .any(|value| value.is_finite() && value > 0.0);
 
-    if has_crop { Some(crop) } else { None }
+    if has_crop {
+        Some(crop)
+    } else {
+        None
+    }
 }
 
 pub fn parse_vml_size(run_xml: &str) -> (Option<f64>, Option<f64>) {
@@ -346,19 +346,17 @@ pub fn parse_vml_size(run_xml: &str) -> (Option<f64>, Option<f64>) {
         return (None, None);
     }
 
-    let width_match = re::get_unchecked(r"(?i)width:\s*([0-9.]+)\s*(px|pt|in|cm|mm)").captures(&style);
-    let height_match = re::get_unchecked(r"(?i)height:\s*([0-9.]+)\s*(px|pt|in|cm|mm)").captures(&style);
+    let width_match =
+        re::get_unchecked(r"(?i)width:\s*([0-9.]+)\s*(px|pt|in|cm|mm)").captures(&style);
+    let height_match =
+        re::get_unchecked(r"(?i)height:\s*([0-9.]+)\s*(px|pt|in|cm|mm)").captures(&style);
 
-    let width_px = width_match
-        .as_ref()
-        .and_then(|caps| {
-            css_length_value_and_unit_to_pixels(caps.get(1)?.as_str(), caps.get(2)?.as_str())
-        });
-    let height_px = height_match
-        .as_ref()
-        .and_then(|caps| {
-            css_length_value_and_unit_to_pixels(caps.get(1)?.as_str(), caps.get(2)?.as_str())
-        });
+    let width_px = width_match.as_ref().and_then(|caps| {
+        css_length_value_and_unit_to_pixels(caps.get(1)?.as_str(), caps.get(2)?.as_str())
+    });
+    let height_px = height_match.as_ref().and_then(|caps| {
+        css_length_value_and_unit_to_pixels(caps.get(1)?.as_str(), caps.get(2)?.as_str())
+    });
 
     (width_px, height_px)
 }
@@ -539,7 +537,11 @@ fn parse_chart_points(xml: &str) -> Vec<String> {
     let re = re::get_unchecked(r"(?is)<c:pt\b[\s\S]*?<c:v>([\s\S]*?)</c:v>[\s\S]*?</c:pt>");
     let values: Vec<String> = re
         .captures_iter(xml)
-        .map(|caps| decode_xml_entities(caps.get(1).map(|m| m.as_str()).unwrap_or("")).trim().to_string())
+        .map(|caps| {
+            decode_xml_entities(caps.get(1).map(|m| m.as_str()).unwrap_or(""))
+                .trim()
+                .to_string()
+        })
         .collect();
     if !values.is_empty() {
         return values;
@@ -548,7 +550,11 @@ fn parse_chart_points(xml: &str) -> Vec<String> {
     let fallback_re = re::get_unchecked(r"(?is)<c:v>([\s\S]*?)</c:v>");
     fallback_re
         .captures_iter(xml)
-        .map(|caps| decode_xml_entities(caps.get(1).map(|m| m.as_str()).unwrap_or("")).trim().to_string())
+        .map(|caps| {
+            decode_xml_entities(caps.get(1).map(|m| m.as_str()).unwrap_or(""))
+                .trim()
+                .to_string()
+        })
         .collect()
 }
 
@@ -588,7 +594,11 @@ fn parse_chart_type(chart_xml: &str) -> Option<ChartKind> {
 
 fn parse_chart_number(raw_value: &str) -> f64 {
     let parsed: f64 = raw_value.replace(',', "").trim().parse().unwrap_or(0.0);
-    if parsed.is_finite() { parsed } else { 0.0 }
+    if parsed.is_finite() {
+        parsed
+    } else {
+        0.0
+    }
 }
 
 fn parse_chart_data(chart_xml: &str) -> Option<ParsedChartData> {
@@ -597,20 +607,20 @@ fn parse_chart_data(chart_xml: &str) -> Option<ParsedChartData> {
     let mut series = Vec::new();
 
     for (index, series_xml) in series_blocks.into_iter().enumerate() {
-        let tx_block = regex_capture_tag(&series_xml, r"(?is)<c:tx\b[\s\S]*?</c:tx>")
-            .unwrap_or_default();
+        let tx_block =
+            regex_capture_tag(&series_xml, r"(?is)<c:tx\b[\s\S]*?</c:tx>").unwrap_or_default();
         let name = parse_chart_points(&tx_block)
             .into_iter()
             .next()
             .unwrap_or_else(|| format!("Series {}", index + 1));
-        let val_block = regex_capture_tag(&series_xml, r"(?is)<c:val\b[\s\S]*?</c:val>")
-            .unwrap_or_default();
+        let val_block =
+            regex_capture_tag(&series_xml, r"(?is)<c:val\b[\s\S]*?</c:val>").unwrap_or_default();
         let values = parse_chart_points(&val_block)
             .into_iter()
             .map(|value| parse_chart_number(&value))
             .collect::<Vec<_>>();
-        let cat_block = regex_capture_tag(&series_xml, r"(?is)<c:cat\b[\s\S]*?</c:cat>")
-            .unwrap_or_default();
+        let cat_block =
+            regex_capture_tag(&series_xml, r"(?is)<c:cat\b[\s\S]*?</c:cat>").unwrap_or_default();
         let categories = parse_chart_points(&cat_block);
         let color = chart_color(
             regex_capture(&series_xml, r#"(?i)<a:srgbClr\b[^>]*val="([^"]+)""#).as_deref(),
@@ -692,10 +702,7 @@ fn parse_chart_data(chart_xml: &str) -> Option<ParsedChartData> {
 
 fn polar_to_cartesian(cx: f64, cy: f64, radius: f64, angle: f64) -> (f64, f64) {
     let radians = (angle - 90.0) * std::f64::consts::PI / 180.0;
-    (
-        cx + radius * radians.cos(),
-        cy + radius * radians.sin(),
-    )
+    (cx + radius * radians.cos(), cy + radius * radians.sin())
 }
 
 fn render_cartesian_chart_svg(chart: &ParsedChartData, width_px: f64, height_px: f64) -> String {
@@ -890,7 +897,9 @@ fn render_cartesian_chart_svg(chart: &ParsedChartData, width_px: f64, height_px:
 
 fn render_pie_chart_svg(chart: &ParsedChartData, width_px: f64, height_px: f64) -> String {
     let base_series = chart.series.first();
-    let values = base_series.map(|series| series.values.as_slice()).unwrap_or(&[]);
+    let values = base_series
+        .map(|series| series.values.as_slice())
+        .unwrap_or(&[]);
     let total = values
         .iter()
         .map(|value| value.max(0.0))
@@ -914,8 +923,7 @@ fn render_pie_chart_svg(chart: &ParsedChartData, width_px: f64, height_px: f64) 
 
     let center_x = (width_px * 0.34).round();
     let center_y = (height_px * 0.56).round();
-    let outer_radius = ((width_px.min(height_px) * 0.26).round() as i64)
-        .clamp(30, 160) as f64;
+    let outer_radius = ((width_px.min(height_px) * 0.26).round() as i64).clamp(30, 160) as f64;
     let inner_radius = if chart.kind == ChartKind::Doughnut {
         (outer_radius * 0.55).round()
     } else {
@@ -928,7 +936,11 @@ fn render_pie_chart_svg(chart: &ParsedChartData, width_px: f64, height_px: f64) 
         let safe_value = value.max(0.0);
         let angle = (safe_value / total) * 360.0;
         let end_angle = start_angle + angle.max(0.001);
-        let large_arc_flag = if end_angle - start_angle > 180.0 { 1 } else { 0 };
+        let large_arc_flag = if end_angle - start_angle > 180.0 {
+            1
+        } else {
+            0
+        };
         let fill = &colors[index % colors.len()];
 
         let (start_outer_x, start_outer_y) =
@@ -1058,7 +1070,7 @@ fn resolve_doc_pr_alt(run_xml: &str) -> Option<String> {
 
 pub fn parse_run_image_block(run_xml: &str, context: &ParseContext<'_>) -> Option<ImageRunNode> {
     let normalized_run_xml = prefer_alternate_content_choice(run_xml);
-    let mut active_run_xml = normalized_run_xml.as_str();
+    let mut active_run_xml = normalized_run_xml.as_ref();
     let (mut width_px, mut height_px, mut floating) = resolve_run_image_layout(active_run_xml);
     let mut alt = resolve_doc_pr_alt(active_run_xml);
     let mut chart_relationship_id =
@@ -1108,7 +1120,8 @@ pub fn parse_run_image_block(run_xml: &str, context: &ParseContext<'_>) -> Optio
         render_standalone_word_shape_svg(active_run_xml, width_px, height_px, context);
     let contains_grouped_or_standalone_shape =
         re::get_unchecked(r"(?i)<wpg:wgp\b|<wps:wsp\b").is_match(active_run_xml);
-    let contains_text_box_content = re::get_unchecked(r"(?i)<w:txbxContent\b").is_match(active_run_xml);
+    let contains_text_box_content =
+        re::get_unchecked(r"(?i)<w:txbxContent\b").is_match(active_run_xml);
 
     // A grouped drawing renders through the group pipeline so sibling pictures and
     // vector layers survive alongside the textbox content; only a bare textbox shape
@@ -1151,20 +1164,20 @@ pub fn parse_run_image_block(run_xml: &str, context: &ParseContext<'_>) -> Optio
     {
         return Some(ImageRunNode {
             r#type: ImageRunNodeType::Image,
-                block_id: None,
-                content_nodes: None,
-                semantic_kind: None,
-                math_ml: None,
-            src: Some(svg_data_uri(standalone_shape_svg.as_deref().unwrap_or_default())),
-            alt: Some(
-                alt.unwrap_or_else(|| {
-                    if contains_text_box_content {
-                        "Text box".to_string()
-                    } else {
-                        "Shape".to_string()
-                    }
-                }),
-            ),
+            block_id: None,
+            content_nodes: None,
+            semantic_kind: None,
+            math_ml: None,
+            src: Some(svg_data_uri(
+                standalone_shape_svg.as_deref().unwrap_or_default(),
+            )),
+            alt: Some(alt.unwrap_or_else(|| {
+                if contains_text_box_content {
+                    "Text box".to_string()
+                } else {
+                    "Shape".to_string()
+                }
+            })),
             width_px,
             height_px,
             part_name: None,
@@ -1195,9 +1208,9 @@ pub fn parse_run_image_block(run_xml: &str, context: &ParseContext<'_>) -> Optio
             }
         }
 
-        if let Some(chart_src) = chart_xml.and_then(|xml| {
-            chart_xml_to_svg_data_uri(xml, width_px, height_px)
-        }) {
+        if let Some(chart_src) =
+            chart_xml.and_then(|xml| chart_xml_to_svg_data_uri(xml, width_px, height_px))
+        {
             return Some(ImageRunNode {
                 r#type: ImageRunNodeType::Image,
                 block_id: None,
@@ -1236,10 +1249,10 @@ pub fn parse_run_image_block(run_xml: &str, context: &ParseContext<'_>) -> Optio
         ));
         return Some(ImageRunNode {
             r#type: ImageRunNodeType::Image,
-                block_id: None,
-                content_nodes: None,
-                semantic_kind: None,
-                math_ml: None,
+            block_id: None,
+            content_nodes: None,
+            semantic_kind: None,
+            math_ml: None,
             src: Some(text_box_src),
             alt: Some(alt.unwrap_or_else(|| "Text box".to_string())),
             width_px,
@@ -1291,10 +1304,10 @@ pub fn parse_run_image_block(run_xml: &str, context: &ParseContext<'_>) -> Optio
 
     Some(ImageRunNode {
         r#type: ImageRunNodeType::Image,
-                block_id: None,
-                content_nodes: None,
-                semantic_kind: None,
-                math_ml: None,
+        block_id: None,
+        content_nodes: None,
+        semantic_kind: None,
+        math_ml: None,
         src,
         alt,
         width_px,
@@ -1323,16 +1336,18 @@ pub fn parse_run_image_tokens(
     run_xml: &str,
     context: &ParseContext<'_>,
 ) -> Vec<(usize, ImageRunNode)> {
+    if !run_xml.split('<').skip(1).any(|tag| {
+        ["a:", "wp:", "v:", "c:", "wps:", "wpg:", "w:txbxContent"]
+            .iter()
+            .any(|prefix| super::scan::starts_with_ignore_ascii_case(tag, prefix))
+    }) {
+        return Vec::new();
+    }
     let active_run_xml = prefer_alternate_content_choice(run_xml);
-    let run_xml = active_run_xml.as_str();
+    let run_xml = active_run_xml.as_ref();
     let candidate_ranges = extract_balanced_tag_blocks_in_order(
         run_xml,
-        &[
-            "mc:AlternateContent",
-            "w:drawing",
-            "w:pict",
-            "w:object",
-        ],
+        &["mc:AlternateContent", "w:drawing", "w:pict", "w:object"],
     );
     let candidate_xml_blocks: Vec<(usize, &str)> = if candidate_ranges.is_empty() {
         vec![(0, run_xml)]

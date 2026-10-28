@@ -1,18 +1,18 @@
 use crate::model::{
-    ParagraphDropCap, ParagraphDropCapType, ParagraphSpacing, ParagraphStyle, TextLigatures, TextStyle,
-    VerticalAlign, ParagraphTextAlignment,
+    ParagraphDropCap, ParagraphDropCapType, ParagraphSpacing, ParagraphStyle,
+    ParagraphTextAlignment, TextLigatures, TextStyle, VerticalAlign,
 };
 use crate::parse::context::{ParseContext, ThemeFontMap};
 use crate::parse::re;
 use crate::parse::util::{
-    merge_paragraph_boolean, merge_paragraph_border_sets, merge_paragraph_indent,
-    merge_paragraph_spacing, merge_paragraph_tab_stops, merge_text_styles,
-    normalize_heading_level, normalize_hex_color, parse_paragraph_border_set_from_xml,
-    parse_paragraph_indent_from_xml, parse_paragraph_numbering_from_xml,
-    parse_paragraph_numbering_parts_from_xml, parse_paragraph_shading_from_xml,
-    parse_paragraph_spacing_from_xml,
-    parse_paragraph_tab_stops_from_xml, parse_text_run_border_style, prefer_alternate_content_choice,
-    resolve_style_properties_block, resolve_theme_font, to_model_alignment,
+    active_xml as prefer_alternate_content_choice, merge_paragraph_boolean,
+    merge_paragraph_border_sets, merge_paragraph_indent, merge_paragraph_spacing,
+    merge_paragraph_tab_stops, normalize_heading_level, normalize_hex_color,
+    parse_paragraph_border_set_from_xml, parse_paragraph_indent_from_xml,
+    parse_paragraph_numbering_from_xml, parse_paragraph_numbering_parts_from_xml,
+    parse_paragraph_shading_from_xml, parse_paragraph_spacing_from_xml,
+    parse_paragraph_tab_stops_from_xml, parse_text_run_border_style,
+    resolve_theme_font, to_model_alignment,
 };
 use crate::xml::{
     extract_balanced_tag_blocks, get_attribute, parse_integer_attribute, parse_on_off_attribute,
@@ -23,12 +23,12 @@ pub fn parse_paragraph_drop_cap_from_xml(
     paragraph_properties_xml: &str,
 ) -> Option<ParagraphDropCap> {
     let frame_pr_tag =
-        regex_tag(paragraph_properties_xml, r"(?i)<w:framePr\b[^>]*/?>").unwrap_or_default();
+        super::scan::find_tag_token_ref(paragraph_properties_xml, "w:framePr").unwrap_or_default();
     if frame_pr_tag.is_empty() {
         return None;
     }
-    let drop_cap_raw = get_attribute(&frame_pr_tag, "w:dropCap")
-        .map(|v| v.trim().to_ascii_lowercase())?;
+    let drop_cap_raw =
+        get_attribute(&frame_pr_tag, "w:dropCap").map(|v| v.trim().to_ascii_lowercase())?;
     let drop_cap_type = match drop_cap_raw.as_str() {
         "drop" => ParagraphDropCapType::Drop,
         "margin" => ParagraphDropCapType::Margin,
@@ -36,10 +36,8 @@ pub fn parse_paragraph_drop_cap_from_xml(
     };
     let lines = parse_integer_attribute(&frame_pr_tag, "w:lines");
     let wrap = get_attribute(&frame_pr_tag, "w:wrap").map(|v| v.trim().to_string());
-    let horizontal_anchor =
-        get_attribute(&frame_pr_tag, "w:hAnchor").map(|v| v.trim().to_string());
-    let vertical_anchor =
-        get_attribute(&frame_pr_tag, "w:vAnchor").map(|v| v.trim().to_string());
+    let horizontal_anchor = get_attribute(&frame_pr_tag, "w:hAnchor").map(|v| v.trim().to_string());
+    let vertical_anchor = get_attribute(&frame_pr_tag, "w:vAnchor").map(|v| v.trim().to_string());
     let x_twips = parse_integer_attribute(&frame_pr_tag, "w:x");
     let y_twips = parse_integer_attribute(&frame_pr_tag, "w:y");
     let horizontal_space_twips = parse_integer_attribute(&frame_pr_tag, "w:hSpace");
@@ -70,7 +68,8 @@ pub(crate) fn parse_paragraph_text_alignment_from_xml(xml: &str) -> Option<Parag
 }
 
 pub fn parse_paragraph_align_from_xml(xml: &str) -> Option<crate::model::ParagraphAlignment> {
-    let alignment = regex_capture(xml, r#"(?i)<w:jc\b[^>]*w:val="([^"]+)""#);
+    let alignment = super::scan::find_attribute_value_in_tag(xml, "w:jc", "w:val")
+        .filter(|value| !value.is_empty());
     to_model_alignment(alignment.as_deref())
 }
 
@@ -112,16 +111,47 @@ pub(crate) fn parse_character_scale_percent_value(raw: &str) -> Option<u16> {
 
 pub(crate) fn parse_character_scale_percent_from_xml(xml: &str) -> Option<u16> {
     let tag = super::scan::find_tag_token(xml, "w:w")?;
-    get_attribute(&tag, "w:val").as_deref()
+    get_attribute(&tag, "w:val")
+        .as_deref()
         .map(parse_character_scale_percent_value)
         .unwrap_or(Some(100))
 }
 
+fn text_script_flags(xml: &str) -> u8 {
+    if xml.is_ascii() && !xml.contains("&#") {
+        return 0;
+    }
+    let mut flags = 0;
+    if let Some(pattern) = re::get(r"(?is)<(?:w|a):t\b[^>]*>([\s\S]*?)</(?:w|a):t>") {
+        for caps in pattern.captures_iter(xml) {
+            if let Some(text) = caps.get(1) {
+                for ch in crate::xml::decode_xml_entities(text.as_str()).chars() {
+                    let code = ch as u32;
+                    if matches!(code, 0x2e80..=0x9fff | 0xac00..=0xd7af) {
+                        flags |= 1;
+                    }
+                    if matches!(code, 0x0590..=0x08ff | 0xfb1d..=0xfefc) {
+                        flags |= 2;
+                    }
+                }
+            }
+        }
+    }
+    flags
+}
+
 pub fn parse_text_style_from_xml(xml: &str, theme_fonts: &ThemeFontMap) -> Option<TextStyle> {
+    cached_text_style(xml, theme_fonts, text_script_flags(xml))
+}
+
+fn parse_text_style_with_scripts(
+    xml: &str,
+    theme_fonts: &ThemeFontMap,
+    scripts: u8,
+) -> Option<TextStyle> {
     if xml.is_empty() {
         return None;
     }
-
     let bold = parse_on_off_attribute(xml, "b");
     let italic = parse_on_off_attribute(xml, "i");
     let underline = parse_underline_attribute(xml);
@@ -129,13 +159,18 @@ pub fn parse_text_style_from_xml(xml: &str, theme_fonts: &ThemeFontMap) -> Optio
     let all_caps = parse_on_off_attribute(xml, "caps");
     let small_caps = parse_on_off_attribute(xml, "smallCaps");
 
-    let color_match = regex_capture(xml, r#"(?i)<w:color\b[^>]*w:val="([^"]+)""#);
-    let highlight_match = regex_capture(xml, r#"(?i)<w:highlight\b[^>]*w:val="([^"]+)""#);
-    let shading_tag = regex_tag(xml, r"(?i)<w:shd\b[^>]*/?>");
-    let character_spacing_match = regex_capture(xml, r#"(?i)<w:spacing\b[^>]*w:val="(-?\d+)""#);
-    let size_match = regex_capture(xml, r#"(?i)<w:sz\b[^>]*w:val="(\d+)""#);
-    let complex_size_match = regex_capture(xml, r#"(?i)<w:szCs\b[^>]*w:val="(\d+)""#);
-    let run_fonts_tag = regex_tag(xml, r"(?i)<w:rFonts\b[^>]*/?>").unwrap_or_default();
+    let color_match = super::scan::find_attribute_value_in_tag(xml, "w:color", "w:val")
+        .filter(|value| !value.is_empty());
+    let highlight_match = super::scan::find_attribute_value_in_tag(xml, "w:highlight", "w:val")
+        .filter(|value| !value.is_empty());
+    let shading_tag = super::scan::find_tag_token_ref(xml, "w:shd");
+    let character_spacing_match =
+        super::scan::find_attribute_value_in_tag(xml, "w:spacing", "w:val");
+    let size_match = super::scan::find_attribute_value_in_tag(xml, "w:sz", "w:val")
+        .filter(|value| !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()));
+    let complex_size_match = super::scan::find_attribute_value_in_tag(xml, "w:szCs", "w:val")
+        .filter(|value| !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()));
+    let run_fonts_tag = super::scan::find_tag_token_ref(xml, "w:rFonts").unwrap_or_default();
     let ascii_font = get_attribute(&run_fonts_tag, "w:ascii");
     let h_ansi_font = get_attribute(&run_fonts_tag, "w:hAnsi");
     let east_asia_font = get_attribute(&run_fonts_tag, "w:eastAsia");
@@ -145,45 +180,48 @@ pub fn parse_text_style_from_xml(xml: &str, theme_fonts: &ThemeFontMap) -> Optio
     let east_asia_theme_font = get_attribute(&run_fonts_tag, "w:eastAsiaTheme");
     let complex_script_theme_font = get_attribute(&run_fonts_tag, "w:csTheme");
     let font_hint = get_attribute(&run_fonts_tag, "w:hint");
-    let language_tag = regex_tag(xml, r"(?i)<w:lang\b[^>]*/?>").unwrap_or_default();
+    let language_tag = super::scan::find_tag_token_ref(xml, "w:lang").unwrap_or_default();
     let language = get_attribute(&language_tag, "w:val");
     let language_east_asia = get_attribute(&language_tag, "w:eastAsia");
     let language_bidi = get_attribute(&language_tag, "w:bidi");
     let right_to_left = parse_on_off_attribute(xml, "rtl");
     let complex_script = parse_on_off_attribute(xml, "cs");
-    let vertical_align_match = regex_capture(xml, r#"(?i)<w:vertAlign\b[^>]*w:val="([^"]+)""#);
-    let drawing_bold_match = regex_capture(xml, r#"(?i)<a:rPr\b[^>]*\bb="([^"]+)""#);
-    let drawing_italic_match = regex_capture(xml, r#"(?i)<a:rPr\b[^>]*\bi="([^"]+)""#);
-    let drawing_underline_match = regex_capture(xml, r#"(?i)<a:rPr\b[^>]*\bu="([^"]+)""#);
+    let vertical_align_match =
+        super::scan::find_attribute_value_in_tag(xml, "w:vertAlign", "w:val")
+            .filter(|value| !value.is_empty());
+    let drawing_xml = if xml
+        .split('<')
+        .skip(1)
+        .any(|tag| super::scan::starts_with_ignore_ascii_case(tag, "a:"))
+    {
+        xml
+    } else {
+        ""
+    };
+    let drawing_bold_match = regex_capture(drawing_xml, r#"(?i)<a:rPr\b[^>]*\bb="([^"]+)""#);
+    let drawing_italic_match = regex_capture(drawing_xml, r#"(?i)<a:rPr\b[^>]*\bi="([^"]+)""#);
+    let drawing_underline_match = regex_capture(drawing_xml, r#"(?i)<a:rPr\b[^>]*\bu="([^"]+)""#);
     let drawing_strike_match =
-        regex_capture(xml, r#"(?i)<a:rPr\b[^>]*\b(?:strike|s)="([^"]+)""#);
+        regex_capture(drawing_xml, r#"(?i)<a:rPr\b[^>]*\b(?:strike|s)="([^"]+)""#);
     let drawing_color_match = regex_capture(
-        xml,
+        drawing_xml,
         r#"(?is)<a:rPr\b[\s\S]*?<a:(?:solidFill|srgbClr)\b[\s\S]*?<a:srgbClr\b[^>]*val="([^"]+)""#,
     );
-    let drawing_size_match = regex_capture(xml, r#"(?i)<a:rPr\b[^>]*\bsz="(\d+)""#);
+    let drawing_size_match = regex_capture(drawing_xml, r#"(?i)<a:rPr\b[^>]*\bsz="(\d+)""#);
     let drawing_font_match = regex_capture(
-        xml,
+        drawing_xml,
         r#"(?is)<a:rPr\b[\s\S]*?<a:latin\b[^>]*typeface="([^"]+)""#,
     );
     let drawing_default_font_match = regex_capture(
-        xml,
+        drawing_xml,
         r#"(?is)<a:defRPr\b[\s\S]*?<a:latin\b[^>]*typeface="([^"]+)""#,
     );
-    let drawing_any_latin_match = regex_capture(xml, r#"(?i)<a:latin\b[^>]*typeface="([^"]+)""#);
-    let run_border_tag = regex_tag(xml, r"(?i)<w:bdr\b[^>]*/?>");
+    let drawing_any_latin_match =
+        regex_capture(drawing_xml, r#"(?i)<a:latin\b[^>]*typeface="([^"]+)""#);
+    let run_border_tag = super::scan::find_tag_token_ref(xml, "w:bdr");
 
-    let decoded_text_samples: String = re::get(r"(?is)<(?:w|a):t\b[^>]*>([\s\S]*?)</(?:w|a):t>")
-        .map(|re| {
-            re.captures_iter(xml)
-                .filter_map(|caps| caps.get(1).map(|m| crate::xml::decode_xml_entities(m.as_str())))
-                .collect()
-        })
-        .unwrap_or_default();
-
-    let contains_east_asia_glyphs =
-        re::get(r"[\u{2e80}-\u{9fff}\u{3040}-\u{30ff}\u{ac00}-\u{d7af}]").is_some_and(|re| re.is_match(&decoded_text_samples));
-    let contains_complex_script_glyphs = re::get(r"[\u{0590}-\u{08ff}\u{fb1d}-\u{fefc}]").is_some_and(|re| re.is_match(&decoded_text_samples));
+    let contains_east_asia_glyphs = scripts & 1 != 0;
+    let contains_complex_script_glyphs = scripts & 2 != 0;
 
     let mut style = TextStyle {
         bold: None,
@@ -277,7 +315,8 @@ pub fn parse_text_style_from_xml(xml: &str, theme_fonts: &ThemeFontMap) -> Optio
     if style.strike.is_none() {
         if let Some(value) = drawing_strike_match {
             let value = value.to_ascii_lowercase();
-            style.strike = Some(value != "nostrike" && value != "none" && value != "false" && value != "0");
+            style.strike =
+                Some(value != "nostrike" && value != "none" && value != "false" && value != "0");
             has_any = true;
         }
     }
@@ -320,7 +359,8 @@ pub fn parse_text_style_from_xml(xml: &str, theme_fonts: &ThemeFontMap) -> Optio
         has_any = true;
     }
 
-    if let Some(kerning) = regex_capture(xml, r#"(?i)<w:kern\b[^>]*w:val="(\d+)""#)
+    if let Some(kerning) = super::scan::find_attribute_value_in_tag(xml, "w:kern", "w:val")
+        .filter(|value| !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()))
         .and_then(|value| value.parse::<f64>().ok())
     {
         if kerning.is_finite() && kerning >= 0.0 {
@@ -504,6 +544,120 @@ fn resolve_toggle_property(
     character_value.or(paragraph_value).or(default_value)
 }
 
+#[derive(Default)]
+struct RunStyleCache {
+    entries: std::collections::HashMap<String, Vec<(u8, ThemeFontMap, Option<TextStyle>)>>,
+}
+
+thread_local! {
+    static RUN_STYLE_CACHE: std::cell::RefCell<Option<RunStyleCache>> = const { std::cell::RefCell::new(None) };
+}
+
+pub(crate) struct RunStyleCacheScope(Option<RunStyleCache>);
+
+pub(crate) fn run_style_cache_scope() -> RunStyleCacheScope {
+    RunStyleCacheScope(RUN_STYLE_CACHE.with(|cache| cache.replace(Some(RunStyleCache::default()))))
+}
+
+impl Drop for RunStyleCacheScope {
+    fn drop(&mut self) {
+        RUN_STYLE_CACHE.with(|cache| {
+            cache.replace(self.0.take());
+        });
+    }
+}
+
+fn cached_text_style(xml: &str, fonts: &ThemeFontMap, scripts: u8) -> Option<TextStyle> {
+    if xml.is_empty() {
+        return None;
+    }
+    let cached = RUN_STYLE_CACHE.with(|cache| {
+        let cache = cache.borrow();
+        cache
+            .as_ref()?
+            .entries
+            .get(xml)?
+            .iter()
+            .find(|(flags, theme, _)| *flags == scripts && theme == fonts)
+            .map(|(_, _, style)| style.clone())
+    });
+    if let Some(style) = cached {
+        return style;
+    }
+    let style = parse_text_style_with_scripts(xml, fonts, scripts);
+    if xml.len() <= 8192 {
+        RUN_STYLE_CACHE.with(|cache| {
+            if let Some(cache) = cache
+                .borrow_mut()
+                .as_mut()
+                .filter(|cache| cache.entries.len() < 4096)
+            {
+                let variants = cache.entries.entry(xml.to_owned()).or_default();
+                if variants.len() < 16 {
+                    variants.push((scripts, fonts.clone(), style.clone()));
+                }
+            }
+        });
+    }
+    return style;
+}
+
+fn parse_direct_run_style(run_xml: &str, context: &ParseContext<'_>) -> Option<TextStyle> {
+    let ranges = crate::xml::extract_direct_child_tag_ranges(run_xml);
+    let ordinary = !ranges.is_empty()
+        && ranges
+            .iter()
+            .filter(|range| range.tag_name.eq_ignore_ascii_case("w:rPr"))
+            .count()
+            <= 1
+        && ranges.iter().all(|range| {
+            if range.tag_name.eq_ignore_ascii_case("w:fldChar")
+                && !run_xml[range.start..range.end].ends_with("/>")
+            {
+                return false;
+            }
+            [
+                "w:rPr",
+                "w:t",
+                "w:tab",
+                "w:br",
+                "w:cr",
+                "w:sym",
+                "w:noBreakHyphen",
+                "w:softHyphen",
+                "w:footnoteReference",
+                "w:endnoteReference",
+                "w:instrText",
+                "w:fldChar",
+                "w:lastRenderedPageBreak",
+            ]
+            .iter()
+            .any(|tag| range.tag_name.eq_ignore_ascii_case(tag))
+        });
+    if ordinary {
+        let properties = ranges
+            .iter()
+            .find(|range| range.tag_name.eq_ignore_ascii_case("w:rPr"))
+            .map(|range| &run_xml[range.start..range.end])
+            .unwrap_or("");
+        if properties.is_empty() {
+            return None;
+        }
+        let scripts = text_script_flags(run_xml);
+        let fonts = &context.style_sheet.theme_fonts;
+        return cached_text_style(properties, fonts, scripts);
+    }
+    let text_box_content = prefer_alternate_content_choice(run_xml);
+    let text_box_run_xml = extract_balanced_tag_blocks(&text_box_content, "w:txbxContent")
+        .into_iter()
+        .next()
+        .and_then(|txbx| extract_balanced_tag_blocks(&txbx, "w:r").into_iter().next());
+    parse_text_style_from_xml(
+        text_box_run_xml.as_deref().unwrap_or(run_xml),
+        &context.style_sheet.theme_fonts,
+    )
+}
+
 pub fn parse_run_style(
     run_xml: &str,
     context: &ParseContext<'_>,
@@ -518,32 +672,25 @@ pub(crate) fn parse_run_style_in_table(
     paragraph_style_id: Option<&str>,
     table_run_style: Option<&TextStyle>,
 ) -> Option<TextStyle> {
-    let run_style_id = regex_capture(run_xml, r#"(?i)<w:rStyle\b[^>]*w:val="([^"]+)""#);
-    let text_box_content = prefer_alternate_content_choice(run_xml);
-    let text_box_run_xml = extract_balanced_tag_blocks(&text_box_content, "w:txbxContent")
-        .into_iter()
-        .next()
-        .and_then(|txbx| extract_balanced_tag_blocks(&txbx, "w:r").into_iter().next());
-    let direct = parse_text_style_from_xml(
-        text_box_run_xml.as_deref().unwrap_or(run_xml),
-        &context.style_sheet.theme_fonts,
-    );
+    let run_style_id = super::scan::find_attribute_value_in_tag(run_xml, "w:rStyle", "w:val")
+        .filter(|value| !value.is_empty());
+    let direct = parse_direct_run_style(run_xml, context);
     let inherited_paragraph_run_style = paragraph_style_id
         .and_then(|id| context.style_sheet.paragraph_style_by_id.get(id))
-        .and_then(|style| style.run_style.clone());
+        .and_then(|style| style.run_style.as_ref());
     let inherited_run_style = run_style_id
         .as_deref()
-        .and_then(|id| context.style_sheet.run_style_by_id.get(id).cloned());
-    let default_run_style = merge_text_styles(&[
-        context.style_sheet.default_run_style.clone(),
-        table_run_style.cloned(),
+        .and_then(|id| context.style_sheet.run_style_by_id.get(id));
+    let default_run_style = super::util::merge_text_style_refs(&[
+        context.style_sheet.default_run_style.as_ref(),
+        table_run_style,
     ]);
 
     let toggle_of = |get: fn(&TextStyle) -> Option<bool>| {
         resolve_toggle_property(
             default_run_style.as_ref().and_then(get),
-            inherited_paragraph_run_style.as_ref().and_then(get),
-            inherited_run_style.as_ref().and_then(get),
+            inherited_paragraph_run_style.and_then(get),
+            inherited_run_style.and_then(get),
             direct.as_ref().and_then(get),
         )
     };
@@ -553,11 +700,11 @@ pub(crate) fn parse_run_style_in_table(
     let all_caps = toggle_of(|s| s.all_caps);
     let small_caps = toggle_of(|s| s.small_caps);
 
-    let merged = merge_text_styles(&[
-        default_run_style,
+    let merged = super::util::merge_text_style_refs(&[
+        default_run_style.as_ref(),
         inherited_paragraph_run_style,
         inherited_run_style,
-        direct,
+        direct.as_ref(),
     ]);
     merged.map(|mut style| {
         style.bold = bold;
@@ -581,22 +728,24 @@ pub fn parse_paragraph_style_in_table(
     context: &ParseContext<'_>,
     table_paragraph_spacing: Option<&ParagraphSpacing>,
 ) -> Option<ParagraphStyle> {
-    let original_paragraph_properties_xml = super::styles::direct_table_property(paragraph_xml, "w:pPr")
-        .unwrap_or_default().to_string();
+    let original_paragraph_properties_xml =
+        super::styles::direct_table_property(paragraph_xml, "w:pPr")
+            .unwrap_or_default()
+            .to_string();
     let mut paragraph_properties_xml = original_paragraph_properties_xml.clone();
     for range in crate::xml::extract_direct_child_tag_ranges(&original_paragraph_properties_xml)
-        .into_iter().rev().filter(|range| range.tag_name.eq_ignore_ascii_case("w:pPrChange"))
+        .into_iter()
+        .rev()
+        .filter(|range| range.tag_name.eq_ignore_ascii_case("w:pPrChange"))
     {
         paragraph_properties_xml.replace_range(range.start..range.end, "");
     }
-    let alignment_match = regex_capture(
-        &paragraph_properties_xml,
-        r#"(?i)<w:jc\b[^>]*w:val="([^"]+)""#,
-    );
-    let p_style_match = regex_capture(
-        &paragraph_properties_xml,
-        r#"(?i)<w:pStyle\b[^>]*w:val="([^"]+)""#,
-    );
+    let alignment_match =
+        super::scan::find_attribute_value_in_tag(&paragraph_properties_xml, "w:jc", "w:val")
+            .filter(|value| !value.is_empty());
+    let p_style_match =
+        super::scan::find_attribute_value_in_tag(&paragraph_properties_xml, "w:pStyle", "w:val")
+            .filter(|value| !value.is_empty());
     let direct_snap_to_grid = parse_on_off_attribute(&paragraph_properties_xml, "snapToGrid");
     let direct_text_alignment = parse_paragraph_text_alignment_from_xml(&paragraph_properties_xml);
     let direct_spacing = parse_paragraph_spacing_from_xml(&paragraph_properties_xml);
@@ -613,7 +762,8 @@ pub fn parse_paragraph_style_in_table(
     let direct_widow_control = parse_on_off_attribute(&paragraph_properties_xml, "widowControl");
     let direct_page_break_before =
         parse_on_off_attribute(&paragraph_properties_xml, "pageBreakBefore");
-    let has_direct_num_pr = re::get_unchecked(r"(?i)<w:numPr\b").is_match(&paragraph_properties_xml);
+    let has_direct_num_pr =
+        re::get_unchecked(r"(?i)<w:numPr\b").is_match(&paragraph_properties_xml);
 
     let explicit_style_id = p_style_match;
     let style_id = explicit_style_id
@@ -627,16 +777,21 @@ pub fn parse_paragraph_style_in_table(
     let align = to_model_alignment(alignment_match.as_deref())
         .or_else(|| inherited.and_then(|s| s.align))
         .or_else(|| default_paragraph_style.and_then(|s| s.align));
-    let inherited_text_alignment = inherited.and_then(|style| style.text_alignment)
+    let inherited_text_alignment = inherited
+        .and_then(|style| style.text_alignment)
         .or_else(|| default_paragraph_style.and_then(|style| style.text_alignment))
         .or(context.style_sheet.default_paragraph_text_alignment);
     let text_alignment = direct_text_alignment.or(inherited_text_alignment);
-    let inherited_snap_to_grid = inherited.and_then(|style| style.snap_to_grid)
+    let inherited_snap_to_grid = inherited
+        .and_then(|style| style.snap_to_grid)
         .or_else(|| default_paragraph_style.and_then(|style| style.snap_to_grid));
     let snap_to_grid = direct_snap_to_grid.or(inherited_snap_to_grid);
-    let heading_level = normalize_heading_level(explicit_style_id.as_deref())
-        .or_else(|| inherited.and_then(|s| s.heading_level))
-        .or_else(|| default_paragraph_style.and_then(|s| s.heading_level));
+    let heading_level = super::styles::parse_heading_level_from_outline(&paragraph_properties_xml)
+        .unwrap_or_else(|| match inherited {
+            Some(style) => style.heading_level,
+            None => normalize_heading_level(explicit_style_id.as_deref())
+                .or_else(|| default_paragraph_style.and_then(|s| s.heading_level)),
+        });
     let numbering = if has_direct_num_pr {
         direct_numbering.or_else(|| {
             // A direct numPr without a usable numId either removes numbering
@@ -773,20 +928,30 @@ pub fn parse_paragraph_style_in_table(
         align,
         snap_to_grid,
         source_snap_to_grid: snap_to_grid,
-        source_has_snap_to_grid: Some(super::styles::direct_table_property(&paragraph_properties_xml, "w:snapToGrid").is_some()),
+        source_has_snap_to_grid: Some(
+            super::styles::direct_table_property(&paragraph_properties_xml, "w:snapToGrid")
+                .is_some(),
+        ),
         source_inherited_snap_to_grid: inherited_snap_to_grid,
         source_table_snap_to_grid: None,
         text_alignment,
         source_text_alignment: text_alignment,
-        source_has_text_alignment: Some(super::styles::direct_table_property(&paragraph_properties_xml, "w:textAlignment").is_some()),
+        source_has_text_alignment: Some(
+            super::styles::direct_table_property(&paragraph_properties_xml, "w:textAlignment")
+                .is_some(),
+        ),
         source_inherited_text_alignment: inherited_text_alignment,
         source_table_text_alignment: None,
         heading_level,
         style_id,
         style_name,
         numbering,
-        source_before_auto_spacing: spacing.as_ref().and_then(|spacing| spacing.before_auto_spacing),
-        source_after_auto_spacing: spacing.as_ref().and_then(|spacing| spacing.after_auto_spacing),
+        source_before_auto_spacing: spacing
+            .as_ref()
+            .and_then(|spacing| spacing.before_auto_spacing),
+        source_after_auto_spacing: spacing
+            .as_ref()
+            .and_then(|spacing| spacing.after_auto_spacing),
         spacing,
         indent,
         background_color,
@@ -802,13 +967,10 @@ pub fn parse_paragraph_style_in_table(
 }
 
 fn regex_capture(xml: &str, pattern: &str) -> Option<String> {
+    if xml.is_empty() {
+        return None;
+    }
     re::get(pattern)?
         .captures(xml)
         .and_then(|caps| caps.get(1).map(|m| m.as_str().to_string()))
-}
-
-fn regex_tag(xml: &str, pattern: &str) -> Option<String> {
-    re::get(pattern)?
-        .find(xml)
-        .map(|m| m.as_str().to_string())
 }

@@ -2,7 +2,7 @@ use crate::model::{
     DocNode, ParagraphChildNode, ParagraphNode, ParagraphNodeType, TextRunNode, TextRunNodeType,
 };
 
-use super::body::extract_body_xml;
+use super::body::body_xml;
 use super::context::ParseContext;
 use super::metadata::extract_section_properties_xml;
 use super::paragraph::parse_paragraph;
@@ -50,7 +50,7 @@ pub fn is_go_back_bookmark_paragraph(paragraph_xml: &str) -> bool {
 }
 
 pub fn parse_document_xml(document_xml: &str, context: &ParseContext<'_>) -> Vec<DocNode> {
-    let body_xml = extract_body_xml(document_xml);
+    let body_xml = body_xml(document_xml);
     let token_ranges = extract_body_token_ranges(&body_xml);
     let mut nodes = Vec::new();
 
@@ -66,7 +66,7 @@ pub fn parse_document_xml(document_xml: &str, context: &ParseContext<'_>) -> Vec
     if nodes.is_empty() {
         nodes.push(DocNode::Paragraph(ParagraphNode {
             r#type: ParagraphNodeType::Paragraph,
-                block_id: None,
+            block_id: None,
             children: vec![ParagraphChildNode::Text(TextRunNode {
                 r#type: TextRunNodeType::Text,
                 text: String::new(),
@@ -132,7 +132,7 @@ mod tests {
     #[test]
     fn extract_body_xml_returns_inner_content() {
         let xml = "<w:document><w:body><w:p/></w:body></w:document>";
-        assert_eq!(extract_body_xml(xml), "<w:p/>");
+        assert_eq!(super::super::body::extract_body_xml(xml), "<w:p/>");
     }
 
     #[test]
@@ -170,21 +170,40 @@ mod tests {
             warnings: RefCell::new(Vec::new()),
         };
         let nodes = parse_document_xml(xml, &context);
-        let DocNode::Paragraph(paragraph) = &nodes[0] else { panic!("paragraph") };
-        let text: String = paragraph.children.iter().filter_map(|child| match child {
-            ParagraphChildNode::Text(run) => Some(run.text.as_str()),
-            _ => None,
-        }).collect();
+        let DocNode::Paragraph(paragraph) = &nodes[0] else {
+            panic!("paragraph")
+        };
+        let text: String = paragraph
+            .children
+            .iter()
+            .filter_map(|child| match child {
+                ParagraphChildNode::Text(run) => Some(run.text.as_str()),
+                _ => None,
+            })
+            .collect();
         assert_eq!(text, "BeforeAfter");
-        assert_eq!(paragraph.source_xml.as_deref(), Some(&xml[8..xml.len() - 9]));
+        assert_eq!(
+            paragraph.source_xml.as_deref(),
+            Some(&xml[8..xml.len() - 9])
+        );
 
         let with_control = xml.replace("<w:r><w:t>Shape story</w:t></w:r>",
             "<w:sdt><w:sdtPr><w:text/></w:sdtPr><w:sdtContent><w:r><w:t>Shape story</w:t></w:r></w:sdtContent></w:sdt>");
         let nodes = parse_document_xml(&with_control, &context);
-        let DocNode::Paragraph(paragraph) = &nodes[0] else { panic!("paragraph") };
-        assert!(!paragraph.children.iter().any(|child| matches!(child, ParagraphChildNode::FormField(_))));
+        let DocNode::Paragraph(paragraph) = &nodes[0] else {
+            panic!("paragraph")
+        };
+        assert!(!paragraph
+            .children
+            .iter()
+            .any(|child| matches!(child, ParagraphChildNode::FormField(_))));
         let nodes = parse_document_xml("<w:body><w:p><w:sdt><w:sdtPr><w:text/></w:sdtPr><w:sdtContent><w:r><w:t>Body control</w:t></w:r></w:sdtContent></w:sdt></w:p></w:body>", &context);
-        let DocNode::Paragraph(paragraph) = &nodes[0] else { panic!("paragraph") };
-        assert!(paragraph.children.iter().any(|child| matches!(child, ParagraphChildNode::FormField(_))));
+        let DocNode::Paragraph(paragraph) = &nodes[0] else {
+            panic!("paragraph")
+        };
+        assert!(paragraph
+            .children
+            .iter()
+            .any(|child| matches!(child, ParagraphChildNode::FormField(_))));
     }
 }

@@ -59,6 +59,21 @@ pub struct PreservedFeature {
 pub fn preserved_features(package: &OoxmlPackage) -> Vec<PreservedFeature> {
     let mut features = std::collections::BTreeMap::<(String, String, String), usize>::new();
     for part in package.parts.values() {
+        if ![
+            "altChunk",
+            "subDoc",
+            "object",
+            "control",
+            "movie",
+            "sound",
+            "dataModel",
+            "oMath",
+        ]
+        .iter()
+        .any(|name| part.content.contains(name))
+        {
+            continue;
+        }
         let Ok(doc) = roxmltree::Document::parse(&part.content) else {
             continue;
         };

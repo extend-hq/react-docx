@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use crate::package::OoxmlPackage;
@@ -172,19 +173,180 @@ pub fn normalize_xml(xml: &str) -> Result<String, String> {
     Ok(result)
 }
 
-pub fn normalized_package(pkg: &OoxmlPackage) -> OoxmlPackage {
-    let mut normalized = pkg.clone();
-    for part in normalized.parts.values_mut() {
-        if !part.name.ends_with(".xml") && !part.name.ends_with(".rels") {
-            continue;
-        }
-        match normalize_xml(&part.content) {
-            Ok(xml) => part.content = xml,
-            Err(error) => normalized.warnings.push(format!(
-                "XML normalization failed in {}: {error}",
-                part.name
-            )),
+fn is_canonical_xml(xml: &str) -> bool {
+    use quick_xml::events::Event;
+    if xml.contains('\r') {
+        return false;
+    }
+    let mut reader = quick_xml::Reader::from_str(xml);
+    let mut bindings = BTreeMap::<String, String>::new();
+    let mut depth = 0usize;
+    let mut roots = 0usize;
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(tag) | Event::Empty(tag)) => {
+                if depth == 0 {
+                    roots += 1;
+                }
+                let raw = tag.as_ref();
+                for attribute in tag.attributes() {
+                    let Ok(attribute) = attribute else {
+                        return false;
+                    };
+                    let name = attribute.key.as_ref();
+                    let value = attribute.value.as_ref();
+                    if value.contains(['\n', '\t', '<', '>'])
+                        || value.split('&').skip(1).any(|reference| {
+                            !["amp;", "lt;", "gt;", "quot;"]
+                                .iter()
+                                .any(|entity| reference.starts_with(entity))
+                        })
+                    {
+                        return false;
+                    }
+                    if name == "xmlns" || name.starts_with("xmlns:") {
+                        let declared = name.strip_prefix("xmlns:").unwrap_or("");
+                        if depth > 0 && !bindings.contains_key(declared) {
+                            return false;
+                        }
+                        if value.contains('&') {
+                            return false;
+                        }
+                        if let Some(expected) = prefix(value) {
+                            if declared != expected {
+                                return false;
+                            }
+                        } else if declared.is_empty()
+                            || [
+                                "w", "r", "a", "m", "c", "wp", "pic", "wps", "wpg", "mc", "w14",
+                                "w15", "v", "o", "xml", "wp14", "w10",
+                            ]
+                            .contains(&declared)
+                        {
+                            return false;
+                        }
+                        if bindings.get(declared).is_some_and(|old| old != value)
+                            || bindings
+                                .iter()
+                                .any(|(key, old)| old == value && key != declared)
+                        {
+                            return false;
+                        }
+                        bindings
+                            .entry(declared.to_owned())
+                            .or_insert_with(|| value.to_owned());
+                    }
+                }
+                let mut quoted = false;
+                let bytes = raw.as_bytes();
+                for (index, byte) in bytes.iter().enumerate() {
+                    if *byte == b'"' {
+                        quoted = !quoted;
+                    }
+                    if !quoted
+                        && (*byte == b'\''
+                            || (*byte == b'='
+                                && (index == 0
+                                    || bytes[index - 1].is_ascii_whitespace()
+                                    || bytes.get(index + 1) != Some(&b'"'))))
+                    {
+                        return false;
+                    }
+                }
+                let name = tag.name();
+                let name = name.as_ref();
+                if let Some((prefix, _)) = name.split_once(':') {
+                    if prefix != "xml" && !bindings.contains_key(prefix) {
+                        return false;
+                    }
+                }
+                for attribute in tag.attributes().with_checks(false) {
+                    let Ok(attribute) = attribute else {
+                        return false;
+                    };
+                    if let Some((prefix, _)) = attribute.key.as_ref().split_once(':') {
+                        if prefix != "xml" && prefix != "xmlns" && !bindings.contains_key(prefix) {
+                            return false;
+                        }
+                    }
+                }
+                if xml.as_bytes().get(reader.buffer_position() as usize - 2) != Some(&b'/') {
+                    depth += 1;
+                }
+            }
+            Ok(Event::End(_)) => {
+                if xml
+                    .as_bytes()
+                    .get(reader.buffer_position() as usize - 2)
+                    .is_some_and(u8::is_ascii_whitespace)
+                {
+                    return false;
+                }
+                let Some(next) = depth.checked_sub(1) else {
+                    return false;
+                };
+                depth = next;
+            }
+            Ok(Event::Eof) => return depth == 0 && roots == 1,
+            Ok(Event::Text(text)) => {
+                if depth == 0 && !text.as_ref().bytes().all(|byte| byte.is_ascii_whitespace()) {
+                    return false;
+                }
+            }
+            Ok(Event::GeneralRef(reference)) => {
+                if depth == 0 {
+                    return false;
+                }
+                let name = reference.as_ref();
+                if !["amp", "lt", "gt", "quot", "apos"].contains(&name) {
+                    let code = name
+                        .strip_prefix("#x")
+                        .or_else(|| name.strip_prefix("#X"))
+                        .and_then(|digits| u32::from_str_radix(digits, 16).ok())
+                        .or_else(|| {
+                            name.strip_prefix('#')
+                                .and_then(|digits| digits.parse::<u32>().ok())
+                        });
+                    if !code.is_some_and(|code| {
+                        code >= 0x20
+                            && !matches!(code, 0xfffe | 0xffff)
+                            && char::from_u32(code).is_some()
+                    }) {
+                        return false;
+                    }
+                }
+            }
+            Ok(Event::Comment(_) | Event::Decl(_)) => {}
+            _ => return false,
         }
     }
-    normalized
+}
+
+pub fn normalized_package(pkg: &OoxmlPackage) -> Cow<'_, OoxmlPackage> {
+    let replacements: Vec<_> = pkg
+        .parts
+        .values()
+        .filter(|part| {
+            (part.name.ends_with(".xml") || part.name.ends_with(".rels"))
+                && !is_canonical_xml(&part.content)
+        })
+        .map(|part| (part.name.clone(), normalize_xml(&part.content)))
+        .collect();
+    if replacements.is_empty() {
+        return Cow::Borrowed(pkg);
+    }
+    let mut normalized = pkg.clone();
+    for (name, replacement) in replacements {
+        match replacement {
+            Ok(xml) => {
+                if let Some(part) = normalized.parts.get_mut(&name) {
+                    part.content = xml;
+                }
+            }
+            Err(error) => normalized
+                .warnings
+                .push(format!("XML normalization failed in {}: {error}", name)),
+        }
+    }
+    Cow::Owned(normalized)
 }

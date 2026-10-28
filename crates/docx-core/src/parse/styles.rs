@@ -1,21 +1,21 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::model::{
-    HeadingLevel, ImageHorizontalAlign, ImageVerticalAlign, ParagraphAlignment,
-    ParagraphBorderSet, ParagraphBorderStyle, ParagraphIndent, ParagraphLineRule,
-    ParagraphNumbering, ParagraphSpacing, ParagraphStyle, ParagraphStyleDefinition,
-    ParagraphTabStop, ParagraphTabStopAlignment, ParagraphTabStopLeader, TableBorderSet,
-    TableBorderStyle, TableBoxSpacing, TableFloating, TableLayout, TextRunBorderStyle,
-    TableAlignment, TablePreferredWidth, TextStyle, VerticalAlign, ParagraphTextAlignment,
-};
-use crate::package::OoxmlPackage;
 use super::colors::normalize_hex_color;
-use crate::model::NumberingDefinitionSet;
 use super::context::{
     empty_style_sheet, ParsedStyleSheet, ParsedTableLook, ParsedTableProperties,
     ParsedTableStyleCondition, ParsedTableStyleDefinition, TableConditionalStyleType,
     ThemeColorMap, ThemeFontMap,
 };
+use crate::model::NumberingDefinitionSet;
+use crate::model::{
+    HeadingLevel, ImageHorizontalAlign, ImageVerticalAlign, ParagraphAlignment, ParagraphBorderSet,
+    ParagraphBorderStyle, ParagraphIndent, ParagraphLineRule, ParagraphNumbering, ParagraphSpacing,
+    ParagraphStyle, ParagraphStyleDefinition, ParagraphTabStop, ParagraphTabStopAlignment,
+    ParagraphTabStopLeader, ParagraphTextAlignment, TableAlignment, TableBorderSet,
+    TableBorderStyle, TableBoxSpacing, TableFloating, TableLayout, TablePreferredWidth,
+    TextRunBorderStyle, TextStyle, VerticalAlign,
+};
+use crate::package::OoxmlPackage;
 use crate::xml::{
     decode_xml_entities, extract_balanced_tag_blocks, get_attribute, normalize_alignment,
     parse_integer_attribute, parse_on_off_attribute, parse_underline_attribute,
@@ -39,6 +39,7 @@ struct RawStyleDefinition {
     snap_to_grid: Option<bool>,
     text_alignment: Option<ParagraphTextAlignment>,
     heading_level: Option<HeadingLevel>,
+    outline_heading: Option<Option<HeadingLevel>>,
     numbering: Option<ParagraphNumbering>,
     spacing: Option<ParagraphSpacing>,
     indent: Option<ParagraphIndent>,
@@ -160,8 +161,8 @@ pub fn parse_paragraph_spacing_from_xml(xml: &str) -> Option<ParagraphSpacing> {
     }
 
     let spacing_tag = super::scan::find_tag_token(xml, "w:spacing")?;
-    let line_rule_raw = get_attribute(&spacing_tag, "w:lineRule")
-        .map(|value| value.to_ascii_lowercase());
+    let line_rule_raw =
+        get_attribute(&spacing_tag, "w:lineRule").map(|value| value.to_ascii_lowercase());
     let line_rule = match line_rule_raw.as_deref() {
         Some("auto") => Some(ParagraphLineRule::Auto),
         Some("exact") => Some(ParagraphLineRule::Exact),
@@ -172,8 +173,12 @@ pub fn parse_paragraph_spacing_from_xml(xml: &str) -> Option<ParagraphSpacing> {
     let spacing = ParagraphSpacing {
         before_twips: parse_integer_attribute(&spacing_tag, "w:before"),
         after_twips: parse_integer_attribute(&spacing_tag, "w:after"),
-        before_auto_spacing: parse_on_off_value(get_attribute(&spacing_tag, "w:beforeAutospacing").as_deref()),
-        after_auto_spacing: parse_on_off_value(get_attribute(&spacing_tag, "w:afterAutospacing").as_deref()),
+        before_auto_spacing: parse_on_off_value(
+            get_attribute(&spacing_tag, "w:beforeAutospacing").as_deref(),
+        ),
+        after_auto_spacing: parse_on_off_value(
+            get_attribute(&spacing_tag, "w:afterAutospacing").as_deref(),
+        ),
         line_twips: parse_integer_attribute(&spacing_tag, "w:line"),
         line_rule,
     };
@@ -284,12 +289,7 @@ pub fn parse_paragraph_shading_from_xml(xml: &str) -> Option<String> {
 pub(super) fn parse_on_off_value(value: Option<&str>) -> Option<bool> {
     let value = value?;
     let normalized = value.trim().to_ascii_lowercase();
-    Some(
-        normalized != "0"
-            && normalized != "false"
-            && normalized != "none"
-            && normalized != "off",
-    )
+    Some(normalized != "0" && normalized != "false" && normalized != "none" && normalized != "off")
 }
 
 /// Mirrors TypeScript `parseParagraphBorderStyle`.
@@ -314,8 +314,12 @@ pub fn parse_paragraph_border_style(tag_xml: Option<&str>) -> Option<ParagraphBo
 
     Some(ParagraphBorderStyle {
         border_type,
-        size_eighth_pt: size_eighth_pt.filter(|value| *value >= 0).map(|value| value as f64),
-        space_pt: space_pt.filter(|value| *value >= 0).map(|value| value as f64),
+        size_eighth_pt: size_eighth_pt
+            .filter(|value| *value >= 0)
+            .map(|value| value as f64),
+        space_pt: space_pt
+            .filter(|value| *value >= 0)
+            .map(|value| value as f64),
         color,
         frame: parse_on_off_value(get_attribute(tag_xml, "w:frame").as_deref()),
         shadow: parse_on_off_value(get_attribute(tag_xml, "w:shadow").as_deref()),
@@ -344,8 +348,12 @@ pub fn parse_text_run_border_style(tag_xml: Option<&str>) -> Option<TextRunBorde
 
     Some(TextRunBorderStyle {
         border_type,
-        size_eighth_pt: size_eighth_pt.filter(|value| *value >= 0).map(|value| value as f64),
-        space_pt: space_pt.filter(|value| *value >= 0).map(|value| value as f64),
+        size_eighth_pt: size_eighth_pt
+            .filter(|value| *value >= 0)
+            .map(|value| value as f64),
+        space_pt: space_pt
+            .filter(|value| *value >= 0)
+            .map(|value| value as f64),
         color,
         frame: parse_on_off_value(get_attribute(tag_xml, "w:frame").as_deref()),
         shadow: parse_on_off_value(get_attribute(tag_xml, "w:shadow").as_deref()),
@@ -464,7 +472,9 @@ pub fn parse_table_border_style(tag_xml: Option<&str>) -> Option<TableBorderStyl
 
     Some(TableBorderStyle {
         border_type,
-        size_eighth_pt: size_eighth_pt.filter(|value| *value >= 0).map(|value| value as f64),
+        size_eighth_pt: size_eighth_pt
+            .filter(|value| *value >= 0)
+            .map(|value| value as f64),
         color,
     })
 }
@@ -473,8 +483,7 @@ pub fn parse_table_border_style(tag_xml: Option<&str>) -> Option<TableBorderStyl
 pub fn parse_table_border_set(xml: &str) -> Option<TableBorderSet> {
     let top = parse_table_border_style(super::scan::find_tag_token(xml, "w:top").as_deref());
     let right = parse_table_border_style(super::scan::find_tag_token(xml, "w:right").as_deref());
-    let bottom =
-        parse_table_border_style(super::scan::find_tag_token(xml, "w:bottom").as_deref());
+    let bottom = parse_table_border_style(super::scan::find_tag_token(xml, "w:bottom").as_deref());
     let left = parse_table_border_style(super::scan::find_tag_token(xml, "w:left").as_deref());
     let inside_h =
         parse_table_border_style(super::scan::find_tag_token(xml, "w:insideH").as_deref());
@@ -520,9 +529,7 @@ fn has_table_properties(properties: &ParsedTableProperties) -> bool {
 }
 
 /// Mirrors TypeScript `parseFloatingTableStyle`.
-pub fn parse_floating_table_style(
-    table_properties_xml: Option<&str>,
-) -> Option<TableFloating> {
+pub fn parse_floating_table_style(table_properties_xml: Option<&str>) -> Option<TableFloating> {
     let table_properties_xml = table_properties_xml?;
     let floating_tag = super::scan::find_tag_token(table_properties_xml, "w:tblpPr")?;
 
@@ -534,10 +541,10 @@ pub fn parse_floating_table_style(
     let bottom_from_text_twips = parse_integer_attribute(&floating_tag, "w:bottomFromText");
     let horizontal_anchor = get_attribute(&floating_tag, "w:horzAnchor");
     let vertical_anchor = get_attribute(&floating_tag, "w:vertAnchor");
-    let horizontal_align_raw = get_attribute(&floating_tag, "w:tblpXSpec")
-        .map(|value| value.trim().to_ascii_lowercase());
-    let vertical_align_raw = get_attribute(&floating_tag, "w:tblpYSpec")
-        .map(|value| value.trim().to_ascii_lowercase());
+    let horizontal_align_raw =
+        get_attribute(&floating_tag, "w:tblpXSpec").map(|value| value.trim().to_ascii_lowercase());
+    let vertical_align_raw =
+        get_attribute(&floating_tag, "w:tblpYSpec").map(|value| value.trim().to_ascii_lowercase());
 
     let horizontal_align = match horizontal_align_raw.as_deref() {
         Some("left") => Some(ImageHorizontalAlign::Left),
@@ -585,10 +592,7 @@ pub fn parse_floating_table_style(
 }
 
 pub(crate) fn direct_table_property<'a>(xml: &'a str, name: &str) -> Option<&'a str> {
-    crate::xml::extract_direct_child_tag_ranges(xml)
-        .into_iter()
-        .find(|range| range.tag_name.eq_ignore_ascii_case(name))
-        .map(|range| &xml[range.start..range.end])
+    crate::xml::direct_child_tag(xml, name)
 }
 
 pub(crate) fn parse_table_preferred_width(tag: &str) -> Option<TablePreferredWidth> {
@@ -643,8 +647,8 @@ pub fn parse_table_style_properties_from_xml(
 ) -> Option<ParsedTableProperties> {
     let table_properties_xml = table_properties_xml?;
 
-    let preferred_width = direct_table_property(table_properties_xml, "w:tblW")
-        .and_then(parse_table_preferred_width);
+    let preferred_width =
+        direct_table_property(table_properties_xml, "w:tblW").and_then(parse_table_preferred_width);
     let width_twips = preferred_width.as_ref().and_then(preferred_width_twips);
     let alignment = direct_table_property(table_properties_xml, "w:jc")
         .and_then(|tag| get_attribute(tag, "w:val"))
@@ -787,7 +791,9 @@ fn merge_table_look(
     merged
 }
 
-fn normalize_table_conditional_style_type(value: Option<&str>) -> Option<TableConditionalStyleType> {
+fn normalize_table_conditional_style_type(
+    value: Option<&str>,
+) -> Option<TableConditionalStyleType> {
     match value?.trim().to_ascii_lowercase().as_str() {
         "wholtable" | "wholetable" => Some(TableConditionalStyleType::WholeTable),
         "firstrow" => Some(TableConditionalStyleType::FirstRow),
@@ -865,14 +871,14 @@ pub fn parse_table_look(table_properties_xml: Option<&str>) -> Option<ParsedTabl
         .as_deref()
         .and_then(|raw| i64::from_str_radix(raw, 16).ok());
 
-    let row_band_size_tag = super::scan::find_tag_token(table_properties_xml, "w:tblStyleRowBandSize")
-        .or_else(|| {
+    let row_band_size_tag =
+        super::scan::find_tag_token(table_properties_xml, "w:tblStyleRowBandSize").or_else(|| {
             extract_balanced_tag_blocks(table_properties_xml, "w:tblStyleRowBandSize")
                 .into_iter()
                 .next()
         });
-    let col_band_size_tag = super::scan::find_tag_token(table_properties_xml, "w:tblStyleColBandSize")
-        .or_else(|| {
+    let col_band_size_tag =
+        super::scan::find_tag_token(table_properties_xml, "w:tblStyleColBandSize").or_else(|| {
             extract_balanced_tag_blocks(table_properties_xml, "w:tblStyleColBandSize")
                 .into_iter()
                 .next()
@@ -899,18 +905,12 @@ pub fn parse_table_look(table_properties_xml: Option<&str>) -> Option<ParsedTabl
     let mask_value = look_mask.unwrap_or(0);
 
     Some(ParsedTableLook {
-        first_row: resolve_on_off_attribute("w:firstRow")
-            .unwrap_or((mask_value & 0x0020) != 0),
-        last_row: resolve_on_off_attribute("w:lastRow")
-            .unwrap_or((mask_value & 0x0040) != 0),
-        first_col: resolve_on_off_attribute("w:firstColumn")
-            .unwrap_or((mask_value & 0x0080) != 0),
-        last_col: resolve_on_off_attribute("w:lastColumn")
-            .unwrap_or((mask_value & 0x0100) != 0),
-        no_h_band: resolve_on_off_attribute("w:noHBand")
-            .unwrap_or((mask_value & 0x0200) != 0),
-        no_v_band: resolve_on_off_attribute("w:noVBand")
-            .unwrap_or((mask_value & 0x0400) != 0),
+        first_row: resolve_on_off_attribute("w:firstRow").unwrap_or((mask_value & 0x0020) != 0),
+        last_row: resolve_on_off_attribute("w:lastRow").unwrap_or((mask_value & 0x0040) != 0),
+        first_col: resolve_on_off_attribute("w:firstColumn").unwrap_or((mask_value & 0x0080) != 0),
+        last_col: resolve_on_off_attribute("w:lastColumn").unwrap_or((mask_value & 0x0100) != 0),
+        no_h_band: resolve_on_off_attribute("w:noHBand").unwrap_or((mask_value & 0x0200) != 0),
+        no_v_band: resolve_on_off_attribute("w:noVBand").unwrap_or((mask_value & 0x0400) != 0),
         row_band_size: row_band_size_raw.max(1),
         col_band_size: col_band_size_raw.max(1),
     })
@@ -939,8 +939,8 @@ pub fn parse_table_conditional_style_from_xml(
     let cell_properties_xml = direct_table_property(xml, "w:tcPr")
         .unwrap_or_default()
         .to_string();
-    let cell_preferred_width = direct_table_property(&cell_properties_xml, "w:tcW")
-        .and_then(parse_table_preferred_width);
+    let cell_preferred_width =
+        direct_table_property(&cell_properties_xml, "w:tcW").and_then(parse_table_preferred_width);
     let run_properties_xml = resolve_style_properties_block(xml, "w:rPr");
     let table_look = parse_table_look(Some(&table_properties_xml));
     let paragraph_text_alignment = super::style::parse_paragraph_text_alignment_from_xml(
@@ -1035,9 +1035,11 @@ fn merge_table_conditional_style(
         paragraph_align: direct
             .and_then(|value| value.paragraph_align)
             .or_else(|| inherited.and_then(|value| value.paragraph_align)),
-        paragraph_text_alignment: direct.and_then(|value| value.paragraph_text_alignment)
+        paragraph_text_alignment: direct
+            .and_then(|value| value.paragraph_text_alignment)
             .or_else(|| inherited.and_then(|value| value.paragraph_text_alignment)),
-        paragraph_snap_to_grid: direct.and_then(|value| value.paragraph_snap_to_grid)
+        paragraph_snap_to_grid: direct
+            .and_then(|value| value.paragraph_snap_to_grid)
             .or_else(|| inherited.and_then(|value| value.paragraph_snap_to_grid)),
         run_style: merge_text_styles(
             inherited.and_then(|value| value.run_style.clone()),
@@ -1197,8 +1199,7 @@ pub fn merge_text_styles(
             merged.resolved_font_family_h_ansi = style.resolved_font_family_h_ansi.clone();
         }
         if style.resolved_font_family_east_asia.is_some() {
-            merged.resolved_font_family_east_asia =
-                style.resolved_font_family_east_asia.clone();
+            merged.resolved_font_family_east_asia = style.resolved_font_family_east_asia.clone();
         }
         if style.resolved_font_family_cs.is_some() {
             merged.resolved_font_family_cs = style.resolved_font_family_cs.clone();
@@ -1285,7 +1286,11 @@ pub fn merge_text_styles(
         || merged.vertical_align.is_some()
         || merged.run_border.is_some();
 
-    if has_any { Some(merged) } else { None }
+    if has_any {
+        Some(merged)
+    } else {
+        None
+    }
 }
 
 fn merge_paragraph_spacing(
@@ -1546,7 +1551,10 @@ fn find_drawing_latin_typeface(xml: &str) -> Option<String> {
         }
     }
 
-    if let Some(block) = extract_balanced_tag_blocks(xml, "a:defRPr").into_iter().next() {
+    if let Some(block) = extract_balanced_tag_blocks(xml, "a:defRPr")
+        .into_iter()
+        .next()
+    {
         if let Some(latin) = extract_balanced_tag_blocks(&block, "a:latin")
             .into_iter()
             .next()
@@ -1558,8 +1566,7 @@ fn find_drawing_latin_typeface(xml: &str) -> Option<String> {
         }
     }
 
-    super::scan::find_tag_token(xml, "a:latin")
-        .and_then(|latin| get_attribute(&latin, "typeface"))
+    super::scan::find_tag_token(xml, "a:latin").and_then(|latin| get_attribute(&latin, "typeface"))
 }
 
 fn find_drawing_color(xml: &str) -> Option<String> {
@@ -1570,13 +1577,19 @@ fn find_drawing_color(xml: &str) -> Option<String> {
             .or_else(|| super::scan::find_tag_token(&block, "a:solidFill"))
         {
             if let Some(srgb) = super::scan::find_tag_token(&color_xml, "a:srgbClr") {
-                if let Some(color) = get_attribute(&srgb, "val").as_deref().and_then(|value| normalize_hex_color(Some(value))) {
+                if let Some(color) = get_attribute(&srgb, "val")
+                    .as_deref()
+                    .and_then(|value| normalize_hex_color(Some(value)))
+                {
                     return Some(color);
                 }
             }
         }
         if let Some(srgb) = super::scan::find_tag_token(&block, "a:srgbClr") {
-            if let Some(color) = get_attribute(&srgb, "val").as_deref().and_then(|value| normalize_hex_color(Some(value))) {
+            if let Some(color) = get_attribute(&srgb, "val")
+                .as_deref()
+                .and_then(|value| normalize_hex_color(Some(value)))
+            {
                 return Some(color);
             }
         }
@@ -1588,7 +1601,6 @@ fn contains_east_asia_glyphs(text: &str) -> bool {
     text.chars().any(|ch| {
         matches!(ch,
             '\u{2e80}'..='\u{9fff}'
-                | '\u{3040}'..='\u{30ff}'
                 | '\u{ac00}'..='\u{d7af}'
         )
     })
@@ -1660,8 +1672,8 @@ pub fn parse_text_style_from_xml(xml: &str, theme_fonts: &ThemeFontMap) -> Optio
     let drawing_bold_match = find_drawing_rpr_attribute(xml, "b");
     let drawing_italic_match = find_drawing_rpr_attribute(xml, "i");
     let drawing_underline_match = find_drawing_rpr_attribute(xml, "u");
-    let drawing_strike_match = find_drawing_rpr_attribute(xml, "strike")
-        .or_else(|| find_drawing_rpr_attribute(xml, "s"));
+    let drawing_strike_match =
+        find_drawing_rpr_attribute(xml, "strike").or_else(|| find_drawing_rpr_attribute(xml, "s"));
     let drawing_color_match = find_drawing_color(xml);
     let drawing_size_match = find_drawing_rpr_attribute(xml, "sz");
     let drawing_font_match = find_drawing_latin_typeface(xml);
@@ -1742,9 +1754,8 @@ pub fn parse_text_style_from_xml(xml: &str, theme_fonts: &ThemeFontMap) -> Optio
     if style.strike.is_none() {
         if let Some(value) = drawing_strike_match {
             let value = value.to_ascii_lowercase();
-            style.strike = Some(
-                value != "nostrike" && value != "none" && value != "false" && value != "0",
-            );
+            style.strike =
+                Some(value != "nostrike" && value != "none" && value != "false" && value != "0");
         }
     }
 
@@ -1892,16 +1903,14 @@ pub fn parse_text_style_from_xml(xml: &str, theme_fonts: &ThemeFontMap) -> Optio
 
 /// Mirrors TypeScript `parseParagraphAlignFromXml`.
 pub fn parse_paragraph_align_from_xml(xml: &str) -> Option<ParagraphAlignment> {
-    map_alignment(
-        super::scan::find_attribute_value_in_tag(xml, "w:jc", "w:val")
-            .as_deref(),
-    )
+    map_alignment(super::scan::find_attribute_value_in_tag(xml, "w:jc", "w:val").as_deref())
 }
 
-fn parse_heading_level_from_outline(xml: &str) -> Option<HeadingLevel> {
-    let outline_value = super::scan::find_attribute_value_in_tag(xml, "w:outlineLvl", "w:val")?;
+pub(crate) fn parse_heading_level_from_outline(xml: &str) -> Option<Option<HeadingLevel>> {
+    let tag = direct_table_property(xml, "w:outlineLvl")?;
+    let outline_value = get_attribute(tag, "w:val")?;
     let level = outline_value.parse::<i64>().ok()? + 1;
-    match level {
+    Some(match level {
         1 => Some(HeadingLevel::One),
         2 => Some(HeadingLevel::Two),
         3 => Some(HeadingLevel::Three),
@@ -1909,7 +1918,7 @@ fn parse_heading_level_from_outline(xml: &str) -> Option<HeadingLevel> {
         5 => Some(HeadingLevel::Five),
         6 => Some(HeadingLevel::Six),
         _ => None,
-    }
+    })
 }
 
 fn parse_style_type(value: Option<&str>) -> Option<RawStyleType> {
@@ -2010,8 +2019,8 @@ fn read_typeface(xml: &str, tag_name: &str) -> Option<String> {
 
 /// Mirrors TypeScript `parseThemeFonts`.
 pub fn parse_theme_fonts(pkg: &OoxmlPackage) -> ThemeFontMap {
-    let Some(theme_xml) = crate::package::related_document_part(pkg, "theme")
-        .map(|part| part.content.as_str())
+    let Some(theme_xml) =
+        crate::package::related_document_part(pkg, "theme").map(|part| part.content.as_str())
     else {
         return ThemeFontMap::default();
     };
@@ -2036,9 +2045,10 @@ pub fn parse_theme_fonts(pkg: &OoxmlPackage) -> ThemeFontMap {
 }
 
 fn parse_theme_color_from_tag(color_xml: &str) -> Option<String> {
-    if let Some(explicit) = super::scan::find_attribute_value_in_tag(color_xml, "a:srgbClr", "w:val")
-        .as_deref()
-        .and_then(|value| normalize_hex_color(Some(value)))
+    if let Some(explicit) =
+        super::scan::find_attribute_value_in_tag(color_xml, "a:srgbClr", "w:val")
+            .as_deref()
+            .and_then(|value| normalize_hex_color(Some(value)))
     {
         return Some(explicit);
     }
@@ -2050,8 +2060,8 @@ fn parse_theme_color_from_tag(color_xml: &str) -> Option<String> {
 
 /// Mirrors TypeScript `parseThemeColors`.
 pub fn parse_theme_colors(pkg: &OoxmlPackage) -> ThemeColorMap {
-    let Some(theme_xml) = crate::package::related_document_part(pkg, "theme")
-        .map(|part| part.content.as_str())
+    let Some(theme_xml) =
+        crate::package::related_document_part(pkg, "theme").map(|part| part.content.as_str())
     else {
         return ThemeColorMap::new();
     };
@@ -2132,14 +2142,21 @@ fn with_word_application_defaults(doc_defaults_xml: &str, theme_fonts: &ThemeFon
         );
     }
     match doc_defaults_xml.rfind("</w:docDefaults>") {
-        Some(end) => format!("{}{}{}", &doc_defaults_xml[..end], supplied, &doc_defaults_xml[end..]),
+        Some(end) => format!(
+            "{}{}{}",
+            &doc_defaults_xml[..end],
+            supplied,
+            &doc_defaults_xml[end..]
+        ),
         None => format!("<w:docDefaults>{supplied}</w:docDefaults>"),
     }
 }
 
 /// Mirrors TypeScript `parseStyleSheet`.
 pub fn parse_style_sheet(pkg: &OoxmlPackage) -> ParsedStyleSheet {
-    let Some(styles_xml) = crate::package::related_document_part(pkg, "styles").map(|part| part.content.as_str()) else {
+    let Some(styles_xml) =
+        crate::package::related_document_part(pkg, "styles").map(|part| part.content.as_str())
+    else {
         return empty_style_sheet();
     };
 
@@ -2149,18 +2166,20 @@ pub fn parse_style_sheet(pkg: &OoxmlPackage) -> ParsedStyleSheet {
         .into_iter()
         .next()
         .unwrap_or_default();
-    let declares_run_defaults = super::scan::contains_tag(&declared_doc_defaults_xml, "w:rPrDefault");
-    let doc_defaults_xml =
-        with_word_application_defaults(&declared_doc_defaults_xml, &theme_fonts);
+    let declares_run_defaults =
+        super::scan::contains_tag(&declared_doc_defaults_xml, "w:rPrDefault");
+    let doc_defaults_xml = with_word_application_defaults(&declared_doc_defaults_xml, &theme_fonts);
 
     let default_paragraph_style = {
         let paragraph_defaults = resolve_style_properties_block(&doc_defaults_xml, "w:pPr");
-        let default_paragraph_has_num_pr = super::scan::contains_tag(&paragraph_defaults, "w:numPr");
+        let default_paragraph_has_num_pr =
+            super::scan::contains_tag(&paragraph_defaults, "w:numPr");
         let align = parse_paragraph_align_from_xml(&paragraph_defaults);
         let snap_to_grid = parse_on_off_attribute(&paragraph_defaults, "snapToGrid");
         let text_alignment = super::style::parse_paragraph_text_alignment_from_xml(
             direct_table_property(&doc_defaults_xml, "w:pPrDefault")
-                .and_then(|xml| direct_table_property(xml, "w:pPr")).unwrap_or_default(),
+                .and_then(|xml| direct_table_property(xml, "w:pPr"))
+                .unwrap_or_default(),
         );
         let spacing = parse_paragraph_spacing_from_xml(&paragraph_defaults);
         let indent = parse_paragraph_indent_from_xml(&paragraph_defaults);
@@ -2233,8 +2252,10 @@ pub fn parse_style_sheet(pkg: &OoxmlPackage) -> ParsedStyleSheet {
         }
     };
 
-    let mut default_run_style =
-        parse_text_style_from_xml(&resolve_style_properties_block(&doc_defaults_xml, "w:rPr"), &theme_fonts);
+    let mut default_run_style = parse_text_style_from_xml(
+        &resolve_style_properties_block(&doc_defaults_xml, "w:rPr"),
+        &theme_fonts,
+    );
     if declares_run_defaults {
         // Declared run defaults without a size render at Word's 10 pt default.
         match default_run_style.as_mut() {
@@ -2278,10 +2299,8 @@ pub fn parse_style_sheet(pkg: &OoxmlPackage) -> ParsedStyleSheet {
         let run_properties_xml = resolve_style_properties_block(&style_xml, "w:rPr");
 
         let heading_level = normalize_heading_level(Some(&style_id))
-            .or_else(|| {
-                normalize_heading_level(get_attribute(&name_tag, "w:val").as_deref())
-            })
-            .or_else(|| parse_heading_level_from_outline(&paragraph_properties_xml));
+            .or_else(|| normalize_heading_level(get_attribute(&name_tag, "w:val").as_deref()));
+        let outline_heading = parse_heading_level_from_outline(&paragraph_properties_xml);
 
         let parsed_style_numbering = parse_paragraph_numbering_from_xml(&paragraph_properties_xml);
         let tab_stops = parse_paragraph_tab_stops_from_xml(&paragraph_properties_xml);
@@ -2300,6 +2319,7 @@ pub fn parse_style_sheet(pkg: &OoxmlPackage) -> ParsedStyleSheet {
                     direct_table_property(&style_xml, "w:pPr").unwrap_or_default(),
                 ),
                 heading_level,
+                outline_heading,
                 numbering: if style_has_paragraph_num_pr && parsed_style_numbering.is_none() {
                     Some(ParagraphNumbering { num_id: 0, ilvl: 0 })
                 } else {
@@ -2397,12 +2417,9 @@ pub fn parse_style_sheet(pkg: &OoxmlPackage) -> ParsedStyleSheet {
         stack.insert(style_id.to_string());
 
         let style = raw_styles_by_id.get(style_id)?;
-        let inherited = style
-            .based_on_id
-            .as_deref()
-            .and_then(|based_on_id| {
-                resolve_run_style(based_on_id, raw_styles_by_id, run_style_cache, stack)
-            });
+        let inherited = style.based_on_id.as_deref().and_then(|based_on_id| {
+            resolve_run_style(based_on_id, raw_styles_by_id, run_style_cache, stack)
+        });
         let resolved = merge_text_styles(inherited, style.run_style.clone());
         run_style_cache.insert(style_id.to_string(), resolved.clone());
         stack.remove(style_id);
@@ -2445,19 +2462,55 @@ pub fn parse_style_sheet(pkg: &OoxmlPackage) -> ParsedStyleSheet {
                 })
         });
 
+        let mut outline_style = Some(style);
+        let mut outline_seen = HashSet::new();
+        let mut outline_heading = None;
+        while let Some(current) = outline_style {
+            if !outline_seen.insert(current.id.as_str()) {
+                break;
+            }
+            if current.outline_heading.is_some() {
+                outline_heading = current.outline_heading;
+                break;
+            }
+            outline_style = current
+                .based_on_id
+                .as_deref()
+                .and_then(|id| raw_styles_by_id.get(id))
+                .filter(|parent| parent.style_type == RawStyleType::Paragraph);
+        }
+
         let resolved = ParagraphStyleDefinition {
             id: style.id.clone(),
             name: style.name.clone(),
             based_on_id: style.based_on_id.clone(),
             next_style_id: style.next_style_id.clone(),
-            align: style.align.or(inherited.as_ref().and_then(|value| value.align)),
-            snap_to_grid: style.snap_to_grid.or(inherited.as_ref().and_then(|value| value.snap_to_grid)),
-            source_has_snap_to_grid: Some(style.snap_to_grid.or(inherited.as_ref().and_then(|value| value.snap_to_grid)).is_some()),
-            text_alignment: style.text_alignment.or(inherited.as_ref().and_then(|value| value.text_alignment)),
-            source_has_text_alignment: Some(style.text_alignment.or(inherited.as_ref().and_then(|value| value.text_alignment)).is_some()),
-            heading_level: style
-                .heading_level
-                .or(inherited.as_ref().and_then(|value| value.heading_level)),
+            align: style
+                .align
+                .or(inherited.as_ref().and_then(|value| value.align)),
+            snap_to_grid: style
+                .snap_to_grid
+                .or(inherited.as_ref().and_then(|value| value.snap_to_grid)),
+            source_has_snap_to_grid: Some(
+                style
+                    .snap_to_grid
+                    .or(inherited.as_ref().and_then(|value| value.snap_to_grid))
+                    .is_some(),
+            ),
+            text_alignment: style
+                .text_alignment
+                .or(inherited.as_ref().and_then(|value| value.text_alignment)),
+            source_has_text_alignment: Some(
+                style
+                    .text_alignment
+                    .or(inherited.as_ref().and_then(|value| value.text_alignment))
+                    .is_some(),
+            ),
+            heading_level: outline_heading.unwrap_or_else(|| {
+                style
+                    .heading_level
+                    .or(inherited.as_ref().and_then(|value| value.heading_level))
+            }),
             numbering: style
                 .numbering
                 .clone()
@@ -2471,7 +2524,9 @@ pub fn parse_style_sheet(pkg: &OoxmlPackage) -> ParsedStyleSheet {
                 style.indent.as_ref(),
             ),
             background_color: merge_paragraph_background_color(
-                inherited.as_ref().and_then(|value| value.background_color.as_deref()),
+                inherited
+                    .as_ref()
+                    .and_then(|value| value.background_color.as_deref()),
                 style.background_color.as_deref(),
             ),
             borders: merge_paragraph_border_sets(
@@ -2479,7 +2534,9 @@ pub fn parse_style_sheet(pkg: &OoxmlPackage) -> ParsedStyleSheet {
                 style.borders.as_ref(),
             ),
             tab_stops: merge_paragraph_tab_stops(
-                inherited.as_ref().and_then(|value| value.tab_stops.as_deref()),
+                inherited
+                    .as_ref()
+                    .and_then(|value| value.tab_stops.as_deref()),
                 style.tab_stops.as_deref(),
             ),
             contextual_spacing: merge_paragraph_boolean(
@@ -2535,8 +2592,12 @@ pub fn parse_style_sheet(pkg: &OoxmlPackage) -> ParsedStyleSheet {
         .collect();
 
     for style in &mut paragraph_styles {
-        style.snap_to_grid = style.snap_to_grid.or(default_paragraph_style.as_ref().and_then(|style| style.snap_to_grid));
-        style.text_alignment = style.text_alignment.or(default_paragraph_style.as_ref().and_then(|style| style.text_alignment));
+        style.snap_to_grid = style.snap_to_grid.or(default_paragraph_style
+            .as_ref()
+            .and_then(|style| style.snap_to_grid));
+        style.text_alignment = style.text_alignment.or(default_paragraph_style
+            .as_ref()
+            .and_then(|style| style.text_alignment));
     }
 
     paragraph_styles.sort_by(|left, right| {
@@ -2647,81 +2708,99 @@ pub fn parse_style_sheet(pkg: &OoxmlPackage) -> ParsedStyleSheet {
         .as_ref()
         .and_then(|style_id| paragraph_style_by_id.get(style_id).cloned());
 
-    let merged_default_paragraph_style = resolved_default_paragraph_style.as_ref().map(|resolved| {
-        ParagraphStyle {
-            source_before_auto_spacing: None,
-            source_after_auto_spacing: None,
-            align: resolved.align.or(default_paragraph_style.as_ref().and_then(|value| value.align)),
-            snap_to_grid: resolved.snap_to_grid.or(default_paragraph_style.as_ref().and_then(|value| value.snap_to_grid)),
-            source_snap_to_grid: None,
-            source_has_snap_to_grid: None,
-            source_inherited_snap_to_grid: None,
-            source_table_snap_to_grid: None,
-            text_alignment: resolved.text_alignment.or(default_paragraph_style.as_ref().and_then(|value| value.text_alignment)),
-            source_text_alignment: None,
-            source_has_text_alignment: None,
-            source_inherited_text_alignment: None,
-            source_table_text_alignment: None,
-            heading_level: resolved.heading_level,
-            style_id: default_paragraph_style_id.clone(),
-            style_name: Some(resolved.name.clone()),
-            numbering: resolved
-                .numbering
-                .clone()
-                .or_else(|| default_paragraph_style.as_ref().and_then(|value| value.numbering.clone())),
-            spacing: merge_paragraph_spacing(
-                default_paragraph_style.as_ref().and_then(|value| value.spacing.as_ref()),
-                resolved.spacing.as_ref(),
-            ),
-            indent: merge_paragraph_indent(
-                default_paragraph_style.as_ref().and_then(|value| value.indent.as_ref()),
-                resolved.indent.as_ref(),
-            ),
-            background_color: merge_paragraph_background_color(
-                default_paragraph_style
+    let merged_default_paragraph_style =
+        resolved_default_paragraph_style
+            .as_ref()
+            .map(|resolved| ParagraphStyle {
+                source_before_auto_spacing: None,
+                source_after_auto_spacing: None,
+                align: resolved.align.or(default_paragraph_style
                     .as_ref()
-                    .and_then(|value| value.background_color.as_deref()),
-                resolved.background_color.as_deref(),
-            ),
-            borders: merge_paragraph_border_sets(
-                default_paragraph_style.as_ref().and_then(|value| value.borders.as_ref()),
-                resolved.borders.as_ref(),
-            ),
-            tab_stops: merge_paragraph_tab_stops(
-                default_paragraph_style
+                    .and_then(|value| value.align)),
+                snap_to_grid: resolved.snap_to_grid.or(default_paragraph_style
                     .as_ref()
-                    .and_then(|value| value.tab_stops.as_deref()),
-                resolved.tab_stops.as_deref(),
-            ),
-            contextual_spacing: merge_paragraph_boolean(
-                default_paragraph_style
+                    .and_then(|value| value.snap_to_grid)),
+                source_snap_to_grid: None,
+                source_has_snap_to_grid: None,
+                source_inherited_snap_to_grid: None,
+                source_table_snap_to_grid: None,
+                text_alignment: resolved.text_alignment.or(default_paragraph_style
                     .as_ref()
-                    .and_then(|value| value.contextual_spacing),
-                resolved.contextual_spacing,
-            ),
-            keep_next: merge_paragraph_boolean(
-                default_paragraph_style.as_ref().and_then(|value| value.keep_next),
-                resolved.keep_next,
-            ),
-            keep_lines: merge_paragraph_boolean(
-                default_paragraph_style.as_ref().and_then(|value| value.keep_lines),
-                resolved.keep_lines,
-            ),
-            widow_control: merge_paragraph_boolean(
-                default_paragraph_style
-                    .as_ref()
-                    .and_then(|value| value.widow_control),
-                resolved.widow_control,
-            ),
-            page_break_before: merge_paragraph_boolean(
-                default_paragraph_style
-                    .as_ref()
-                    .and_then(|value| value.page_break_before),
-                resolved.page_break_before,
-            ),
-            drop_cap: None,
-        }
-    });
+                    .and_then(|value| value.text_alignment)),
+                source_text_alignment: None,
+                source_has_text_alignment: None,
+                source_inherited_text_alignment: None,
+                source_table_text_alignment: None,
+                heading_level: resolved.heading_level,
+                style_id: default_paragraph_style_id.clone(),
+                style_name: Some(resolved.name.clone()),
+                numbering: resolved.numbering.clone().or_else(|| {
+                    default_paragraph_style
+                        .as_ref()
+                        .and_then(|value| value.numbering.clone())
+                }),
+                spacing: merge_paragraph_spacing(
+                    default_paragraph_style
+                        .as_ref()
+                        .and_then(|value| value.spacing.as_ref()),
+                    resolved.spacing.as_ref(),
+                ),
+                indent: merge_paragraph_indent(
+                    default_paragraph_style
+                        .as_ref()
+                        .and_then(|value| value.indent.as_ref()),
+                    resolved.indent.as_ref(),
+                ),
+                background_color: merge_paragraph_background_color(
+                    default_paragraph_style
+                        .as_ref()
+                        .and_then(|value| value.background_color.as_deref()),
+                    resolved.background_color.as_deref(),
+                ),
+                borders: merge_paragraph_border_sets(
+                    default_paragraph_style
+                        .as_ref()
+                        .and_then(|value| value.borders.as_ref()),
+                    resolved.borders.as_ref(),
+                ),
+                tab_stops: merge_paragraph_tab_stops(
+                    default_paragraph_style
+                        .as_ref()
+                        .and_then(|value| value.tab_stops.as_deref()),
+                    resolved.tab_stops.as_deref(),
+                ),
+                contextual_spacing: merge_paragraph_boolean(
+                    default_paragraph_style
+                        .as_ref()
+                        .and_then(|value| value.contextual_spacing),
+                    resolved.contextual_spacing,
+                ),
+                keep_next: merge_paragraph_boolean(
+                    default_paragraph_style
+                        .as_ref()
+                        .and_then(|value| value.keep_next),
+                    resolved.keep_next,
+                ),
+                keep_lines: merge_paragraph_boolean(
+                    default_paragraph_style
+                        .as_ref()
+                        .and_then(|value| value.keep_lines),
+                    resolved.keep_lines,
+                ),
+                widow_control: merge_paragraph_boolean(
+                    default_paragraph_style
+                        .as_ref()
+                        .and_then(|value| value.widow_control),
+                    resolved.widow_control,
+                ),
+                page_break_before: merge_paragraph_boolean(
+                    default_paragraph_style
+                        .as_ref()
+                        .and_then(|value| value.page_break_before),
+                    resolved.page_break_before,
+                ),
+                drop_cap: None,
+            });
 
     let mut table_paragraph_spacing_by_style_id = HashMap::new();
     for (style_id, style) in raw_styles_by_id
@@ -2766,7 +2845,9 @@ pub fn parse_style_sheet(pkg: &OoxmlPackage) -> ParsedStyleSheet {
         doc_default_paragraph_spacing: default_paragraph_style
             .as_ref()
             .and_then(|style| style.spacing.clone()),
-        default_paragraph_text_alignment: default_paragraph_style.as_ref().and_then(|style| style.text_alignment),
+        default_paragraph_text_alignment: default_paragraph_style
+            .as_ref()
+            .and_then(|style| style.text_alignment),
         default_paragraph_style: merged_default_paragraph_style,
         default_paragraph_style_id,
         default_run_style: merge_text_styles(
@@ -2778,7 +2859,9 @@ pub fn parse_style_sheet(pkg: &OoxmlPackage) -> ParsedStyleSheet {
     }
 }
 
-pub fn clone_paragraph_style_definition(style: &ParagraphStyleDefinition) -> ParagraphStyleDefinition {
+pub fn clone_paragraph_style_definition(
+    style: &ParagraphStyleDefinition,
+) -> ParagraphStyleDefinition {
     style.clone()
 }
 
@@ -2792,7 +2875,8 @@ mod table_box_spacing_tests {
 
     #[test]
     fn parses_start_end_aliases() {
-        let xml = r#"<w:tcMar><w:start w:w="0" w:type="dxa"/><w:end w:w="0" w:type="dxa"/></w:tcMar>"#;
+        let xml =
+            r#"<w:tcMar><w:start w:w="0" w:type="dxa"/><w:end w:w="0" w:type="dxa"/></w:tcMar>"#;
         let spacing = parse_table_box_spacing(xml).expect("spacing");
         assert_eq!(spacing.left_twips, Some(0));
         assert_eq!(spacing.right_twips, Some(0));

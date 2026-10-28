@@ -16,95 +16,47 @@ fn has_word_boundary_after(xml: &str, index: usize) -> bool {
         .is_none_or(|byte| !byte.is_ascii_alphanumeric() && *byte != b'_')
 }
 
-fn find_case_insensitive_at(haystack: &str, start: usize, needle: &str) -> Option<usize> {
-    if needle.is_empty() || start >= haystack.len() {
-        return None;
-    }
-
-    let haystack_bytes = haystack.as_bytes();
-    let needle_bytes = needle.as_bytes();
-    if start + needle.len() > haystack_bytes.len() {
-        return None;
-    }
-
-    let max_start = haystack_bytes.len().saturating_sub(needle_bytes.len());
-
-    for index in start..=max_start {
-        let end = index + needle_bytes.len();
-        if end > haystack_bytes.len() {
-            break;
-        }
-        if haystack_bytes[index..end]
-            .iter()
-            .zip(needle_bytes.iter())
-            .all(|(left, right)| left.eq_ignore_ascii_case(right))
+pub(crate) fn find_tag_token_ref<'a>(xml: &'a str, tag_name: &str) -> Option<&'a str> {
+    let name = tag_name.as_bytes();
+    let mut cursor = 0;
+    while let Some(offset) = xml[cursor..].find('<') {
+        let start = cursor + offset;
+        let after = start + 1 + name.len();
+        if xml
+            .as_bytes()
+            .get(start + 1..after)
+            .is_some_and(|value| value.eq_ignore_ascii_case(name))
+            && has_word_boundary_after(xml, after)
         {
-            return Some(index);
+            let end = crate::xml::tag_token_end(xml, after)?;
+            return Some(&xml[start..end]);
         }
+        cursor = start + 1;
     }
-
     None
 }
 
-/// Hand-rolled scanner matching `<tagName\b[^>]*\/?>` regex patterns.
 pub fn find_tag_token(xml: &str, tag_name: &str) -> Option<String> {
-    let open_prefix = format!("<{tag_name}");
-    let mut index = 0;
-
-    while index < xml.len() {
-        let Some(tag_start) = find_case_insensitive_at(xml, index, &open_prefix) else {
-            break;
-        };
-
-        if !has_word_boundary_after(xml, tag_start + open_prefix.len()) {
-            index = tag_start + 1;
-            continue;
-        }
-
-        let Some(relative_gt) = xml[tag_start..].find('>') else {
-            break;
-        };
-
-        return Some(xml[tag_start..tag_start + relative_gt + 1].to_string());
-    }
-
-    None
+    find_tag_token_ref(xml, tag_name).map(str::to_owned)
 }
 
-/// Hand-rolled scanner matching global `<tagName\b[^>]*>` regex patterns.
 pub fn find_all_tag_tokens(xml: &str, tag_name: &str) -> Vec<String> {
-    let open_prefix = format!("<{tag_name}");
+    let mut remaining = xml;
     let mut tags = Vec::new();
-    let mut index = 0;
-
-    while index < xml.len() {
-        let Some(tag_start) = find_case_insensitive_at(xml, index, &open_prefix) else {
-            break;
-        };
-
-        if !has_word_boundary_after(xml, tag_start + open_prefix.len()) {
-            index = tag_start + 1;
-            continue;
-        }
-
-        let Some(relative_gt) = xml[tag_start..].find('>') else {
-            break;
-        };
-
-        let tag_end = tag_start + relative_gt + 1;
-        tags.push(xml[tag_start..tag_end].to_string());
-        index = tag_end;
+    while let Some(tag) = find_tag_token_ref(remaining, tag_name) {
+        let end = tag.as_ptr() as usize - remaining.as_ptr() as usize + tag.len();
+        tags.push(tag.to_owned());
+        remaining = &remaining[end..];
     }
-
     tags
 }
 
 pub fn find_attribute_value_in_tag(xml: &str, tag_name: &str, attribute: &str) -> Option<String> {
-    find_tag_token(xml, tag_name).and_then(|tag| get_attribute(&tag, attribute))
+    find_tag_token_ref(xml, tag_name).and_then(|tag| get_attribute(tag, attribute))
 }
 
 pub fn contains_tag(xml: &str, tag_name: &str) -> bool {
-    find_tag_token(xml, tag_name).is_some()
+    find_tag_token_ref(xml, tag_name).is_some()
 }
 
 pub fn decode_xml_attribute(value: Option<&str>) -> Option<String> {

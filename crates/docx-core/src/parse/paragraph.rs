@@ -1,18 +1,18 @@
 use crate::model::{
     FormFieldCheckboxSizeMode, FormFieldCheckboxWidgetSettings, FormFieldDropdownWidgetSettings,
-    FormFieldOption, FormFieldRunNode, FormFieldRunNodeType, FormFieldSourceKind, FormFieldTextWidgetSettings,
-    FormFieldType, FormFieldWidgetSettings, NoteReference, NoteReferenceKind, ParagraphChildNode,
-    ParagraphNode, ParagraphNodeType, ParagraphSourceTextPatch,
-    ParagraphSourceTextPatchRun, TextRunNode, TextRunNodeType, TextStyle,
+    FormFieldOption, FormFieldRunNode, FormFieldRunNodeType, FormFieldSourceKind,
+    FormFieldTextWidgetSettings, FormFieldType, FormFieldWidgetSettings, NoteReference,
+    NoteReferenceKind, ParagraphChildNode, ParagraphNode, ParagraphNodeType,
+    ParagraphSourceTextPatch, ParagraphSourceTextPatchRun, TextRunNode, TextRunNodeType, TextStyle,
 };
 use crate::parse::context::ParseContext;
-use crate::parse::re;
 use crate::parse::images::parse_run_image_tokens;
+use crate::parse::re;
 use crate::parse::style::{parse_paragraph_style_in_table, parse_run_style_in_table};
 use crate::parse::util::{
-    decode_hex_code_point, decode_xml_attribute, normalize_legacy_form_display_value,
-    on_off_value_to_boolean, parse_on_off_tag_value, parse_relationships_from_parts, prefer_alternate_content_choice,
-    strip_text_box_content,
+    active_xml as prefer_alternate_content_choice, decode_hex_code_point, decode_xml_attribute,
+    normalize_legacy_form_display_value, on_off_value_to_boolean, parse_on_off_tag_value,
+    parse_relationships_from_parts, strip_text_box_content,
 };
 use crate::xml::{
     decode_xml_entities, extract_balanced_tag_blocks, extract_balanced_tag_ranges, get_attribute,
@@ -35,10 +35,15 @@ pub struct ParsedRunTextToken {
     pub note_reference: Option<NoteReference>,
 }
 
-fn run_text_xml(run_xml: &str) -> String {
+fn run_text_xml(run_xml: &str) -> std::borrow::Cow<'_, str> {
     let mut active = prefer_alternate_content_choice(run_xml);
-    for range in extract_balanced_tag_ranges(&active, "w:txbxContent").into_iter().rev() {
-        active.replace_range(range.start..range.end, &" ".repeat(range.end - range.start));
+    for range in extract_balanced_tag_ranges(&active, "w:txbxContent")
+        .into_iter()
+        .rev()
+    {
+        active
+            .to_mut()
+            .replace_range(range.start..range.end, &" ".repeat(range.end - range.start));
     }
     active
 }
@@ -102,17 +107,34 @@ pub fn parse_run_text_tokens(run_xml: &str) -> Vec<ParsedRunTextToken> {
             }
             continue;
         }
-        let marker = caps.get(0).map(|m| m.as_str().to_ascii_lowercase()).unwrap_or_default();
-        if marker.starts_with("<w:nobreakhyphen") || marker.starts_with("<w:softhyphen") || marker.starts_with("<w:sym") {
+        let marker = caps
+            .get(0)
+            .map(|m| m.as_str().to_ascii_lowercase())
+            .unwrap_or_default();
+        if marker.starts_with("<w:nobreakhyphen")
+            || marker.starts_with("<w:softhyphen")
+            || marker.starts_with("<w:sym")
+        {
             let raw = caps.get(0).unwrap().as_str();
-            let text = if marker.starts_with("<w:nobreakhyphen") { "\u{2011}".to_string() }
-                else if marker.starts_with("<w:softhyphen") { "\u{00ad}".to_string() }
-                else {
-                    let code = get_attribute(raw, "w:char").and_then(|v| u32::from_str_radix(&v, 16).ok());
-                    let font = get_attribute(raw, "w:font").unwrap_or_default();
-                    code.and_then(|code| super::symbols::symbol_character(&font, code).or_else(|| char::from_u32(code))).unwrap_or('\u{fffd}').to_string()
-                };
-            parts.push(ParsedRunTextToken { text, source_start, note_reference: None });
+            let text = if marker.starts_with("<w:nobreakhyphen") {
+                "\u{2011}".to_string()
+            } else if marker.starts_with("<w:softhyphen") {
+                "\u{00ad}".to_string()
+            } else {
+                let code =
+                    get_attribute(raw, "w:char").and_then(|v| u32::from_str_radix(&v, 16).ok());
+                let font = get_attribute(raw, "w:font").unwrap_or_default();
+                code.and_then(|code| {
+                    super::symbols::symbol_character(&font, code).or_else(|| char::from_u32(code))
+                })
+                .unwrap_or('\u{fffd}')
+                .to_string()
+            };
+            parts.push(ParsedRunTextToken {
+                text,
+                source_start,
+                note_reference: None,
+            });
         } else if marker == "</w:p>" {
             parts.push(ParsedRunTextToken {
                 source_start,
@@ -156,7 +178,10 @@ fn hyperlink_href_from_tag(hyperlink_tag: &str, context: &ParseContext<'_>) -> O
         ));
     }
     if let (Some(anchor), Some(target)) = (anchor.as_deref(), relationship_target.as_deref()) {
-        return Some(format!("{}#{anchor}", target.split('#').next().unwrap_or(target)));
+        return Some(format!(
+            "{}#{anchor}",
+            target.split('#').next().unwrap_or(target)
+        ));
     }
     if let Some(target) = relationship_target {
         return Some(target);
@@ -174,26 +199,56 @@ fn hyperlink_href_from_field_instruction(raw_instruction: &str) -> Option<String
     }
     let anchor_match = re::get(r#"(?i)\\l\s+(?:"([^"]+)"|([^\s\\]+))"#)
         .and_then(|re| re.captures(&instruction))
-        .and_then(|c| c.get(1).or_else(|| c.get(2)).map(|m| m.as_str().to_string()));
+        .and_then(|c| {
+            c.get(1)
+                .or_else(|| c.get(2))
+                .map(|m| m.as_str().to_string())
+        });
     let explicit_target_match = re::get(r#"(?i)^\s*HYPERLINK\b\s+(?:"([^"]+)"|([^\s\\]+))"#)
         .and_then(|re| re.captures(&instruction))
-        .and_then(|c| c.get(1).or_else(|| c.get(2)).map(|m| m.as_str().to_string()));
+        .and_then(|c| {
+            c.get(1)
+                .or_else(|| c.get(2))
+                .map(|m| m.as_str().to_string())
+        });
     if let Some(target) = explicit_target_match {
         if let Some(ref anchor) = anchor_match {
-            return Some(format!("{}#{anchor}", target.split('#').next().unwrap_or(&target)));
+            return Some(format!(
+                "{}#{anchor}",
+                target.split('#').next().unwrap_or(&target)
+            ));
         }
         return Some(target);
     }
     anchor_match.map(|a| format!("#{a}"))
 }
 
-pub fn parse_paragraph_runs(paragraph_xml: &str, context: &ParseContext<'_>) -> Vec<ParagraphRunToken> {
+pub fn parse_paragraph_runs(
+    paragraph_xml: &str,
+    context: &ParseContext<'_>,
+) -> Vec<ParagraphRunToken> {
     let run_ranges = extract_balanced_tag_ranges(paragraph_xml, "w:r");
     if run_ranges.is_empty() {
         return Vec::new();
     }
 
-    let hyperlink_ranges: Vec<_> = extract_balanced_tag_ranges(paragraph_xml, "w:hyperlink")
+    if !super::scan::contains_tag(paragraph_xml, "w:fldChar")
+        && !super::scan::contains_tag(paragraph_xml, "w:hyperlink")
+        && !super::scan::contains_tag(paragraph_xml, "w:fldSimple")
+    {
+        return run_ranges
+            .into_iter()
+            .map(|range| ParagraphRunToken {
+                xml: paragraph_xml[range.start..range.end].to_owned(),
+                start: range.start,
+                end: range.end,
+                link: None,
+                text_links: Vec::new(),
+            })
+            .collect();
+    }
+
+    let mut hyperlink_ranges: Vec<_> = extract_balanced_tag_ranges(paragraph_xml, "w:hyperlink")
         .into_iter()
         .map(|range| {
             let hyperlink_xml = &paragraph_xml[range.start..range.end];
@@ -205,9 +260,28 @@ pub fn parse_paragraph_runs(paragraph_xml: &str, context: &ParseContext<'_>) -> 
             (range, href)
         })
         .collect();
+    hyperlink_ranges.extend(
+        extract_balanced_tag_ranges(paragraph_xml, "w:fldSimple")
+            .into_iter()
+            .map(|range| {
+                let tag = super::scan::find_tag_token_ref(
+                    &paragraph_xml[range.start..range.end],
+                    "w:fldSimple",
+                )
+                .unwrap_or("");
+                let href = get_attribute(tag, "w:instr")
+                    .and_then(|instruction| hyperlink_href_from_field_instruction(&instruction));
+                (range, href)
+            }),
+    );
+    hyperlink_ranges.sort_by_key(|(range, _)| range.start);
 
-    let mut field_links_by_run: std::collections::HashMap<usize, String> = std::collections::HashMap::new();
-    let mut field_text_links_by_run: std::collections::HashMap<usize, Vec<(usize, Option<String>)>> = std::collections::HashMap::new();
+    let mut field_links_by_run: std::collections::HashMap<usize, String> =
+        std::collections::HashMap::new();
+    let mut field_text_links_by_run: std::collections::HashMap<
+        usize,
+        Vec<(usize, Option<String>)>,
+    > = std::collections::HashMap::new();
     #[derive(Default)]
     struct FieldState {
         instruction: String,
@@ -239,14 +313,21 @@ pub fn parse_paragraph_runs(paragraph_xml: &str, context: &ParseContext<'_>) -> 
                             field.separated = true;
                         }
                     }
-                    Some("end") => { fields.pop(); }
+                    Some("end") => {
+                        fields.pop();
+                    }
                     _ => {}
                 }
-                text_links.push((token.get(0).unwrap().end(), fields.iter().rev().find_map(|field| field.link.clone())));
+                text_links.push((
+                    token.get(0).unwrap().end(),
+                    fields.iter().rev().find_map(|field| field.link.clone()),
+                ));
             } else {
                 let link = fields.iter().rev().find_map(|field| field.link.clone());
                 if let Some(link) = link.as_ref() {
-                    field_links_by_run.entry(run_index).or_insert_with(|| link.clone());
+                    field_links_by_run
+                        .entry(run_index)
+                        .or_insert_with(|| link.clone());
                 }
             }
         }
@@ -271,8 +352,44 @@ pub fn parse_paragraph_runs(paragraph_xml: &str, context: &ParseContext<'_>) -> 
                     None
                 }
             });
-            let text_links = field_text_links_by_run.remove(&run_index).unwrap_or_default()
-                .into_iter().map(|(offset, link)| (offset, hyperlink_href.clone().or(link))).collect();
+            let field_links = field_text_links_by_run
+                .remove(&run_index)
+                .unwrap_or_default();
+            let overlapping: Vec<_> = hyperlink_ranges[hyperlink_range_cursor..]
+                .iter()
+                .take_while(|(hyperlink, _)| hyperlink.start < range.end)
+                .filter(|(hyperlink, _)| hyperlink.end > range.start)
+                .collect();
+            let mut offsets: Vec<_> = field_links.iter().map(|(offset, _)| *offset).collect();
+            for (hyperlink, _) in &overlapping {
+                offsets.push(hyperlink.start.saturating_sub(range.start));
+                if hyperlink.end < range.end {
+                    offsets.push(hyperlink.end - range.start);
+                }
+            }
+            offsets.sort_unstable();
+            offsets.dedup();
+            let text_links = offsets
+                .into_iter()
+                .map(|offset| {
+                    let position = range.start + offset;
+                    let href = overlapping
+                        .iter()
+                        .rev()
+                        .find(|(hyperlink, _)| {
+                            position >= hyperlink.start && position < hyperlink.end
+                        })
+                        .and_then(|(_, href)| href.clone())
+                        .or_else(|| {
+                            field_links
+                                .iter()
+                                .rev()
+                                .find(|(start, _)| *start <= offset)
+                                .and_then(|(_, href)| href.clone())
+                        });
+                    (offset, href)
+                })
+                .collect();
             let link = hyperlink_href.or_else(|| field_links_by_run.get(&run_index).cloned());
             ParagraphRunToken {
                 xml: paragraph_xml[range.start..range.end].to_string(),
@@ -333,9 +450,7 @@ pub fn parse_run_active_x_checkbox_field(
         return None;
     }
     let markup = decode_active_x_binary_markup(active_x_binary);
-    if !re::get(r#"(?i)input\s+type\s*=\s*"checkbox""#)
-        .is_some_and(|re| re.is_match(&markup))
-    {
+    if !re::get(r#"(?i)input\s+type\s*=\s*"checkbox""#).is_some_and(|re| re.is_match(&markup)) {
         return None;
     }
     let name = re::get(r#"(?i)\bname\s*=\s*"([^"]+)""#)
@@ -404,9 +519,12 @@ fn parse_legacy_form_field_from_range(
     } else {
         &[]
     };
-    let fallback_result_text = normalize_legacy_form_display_value(
-        Some(&result_runs.iter().map(|r| parse_run_text(&r.xml)).collect::<String>()),
-    );
+    let fallback_result_text = normalize_legacy_form_display_value(Some(
+        &result_runs
+            .iter()
+            .map(|r| parse_run_text(&r.xml))
+            .collect::<String>(),
+    ));
     let style_run_xml = result_runs
         .iter()
         .find(|run| {
@@ -448,7 +566,11 @@ fn parse_legacy_form_field_from_range(
     match field_type {
         FormFieldType::Checkbox => {
             let checkbox_xml = ff_data_xml
-                .and_then(|xml| extract_balanced_tag_blocks(xml, "w:checkBox").into_iter().next())
+                .and_then(|xml| {
+                    extract_balanced_tag_blocks(xml, "w:checkBox")
+                        .into_iter()
+                        .next()
+                })
                 .or_else(|| {
                     ff_data_xml.and_then(|xml| {
                         re::get(r"(?i)<w:checkBox\b[^>]*/?>")
@@ -477,9 +599,14 @@ fn parse_legacy_form_field_from_range(
                     .map(|m| m.as_str().to_string())
             });
             let default_checked = parse_on_off_tag_value(default_tag.as_deref(), &["w:val"]);
-            let checked = parse_on_off_tag_value(checked_tag.as_deref(), &["w:val"]).or(default_checked);
-            let size_value = size_tag.as_deref().and_then(|t| parse_integer_attribute(t, "w:val"));
-            let size_pt = size_value.filter(|v| *v > 0).map(|v| ((v as f64) / 2.0 * 100.0).round() / 100.0);
+            let checked =
+                parse_on_off_tag_value(checked_tag.as_deref(), &["w:val"]).or(default_checked);
+            let size_value = size_tag
+                .as_deref()
+                .and_then(|t| parse_integer_attribute(t, "w:val"));
+            let size_pt = size_value
+                .filter(|v| *v > 0)
+                .map(|v| ((v as f64) / 2.0 * 100.0).round() / 100.0);
             let size_mode = if size_auto_tag.is_some() {
                 Some(FormFieldCheckboxSizeMode::Auto)
             } else if size_pt.is_some() {
@@ -515,7 +642,11 @@ fn parse_legacy_form_field_from_range(
         }
         FormFieldType::Dropdown => {
             let dropdown_xml = ff_data_xml
-                .and_then(|xml| extract_balanced_tag_blocks(xml, "w:ddList").into_iter().next())
+                .and_then(|xml| {
+                    extract_balanced_tag_blocks(xml, "w:ddList")
+                        .into_iter()
+                        .next()
+                })
                 .or_else(|| {
                     ff_data_xml.and_then(|xml| {
                         re::get(r"(?i)<w:ddList\b[^>]*/?>")
@@ -558,8 +689,8 @@ fn parse_legacy_form_field_from_range(
                 .and_then(|tag| get_attribute(tag, "w:val"))
                 .as_deref()
                 .and_then(|value| decode_xml_attribute(Some(&value)))
-            .map(|v| v.trim().to_string())
-            .filter(|v| !v.is_empty());
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty());
             let dropdown_default_value = default_value.clone();
             if dropdown_default_value.is_some() {
                 widget_settings.dropdown = Some(FormFieldDropdownWidgetSettings {
@@ -579,7 +710,11 @@ fn parse_legacy_form_field_from_range(
                 placeholder: None,
                 checked: None,
                 value,
-                options: if options.is_empty() { None } else { Some(options) },
+                options: if options.is_empty() {
+                    None
+                } else {
+                    Some(options)
+                },
                 widget: Some(widget_settings),
                 checked_symbol: None,
                 unchecked_symbol: None,
@@ -590,7 +725,11 @@ fn parse_legacy_form_field_from_range(
         }
         FormFieldType::Text => {
             let text_input_xml = ff_data_xml
-                .and_then(|xml| extract_balanced_tag_blocks(xml, "w:textInput").into_iter().next())
+                .and_then(|xml| {
+                    extract_balanced_tag_blocks(xml, "w:textInput")
+                        .into_iter()
+                        .next()
+                })
                 .or_else(|| {
                     ff_data_xml.and_then(|xml| {
                         re::get(r"(?i)<w:textInput\b[^>]*/?>")
@@ -684,14 +823,10 @@ fn parse_legacy_paragraph_form_field_tokens(
         return Vec::new();
     }
     let mut tokens = Vec::new();
-    let mut stack: Vec<(
-        usize,
-        Option<usize>,
-        Vec<String>,
-        Option<String>,
-    )> = Vec::new();
+    let mut stack: Vec<(usize, Option<usize>, Vec<String>, Option<String>)> = Vec::new();
     let inline_token_pattern = re::get_unchecked(
-        r#"(?is)<w:fldChar\b[^>]*\bw:fldCharType="(begin|separate|end)"[^>]*>([\s\S]*?)</w:fldChar>|<w:fldChar\b[^>]*\bw:fldCharType="(begin|separate|end)"[^>]*/>|<w:instrText\b(?:[^>]*[^/>])?>([\s\S]*?)</w:instrText>"#,);
+        r#"(?is)<w:fldChar\b[^>]*\bw:fldCharType="(begin|separate|end)"[^>]*>([\s\S]*?)</w:fldChar>|<w:fldChar\b[^>]*\bw:fldCharType="(begin|separate|end)"[^>]*/>|<w:instrText\b(?:[^>]*[^/>])?>([\s\S]*?)</w:instrText>"#,
+    );
 
     for (run_index, run) in runs.iter().enumerate() {
         for caps in inline_token_pattern.captures_iter(&run.xml) {
@@ -817,21 +952,19 @@ fn parse_form_field_from_sdt_xml(
     let first_run_xml = extract_balanced_tag_blocks(&sdt_content_xml, "w:r")
         .into_iter()
         .next();
-    let style = first_run_xml
-        .as_deref()
-        .and_then(|xml| parse_run_style_in_table(xml, context, paragraph_style_id, table_run_style));
+    let style = first_run_xml.as_deref().and_then(|xml| {
+        parse_run_style_in_table(xml, context, paragraph_style_id, table_run_style)
+    });
     let content_text = parse_run_text(&sdt_content_xml);
     let trimmed_content_text = content_text.trim();
 
-    if re::get(r"(?i)<w14:checkbox\b")
-        .is_some_and(|re| re.is_match(&sdt_properties_xml))
-    {
+    if re::get(r"(?i)<w14:checkbox\b").is_some_and(|re| re.is_match(&sdt_properties_xml)) {
         let checked_tag = re::get(r"(?i)<w14:checked\b[^>]*/?>")
             .and_then(|re| re.find(&sdt_properties_xml))
             .map(|m| m.as_str().to_string());
-        let checked_value = checked_tag.as_deref().and_then(|tag| {
-            get_attribute(tag, "w14:val").or_else(|| get_attribute(tag, "w:val"))
-        });
+        let checked_value = checked_tag
+            .as_deref()
+            .and_then(|tag| get_attribute(tag, "w14:val").or_else(|| get_attribute(tag, "w:val")));
         let checked_state_tag = re::get(r"(?i)<w14:checkedState\b[^>]*/?>")
             .and_then(|re| re.find(&sdt_properties_xml))
             .map(|m| m.as_str().to_string());
@@ -906,7 +1039,9 @@ fn parse_form_field_from_sdt_xml(
                 };
                 options.push(FormFieldOption {
                     display_text: fallback_text,
-                    value: value.map(|v| v.trim().to_string()).filter(|v| !v.is_empty()),
+                    value: value
+                        .map(|v| v.trim().to_string())
+                        .filter(|v| !v.is_empty()),
                 });
             }
         }
@@ -917,8 +1052,8 @@ fn parse_form_field_from_sdt_xml(
             .as_deref()
             .and_then(|tag| get_attribute(tag, "w:val"))
             .and_then(|value| decode_xml_attribute(Some(&value)))
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty());
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty());
         let selected_value = if trimmed_content_text.is_empty() {
             last_value
         } else {
@@ -934,7 +1069,11 @@ fn parse_form_field_from_sdt_xml(
             placeholder,
             checked: None,
             value: selected_value,
-            options: if options.is_empty() { None } else { Some(options) },
+            options: if options.is_empty() {
+                None
+            } else {
+                Some(options)
+            },
             widget: None,
             checked_symbol: None,
             unchecked_symbol: None,
@@ -944,9 +1083,7 @@ fn parse_form_field_from_sdt_xml(
         });
     }
 
-    if re::get(r"(?i)<w:date\b")
-        .is_some_and(|re| re.is_match(&sdt_properties_xml))
-    {
+    if re::get(r"(?i)<w:date\b").is_some_and(|re| re.is_match(&sdt_properties_xml)) {
         let full_date_tag = re::get(r"(?i)<w:fullDate\b[^>]*/?>")
             .and_then(|re| re.find(&sdt_properties_xml))
             .map(|m| m.as_str().to_string());
@@ -954,8 +1091,8 @@ fn parse_form_field_from_sdt_xml(
             .as_deref()
             .and_then(|tag| get_attribute(tag, "w:val"))
             .and_then(|value| decode_xml_attribute(Some(&value)))
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty());
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty());
         let value = if trimmed_content_text.is_empty() {
             full_date
         } else {
@@ -981,9 +1118,7 @@ fn parse_form_field_from_sdt_xml(
         });
     }
 
-    if re::get(r"(?i)<w:(?:text|richText)\b")
-        .is_some_and(|re| re.is_match(&sdt_properties_xml))
-    {
+    if re::get(r"(?i)<w:(?:text|richText)\b").is_some_and(|re| re.is_match(&sdt_properties_xml)) {
         return Some(FormFieldRunNode {
             r#type: FormFieldRunNodeType::FormField,
             field_type: FormFieldType::Text,
@@ -1013,7 +1148,13 @@ pub fn parse_paragraph_form_field_tokens(
     paragraph_style_id: Option<&str>,
     runs: Option<&[ParagraphRunToken]>,
 ) -> Vec<ParagraphFormFieldToken> {
-    parse_paragraph_form_field_tokens_in_table(paragraph_xml, context, paragraph_style_id, runs, None)
+    parse_paragraph_form_field_tokens_in_table(
+        paragraph_xml,
+        context,
+        paragraph_style_id,
+        runs,
+        None,
+    )
 }
 
 fn parse_paragraph_form_field_tokens_in_table(
@@ -1023,18 +1164,36 @@ fn parse_paragraph_form_field_tokens_in_table(
     runs: Option<&[ParagraphRunToken]>,
     table_run_style: Option<&TextStyle>,
 ) -> Vec<ParagraphFormFieldToken> {
+    if !super::scan::contains_tag(paragraph_xml, "w:fldChar")
+        && !super::scan::contains_tag(paragraph_xml, "w:sdt")
+    {
+        return Vec::new();
+    }
     let paragraph_runs: Vec<ParagraphRunToken> = runs
         .map(|r| r.to_vec())
         .unwrap_or_else(|| parse_paragraph_runs(paragraph_xml, context));
-    let story_runs: Vec<_> = paragraph_runs.iter().map(|run| ParagraphRunToken {
-        xml: strip_text_box_content(&run.xml),
-        ..run.clone()
-    }).collect();
-    let legacy_tokens =
-        parse_legacy_paragraph_form_field_tokens(paragraph_xml, &story_runs, context, paragraph_style_id, table_run_style);
+    let story_runs: Vec<_> = paragraph_runs
+        .iter()
+        .map(|run| ParagraphRunToken {
+            xml: strip_text_box_content(&run.xml),
+            ..run.clone()
+        })
+        .collect();
+    let legacy_tokens = parse_legacy_paragraph_form_field_tokens(
+        paragraph_xml,
+        &story_runs,
+        context,
+        paragraph_style_id,
+        table_run_style,
+    );
     let text_box_ranges = extract_balanced_tag_ranges(paragraph_xml, "w:txbxContent");
-    let sdt_ranges: Vec<_> = extract_balanced_tag_ranges(paragraph_xml, "w:sdt").into_iter()
-        .filter(|range| !text_box_ranges.iter().any(|story| range.start >= story.start && range.end <= story.end))
+    let sdt_ranges: Vec<_> = extract_balanced_tag_ranges(paragraph_xml, "w:sdt")
+        .into_iter()
+        .filter(|range| {
+            !text_box_ranges
+                .iter()
+                .any(|story| range.start >= story.start && range.end <= story.end)
+        })
         .collect();
     if sdt_ranges.is_empty() {
         return legacy_tokens;
@@ -1063,7 +1222,13 @@ fn parse_paragraph_form_field_tokens_in_table(
                     && href.is_some()
             })
             .and_then(|(_, href)| href.clone());
-        if let Some(field) = parse_form_field_from_sdt_xml(sdt_xml, context, paragraph_style_id, table_run_style, link) {
+        if let Some(field) = parse_form_field_from_sdt_xml(
+            sdt_xml,
+            context,
+            paragraph_style_id,
+            table_run_style,
+            link,
+        ) {
             sdt_tokens.push(ParagraphFormFieldToken {
                 start: range.start,
                 end: range.end,
@@ -1102,7 +1267,12 @@ fn parse_paragraph_mark_run_style(
         effective_mark_run_properties_xml.replace_range(range.start..range.end, "");
     }
     let synthetic_mark_run_xml = format!("<w:r>{}</w:r>", effective_mark_run_properties_xml);
-    parse_run_style_in_table(&synthetic_mark_run_xml, context, paragraph_style_id, table_run_style)
+    parse_run_style_in_table(
+        &synthetic_mark_run_xml,
+        context,
+        paragraph_style_id,
+        table_run_style,
+    )
 }
 
 fn parse_paragraph_mark_formatting(
@@ -1123,9 +1293,9 @@ fn parse_paragraph_mark_formatting(
         .and_then(|tag| get_attribute(tag, "w:val"))
         .and_then(|id| context.style_sheet.run_style_by_id.get(&id).cloned());
     crate::model::ParagraphMarkFormattingSource {
-        default_style: super::util::merge_text_styles(&[
-            context.style_sheet.default_run_style.clone(),
-            table_run_style.cloned(),
+        default_style: super::util::merge_text_style_refs(&[
+            context.style_sheet.default_run_style.as_ref(),
+            table_run_style,
         ]),
         character_style,
         direct_style: super::style::parse_text_style_from_xml(
@@ -1159,7 +1329,9 @@ pub(crate) fn parse_paragraph_with_table_run_style(
     let paragraph_mark_style = parse_paragraph_mark_run_style(
         paragraph_xml,
         context,
-        paragraph_style.as_ref().and_then(|style| style.style_id.as_deref()),
+        paragraph_style
+            .as_ref()
+            .and_then(|style| style.style_id.as_deref()),
         table_run_style,
     );
     let paragraph_properties_xml = super::styles::direct_table_property(paragraph_xml, "w:pPr")
@@ -1188,9 +1360,18 @@ pub(crate) fn parse_paragraph_with_table_run_style(
     );
 
     enum ContentToken<'a> {
-        Run { start: usize, token: &'a ParagraphRunToken },
-        FormField { start: usize, token: &'a ParagraphFormFieldToken },
-        Math { start: usize, xml: &'a str },
+        Run {
+            start: usize,
+            token: &'a ParagraphRunToken,
+        },
+        FormField {
+            start: usize,
+            token: &'a ParagraphFormFieldToken,
+        },
+        Math {
+            start: usize,
+            xml: &'a str,
+        },
     }
 
     let mut content_tokens: Vec<ContentToken<'_>> = Vec::new();
@@ -1202,9 +1383,8 @@ pub(crate) fn parse_paragraph_with_table_run_style(
             form_field_token_cursor += 1;
         }
         let current_form_field_token = form_field_tokens.get(form_field_token_cursor);
-        let inside_form_field = current_form_field_token.is_some_and(|token| {
-            run.start >= token.start && run.end <= token.end
-        });
+        let inside_form_field = current_form_field_token
+            .is_some_and(|token| run.start >= token.start && run.end <= token.end);
         if inside_form_field {
             continue;
         }
@@ -1221,8 +1401,14 @@ pub(crate) fn parse_paragraph_with_table_run_style(
     }
     let text_box_ranges = extract_balanced_tag_ranges(paragraph_xml, "w:txbxContent");
     for range in extract_balanced_tag_ranges(paragraph_xml, "m:oMath") {
-        if !text_box_ranges.iter().any(|story| range.start >= story.start && range.end <= story.end) {
-            content_tokens.push(ContentToken::Math { start: range.start, xml: &paragraph_xml[range.start..range.end] });
+        if !text_box_ranges
+            .iter()
+            .any(|story| range.start >= story.start && range.end <= story.end)
+        {
+            content_tokens.push(ContentToken::Math {
+                start: range.start,
+                xml: &paragraph_xml[range.start..range.end],
+            });
         }
     }
     content_tokens.sort_by_key(|token| match token {
@@ -1236,7 +1422,11 @@ pub(crate) fn parse_paragraph_with_table_run_style(
             ContentToken::Math { xml, .. } => {
                 if let Some(math) = super::math::parse_math(xml) {
                     children.push(ParagraphChildNode::Image(math));
-                } else { context.push_warning("Unable to interpret an equation; source markup is preserved"); }
+                } else {
+                    context.push_warning(
+                        "Unable to interpret an equation; source markup is preserved",
+                    );
+                }
             }
             ContentToken::FormField { token, .. } => {
                 children.push(ParagraphChildNode::FormField(token.field.clone()));
@@ -1248,9 +1438,12 @@ pub(crate) fn parse_paragraph_with_table_run_style(
                     paragraph_style.as_ref().and_then(|s| s.style_id.as_deref()),
                     table_run_style,
                 );
-                if let Some(active_x_field) =
-                    parse_run_active_x_checkbox_field(&run.xml, context, style.clone(), run.link.clone())
-                {
+                if let Some(active_x_field) = parse_run_active_x_checkbox_field(
+                    &run.xml,
+                    context,
+                    style.clone(),
+                    run.link.clone(),
+                ) {
                     children.push(ParagraphChildNode::FormField(active_x_field));
                     continue;
                 }
@@ -1264,21 +1457,35 @@ pub(crate) fn parse_paragraph_with_table_run_style(
                     if token.text.is_empty() && token.note_reference.is_none() {
                         continue;
                     }
-                    ordered_children.push((token.source_start, ParagraphChildNode::Text(TextRunNode {
-                        r#type: TextRunNodeType::Text,
-                        text: token.text,
-                        style: style.clone(),
-                        link: run.text_links.iter().rev().find(|(offset, _)| *offset <= token.source_start)
-                            .and_then(|(_, link)| link.clone()),
-                        note_reference: token.note_reference,
-                    })));
+                    ordered_children.push((
+                        token.source_start,
+                        ParagraphChildNode::Text(TextRunNode {
+                            r#type: TextRunNodeType::Text,
+                            text: token.text,
+                            style: style.clone(),
+                            link: run
+                                .text_links
+                                .iter()
+                                .rev()
+                                .find(|(offset, _)| *offset <= token.source_start)
+                                .and_then(|(_, link)| link.clone()),
+                            note_reference: token.note_reference,
+                        }),
+                    ));
                 }
                 for (source_start, mut image) in images {
                     if let Some(xml) = image.source_xml.as_deref() {
                         let active_xml = prefer_alternate_content_choice(xml);
                         let text_boxes = extract_balanced_tag_blocks(&active_xml, "w:txbxContent");
                         if !text_boxes.is_empty() {
-                            image.content_nodes = Some(text_boxes.iter().flat_map(|xml| super::document::parse_document_xml(xml, context)).collect());
+                            image.content_nodes = Some(
+                                text_boxes
+                                    .iter()
+                                    .flat_map(|xml| {
+                                        super::document::parse_document_xml(xml, context)
+                                    })
+                                    .collect(),
+                            );
                             image.semantic_kind = Some("text_box".into());
                         }
                     }
@@ -1318,13 +1525,17 @@ pub(crate) fn parse_paragraph_with_table_run_style(
 
     ParagraphNode {
         r#type: ParagraphNodeType::Paragraph,
-                block_id: None,
+        block_id: None,
         style: paragraph_style,
         paragraph_mark_style: paragraph_mark_style.clone(),
         source_paragraph_mark_style: paragraph_mark_style,
         source_paragraph_mark_formatting: Some(source_paragraph_mark_formatting),
         source_paragraph_mark_properties_xml,
-        paragraph_mark_deleted: if paragraph_mark_deleted { Some(true) } else { None },
+        paragraph_mark_deleted: if paragraph_mark_deleted {
+            Some(true)
+        } else {
+            None
+        },
         children,
         source_xml: Some(paragraph_xml.to_string()),
         source_text_patch: None,

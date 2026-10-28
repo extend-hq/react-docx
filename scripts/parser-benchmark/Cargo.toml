@@ -1,0 +1,23 @@
+[package]
+name = "parser-benchmark"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+docx-core = { path = "../../crates/docx-core" }
+docx-rs = { version = "=0.4.22", default-features = false }
+office_oxide = "=0.1.15"
+undoc = { version = "=0.27.1", default-features = false, features = ["docx", "doc", "codepages"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+flate2 = "1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+debug = 1
+strip = false

@@ -13,7 +13,8 @@ serde.workspace = true
 serde_json.workspace = true
 serde_bytes.workspace = true
 miniz_oxide.workspace = true
-regex-lite = "0.1"
+regex = { version = "1", default-features = false, features = ["std", "perf", "unicode-case"] }
+quick-xml = "0.42"
 base64 = "0.22"
 roxmltree = "0.20"
 sha2 = "0.10"

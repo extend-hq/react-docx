@@ -333,26 +333,29 @@ impl Extractor {
             BlockType::Text
         };
         let mut content = String::new();
-        let mut inline = Vec::new();
+        let mut inline = Vec::with_capacity(p.children.len());
         let mut children = Vec::new();
+        let mut text_offset = 0;
         for (index, child) in p.children.iter().enumerate() {
-            let child_id = format!("{id}/child/{index}");
             match child {
                 ParagraphChildNode::Text(run) => {
-                    let start = content.encode_utf16().count();
+                    let start = text_offset;
+                    text_offset += run.text.encode_utf16().count();
                     content.push_str(&run.text);
-                    inline.push(json!({"type":"text", "start":start, "end":content.encode_utf16().count(), "text":run.text, "style":run.style, "link":run.link, "noteReference":run.note_reference}));
+                    inline.push(json!({"type":"text", "start":start, "end":text_offset, "text":run.text, "style":run.style, "link":run.link, "noteReference":run.note_reference}));
                 }
                 ParagraphChildNode::FormField(field) => {
+                    let child_id = format!("{id}/child/{index}");
                     let value = field.value.clone().unwrap_or_else(|| {
                         field
                             .checked
                             .map(|checked| if checked { "☒" } else { "☐" }.to_string())
                             .unwrap_or_default()
                     });
-                    let start = content.encode_utf16().count();
+                    let start = text_offset;
+                    text_offset += value.encode_utf16().count();
                     content.push_str(&value);
-                    inline.push(json!({"type":"form_field", "blockId":child_id, "start":start, "end":content.encode_utf16().count(), "text":value}));
+                    inline.push(json!({"type":"form_field", "blockId":child_id, "start":start, "end":text_offset, "text":value}));
                     children.push(self.block(
                         child_id,
                         BlockType::KeyValue,
@@ -363,6 +366,7 @@ impl Extractor {
                     ));
                 }
                 ParagraphChildNode::Image(image) => {
+                    let child_id = format!("{id}/child/{index}");
                     let kind = match image.semantic_kind.as_deref() {
                         Some("formula") => BlockType::Formula,
                         Some("watermark") => BlockType::Watermark,
@@ -370,7 +374,7 @@ impl Extractor {
                         _ => BlockType::Figure,
                     };
                     let image_id = image.block_id.as_deref().unwrap_or(&child_id);
-                    inline.push(json!({"type":"block", "blockId":image_id, "offset":content.encode_utf16().count()}));
+                    inline.push(json!({"type":"block", "blockId":image_id, "offset":text_offset}));
                     let nested = image
                         .content_nodes
                         .as_ref()
@@ -477,9 +481,10 @@ fn without_empty_blocks(blocks: Vec<DocumentBlock>, parent: Option<&str>) -> Vec
         .flat_map(|mut block| {
             block.children = without_empty_blocks(block.children, Some(&block.id));
             block.parent_block_id = parent.map(str::to_string);
-            let has_text = block.content.chars().any(|c| {
-                !c.is_whitespace() && !matches!(c, '\u{200b}' | '\u{feff}' | '\u{00ad}')
-            });
+            let has_text = block
+                .content
+                .chars()
+                .any(|c| !c.is_whitespace() && !matches!(c, '\u{200b}' | '\u{feff}' | '\u{00ad}'));
             let has_object = matches!(
                 block.r#type,
                 BlockType::Figure
