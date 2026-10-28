@@ -1,5 +1,11 @@
 # @extend-ai/react-docx
 
+## 0.12.1
+
+### Patch Changes
+
+- 4001188: Keep table row resize handles on the row borders of compact rows, so clicks in table cells place the caret instead of resizing the rows.
+
 ## 0.12.0
 
 ### Minor Changes
