@@ -668,3 +668,169 @@ test("extends the selection across paragraphs with Shift+ArrowUp/Down", async ({
   await page.keyboard.press("Shift+ArrowDown");
   await expect.poll(activeRange).toEqual([0, 0, 2, 0]);
 });
+
+test("clicking a compact table cell places the caret without resizing rows", async ({
+  page,
+}) => {
+  const run = (text: string) =>
+    `<w:r><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial"/><w:sz w:val="20"/></w:rPr><w:t xml:space="preserve">${text}</w:t></w:r>`;
+  const cell = (width: number, text: string) =>
+    `<w:tc><w:tcPr><w:tcW w:w="${width}" w:type="dxa"/></w:tcPr><w:p><w:pPr><w:jc w:val="both"/></w:pPr>${run(
+      text
+    )}</w:p></w:tc>`;
+  const row = (label: string, value: string) =>
+    `<w:tr>${cell(2800, label)}${cell(6200, value)}</w:tr>`;
+  const border = (side: string) =>
+    `<w:${side} w:val="single" w:sz="4" w:space="0" w:color="000000"/>`;
+  const table = `<w:tbl><w:tblPr><w:tblW w:w="9000" w:type="dxa"/><w:tblBorders>${[
+    "top",
+    "left",
+    "bottom",
+    "right",
+    "insideH",
+    "insideV",
+  ]
+    .map(border)
+    .join(
+      ""
+    )}</w:tblBorders></w:tblPr><w:tblGrid><w:gridCol w:w="2800"/><w:gridCol w:w="6200"/></w:tblGrid>${row(
+    "Process",
+    "1/2026"
+  )}${row("Method", "Electronic auction")}${row(
+    "Subject",
+    "Purchase of notebooks for the computer labs of the municipal schools and the libraries."
+  )}${row("Agency", "Education")}</w:tbl>`;
+  const xml = DOCUMENT_XML.replace(
+    /<w:p>[\s\S]*?<w:sectPr>/,
+    `<w:p>${run("Paragraph above the table")}</w:p>${table}<w:sectPr>`
+  );
+  await page.goto("/");
+  await page.locator('input[type="file"][accept*=".doc"]').setInputFiles({
+    name: "compact-table.docx",
+    mimeType:
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    buffer: Buffer.from(
+      createZip([
+        { name: "[Content_Types].xml", content: CONTENT_TYPES_XML },
+        { name: "_rels/.rels", content: ROOT_RELATIONSHIPS_XML },
+        { name: "word/document.xml", content: xml },
+      ])
+    ),
+  });
+
+  const subject = page
+    .locator("[data-docx-page-index] td span", { hasText: /^Purchase/ })
+    .first();
+  await expect(subject).toBeVisible({ timeout: 20_000 });
+  const rowHeights = () =>
+    page.evaluate(() =>
+      Array.from(document.querySelectorAll("[data-docx-page-index] tr")).map(
+        (row) => Math.round(row.getBoundingClientRect().height)
+      )
+    );
+
+  // The first click activates the table and shows its resize handles.
+  await subject.click();
+  const editingCell = page
+    .locator("[data-docx-cell-key][contenteditable='true']")
+    .filter({ hasText: /^Purchase/ });
+  await expect(editingCell).toBeVisible();
+  const heightsBefore = await rowHeights();
+  expect(heightsBefore[0]).toBeLessThan(24);
+
+  // A second click at the end of the wrapped cell's last line lands near the
+  // row border, where a row resize handle can be.
+  const clickLineEnd = async () => {
+    const lineEnd = await editingCell.evaluate((element) => {
+      const range = document.createRange();
+      range.selectNodeContents(element);
+      const lines = Array.from(range.getClientRects()).filter(
+        (rect) => rect.width > 0
+      );
+      const last = lines[lines.length - 1];
+      return { x: last.right - 1, y: last.top + last.height / 2 };
+    });
+    await page.mouse.click(lineEnd.x, lineEnd.y);
+  };
+  await clickLineEnd();
+  await page.keyboard.type(" X");
+
+  await expect(editingCell).toHaveText(
+    "Purchase of notebooks for the computer labs of the municipal schools and the libraries. X"
+  );
+  expect(await rowHeights()).toEqual(heightsBefore);
+
+  const firstRow = await page
+    .locator("[data-docx-page-index] tr")
+    .first()
+    .boundingBox();
+  if (!firstRow) {
+    throw new Error("Expected the first table row to be rendered");
+  }
+  const borderY = firstRow.y + firstRow.height;
+  // Hover a row border until its resize handle is under the pointer.
+  const hoverRowBorder = async (x: number, y: number) => {
+    await page.mouse.move(x, y);
+    await expect
+      .poll(() =>
+        page.evaluate(
+          (point) => {
+            const element = document.elementFromPoint(point.x, point.y);
+            return element ? getComputedStyle(element).cursor : null;
+          },
+          { x, y }
+        )
+      )
+      .toBe("row-resize");
+  };
+
+  // A click on the row border without dragging leaves the rows as they are,
+  // and doesn't pin their current heights: the wrapped row still shrinks when
+  // its text gets shorter.
+  await hoverRowBorder(firstRow.x + 40, borderY);
+  await page.mouse.down();
+  await page.mouse.up();
+  expect(await rowHeights()).toEqual(heightsBefore);
+  await clickLineEnd();
+  await page.keyboard.type(" Y");
+  for (let index = 0; index < 60; index += 1) {
+    await page.keyboard.press("Backspace");
+  }
+  await expect(editingCell).toHaveText("Purchase of notebooks for the c");
+  await expect.poll(async () => (await rowHeights())[2]).toBe(heightsBefore[0]);
+  const heightsAfterEdit = await rowHeights();
+
+  // Dragging the border under a short row up doesn't grow it.
+  const secondRow = await page
+    .locator("[data-docx-page-index] tr")
+    .nth(1)
+    .boundingBox();
+  if (!secondRow) {
+    throw new Error("Expected the second table row to be rendered");
+  }
+  const secondBorderY = secondRow.y + secondRow.height;
+  await hoverRowBorder(secondRow.x + 40, secondBorderY);
+  await page.mouse.down();
+  await page.mouse.move(secondRow.x + 40, secondBorderY - 3);
+  await page.mouse.move(secondRow.x + 40, secondBorderY - 6);
+  await page.mouse.up();
+  // Let the committed heights render before measuring.
+  await page.evaluate(
+    () =>
+      new Promise((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(resolve))
+      )
+  );
+  expect((await rowHeights())[1]).toBe(heightsAfterEdit[1]);
+
+  // Dragging the border under the first row resizes that row and only it.
+  await hoverRowBorder(firstRow.x + 40, borderY);
+  await page.mouse.down();
+  await page.mouse.move(firstRow.x + 40, borderY + 10);
+  await page.mouse.move(firstRow.x + 40, borderY + 20);
+  await page.mouse.up();
+  await expect
+    .poll(async () => (await rowHeights())[0])
+    .toBeGreaterThanOrEqual(heightsBefore[0] + 15);
+  expect((await rowHeights()).slice(1)).toEqual(heightsAfterEdit.slice(1));
+});
