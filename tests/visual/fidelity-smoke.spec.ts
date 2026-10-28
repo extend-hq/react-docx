@@ -834,3 +834,82 @@ test("clicking a compact table cell places the caret without resizing rows", asy
     .toBeGreaterThanOrEqual(heightsBefore[0] + 15);
   expect((await rowHeights()).slice(1)).toEqual(heightsAfterEdit.slice(1));
 });
+
+test("keeps row handles on rendered borders in a virtualized large table document", async ({ page }) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "webdriver", { get: () => false });
+  });
+  const cell = (text: string, merge?: string) =>
+    `<w:tc><w:tcPr><w:tcW w:w="800" w:type="dxa"/>${merge === undefined ? "" : `<w:vMerge w:val="${merge}"/>`}</w:tcPr><w:p><w:pPr><w:spacing w:before="0" w:after="0"/></w:pPr><w:r><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial"/><w:sz w:val="20"/></w:rPr>${text.split("\n").map(line => `<w:t>${line}</w:t>`).join("<w:br/>")}</w:r></w:p></w:tc>`;
+  const table = (rows: string[], columns: number) =>
+    `<w:tbl><w:tblPr><w:tblLayout w:type="fixed"/><w:tblBorders>${["top", "left", "bottom", "right", "insideH", "insideV"].map(side => `<w:${side} w:val="single" w:sz="4"/>`).join("")}</w:tblBorders></w:tblPr><w:tblGrid>${'<w:gridCol w:w="800"/>'.repeat(columns)}</w:tblGrid>${rows.join("")}</w:tbl>`;
+  const headers = Array.from({ length: 3 }, (_, row) =>
+    `<w:tr><w:trPr><w:tblHeader/></w:trPr>${Array.from({ length: 11 }, (_, column) =>
+      cell(column < 2 && row > 0 ? "" : `H${row + 1}.${column + 1}`, column < 2 ? row === 0 ? "restart" : "continue" : undefined)
+    ).join("")}</w:tr>`
+  );
+  const body = Array.from({ length: 5 }, (_, row) =>
+    `<w:tr>${Array.from({ length: 11 }, (_, column) =>
+      cell(column === 2 ? `Row ${row + 1}\nTwo\nThree\nFour` : `${row + 1}.${column + 1}`)
+    ).join("")}</w:tr>`
+  );
+  const extra = Array.from({ length: 44 }, (_, row) =>
+    `<w:tr>${Array.from({ length: 4 }, (_, column) => cell(`${row + 1}.${column + 1}`)).join("")}</w:tr>`
+  );
+  const xml = DOCUMENT_XML.replace(/<w:p>[\s\S]*?<w:sectPr>/,
+    `${table([...headers, ...body], 11)}<w:p><w:r><w:br w:type="page"/></w:r></w:p>${table(extra, 4)}<w:sectPr>`);
+  await page.goto("/");
+  await page.locator('input[type="file"][accept*=".doc"]').setInputFiles({
+    name: "large-tables.docx",
+    mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    buffer: Buffer.from(createZip([
+      { name: "[Content_Types].xml", content: CONTENT_TYPES_XML },
+      { name: "_rels/.rels", content: ROOT_RELATIONSHIPS_XML },
+      { name: "word/document.xml", content: xml },
+    ])),
+  });
+  const target = page.locator("[data-docx-page-index] table").filter({ hasText: "Row 1" }).first();
+  await expect(target).toBeVisible({ timeout: 20_000 });
+  await target.getByText("Row 1", { exact: true }).click();
+  const geometry = () => target.evaluate(table => {
+    const rows = Array.from((table as HTMLTableElement).rows, row => {
+      const rect = row.getBoundingClientRect();
+      return { bottom: rect.bottom, height: rect.height };
+    });
+    const handles = Array.from(table.parentElement!.querySelectorAll<HTMLElement>("[data-docx-row-resize-handle]"), handle => {
+      const rect = handle.getBoundingClientRect();
+      return { x: rect.left + 20, y: rect.top + rect.height / 2 };
+    });
+    return { rows, handles, errors: handles.map((handle, index) => Math.abs(handle.y - rows[index]!.bottom)) };
+  });
+  const expectAligned = async () => {
+    await expect.poll(async () => (await geometry()).handles.length).toBe(7);
+    await expect.poll(async () => Math.max(...(await geometry()).errors)).toBeLessThan(0.75);
+  };
+  await expectAligned();
+  const box = (await target.boundingBox())!;
+  await page.mouse.move(box.x + 20, box.y + 96.5);
+  expect(await page.evaluate(({ x, y }) => getComputedStyle(document.elementFromPoint(x, y)!).cursor,
+    { x: box.x + 20, y: box.y + 96.5 })).not.toBe("row-resize");
+
+  const beforeEdit = await geometry();
+  await target.locator("td").filter({ hasText: "Row 2" }).click();
+  const editingCell = target.getByRole("textbox", { name: "Wrapped paragraph text" });
+  await editingCell.fill("Expanded content that wraps across many additional lines in this narrow table column.");
+  await expect.poll(async () => (await geometry()).rows[4]!.height).toBeGreaterThan(beforeEdit.rows[4]!.height + 20);
+  await expectAligned();
+
+  await page.getByRole("combobox", { name: "Zoom", exact: true }).click();
+  await page.getByRole("option", { name: "125%", exact: true }).click();
+  await expect(page.locator("[data-docx-editor-root]")).toHaveAttribute("data-docx-resolved-zoom", "125");
+  await expectAligned();
+  const beforeDrag = await geometry();
+  const handle = beforeDrag.handles[3]!;
+  await page.mouse.move(handle.x, handle.y);
+  await page.mouse.down();
+  await page.mouse.move(handle.x, handle.y + 24, { steps: 3 });
+  await page.mouse.up();
+  await expect.poll(async () => (await geometry()).rows[3]!.height).toBeGreaterThan(beforeDrag.rows[3]!.height + 20);
+  expect((await geometry()).rows[3]!.height).toBeLessThan(beforeDrag.rows[3]!.height + 28);
+  await expectAligned();
+});

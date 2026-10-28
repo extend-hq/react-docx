@@ -1,6 +1,7 @@
 import { mathContent } from "./math-content";
 import { createClippedBodyRectReader } from "./body-measurement";
 import { tableRowHasWholeMergeGeometry } from "./table-row-measurement";
+import { TableRowHandles } from "./table-row-handles";
 import { bodyAutomaticParagraphSpacingPx } from "./paragraph-auto-spacing";
 import * as React from "react";
 import type { Properties as CssProperties } from "csstype";
@@ -51301,6 +51302,7 @@ export function DocxEditorViewer({
       // 24px as before, or the row's own height when it is already shorter:
       // dragging a 16px row up must not grow it to 24px.
       const minimumHeightPx = Math.min(24, topStart);
+      const scale = resolveViewerMeasurementZoomScale(event.currentTarget);
       const startY = event.clientY;
       let latestHeights = startingHeights;
       let frameId: number | undefined;
@@ -51315,7 +51317,7 @@ export function DocxEditorViewer({
       };
 
       const onPointerMove = (pointerEvent: PointerEvent): void => {
-        const deltaPx = pointerEvent.clientY - startY;
+        const deltaPx = (pointerEvent.clientY - startY) / scale;
         const nextTop = Math.max(
           minimumHeightPx,
           Math.round(topStart + deltaPx)
@@ -51364,7 +51366,7 @@ export function DocxEditorViewer({
       window.addEventListener("pointerup", onPointerUp, { once: true });
       window.addEventListener("pointercancel", onPointerUp, { once: true });
     },
-    [isReadOnly]
+    [isReadOnly, resolveViewerMeasurementZoomScale]
   );
 
   const beginEmbeddedTableColumnResize = React.useCallback(
@@ -60016,28 +60018,7 @@ export function DocxEditorViewer({
                     : 24
                 )
               : normalizedRowHeightsPx;
-          // The row resize handles use the measured heights as they are, so
-          // they sit on the row borders: single-line rows at Word metrics are
-          // shorter than 24px. Rows of 24px or more get the same positions.
-          const rowHandleHeightsPx =
-            measuredRowHeightsPx &&
-            measuredRowHeightsPx.length === node.rows.length
-              ? measuredRowHeightsPx.map((value) =>
-                  Number.isFinite(value) && (value as number) > 0
-                    ? (value as number)
-                    : 24
-                )
-              : normalizedRowHeightsPx;
-          const tableRowBoundaryOffsetsPx = rowHandleHeightsPx.reduce(
-            (offsets: number[], rowHeightPx: number) => {
-              const previous = offsets[offsets.length - 1] ?? 0;
-              offsets.push(previous + rowHeightPx);
-              return offsets;
-            },
-            [] as number[]
-          );
           const maxBoundaryColumnIndex = Math.max(0, effectiveColumnCount - 2);
-          const maxBoundaryRowIndex = Math.max(0, node.rows.length - 2);
           const showTableMoveHandle =
             showTableHandles && tableRowStartIndex === 0;
           const tableMoveHandleToneStyle: React.CSSProperties =
@@ -62359,16 +62340,13 @@ export function DocxEditorViewer({
                       );
                     })
                 : null}
-              {showTableHandles && !isSplitTableSegment && node.rows.length > 1
-                ? rowHeightsPx
-                    .slice(0, maxBoundaryRowIndex + 1)
-                    .map((_, boundaryRowIndex) => {
-                      if (boundaryRowIndex > maxBoundaryRowIndex) {
-                        return null;
-                      }
-
-                      const topPx =
-                        tableRowBoundaryOffsetsPx[boundaryRowIndex] ?? 0;
+              {showTableHandles && !isSplitTableSegment && node.rows.length > 1 ? (
+                <TableRowHandles
+                  rowCount={node.rows.length}
+                  resolveZoomScale={resolveViewerMeasurementZoomScale}
+                >
+                  {({ heightsPx: rowHandleHeightsPx, bottomsPx }) =>
+                    bottomsPx.slice(0, -1).map((topPx, boundaryRowIndex) => {
                       const isResizing =
                         isRowHandleActive &&
                         activeRowResize?.boundaryRowIndex === boundaryRowIndex;
@@ -62400,14 +62378,13 @@ export function DocxEditorViewer({
                         <span
                           key={`row-border-${nodeIndex}-${boundaryRowIndex}`}
                           contentEditable={false}
+                          data-docx-row-resize-handle={boundaryRowIndex}
                           style={{
                             position: "absolute",
                             left: 0,
                             width: `${resolvedTableWidthPx}px`,
                             top: `${
-                              topPx -
-                              hitSizePx / 2 +
-                              TABLE_RESIZE_HANDLE_ALIGNMENT_OFFSET_PX
+                              topPx - hitSizePx / 2
                             }px`,
                             height: hitSizePx,
                             cursor: "row-resize",
@@ -62485,14 +62462,13 @@ export function DocxEditorViewer({
                               event.currentTarget.parentElement?.querySelector(
                                 "table"
                               );
+                            const scale = resolveViewerMeasurementZoomScale(event.currentTarget);
                             const measuredRows = tableElement
-                              ? Array.from(
-                                  tableElement.querySelectorAll("tbody > tr")
-                                ).map((rowElement) =>
+                              ? Array.from(tableElement.rows).map((rowElement) =>
                                   normalizeMeasuredTableRowHeightPx(
                                     (
                                       rowElement as HTMLTableRowElement
-                                    ).getBoundingClientRect().height
+                                    ).getBoundingClientRect().height / scale
                                   )
                                 )
                               : [];
@@ -62526,7 +62502,9 @@ export function DocxEditorViewer({
                         </span>
                       );
                     })
-                : null}
+                  }
+                </TableRowHandles>
+              ) : null}
               {showTableHandles && !isSplitTableSegment ? (
                 <span
                   contentEditable={false}
