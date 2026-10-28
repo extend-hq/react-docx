@@ -1,5 +1,7 @@
 # react-docx
 
+[![npm version](https://img.shields.io/npm/v/%40extend-ai%2Freact-docx)](https://www.npmjs.com/package/@extend-ai/react-docx)
+
 `react-docx` is a DOCX viewer and editor for JavaScript and React applications, built as a monorepo.
 
 The main package is [`@extend-ai/react-docx`](./packages/react-viewer), which gives you:
