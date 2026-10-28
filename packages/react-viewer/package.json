@@ -1,6 +1,6 @@
 {
   "name": "@extend-ai/react-docx",
-  "version": "0.12.1",
+  "version": "0.12.2",
   "description": "JavaScript and React viewers for DOCX documents",
   "license": "MIT",
   "type": "module",
