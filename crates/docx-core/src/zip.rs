@@ -42,6 +42,7 @@ struct ZipEntry {
     name: String,
     compression_method: u16,
     compressed_size: u32,
+    uncompressed_size: u32,
     local_header_offset: u32,
 }
 
@@ -108,6 +109,7 @@ fn parse_central_directory(bytes: &[u8]) -> Result<Vec<ZipEntry>, String> {
 
         let compression_method = read_u16_le(bytes, cursor + 10);
         let compressed_size = read_u32_le(bytes, cursor + 20);
+        let uncompressed_size = read_u32_le(bytes, cursor + 24);
         let file_name_length = read_u16_le(bytes, cursor + 28) as usize;
         let extra_field_length = read_u16_le(bytes, cursor + 30) as usize;
         let file_comment_length = read_u16_le(bytes, cursor + 32) as usize;
@@ -127,6 +129,7 @@ fn parse_central_directory(bytes: &[u8]) -> Result<Vec<ZipEntry>, String> {
             name,
             compression_method,
             compressed_size,
+            uncompressed_size,
             local_header_offset,
         });
 
@@ -170,6 +173,22 @@ fn extract_entry_data(bytes: &[u8], entry: &ZipEntry) -> Result<Vec<u8>, String>
     }
 
     if entry.compression_method == DEFLATE_COMPRESSION {
+        let expected = entry.uncompressed_size as usize;
+        if expected <= 64 * 1024 * 1024
+            && expected <= compressed_data.len().saturating_mul(512).max(1024 * 1024)
+        {
+            let mut output = vec![0; expected];
+            let (decoded, status) = zlib_rs::decompress_slice(
+                &mut output,
+                compressed_data,
+                zlib_rs::InflateConfig { window_bits: -15 },
+            );
+            if status == zlib_rs::ReturnCode::Ok {
+                let length = decoded.len();
+                output.truncate(length);
+                return Ok(output);
+            }
+        }
         return inflate_raw(compressed_data);
     }
 

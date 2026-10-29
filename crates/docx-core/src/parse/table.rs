@@ -192,7 +192,7 @@ pub fn parse_table(
     table_xml: &str,
     context: &crate::parse::context::ParseContext<'_>,
 ) -> TableNode {
-    let table_properties_xml = direct_table_property(table_xml, "w:tblPr").map(str::to_string);
+    let table_properties_xml = direct_table_property(table_xml, "w:tblPr");
     let table_style_id = table_properties_xml
         .as_deref()
         .and_then(|xml| direct_table_property(xml, "w:tblStyle"))
@@ -243,7 +243,7 @@ pub fn parse_table(
         parse_table_look(table_properties_xml.as_deref()),
         style_table_look.as_ref(),
     );
-    let row_blocks: Vec<_> = extract_balanced_tag_blocks(table_xml, "w:tr")
+    let row_blocks: Vec<_> = crate::xml::extract_balanced_tag_slices(table_xml, "w:tr")
         .into_iter()
         .filter(|row| direct_table_property(row, "w:trPr")
             .and_then(|properties| direct_table_property(properties, "w:del"))
@@ -251,7 +251,7 @@ pub fn parse_table(
         .collect();
     let source_grid_bound = table_grid_xml.map(|_| column_widths_twips.len() as i64)
         .unwrap_or_else(|| row_blocks.iter().map(|row| {
-            extract_balanced_tag_blocks(row, "w:tc").iter().fold(0i64, |total, cell| {
+            crate::xml::extract_balanced_tag_slices(row, "w:tc").iter().fold(0i64, |total, cell| {
                 let span = direct_table_property(cell, "w:tcPr")
                     .and_then(|xml| direct_table_property(xml, "w:gridSpan"))
                     .and_then(|tag| parse_integer_attribute(tag, "w:val")).unwrap_or(1).max(1);
@@ -259,7 +259,7 @@ pub fn parse_table(
             })
         }).max().unwrap_or(0));
     let mut rows: Vec<TableRowNode> = Vec::new();
-    let mut cell_sources_by_row: Vec<Vec<String>> = Vec::new();
+    let mut cell_sources_by_row: Vec<Vec<&str>> = Vec::new();
     #[derive(Clone, Copy)]
     struct VerticalMergeAnchor {
         row_index: usize,
@@ -267,7 +267,7 @@ pub fn parse_table(
     }
     let mut active_vertical_merge_by_column: HashMap<i64, VerticalMergeAnchor> = HashMap::new();
     for row_xml in row_blocks {
-        let row_properties_xml = direct_table_property(&row_xml, "w:trPr").map(str::to_string);
+        let row_properties_xml = direct_table_property(row_xml, "w:trPr");
         let grid_before = row_properties_xml.as_deref()
             .and_then(|xml| direct_table_property(xml, "w:gridBefore"))
             .and_then(|tag| parse_integer_attribute(tag, "w:val")).filter(|value| *value >= 0);
@@ -306,7 +306,7 @@ pub fn parse_table(
         let row_is_header = row_properties_xml
             .as_deref()
             .and_then(|xml| parse_on_off_attribute(xml, "tblHeader"));
-        let cell_sources = extract_balanced_tag_blocks(&row_xml, "w:tc");
+        let cell_sources = crate::xml::extract_balanced_tag_slices(row_xml, "w:tc");
         let parsed_cells: Vec<ParsedTableCellResult> = cell_sources
             .iter()
             .map(|cell_xml| parse_table_cell_geometry(cell_xml))

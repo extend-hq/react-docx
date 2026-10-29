@@ -13,9 +13,9 @@ serde_json = "1"
 serde_bytes = "0.11"
 miniz_oxide = "0.8"
 
-# Size-optimized release profile: the wasm binary ships inside the npm package.
+# Optimize the shared parser for throughput in release builds.
 [profile.release]
-opt-level = "z"
+opt-level = 3
 lto = true
 codegen-units = 1
 strip = true

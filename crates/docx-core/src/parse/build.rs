@@ -11,21 +11,23 @@ use super::metadata::{
     parse_document_compatibility_settings, parse_document_default_tab_stop_twips,
     parse_document_page_count_from_app_properties,
 };
-use super::numbering::parse_numbering_definitions;
+use super::numbering::parse_numbering_with_assets;
 use super::relationships::parse_part_relationships;
 use super::sections::{
     parse_document_comments, parse_document_notes_from_part, parse_document_sections,
     parse_footer_sections, parse_header_sections,
 };
 use super::styles::{
-    clone_numbering_definitions, clone_paragraph_style_definition, parse_style_sheet,
+    parse_document_style_sheet,
 };
 
 pub fn build_doc_model(pkg: &OoxmlPackage) -> DocModel {
     let _style_cache = super::style::run_style_cache_scope();
+    let binary_assets = &pkg.binary_assets;
     let document_id = crate::structured::package_identity(pkg);
-    let normalized = super::namespaces::normalized_package(pkg);
+    let (normalized, indexes) = super::namespaces::normalized_package(pkg);
     let pkg = &normalized;
+    let _xml_index = crate::xml_index::scope(pkg.parts.values().map(|part| (part.name.as_str(), part.content.as_str())), indexes);
     let mut warnings = pkg.warnings.clone();
     warnings.extend(
         crate::source_graph::preserved_features(pkg)
@@ -61,43 +63,33 @@ pub fn build_doc_model(pkg: &OoxmlPackage) -> DocModel {
     let default_tab_stop_twips = parse_document_default_tab_stop_twips(pkg);
     let section_properties_xml = extract_section_properties_xml(resolved_document_xml);
     let content_types = parse_content_types(pkg);
-    let style_sheet = parse_style_sheet(pkg);
-    let numbering_definitions = parse_numbering_definitions(pkg, &content_types);
+    let style_sheet = parse_document_style_sheet(pkg);
+    let numbering_definitions = parse_numbering_with_assets(pkg, &content_types, binary_assets);
     let document_relationships = parse_part_relationships(pkg, &main_part);
 
-    let context = ParseContext {
-        relationships: document_relationships.clone(),
-        content_types: content_types.clone(),
-        parts: &pkg.parts,
-        binary_assets: &pkg.binary_assets,
-        style_sheet: style_sheet.clone(),
-        warnings: RefCell::new(Vec::new()),
-    };
 
+    let mut part_cache = super::sections::PartNodeCache::new(pkg, &content_types, &style_sheet, binary_assets);
     let header_sections = parse_header_sections(
         pkg,
         resolved_document_xml,
         &document_relationships,
-        &content_types,
-        &style_sheet,
         &mut warnings,
+        &mut part_cache,
     );
     let footer_sections = parse_footer_sections(
         pkg,
         resolved_document_xml,
         &document_relationships,
-        &content_types,
-        &style_sheet,
         &mut warnings,
+        &mut part_cache,
     );
     let sections = parse_document_sections(
-        pkg,
         resolved_document_xml,
         &document_relationships,
-        &content_types,
-        &style_sheet,
         &mut warnings,
+        &mut part_cache,
     );
+    drop(part_cache);
     let footnotes = parse_document_notes_from_part(
         pkg,
         &crate::package::related_document_part_name(pkg, "footnotes"),
@@ -105,6 +97,7 @@ pub fn build_doc_model(pkg: &OoxmlPackage) -> DocModel {
         &content_types,
         &style_sheet,
         &mut warnings,
+        binary_assets,
     );
     let endnotes = parse_document_notes_from_part(
         pkg,
@@ -113,11 +106,22 @@ pub fn build_doc_model(pkg: &OoxmlPackage) -> DocModel {
         &content_types,
         &style_sheet,
         &mut warnings,
+        binary_assets,
     );
-    let comments = parse_document_comments(pkg, &content_types, &style_sheet);
+    let comments = parse_document_comments(pkg, &content_types, &style_sheet, binary_assets);
+
+    let context = ParseContext {
+        relationships: document_relationships.clone(),
+        content_types: content_types.clone(),
+        parts: &pkg.parts,
+        binary_assets,
+        style_sheet,
+        warnings: RefCell::new(Vec::new()),
+    };
 
     let nodes = parse_document_xml(resolved_document_xml, &context);
     warnings.extend(context.warnings.borrow().iter().cloned());
+    let style_sheet = context.style_sheet;
 
     let mut model = DocModel {
         nodes,
@@ -133,12 +137,8 @@ pub fn build_doc_model(pkg: &OoxmlPackage) -> DocModel {
             sections: Some(sections),
             header_sections,
             footer_sections,
-            paragraph_styles: style_sheet
-                .paragraph_styles
-                .iter()
-                .map(clone_paragraph_style_definition)
-                .collect(),
-            default_paragraph_style_id: style_sheet.default_paragraph_style_id.clone(),
+            paragraph_styles: style_sheet.paragraph_styles,
+            default_paragraph_style_id: style_sheet.default_paragraph_style_id,
             default_tab_stop_twips,
             document_settings_imported: crate::package::related_document_part(pkg, "settings")
                 .is_some()
@@ -148,10 +148,8 @@ pub fn build_doc_model(pkg: &OoxmlPackage) -> DocModel {
             )
             .is_some()
             .then_some(true),
-            numbering_definitions: numbering_definitions
-                .as_ref()
-                .map(clone_numbering_definitions),
-            compatibility: compatibility.clone(),
+            numbering_definitions,
+            compatibility,
             footnotes: clone_notes_if_non_empty(footnotes),
             endnotes: clone_notes_if_non_empty(endnotes),
             comments: if comments.is_empty() {

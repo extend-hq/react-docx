@@ -1,6 +1,6 @@
 # Parser benchmark and optimization harness
 
-The standalone Cargo workspace pins docx-rs 0.4.22, office_oxide 0.1.15, and undoc 0.27.1. It links the local docx-core. Release measurements use opt-level 3, thin LTO, and one codegen unit for every parser. The production WASM build retains the repository's size-oriented profile.
+The standalone Cargo workspace pins docx-rs 0.4.22, office_oxide 0.1.15, and undoc 0.27.1. It links the local docx-core. Release measurements use opt-level 3, thin LTO, and one codegen unit for every parser. The production WASM build uses opt-level 3 and wasm-opt -O3; record its compressed size alongside speed.
 
 Install Python dependencies from `requirements.txt` into `.python-deps`, then build with `cargo build --release --manifest-path scripts/parser-benchmark/Cargo.toml`. Run commands from the repository root. Generated results and binary snapshots belong under `output/`.
 
@@ -28,6 +28,8 @@ Run timing commands sequentially after builds, accuracy checks, and other owned 
 The main harness takes `ENGINE INPUT FORMAT OUTPUT_PREFIX REPEATS [compact]`. Output prefix `-` disables serialization. `compact` reduces only the saved diagnostic JSON after a complete production parse; it does not change timed work. Core builds both its complete model and structured blocks; the other engines expose their corresponding native models or IR. docx-rs image previews are disabled. These outputs have different fidelity and coverage.
 
 The parity audit compares all model fields against original saved native output, except source XML serialization and binary image payload contents. Image presence is retained; style definitions are aligned by ID. Other arrays remain ordered. The WASM benchmark measures complete model construction and the JS bridge, with file reads, module initialization, and explicit GC outside warm timings. It does not measure layout or structured-block extraction.
+
+For parser rewrites, use `strict_parity.py` with `--baseline`, `--binary`, `--out`, `--label`, and `--split full`. This compares every serialized model and block value, including source XML and binary payloads. Only JSON object key order and the order of paragraph/table style definitions are normalized. All other arrays retain their order. Pass `--digest-binary scripts/parser-benchmark/target/release/digest` to stream canonical hashes in native code without loading large output trees into memory. Baseline receipts are cached by parser and digest executable hashes. `--manifest` accepts an additional differential fixture corpus.
 
 ## Interpretation
 

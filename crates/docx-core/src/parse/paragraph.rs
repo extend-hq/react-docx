@@ -29,6 +29,15 @@ pub struct ParagraphRunToken {
 }
 
 #[derive(Clone, Debug)]
+struct RunToken<'a> {
+    xml: std::borrow::Cow<'a, str>,
+    start: usize,
+    end: usize,
+    link: Option<String>,
+    text_links: Vec<(usize, Option<String>)>,
+}
+
+#[derive(Clone, Debug)]
 pub struct ParsedRunTextToken {
     pub text: String,
     pub source_start: usize,
@@ -50,6 +59,9 @@ fn run_text_xml(run_xml: &str) -> std::borrow::Cow<'_, str> {
 
 pub fn parse_run_text_tokens(run_xml: &str) -> Vec<ParsedRunTextToken> {
     let normalized_run_xml = prefer_alternate_content_choice(run_xml);
+    if let Some(tokens) = stream_run_text_tokens(&normalized_run_xml) {
+        return tokens;
+    }
     let token_pattern = re::get_unchecked(
         r#"(?is)<w:t\b(?:[^>]*[^/>])?>([\s\S]*?)</w:t>|<a:t\b(?:[^>]*[^/>])?>([\s\S]*?)</a:t>|<w:footnoteReference\b[^>]*w:id="(-?\d+)"[^>]*/>|<w:endnoteReference\b[^>]*w:id="(-?\d+)"[^>]*/>|<w:tab\b[^>]*/>|<a:tab\b[^>]*/>|<w:br\b[^>]*/>|<w:cr\b[^>]*/>|<a:br\b[^>]*/>|<w:noBreakHyphen\b[^>]*/>|<w:softHyphen\b[^>]*/>|<w:sym\b[^>]*/>|</w:p>"#,
     );
@@ -158,6 +170,85 @@ pub fn parse_run_text_tokens(run_xml: &str) -> Vec<ParsedRunTextToken> {
     parts
 }
 
+fn stream_run_text_tokens(xml: &str) -> Option<Vec<ParsedRunTextToken>> {
+    use quick_xml::events::Event;
+    if xml.contains("<!") { return None; }
+    let mut reader = quick_xml::Reader::from_str(xml);
+    let mut tokens = Vec::new();
+    loop {
+        let source_start = reader.buffer_position() as usize;
+        let event = reader.read_event().ok()?;
+        if let Event::Start(tag) | Event::Empty(tag) = &event {
+            if tag.as_ref().contains('<') { return None; }
+        }
+        match event {
+            Event::Start(tag) if matches!(tag.name().as_ref(), "w:t" | "a:t") => {
+                let word_text = tag.name().as_ref() == "w:t";
+                let text = reader.read_text(tag.name()).ok()?;
+                let text = text.as_ref();
+                if text.contains('<') { return None; }
+                let text = if word_text && text.contains(['\r', '\n']) {
+                    decode_xml_entities(&text.replace("\r\n", " ").replace(['\r', '\n'], " "))
+                } else {
+                    decode_xml_entities(text)
+                };
+                tokens.push(ParsedRunTextToken { text, source_start, note_reference: None });
+            }
+            Event::Empty(tag) => {
+                let name = tag.name();
+                let name = name.as_ref();
+                let text = match name {
+                    "w:footnoteReference" | "w:endnoteReference" => {
+                        let raw = tag.as_ref();
+                        let mut ids = 0;
+                        for attribute in tag.attributes() {
+                            let attribute = attribute.ok()?;
+                            ids += usize::from(attribute.key.as_ref().eq_ignore_ascii_case("w:id"));
+                        }
+                        if ids != 1 { return None; }
+                        let Some(id) = raw.split_once("w:id=\"").and_then(|(_, value)| value.split_once('"').map(|v| v.0)) else { return None };
+                        let digits = id.strip_prefix('-').unwrap_or(id);
+                        if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) { continue; }
+                        let id = id.parse::<i64>().unwrap_or(0);
+                        if id >= 0 {
+                            tokens.push(ParsedRunTextToken {
+                                text: String::new(), source_start,
+                                note_reference: Some(NoteReference {
+                                    kind: if name == "w:footnoteReference" { NoteReferenceKind::Footnote } else { NoteReferenceKind::Endnote }, id,
+                                }),
+                            });
+                        }
+                        continue;
+                    }
+                    "w:tab" | "a:tab" => "\t".to_owned(),
+                    "w:br" | "w:cr" | "a:br" => "\n".to_owned(),
+                    "w:noBreakHyphen" => "\u{2011}".to_owned(),
+                    "w:softHyphen" => "\u{00ad}".to_owned(),
+                    "w:sym" => {
+                        let code = get_attribute(tag.as_ref(), "w:char").and_then(|v| u32::from_str_radix(&v, 16).ok());
+                        let font = get_attribute(tag.as_ref(), "w:font").unwrap_or_default();
+                        code.and_then(|code| super::symbols::symbol_character(&font, code).or_else(|| char::from_u32(code)))
+                            .unwrap_or('\u{fffd}').to_string()
+                    }
+                    _ => {
+                        if ["w:footnoteReference", "w:endnoteReference", "w:tab", "a:tab", "w:br", "w:cr", "a:br", "w:noBreakHyphen", "w:softHyphen", "w:sym"]
+                            .iter().any(|expected| name.eq_ignore_ascii_case(expected)) { return None; }
+                        continue;
+                    }
+                };
+                tokens.push(ParsedRunTextToken { text, source_start, note_reference: None });
+            }
+            Event::End(tag) if tag.name().as_ref().eq_ignore_ascii_case("w:p") => {
+                if !xml[source_start..reader.buffer_position() as usize].eq_ignore_ascii_case("</w:p>") { return None; }
+                tokens.push(ParsedRunTextToken { text: "\n".into(), source_start, note_reference: None });
+            }
+            Event::Start(tag) if ["w:t", "a:t"].iter().any(|name| tag.name().as_ref().eq_ignore_ascii_case(name)) => return None,
+            Event::Eof => return Some(tokens),
+            _ => {}
+        }
+    }
+}
+
 pub fn parse_run_text(run_xml: &str) -> String {
     parse_run_text_tokens(run_xml)
         .into_iter()
@@ -223,23 +314,30 @@ fn hyperlink_href_from_field_instruction(raw_instruction: &str) -> Option<String
     anchor_match.map(|a| format!("#{a}"))
 }
 
-pub fn parse_paragraph_runs(
-    paragraph_xml: &str,
+pub fn parse_paragraph_runs(paragraph_xml: &str, context: &ParseContext<'_>) -> Vec<ParagraphRunToken> {
+    paragraph_runs(paragraph_xml, context).into_iter().map(|run| ParagraphRunToken {
+        xml: run.xml.into_owned(), start: run.start, end: run.end, link: run.link, text_links: run.text_links,
+    }).collect()
+}
+
+fn paragraph_runs<'a>(
+    paragraph_xml: &'a str,
     context: &ParseContext<'_>,
-) -> Vec<ParagraphRunToken> {
+) -> Vec<RunToken<'a>> {
     let run_ranges = extract_balanced_tag_ranges(paragraph_xml, "w:r");
     if run_ranges.is_empty() {
         return Vec::new();
     }
 
-    if !super::scan::contains_tag(paragraph_xml, "w:fldChar")
+    let has_complex_fields = super::scan::contains_tag(paragraph_xml, "w:fldChar");
+    if !has_complex_fields
         && !super::scan::contains_tag(paragraph_xml, "w:hyperlink")
         && !super::scan::contains_tag(paragraph_xml, "w:fldSimple")
     {
         return run_ranges
             .into_iter()
-            .map(|range| ParagraphRunToken {
-                xml: paragraph_xml[range.start..range.end].to_owned(),
+            .map(|range| RunToken {
+                xml: std::borrow::Cow::Borrowed(&paragraph_xml[range.start..range.end]),
                 start: range.start,
                 end: range.end,
                 link: None,
@@ -294,6 +392,10 @@ pub fn parse_paragraph_runs(
     );
 
     for (run_index, range) in run_ranges.iter().enumerate() {
+        if !has_complex_fields {
+            field_text_links_by_run.insert(run_index, vec![(0, None)]);
+            continue;
+        }
         let run_xml = run_text_xml(&paragraph_xml[range.start..range.end]);
         let mut text_links = vec![(0, fields.iter().rev().find_map(|field| field.link.clone()))];
         for token in field_tokens.captures_iter(&run_xml) {
@@ -391,8 +493,8 @@ pub fn parse_paragraph_runs(
                 })
                 .collect();
             let link = hyperlink_href.or_else(|| field_links_by_run.get(&run_index).cloned());
-            ParagraphRunToken {
-                xml: paragraph_xml[range.start..range.end].to_string(),
+            RunToken {
+                xml: std::borrow::Cow::Borrowed(&paragraph_xml[range.start..range.end]),
                 start: range.start,
                 end: range.end,
                 link,
@@ -486,7 +588,7 @@ pub fn parse_run_active_x_checkbox_field(
 
 fn parse_legacy_form_field_from_range(
     paragraph_xml: &str,
-    runs: &[ParagraphRunToken],
+    runs: &[RunToken<'_>],
     context: &ParseContext<'_>,
     paragraph_style_id: Option<&str>,
     table_run_style: Option<&TextStyle>,
@@ -532,7 +634,7 @@ fn parse_legacy_form_field_from_range(
                 || re::get(r"(?i)<w:sym\b").is_some_and(|re| re.is_match(&run.xml))
         })
         .or_else(|| runs.get(start_run_index))
-        .map(|r| r.xml.as_str());
+        .map(|r| r.xml.as_ref());
     let style = style_run_xml.and_then(|xml| {
         parse_run_style_in_table(xml, context, paragraph_style_id, table_run_style)
     });
@@ -814,7 +916,7 @@ fn parse_legacy_form_field_from_range(
 
 fn parse_legacy_paragraph_form_field_tokens(
     paragraph_xml: &str,
-    runs: &[ParagraphRunToken],
+    runs: &[RunToken<'_>],
     context: &ParseContext<'_>,
     paragraph_style_id: Option<&str>,
     table_run_style: Option<&TextStyle>,
@@ -1148,11 +1250,15 @@ pub fn parse_paragraph_form_field_tokens(
     paragraph_style_id: Option<&str>,
     runs: Option<&[ParagraphRunToken]>,
 ) -> Vec<ParagraphFormFieldToken> {
+    let borrowed = runs.map(|runs| runs.iter().map(|run| RunToken {
+        xml: std::borrow::Cow::Borrowed(run.xml.as_str()), start: run.start, end: run.end,
+        link: run.link.clone(), text_links: run.text_links.clone(),
+    }).collect::<Vec<_>>());
     parse_paragraph_form_field_tokens_in_table(
         paragraph_xml,
         context,
         paragraph_style_id,
-        runs,
+        borrowed.as_deref(),
         None,
     )
 }
@@ -1161,7 +1267,7 @@ fn parse_paragraph_form_field_tokens_in_table(
     paragraph_xml: &str,
     context: &ParseContext<'_>,
     paragraph_style_id: Option<&str>,
-    runs: Option<&[ParagraphRunToken]>,
+    runs: Option<&[RunToken<'_>]>,
     table_run_style: Option<&TextStyle>,
 ) -> Vec<ParagraphFormFieldToken> {
     if !super::scan::contains_tag(paragraph_xml, "w:fldChar")
@@ -1169,13 +1275,13 @@ fn parse_paragraph_form_field_tokens_in_table(
     {
         return Vec::new();
     }
-    let paragraph_runs: Vec<ParagraphRunToken> = runs
+    let paragraph_runs: Vec<RunToken<'_>> = runs
         .map(|r| r.to_vec())
-        .unwrap_or_else(|| parse_paragraph_runs(paragraph_xml, context));
+        .unwrap_or_else(|| paragraph_runs(paragraph_xml, context));
     let story_runs: Vec<_> = paragraph_runs
         .iter()
-        .map(|run| ParagraphRunToken {
-            xml: strip_text_box_content(&run.xml),
+        .map(|run| RunToken {
+            xml: std::borrow::Cow::Owned(strip_text_box_content(&run.xml)),
             ..run.clone()
         })
         .collect();
@@ -1250,25 +1356,23 @@ fn parse_paragraph_mark_run_style(
     table_run_style: Option<&TextStyle>,
 ) -> Option<TextStyle> {
     let paragraph_properties_xml = super::styles::direct_table_property(paragraph_xml, "w:pPr")
-        .unwrap_or_default()
-        .to_string();
+        .unwrap_or_default();
     let mark_run_properties_xml =
         crate::xml::extract_direct_child_tag_ranges(&paragraph_properties_xml)
             .into_iter()
             .find(|range| range.tag_name.eq_ignore_ascii_case("w:rPr"))
-            .map(|range| paragraph_properties_xml[range.start..range.end].to_string())
+            .map(|range| &paragraph_properties_xml[range.start..range.end])
             .unwrap_or_default();
-    let mut effective_mark_run_properties_xml = mark_run_properties_xml.clone();
+    let mut effective_mark_run_properties_xml = std::borrow::Cow::Borrowed(mark_run_properties_xml);
     for range in crate::xml::extract_direct_child_tag_ranges(&mark_run_properties_xml)
         .into_iter()
         .rev()
         .filter(|range| range.tag_name.eq_ignore_ascii_case("w:rPrChange"))
     {
-        effective_mark_run_properties_xml.replace_range(range.start..range.end, "");
+        effective_mark_run_properties_xml.to_mut().replace_range(range.start..range.end, "");
     }
-    let synthetic_mark_run_xml = format!("<w:r>{}</w:r>", effective_mark_run_properties_xml);
-    parse_run_style_in_table(
-        &synthetic_mark_run_xml,
+    super::style::parse_mark_run_style(
+        &effective_mark_run_properties_xml,
         context,
         paragraph_style_id,
         table_run_style,
@@ -1281,13 +1385,13 @@ fn parse_paragraph_mark_formatting(
     table_run_style: Option<&TextStyle>,
 ) -> crate::model::ParagraphMarkFormattingSource {
     let source_mark = source_mark.unwrap_or("<w:rPr/>");
-    let mut current = source_mark.to_string();
+    let mut current = std::borrow::Cow::Borrowed(source_mark);
     for range in crate::xml::extract_direct_child_tag_ranges(source_mark)
         .into_iter()
         .rev()
         .filter(|range| range.tag_name.eq_ignore_ascii_case("w:rPrChange"))
     {
-        current.replace_range(range.start..range.end, "");
+        current.to_mut().replace_range(range.start..range.end, "");
     }
     let character_style = super::styles::direct_table_property(&current, "w:rStyle")
         .and_then(|tag| get_attribute(tag, "w:val"))
@@ -1335,13 +1439,12 @@ pub(crate) fn parse_paragraph_with_table_run_style(
         table_run_style,
     );
     let paragraph_properties_xml = super::styles::direct_table_property(paragraph_xml, "w:pPr")
-        .unwrap_or_default()
-        .to_string();
+        .unwrap_or_default();
     let source_paragraph_mark_properties_xml =
         crate::xml::extract_direct_child_tag_ranges(&paragraph_properties_xml)
             .into_iter()
             .find(|range| range.tag_name.eq_ignore_ascii_case("w:rPr"))
-            .map(|range| paragraph_properties_xml[range.start..range.end].to_string());
+            .map(|range| &paragraph_properties_xml[range.start..range.end]);
     let source_paragraph_mark_formatting = parse_paragraph_mark_formatting(
         source_paragraph_mark_properties_xml.as_deref(),
         context,
@@ -1350,7 +1453,7 @@ pub(crate) fn parse_paragraph_with_table_run_style(
     let paragraph_mark_deleted = source_paragraph_mark_properties_xml
         .as_deref()
         .is_some_and(|xml| super::styles::direct_table_property(xml, "w:del").is_some());
-    let runs = parse_paragraph_runs(paragraph_xml, context);
+    let runs = paragraph_runs(paragraph_xml, context);
     let form_field_tokens = parse_paragraph_form_field_tokens_in_table(
         paragraph_xml,
         context,
@@ -1362,7 +1465,7 @@ pub(crate) fn parse_paragraph_with_table_run_style(
     enum ContentToken<'a> {
         Run {
             start: usize,
-            token: &'a ParagraphRunToken,
+            token: &'a RunToken<'a>,
         },
         FormField {
             start: usize,
@@ -1438,12 +1541,9 @@ pub(crate) fn parse_paragraph_with_table_run_style(
                     paragraph_style.as_ref().and_then(|s| s.style_id.as_deref()),
                     table_run_style,
                 );
-                if let Some(active_x_field) = parse_run_active_x_checkbox_field(
-                    &run.xml,
-                    context,
-                    style.clone(),
-                    run.link.clone(),
-                ) {
+                if let Some(active_x_field) = super::scan::contains_tag(&run.xml, "w:object").then(|| parse_run_active_x_checkbox_field(
+                    &run.xml, context, style.clone(), run.link.clone(),
+                )).flatten() {
                     children.push(ParagraphChildNode::FormField(active_x_field));
                     continue;
                 }
@@ -1451,18 +1551,17 @@ pub(crate) fn parse_paragraph_with_table_run_style(
                 // Text boxes own a separate story, including when their drawing
                 // renders as a group or cannot be represented as an image.
                 let run_xml_for_text = run_text_xml(&run.xml);
-                let parsed_tokens = parse_run_text_tokens(&run_xml_for_text);
+                let mut parsed_tokens = parse_run_text_tokens(&run_xml_for_text).into_iter()
+                    .filter(|token| !token.text.is_empty() || token.note_reference.is_some()).peekable();
+                let mut remaining_style = style;
                 let mut ordered_children = Vec::new();
-                for token in parsed_tokens {
-                    if token.text.is_empty() && token.note_reference.is_none() {
-                        continue;
-                    }
+                while let Some(token) = parsed_tokens.next() {
                     ordered_children.push((
                         token.source_start,
                         ParagraphChildNode::Text(TextRunNode {
                             r#type: TextRunNodeType::Text,
                             text: token.text,
-                            style: style.clone(),
+                            style: if parsed_tokens.peek().is_none() { remaining_style.take() } else { remaining_style.clone() },
                             link: run
                                 .text_links
                                 .iter()
@@ -1530,7 +1629,7 @@ pub(crate) fn parse_paragraph_with_table_run_style(
         paragraph_mark_style: paragraph_mark_style.clone(),
         source_paragraph_mark_style: paragraph_mark_style,
         source_paragraph_mark_formatting: Some(source_paragraph_mark_formatting),
-        source_paragraph_mark_properties_xml,
+        source_paragraph_mark_properties_xml: source_paragraph_mark_properties_xml.map(str::to_owned),
         paragraph_mark_deleted: if paragraph_mark_deleted {
             Some(true)
         } else {

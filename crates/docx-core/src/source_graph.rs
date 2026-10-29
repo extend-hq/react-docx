@@ -59,6 +59,11 @@ pub struct PreservedFeature {
 pub fn preserved_features(package: &OoxmlPackage) -> Vec<PreservedFeature> {
     let mut features = std::collections::BTreeMap::<(String, String, String), usize>::new();
     for part in package.parts.values() {
+        if crate::xml_index::contains_local_names(&part.content, &[
+            "altChunk", "subDoc", "object", "control", "movie", "sound", "dataModel", "oMath",
+        ]) == Some(false) {
+            continue;
+        }
         if ![
             "altChunk",
             "subDoc",

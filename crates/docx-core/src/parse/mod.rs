@@ -22,6 +22,7 @@ mod table;
 mod util;
 
 pub use build::build_doc_model;
+pub(crate) use namespaces::prefix as canonical_namespace_prefix;
 pub use body::extract_body_xml;
 pub use colors::{
     default_drawing_scheme_colors, normalize_hex_color, resolve_drawing_color_from_xml,

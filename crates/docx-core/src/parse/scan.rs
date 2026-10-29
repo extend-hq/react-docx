@@ -17,6 +17,9 @@ fn has_word_boundary_after(xml: &str, index: usize) -> bool {
 }
 
 pub(crate) fn find_tag_token_ref<'a>(xml: &'a str, tag_name: &str) -> Option<&'a str> {
+    if let Some(tag) = crate::xml_index::tag(xml, tag_name) {
+        return tag;
+    }
     let name = tag_name.as_bytes();
     let mut cursor = 0;
     while let Some(offset) = xml[cursor..].find('<') {

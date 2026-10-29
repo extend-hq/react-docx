@@ -136,6 +136,11 @@ pub fn merge_text_styles(styles: &[Option<TextStyle>]) -> Option<TextStyle> {
 }
 
 pub(crate) fn merge_text_style_refs(styles: &[Option<&TextStyle>]) -> Option<TextStyle> {
+    let mut present = styles.iter().flatten();
+    let first = *present.next()?;
+    if present.next().is_none() {
+        return Some(first.clone());
+    }
     let mut merged = TextStyle {
         bold: None,
         italic: None,

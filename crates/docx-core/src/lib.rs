@@ -8,6 +8,7 @@ pub mod xml;
 pub mod structured;
 pub mod source_graph;
 pub mod zip;
+mod xml_index;
 
 pub use doc::{is_doc_format, parse_doc};
 pub use model::*;

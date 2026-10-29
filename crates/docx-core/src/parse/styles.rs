@@ -17,7 +17,7 @@ use crate::model::{
 };
 use crate::package::OoxmlPackage;
 use crate::xml::{
-    decode_xml_entities, extract_balanced_tag_blocks, get_attribute, normalize_alignment,
+    decode_xml_entities, get_attribute, normalize_alignment,
     parse_integer_attribute, parse_on_off_attribute, parse_underline_attribute,
 };
 
@@ -125,10 +125,10 @@ pub fn parse_paragraph_numbering_from_xml(xml: &str) -> Option<ParagraphNumberin
         return None;
     }
 
-    let numbering_xml = extract_balanced_tag_blocks(xml, "w:numPr")
+    let numbering_xml = crate::xml::extract_balanced_tag_slices(xml, "w:numPr")
         .into_iter()
         .next()
-        .or_else(|| super::scan::find_tag_token(xml, "w:numPr"))
+        .or_else(|| super::scan::find_tag_token_ref(xml, "w:numPr"))
         .unwrap_or_default();
     if numbering_xml.is_empty() {
         return None;
@@ -150,7 +150,7 @@ pub fn parse_paragraph_numbering_from_xml(xml: &str) -> Option<ParagraphNumberin
 }
 
 fn find_namespaced_integer_attribute(xml: &str, tag_name: &str, attribute: &str) -> Option<i64> {
-    let tag = super::scan::find_tag_token(xml, tag_name)?;
+    let tag = super::scan::find_tag_token_ref(xml, tag_name)?;
     parse_integer_attribute(&tag, attribute)
 }
 
@@ -160,7 +160,7 @@ pub fn parse_paragraph_spacing_from_xml(xml: &str) -> Option<ParagraphSpacing> {
         return None;
     }
 
-    let spacing_tag = super::scan::find_tag_token(xml, "w:spacing")?;
+    let spacing_tag = super::scan::find_tag_token_ref(xml, "w:spacing")?;
     let line_rule_raw =
         get_attribute(&spacing_tag, "w:lineRule").map(|value| value.to_ascii_lowercase());
     let line_rule = match line_rule_raw.as_deref() {
@@ -202,7 +202,7 @@ pub fn parse_paragraph_indent_from_xml(xml: &str) -> Option<ParagraphIndent> {
         return None;
     }
 
-    let indent_tag = super::scan::find_tag_token(xml, "w:ind")?;
+    let indent_tag = super::scan::find_tag_token_ref(xml, "w:ind")?;
     let indent = ParagraphIndent {
         left_twips: parse_integer_attribute(&indent_tag, "w:left"),
         right_twips: parse_integer_attribute(&indent_tag, "w:right"),
@@ -250,10 +250,10 @@ pub fn parse_paragraph_tab_stops_from_xml(xml: &str) -> Vec<ParagraphTabStop> {
         return Vec::new();
     }
 
-    let tabs_xml = extract_balanced_tag_blocks(xml, "w:tabs")
+    let tabs_xml = crate::xml::extract_balanced_tag_slices(xml, "w:tabs")
         .into_iter()
         .next()
-        .or_else(|| super::scan::find_tag_token(xml, "w:tabs"))
+        .or_else(|| super::scan::find_tag_token_ref(xml, "w:tabs"))
         .unwrap_or_default();
     if tabs_xml.is_empty() {
         return Vec::new();
@@ -282,7 +282,7 @@ pub fn parse_paragraph_shading_from_xml(xml: &str) -> Option<String> {
     if xml.is_empty() {
         return None;
     }
-    let shading_tag = super::scan::find_tag_token(xml, "w:shd")?;
+    let shading_tag = super::scan::find_tag_token_ref(xml, "w:shd")?;
     normalize_hex_color(get_attribute(&shading_tag, "w:fill").as_deref())
 }
 
@@ -366,32 +366,32 @@ pub fn parse_paragraph_border_set_from_xml(xml: &str) -> Option<ParagraphBorderS
         return None;
     }
 
-    let paragraph_border_xml = extract_balanced_tag_blocks(xml, "w:pBdr")
+    let paragraph_border_xml = crate::xml::extract_balanced_tag_slices(xml, "w:pBdr")
         .into_iter()
         .next()
-        .or_else(|| super::scan::find_tag_token(xml, "w:pBdr"))
+        .or_else(|| super::scan::find_tag_token_ref(xml, "w:pBdr"))
         .unwrap_or_default();
     if paragraph_border_xml.is_empty() {
         return None;
     }
 
     let top = parse_paragraph_border_style(
-        super::scan::find_tag_token(&paragraph_border_xml, "w:top").as_deref(),
+        super::scan::find_tag_token_ref(&paragraph_border_xml, "w:top").as_deref(),
     );
     let right = parse_paragraph_border_style(
-        super::scan::find_tag_token(&paragraph_border_xml, "w:right").as_deref(),
+        super::scan::find_tag_token_ref(&paragraph_border_xml, "w:right").as_deref(),
     );
     let bottom = parse_paragraph_border_style(
-        super::scan::find_tag_token(&paragraph_border_xml, "w:bottom").as_deref(),
+        super::scan::find_tag_token_ref(&paragraph_border_xml, "w:bottom").as_deref(),
     );
     let left = parse_paragraph_border_style(
-        super::scan::find_tag_token(&paragraph_border_xml, "w:left").as_deref(),
+        super::scan::find_tag_token_ref(&paragraph_border_xml, "w:left").as_deref(),
     );
     let between = parse_paragraph_border_style(
-        super::scan::find_tag_token(&paragraph_border_xml, "w:between").as_deref(),
+        super::scan::find_tag_token_ref(&paragraph_border_xml, "w:between").as_deref(),
     );
     let bar = parse_paragraph_border_style(
-        super::scan::find_tag_token(&paragraph_border_xml, "w:bar").as_deref(),
+        super::scan::find_tag_token_ref(&paragraph_border_xml, "w:bar").as_deref(),
     );
 
     if top.is_none()
@@ -416,14 +416,14 @@ pub fn parse_paragraph_border_set_from_xml(xml: &str) -> Option<ParagraphBorderS
 
 /// Mirrors TypeScript `parseTableBoxSpacing`.
 pub fn parse_table_box_spacing(xml: &str) -> Option<TableBoxSpacing> {
-    let top_match = super::scan::find_tag_token(xml, "w:top");
+    let top_match = super::scan::find_tag_token_ref(xml, "w:top");
     // Word writes the bidi-aware w:start/w:end instead of w:left/w:right in
     // newer documents; treat them as left/right (LTR rendering).
-    let right_match = super::scan::find_tag_token(xml, "w:right")
-        .or_else(|| super::scan::find_tag_token(xml, "w:end"));
-    let bottom_match = super::scan::find_tag_token(xml, "w:bottom");
-    let left_match = super::scan::find_tag_token(xml, "w:left")
-        .or_else(|| super::scan::find_tag_token(xml, "w:start"));
+    let right_match = super::scan::find_tag_token_ref(xml, "w:right")
+        .or_else(|| super::scan::find_tag_token_ref(xml, "w:end"));
+    let bottom_match = super::scan::find_tag_token_ref(xml, "w:bottom");
+    let left_match = super::scan::find_tag_token_ref(xml, "w:left")
+        .or_else(|| super::scan::find_tag_token_ref(xml, "w:start"));
 
     let spacing = TableBoxSpacing {
         top_twips: top_match
@@ -481,16 +481,16 @@ pub fn parse_table_border_style(tag_xml: Option<&str>) -> Option<TableBorderStyl
 
 /// Mirrors TypeScript `parseTableBorderSet`.
 pub fn parse_table_border_set(xml: &str) -> Option<TableBorderSet> {
-    let top = parse_table_border_style(super::scan::find_tag_token(xml, "w:top").as_deref());
-    let right = parse_table_border_style(super::scan::find_tag_token(xml, "w:right").as_deref());
-    let bottom = parse_table_border_style(super::scan::find_tag_token(xml, "w:bottom").as_deref());
-    let left = parse_table_border_style(super::scan::find_tag_token(xml, "w:left").as_deref());
+    let top = parse_table_border_style(super::scan::find_tag_token_ref(xml, "w:top").as_deref());
+    let right = parse_table_border_style(super::scan::find_tag_token_ref(xml, "w:right").as_deref());
+    let bottom = parse_table_border_style(super::scan::find_tag_token_ref(xml, "w:bottom").as_deref());
+    let left = parse_table_border_style(super::scan::find_tag_token_ref(xml, "w:left").as_deref());
     let inside_h =
-        parse_table_border_style(super::scan::find_tag_token(xml, "w:insideH").as_deref());
+        parse_table_border_style(super::scan::find_tag_token_ref(xml, "w:insideH").as_deref());
     let inside_v =
-        parse_table_border_style(super::scan::find_tag_token(xml, "w:insideV").as_deref());
-    let tl2br = parse_table_border_style(super::scan::find_tag_token(xml, "w:tl2br").as_deref());
-    let tr2bl = parse_table_border_style(super::scan::find_tag_token(xml, "w:tr2bl").as_deref());
+        parse_table_border_style(super::scan::find_tag_token_ref(xml, "w:insideV").as_deref());
+    let tl2br = parse_table_border_style(super::scan::find_tag_token_ref(xml, "w:tl2br").as_deref());
+    let tr2bl = parse_table_border_style(super::scan::find_tag_token_ref(xml, "w:tr2bl").as_deref());
 
     if top.is_none()
         && right.is_none()
@@ -531,7 +531,7 @@ fn has_table_properties(properties: &ParsedTableProperties) -> bool {
 /// Mirrors TypeScript `parseFloatingTableStyle`.
 pub fn parse_floating_table_style(table_properties_xml: Option<&str>) -> Option<TableFloating> {
     let table_properties_xml = table_properties_xml?;
-    let floating_tag = super::scan::find_tag_token(table_properties_xml, "w:tblpPr")?;
+    let floating_tag = super::scan::find_tag_token_ref(table_properties_xml, "w:tblpPr")?;
 
     let x_twips = parse_integer_attribute(&floating_tag, "w:tblpX");
     let y_twips = parse_integer_attribute(&floating_tag, "w:tblpY");
@@ -661,7 +661,7 @@ pub fn parse_table_style_properties_from_xml(
     let bidi_visual = direct_table_property(table_properties_xml, "w:bidiVisual")
         .and_then(|tag| parse_on_off_attribute(tag, "bidiVisual"));
 
-    let table_indent_tag = super::scan::find_tag_token(table_properties_xml, "w:tblInd");
+    let table_indent_tag = super::scan::find_tag_token_ref(table_properties_xml, "w:tblInd");
     let table_indent_type = table_indent_tag
         .as_deref()
         .and_then(|tag| get_attribute(tag, "w:type"))
@@ -677,7 +677,7 @@ pub fn parse_table_style_properties_from_xml(
         None
     };
 
-    let table_layout_tag = super::scan::find_tag_token(table_properties_xml, "w:tblLayout");
+    let table_layout_tag = super::scan::find_tag_token_ref(table_properties_xml, "w:tblLayout");
     let table_layout_raw = table_layout_tag
         .as_deref()
         .and_then(|tag| get_attribute(tag, "w:type"))
@@ -689,7 +689,7 @@ pub fn parse_table_style_properties_from_xml(
     };
 
     let table_cell_spacing_tag =
-        super::scan::find_tag_token(table_properties_xml, "w:tblCellSpacing");
+        super::scan::find_tag_token_ref(table_properties_xml, "w:tblCellSpacing");
     let table_cell_spacing_type = table_cell_spacing_tag
         .as_deref()
         .and_then(|tag| get_attribute(tag, "w:type"))
@@ -705,10 +705,10 @@ pub fn parse_table_style_properties_from_xml(
         None
     };
 
-    let table_cell_margin_xml = extract_balanced_tag_blocks(table_properties_xml, "w:tblCellMar")
+    let table_cell_margin_xml = crate::xml::extract_balanced_tag_slices(table_properties_xml, "w:tblCellMar")
         .into_iter()
         .next()
-        .or_else(|| super::scan::find_tag_token(table_properties_xml, "w:tblCellMar"));
+        .or_else(|| super::scan::find_tag_token_ref(table_properties_xml, "w:tblCellMar"));
     let cell_margin_twips = table_cell_margin_xml
         .as_deref()
         .and_then(parse_table_box_spacing);
@@ -865,21 +865,21 @@ fn merge_table_border_sets(
 /// Mirrors TypeScript `parseTableLook`.
 pub fn parse_table_look(table_properties_xml: Option<&str>) -> Option<ParsedTableLook> {
     let table_properties_xml = table_properties_xml?;
-    let table_look_tag = super::scan::find_tag_token(table_properties_xml, "w:tblLook")?;
+    let table_look_tag = super::scan::find_tag_token_ref(table_properties_xml, "w:tblLook")?;
     let look_mask_raw = get_attribute(&table_look_tag, "w:val");
     let look_mask = look_mask_raw
         .as_deref()
         .and_then(|raw| i64::from_str_radix(raw, 16).ok());
 
     let row_band_size_tag =
-        super::scan::find_tag_token(table_properties_xml, "w:tblStyleRowBandSize").or_else(|| {
-            extract_balanced_tag_blocks(table_properties_xml, "w:tblStyleRowBandSize")
+        super::scan::find_tag_token_ref(table_properties_xml, "w:tblStyleRowBandSize").or_else(|| {
+            crate::xml::extract_balanced_tag_slices(table_properties_xml, "w:tblStyleRowBandSize")
                 .into_iter()
                 .next()
         });
     let col_band_size_tag =
-        super::scan::find_tag_token(table_properties_xml, "w:tblStyleColBandSize").or_else(|| {
-            extract_balanced_tag_blocks(table_properties_xml, "w:tblStyleColBandSize")
+        super::scan::find_tag_token_ref(table_properties_xml, "w:tblStyleColBandSize").or_else(|| {
+            crate::xml::extract_balanced_tag_slices(table_properties_xml, "w:tblStyleColBandSize")
                 .into_iter()
                 .next()
         });
@@ -926,19 +926,17 @@ pub fn parse_table_conditional_style_from_xml(
     }
 
     let table_properties_xml = direct_table_property(xml, "w:tblPr")
-        .unwrap_or_default()
-        .to_string();
-    let paragraph_properties_xml = extract_balanced_tag_blocks(xml, "w:pPr")
+        .unwrap_or_default();
+    let paragraph_properties_xml = crate::xml::extract_balanced_tag_slices(xml, "w:pPr")
         .into_iter()
         .next()
         .unwrap_or_default();
-    let row_properties_xml = extract_balanced_tag_blocks(xml, "w:trPr")
+    let row_properties_xml = crate::xml::extract_balanced_tag_slices(xml, "w:trPr")
         .into_iter()
         .next()
         .unwrap_or_default();
     let cell_properties_xml = direct_table_property(xml, "w:tcPr")
-        .unwrap_or_default()
-        .to_string();
+        .unwrap_or_default();
     let cell_preferred_width =
         direct_table_property(&cell_properties_xml, "w:tcW").and_then(parse_table_preferred_width);
     let run_properties_xml = resolve_style_properties_block(xml, "w:rPr");
@@ -955,9 +953,9 @@ pub fn parse_table_conditional_style_from_xml(
             .as_deref(),
     );
 
-    let row_shading_tag = super::scan::find_tag_token(&row_properties_xml, "w:shd");
-    let cell_shading_tag = super::scan::find_tag_token(&cell_properties_xml, "w:shd")
-        .or_else(|| super::scan::find_tag_token(&table_properties_xml, "w:shd"));
+    let row_shading_tag = super::scan::find_tag_token_ref(&row_properties_xml, "w:shd");
+    let cell_shading_tag = super::scan::find_tag_token_ref(&cell_properties_xml, "w:shd")
+        .or_else(|| super::scan::find_tag_token_ref(&table_properties_xml, "w:shd"));
     let row_background_color = row_shading_tag
         .as_deref()
         .and_then(|tag| get_attribute(tag, "w:fill"))
@@ -970,14 +968,14 @@ pub fn parse_table_conditional_style_from_xml(
         .and_then(|value| normalize_hex_color(Some(value)));
     let run_style = parse_text_style_from_xml(&run_properties_xml, theme_fonts);
 
-    let table_borders_xml = extract_balanced_tag_blocks(&table_properties_xml, "w:tblBorders")
+    let table_borders_xml = crate::xml::extract_balanced_tag_slices(&table_properties_xml, "w:tblBorders")
         .into_iter()
         .next()
-        .or_else(|| super::scan::find_tag_token(&table_properties_xml, "w:tblBorders"));
-    let cell_borders_xml = extract_balanced_tag_blocks(&cell_properties_xml, "w:tcBorders")
+        .or_else(|| super::scan::find_tag_token_ref(&table_properties_xml, "w:tblBorders"));
+    let cell_borders_xml = crate::xml::extract_balanced_tag_slices(&cell_properties_xml, "w:tcBorders")
         .into_iter()
         .next()
-        .or_else(|| super::scan::find_tag_token(&cell_properties_xml, "w:tcBorders"));
+        .or_else(|| super::scan::find_tag_token_ref(&cell_properties_xml, "w:tcBorders"));
     let table_borders = table_borders_xml
         .as_deref()
         .and_then(parse_table_border_set);
@@ -1148,13 +1146,13 @@ pub fn merge_text_styles(
             merged.small_caps = style.small_caps;
         }
         if style.color.is_some() {
-            merged.color = style.color.clone();
+            merged.color = style.color;
         }
         if style.highlight.is_some() {
-            merged.highlight = style.highlight.clone();
+            merged.highlight = style.highlight;
         }
         if style.background_color.is_some() {
-            merged.background_color = style.background_color.clone();
+            merged.background_color = style.background_color;
         }
         if style.font_size_pt.is_some() {
             merged.font_size_pt = style.font_size_pt;
@@ -1163,58 +1161,58 @@ pub fn merge_text_styles(
             merged.font_size_cs_pt = style.font_size_cs_pt;
         }
         if style.font_family.is_some() {
-            merged.font_family = style.font_family.clone();
+            merged.font_family = style.font_family;
         }
         if style.source_font_family.is_some() {
-            merged.source_font_family = style.source_font_family.clone();
+            merged.source_font_family = style.source_font_family;
         }
         if style.font_family_ascii.is_some() {
-            merged.font_family_ascii = style.font_family_ascii.clone();
+            merged.font_family_ascii = style.font_family_ascii;
         }
         if style.font_family_h_ansi.is_some() {
-            merged.font_family_h_ansi = style.font_family_h_ansi.clone();
+            merged.font_family_h_ansi = style.font_family_h_ansi;
         }
         if style.font_family_east_asia.is_some() {
-            merged.font_family_east_asia = style.font_family_east_asia.clone();
+            merged.font_family_east_asia = style.font_family_east_asia;
         }
         if style.font_family_cs.is_some() {
-            merged.font_family_cs = style.font_family_cs.clone();
+            merged.font_family_cs = style.font_family_cs;
         }
         if style.font_theme_ascii.is_some() {
-            merged.font_theme_ascii = style.font_theme_ascii.clone();
+            merged.font_theme_ascii = style.font_theme_ascii;
         }
         if style.font_theme_h_ansi.is_some() {
-            merged.font_theme_h_ansi = style.font_theme_h_ansi.clone();
+            merged.font_theme_h_ansi = style.font_theme_h_ansi;
         }
         if style.font_theme_east_asia.is_some() {
-            merged.font_theme_east_asia = style.font_theme_east_asia.clone();
+            merged.font_theme_east_asia = style.font_theme_east_asia;
         }
         if style.font_theme_cs.is_some() {
-            merged.font_theme_cs = style.font_theme_cs.clone();
+            merged.font_theme_cs = style.font_theme_cs;
         }
         if style.resolved_font_family_ascii.is_some() {
-            merged.resolved_font_family_ascii = style.resolved_font_family_ascii.clone();
+            merged.resolved_font_family_ascii = style.resolved_font_family_ascii;
         }
         if style.resolved_font_family_h_ansi.is_some() {
-            merged.resolved_font_family_h_ansi = style.resolved_font_family_h_ansi.clone();
+            merged.resolved_font_family_h_ansi = style.resolved_font_family_h_ansi;
         }
         if style.resolved_font_family_east_asia.is_some() {
-            merged.resolved_font_family_east_asia = style.resolved_font_family_east_asia.clone();
+            merged.resolved_font_family_east_asia = style.resolved_font_family_east_asia;
         }
         if style.resolved_font_family_cs.is_some() {
-            merged.resolved_font_family_cs = style.resolved_font_family_cs.clone();
+            merged.resolved_font_family_cs = style.resolved_font_family_cs;
         }
         if style.font_hint.is_some() {
-            merged.font_hint = style.font_hint.clone();
+            merged.font_hint = style.font_hint;
         }
         if style.language.is_some() {
-            merged.language = style.language.clone();
+            merged.language = style.language;
         }
         if style.language_east_asia.is_some() {
-            merged.language_east_asia = style.language_east_asia.clone();
+            merged.language_east_asia = style.language_east_asia;
         }
         if style.language_bidi.is_some() {
-            merged.language_bidi = style.language_bidi.clone();
+            merged.language_bidi = style.language_bidi;
         }
         if style.right_to_left.is_some() {
             merged.right_to_left = style.right_to_left;
@@ -1224,7 +1222,7 @@ pub fn merge_text_styles(
         }
         if style.character_scale_percent.is_some() || style.source_character_scale.is_some() {
             merged.character_scale_percent = style.character_scale_percent;
-            merged.source_character_scale = style.source_character_scale.clone();
+            merged.source_character_scale = style.source_character_scale;
         }
         if style.character_spacing_twips.is_some() {
             merged.character_spacing_twips = style.character_spacing_twips;
@@ -1242,7 +1240,7 @@ pub fn merge_text_styles(
             merged.vertical_align = style.vertical_align;
         }
         if style.run_border.is_some() {
-            merged.run_border = style.run_border.clone();
+            merged.run_border = style.run_border;
         }
     }
 
@@ -1534,16 +1532,16 @@ fn resolve_theme_font(theme_token: Option<&str>, theme_fonts: &ThemeFontMap) -> 
 }
 
 fn find_drawing_rpr_attribute(xml: &str, attribute: &str) -> Option<String> {
-    let tag = super::scan::find_tag_token(xml, "a:rPr")?;
+    let tag = super::scan::find_tag_token_ref(xml, "a:rPr")?;
     get_attribute(&tag, attribute)
 }
 
 fn find_drawing_latin_typeface(xml: &str) -> Option<String> {
-    if let Some(block) = extract_balanced_tag_blocks(xml, "a:rPr").into_iter().next() {
-        if let Some(latin) = extract_balanced_tag_blocks(&block, "a:latin")
+    if let Some(block) = crate::xml::extract_balanced_tag_slices(xml, "a:rPr").into_iter().next() {
+        if let Some(latin) = crate::xml::extract_balanced_tag_slices(&block, "a:latin")
             .into_iter()
             .next()
-            .or_else(|| super::scan::find_tag_token(&block, "a:latin"))
+            .or_else(|| super::scan::find_tag_token_ref(&block, "a:latin"))
         {
             if let Some(typeface) = get_attribute(&latin, "typeface") {
                 return Some(typeface);
@@ -1551,14 +1549,14 @@ fn find_drawing_latin_typeface(xml: &str) -> Option<String> {
         }
     }
 
-    if let Some(block) = extract_balanced_tag_blocks(xml, "a:defRPr")
+    if let Some(block) = crate::xml::extract_balanced_tag_slices(xml, "a:defRPr")
         .into_iter()
         .next()
     {
-        if let Some(latin) = extract_balanced_tag_blocks(&block, "a:latin")
+        if let Some(latin) = crate::xml::extract_balanced_tag_slices(&block, "a:latin")
             .into_iter()
             .next()
-            .or_else(|| super::scan::find_tag_token(&block, "a:latin"))
+            .or_else(|| super::scan::find_tag_token_ref(&block, "a:latin"))
         {
             if let Some(typeface) = get_attribute(&latin, "typeface") {
                 return Some(typeface);
@@ -1566,17 +1564,17 @@ fn find_drawing_latin_typeface(xml: &str) -> Option<String> {
         }
     }
 
-    super::scan::find_tag_token(xml, "a:latin").and_then(|latin| get_attribute(&latin, "typeface"))
+    super::scan::find_tag_token_ref(xml, "a:latin").and_then(|latin| get_attribute(&latin, "typeface"))
 }
 
 fn find_drawing_color(xml: &str) -> Option<String> {
-    if let Some(block) = extract_balanced_tag_blocks(xml, "a:rPr").into_iter().next() {
-        if let Some(color_xml) = extract_balanced_tag_blocks(&block, "a:solidFill")
+    if let Some(block) = crate::xml::extract_balanced_tag_slices(xml, "a:rPr").into_iter().next() {
+        if let Some(color_xml) = crate::xml::extract_balanced_tag_slices(&block, "a:solidFill")
             .into_iter()
             .next()
-            .or_else(|| super::scan::find_tag_token(&block, "a:solidFill"))
+            .or_else(|| super::scan::find_tag_token_ref(&block, "a:solidFill"))
         {
-            if let Some(srgb) = super::scan::find_tag_token(&color_xml, "a:srgbClr") {
+            if let Some(srgb) = super::scan::find_tag_token_ref(&color_xml, "a:srgbClr") {
                 if let Some(color) = get_attribute(&srgb, "val")
                     .as_deref()
                     .and_then(|value| normalize_hex_color(Some(value)))
@@ -1585,7 +1583,7 @@ fn find_drawing_color(xml: &str) -> Option<String> {
                 }
             }
         }
-        if let Some(srgb) = super::scan::find_tag_token(&block, "a:srgbClr") {
+        if let Some(srgb) = super::scan::find_tag_token_ref(&block, "a:srgbClr") {
             if let Some(color) = get_attribute(&srgb, "val")
                 .as_deref()
                 .and_then(|value| normalize_hex_color(Some(value)))
@@ -1618,7 +1616,7 @@ fn contains_complex_script_glyphs(text: &str) -> bool {
 fn collect_decoded_text_samples(xml: &str) -> String {
     let mut samples = String::new();
     for tag_name in ["w:t", "a:t"] {
-        for block in extract_balanced_tag_blocks(xml, tag_name) {
+        for block in crate::xml::extract_balanced_tag_slices(xml, tag_name) {
             if let Some(start) = block.find('>') {
                 let end = block.rfind("</").unwrap_or(block.len());
                 if start + 1 < end {
@@ -1632,6 +1630,10 @@ fn collect_decoded_text_samples(xml: &str) -> String {
 
 /// Mirrors TypeScript `parseTextStyleFromXml`.
 pub fn parse_text_style_from_xml(xml: &str, theme_fonts: &ThemeFontMap) -> Option<TextStyle> {
+    super::style::cached_definition_style(xml, theme_fonts)
+}
+
+pub(crate) fn parse_definition_style_uncached(xml: &str, theme_fonts: &ThemeFontMap) -> Option<TextStyle> {
     if xml.is_empty() {
         return None;
     }
@@ -1645,13 +1647,13 @@ pub fn parse_text_style_from_xml(xml: &str, theme_fonts: &ThemeFontMap) -> Optio
 
     let color_match = super::scan::find_attribute_value_in_tag(xml, "w:color", "w:val");
     let highlight_match = super::scan::find_attribute_value_in_tag(xml, "w:highlight", "w:val");
-    let shading_tag = super::scan::find_tag_token(xml, "w:shd");
+    let shading_tag = super::scan::find_tag_token_ref(xml, "w:shd");
     let character_spacing_match =
         super::scan::find_attribute_value_in_tag(xml, "w:spacing", "w:val");
     let kerning_match = super::scan::find_attribute_value_in_tag(xml, "w:kern", "w:val");
     let size_match = super::scan::find_attribute_value_in_tag(xml, "w:sz", "w:val");
     let complex_size_match = super::scan::find_attribute_value_in_tag(xml, "w:szCs", "w:val");
-    let run_fonts_tag = super::scan::find_tag_token(xml, "w:rFonts").unwrap_or_default();
+    let run_fonts_tag = super::scan::find_tag_token_ref(xml, "w:rFonts").unwrap_or_default();
     let ascii_font = get_attribute(&run_fonts_tag, "w:ascii");
     let h_ansi_font = get_attribute(&run_fonts_tag, "w:hAnsi");
     let east_asia_font = get_attribute(&run_fonts_tag, "w:eastAsia");
@@ -1661,7 +1663,7 @@ pub fn parse_text_style_from_xml(xml: &str, theme_fonts: &ThemeFontMap) -> Optio
     let east_asia_theme_font = get_attribute(&run_fonts_tag, "w:eastAsiaTheme");
     let complex_script_theme_font = get_attribute(&run_fonts_tag, "w:csTheme");
     let font_hint = get_attribute(&run_fonts_tag, "w:hint");
-    let language_tag = super::scan::find_tag_token(xml, "w:lang").unwrap_or_default();
+    let language_tag = super::scan::find_tag_token_ref(xml, "w:lang").unwrap_or_default();
     let language = get_attribute(&language_tag, "w:val");
     let language_east_asia = get_attribute(&language_tag, "w:eastAsia");
     let language_bidi = get_attribute(&language_tag, "w:bidi");
@@ -1677,7 +1679,7 @@ pub fn parse_text_style_from_xml(xml: &str, theme_fonts: &ThemeFontMap) -> Optio
     let drawing_color_match = find_drawing_color(xml);
     let drawing_size_match = find_drawing_rpr_attribute(xml, "sz");
     let drawing_font_match = find_drawing_latin_typeface(xml);
-    let run_border_tag = super::scan::find_tag_token(xml, "w:bdr");
+    let run_border_tag = super::scan::find_tag_token_ref(xml, "w:bdr");
     let decoded_text_samples = collect_decoded_text_samples(xml);
     let contains_east_asia = contains_east_asia_glyphs(&decoded_text_samples);
     let contains_complex_script = contains_complex_script_glyphs(&decoded_text_samples);
@@ -1931,11 +1933,11 @@ fn parse_style_type(value: Option<&str>) -> Option<RawStyleType> {
     }
 }
 
-fn resolve_style_properties_block(style_xml: &str, tag_name: &str) -> String {
-    extract_balanced_tag_blocks(style_xml, tag_name)
+fn resolve_style_properties_block<'a>(style_xml: &'a str, tag_name: &str) -> &'a str {
+    crate::xml::extract_balanced_tag_slices(style_xml, tag_name)
         .into_iter()
         .next()
-        .or_else(|| super::scan::find_tag_token(style_xml, tag_name))
+        .or_else(|| super::scan::find_tag_token_ref(style_xml, tag_name))
         .unwrap_or_default()
 }
 
@@ -2008,7 +2010,7 @@ fn extract_balanced_tag_ranges(xml: &str, tag_name: &str) -> Vec<crate::xml::Tag
 }
 
 fn read_typeface(xml: &str, tag_name: &str) -> Option<String> {
-    let token = super::scan::find_tag_token(xml, &format!("a:{tag_name}"))?;
+    let token = super::scan::find_tag_token_ref(xml, &format!("a:{tag_name}"))?;
     let value = get_attribute(&token, "typeface")?.trim().to_string();
     if value.is_empty() {
         None
@@ -2025,11 +2027,11 @@ pub fn parse_theme_fonts(pkg: &OoxmlPackage) -> ThemeFontMap {
         return ThemeFontMap::default();
     };
 
-    let major_font_xml = extract_balanced_tag_blocks(theme_xml, "a:majorFont")
+    let major_font_xml = crate::xml::extract_balanced_tag_slices(theme_xml, "a:majorFont")
         .into_iter()
         .next()
         .unwrap_or_default();
-    let minor_font_xml = extract_balanced_tag_blocks(theme_xml, "a:minorFont")
+    let minor_font_xml = crate::xml::extract_balanced_tag_slices(theme_xml, "a:minorFont")
         .into_iter()
         .next()
         .unwrap_or_default();
@@ -2066,7 +2068,7 @@ pub fn parse_theme_colors(pkg: &OoxmlPackage) -> ThemeColorMap {
         return ThemeColorMap::new();
     };
 
-    let color_scheme_xml = extract_balanced_tag_blocks(theme_xml, "a:clrScheme")
+    let color_scheme_xml = crate::xml::extract_balanced_tag_slices(theme_xml, "a:clrScheme")
         .into_iter()
         .next()
         .unwrap_or_default();
@@ -2096,10 +2098,10 @@ pub fn parse_theme_colors(pkg: &OoxmlPackage) -> ThemeColorMap {
 
     let mut colors = ThemeColorMap::new();
     for name in color_names {
-        let tag_match = extract_balanced_tag_blocks(&color_scheme_xml, &format!("a:{name}"))
+        let tag_match = crate::xml::extract_balanced_tag_slices(&color_scheme_xml, &format!("a:{name}"))
             .into_iter()
             .next()
-            .or_else(|| super::scan::find_tag_token(&color_scheme_xml, &format!("a:{name}")));
+            .or_else(|| super::scan::find_tag_token_ref(&color_scheme_xml, &format!("a:{name}")));
         let Some(tag_match) = tag_match else {
             continue;
         };
@@ -2154,6 +2156,44 @@ fn with_word_application_defaults(doc_defaults_xml: &str, theme_fonts: &ThemeFon
 
 /// Mirrors TypeScript `parseStyleSheet`.
 pub fn parse_style_sheet(pkg: &OoxmlPackage) -> ParsedStyleSheet {
+    parse_style_sheet_selected(pkg, None)
+}
+
+pub(crate) fn parse_document_style_sheet(pkg: &OoxmlPackage) -> ParsedStyleSheet {
+    let mut referenced = HashSet::new();
+    for part in pkg.parts.values() {
+        for name in ["w:tblStyle", "w:rStyle", "w:pStyle"] {
+            for tag in crate::xml::extract_balanced_tag_slices(&part.content, name) {
+                if let Some(id) = get_attribute(tag, "w:val") { referenced.insert(id); }
+            }
+        }
+    }
+    if let Some(part) = crate::package::related_document_part(pkg, "styles") {
+        let mut parents = HashMap::new();
+        for style in crate::xml::extract_balanced_tag_slices(&part.content, "w:style") {
+            let tag = super::scan::find_tag_token_ref(style, "w:style").unwrap_or("");
+            let Some(id) = get_attribute(tag, "w:styleId") else { continue };
+            if let Some(parent) = super::scan::find_attribute_value_in_tag(style, "w:basedOn", "w:val") {
+                parents.insert(id.clone(), parent);
+            }
+            let kind = parse_style_type(get_attribute(tag, "w:type").as_deref());
+            if kind == Some(RawStyleType::Paragraph)
+                || (kind == Some(RawStyleType::Table)
+                    && get_attribute(tag, "w:default").is_some_and(|v| matches!(v.as_str(), "1" | "true" | "on"))) {
+                referenced.insert(id);
+            }
+        }
+        let mut pending: Vec<_> = referenced.iter().cloned().collect();
+        while let Some(id) = pending.pop() {
+            if let Some(parent) = parents.get(&id) {
+                if referenced.insert(parent.clone()) { pending.push(parent.clone()); }
+            }
+        }
+    }
+    parse_style_sheet_selected(pkg, Some(&referenced))
+}
+
+fn parse_style_sheet_selected(pkg: &OoxmlPackage, selected_styles: Option<&HashSet<String>>) -> ParsedStyleSheet {
     let Some(styles_xml) =
         crate::package::related_document_part(pkg, "styles").map(|part| part.content.as_str())
     else {
@@ -2162,7 +2202,7 @@ pub fn parse_style_sheet(pkg: &OoxmlPackage) -> ParsedStyleSheet {
 
     let theme_fonts = parse_theme_fonts(pkg);
     let theme_colors = parse_theme_colors(pkg);
-    let declared_doc_defaults_xml = extract_balanced_tag_blocks(styles_xml, "w:docDefaults")
+    let declared_doc_defaults_xml = crate::xml::extract_balanced_tag_slices(styles_xml, "w:docDefaults")
         .into_iter()
         .next()
         .unwrap_or_default();
@@ -2280,19 +2320,22 @@ pub fn parse_style_sheet(pkg: &OoxmlPackage) -> ParsedStyleSheet {
     let mut raw_table_styles_by_id = HashMap::new();
     let mut default_table_style_id = None;
 
-    for style_xml in extract_balanced_tag_blocks(styles_xml, "w:style") {
-        let style_tag = super::scan::find_tag_token(&style_xml, "w:style").unwrap_or_default();
+    for style_xml in crate::xml::extract_balanced_tag_slices(styles_xml, "w:style") {
+        let style_tag = super::scan::find_tag_token_ref(&style_xml, "w:style").unwrap_or_default();
         let style_id = get_attribute(&style_tag, "w:styleId");
         let style_type = parse_style_type(get_attribute(&style_tag, "w:type").as_deref());
         let (Some(style_id), Some(style_type)) = (style_id, style_type) else {
             continue;
         };
+        if selected_styles.is_some_and(|ids| !ids.contains(&style_id)) {
+            continue;
+        }
 
-        let name_tag = super::scan::find_tag_token(&style_xml, "w:name").unwrap_or_default();
-        let based_on_tag = super::scan::find_tag_token(&style_xml, "w:basedOn").unwrap_or_default();
-        let next_tag = super::scan::find_tag_token(&style_xml, "w:next").unwrap_or_default();
+        let name_tag = super::scan::find_tag_token_ref(&style_xml, "w:name").unwrap_or_default();
+        let based_on_tag = super::scan::find_tag_token_ref(&style_xml, "w:basedOn").unwrap_or_default();
+        let next_tag = super::scan::find_tag_token_ref(&style_xml, "w:next").unwrap_or_default();
         let ui_priority_tag =
-            super::scan::find_tag_token(&style_xml, "w:uiPriority").unwrap_or_default();
+            super::scan::find_tag_token_ref(&style_xml, "w:uiPriority").unwrap_or_default();
         let paragraph_properties_xml = resolve_style_properties_block(&style_xml, "w:pPr");
         let style_has_paragraph_num_pr =
             super::scan::contains_tag(&paragraph_properties_xml, "w:numPr");
@@ -2357,7 +2400,7 @@ pub fn parse_style_sheet(pkg: &OoxmlPackage) -> ParsedStyleSheet {
             },
         );
 
-        if style_type == RawStyleType::Table {
+        if style_type == RawStyleType::Table && selected_styles.is_none_or(|ids| ids.contains(&style_id)) {
             if get_attribute(&style_tag, "w:default")
                 .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "on"))
             {
@@ -2371,9 +2414,9 @@ pub fn parse_style_sheet(pkg: &OoxmlPackage) -> ParsedStyleSheet {
                 conditions.insert(TableConditionalStyleType::WholeTable, whole_table_condition);
             }
 
-            for conditional_style_xml in extract_balanced_tag_blocks(&style_xml, "w:tblStylePr") {
+            for conditional_style_xml in crate::xml::extract_balanced_tag_slices(&style_xml, "w:tblStylePr") {
                 let conditional_style_tag =
-                    super::scan::find_tag_token(&conditional_style_xml, "w:tblStylePr")
+                    super::scan::find_tag_token_ref(&conditional_style_xml, "w:tblStylePr")
                         .unwrap_or_default();
                 let Some(conditional_type) = normalize_table_conditional_style_type(
                     get_attribute(&conditional_style_tag, "w:type").as_deref(),

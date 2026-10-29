@@ -96,6 +96,9 @@ fn visit_direct_child_tags(xml: &str, mut visit: impl FnMut(usize, usize, &str) 
 }
 
 pub fn extract_direct_child_tag_ranges(xml: &str) -> Vec<TaggedRange> {
+    if let Some(children) = crate::xml_index::children(xml) {
+        return children;
+    }
     let mut children = Vec::new();
     visit_direct_child_tags(xml, |start, end, name| {
         children.push(TaggedRange {
@@ -109,6 +112,9 @@ pub fn extract_direct_child_tag_ranges(xml: &str) -> Vec<TaggedRange> {
 }
 
 pub(crate) fn direct_child_tag<'a>(xml: &'a str, name: &str) -> Option<&'a str> {
+    if let Some(child) = crate::xml_index::child(xml, name) {
+        return child;
+    }
     let mut found = None;
     visit_direct_child_tags(xml, |start, end, tag| {
         if tag.eq_ignore_ascii_case(name) {
@@ -297,6 +303,9 @@ pub fn decode_xml_entities(text: &str) -> String {
 }
 
 pub fn extract_balanced_tag_ranges(xml: &str, tag_name: &str) -> Vec<TagRange> {
+    if let Some(ranges) = crate::xml_index::ranges(xml, tag_name) {
+        return ranges;
+    }
     let mut ranges = Vec::new();
     let mut start_stack = Vec::new();
 
@@ -340,6 +349,13 @@ pub fn extract_balanced_tag_blocks(xml: &str, tag_name: &str) -> Vec<String> {
         .collect()
 }
 
+pub(crate) fn extract_balanced_tag_slices<'a>(xml: &'a str, tag_name: &str) -> Vec<&'a str> {
+    extract_balanced_tag_ranges(xml, tag_name)
+        .into_iter()
+        .map(|range| &xml[range.start..range.end])
+        .collect()
+}
+
 pub fn extract_balanced_tag_blocks_in_order(xml: &str, tag_names: &[&str]) -> Vec<TaggedRange> {
     let mut ranges = Vec::new();
 
@@ -374,6 +390,9 @@ pub fn extract_balanced_tag_blocks_in_order(xml: &str, tag_names: &[&str]) -> Ve
 
 fn find_namespaced_tag_attributes(xml: &str, tag_name: &str) -> Option<String> {
     let open_prefix = format!("<w:{tag_name}");
+    if let Some(tag) = crate::xml_index::tag(xml, &format!("w:{tag_name}")) {
+        return tag.map(|tag| tag[open_prefix.len()..tag.len() - 1].trim_end_matches('/').to_owned());
+    }
     let mut index = 0;
 
     while index < xml.len() {

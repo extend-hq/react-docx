@@ -14,7 +14,7 @@ use crate::xml::{
 };
 
 use super::context::{ContentTypeLookup, ParseContext, ParsedStyleSheet};
-use super::body::extract_body_xml;
+use super::body::body_xml;
 use super::document::{
     extract_body_token_ranges, is_go_back_bookmark_paragraph, parse_document_xml, BodyTokenKind,
 };
@@ -28,24 +28,29 @@ struct ReferencedSectionPart {
     nodes: Vec<DocNode>,
 }
 
-struct PartNodeCache<'a> {
+pub(crate) struct PartNodeCache<'a, 's> {
     pkg: &'a OoxmlPackage,
-    content_types: ContentTypeLookup,
-    style_sheet: ParsedStyleSheet,
+    binary_assets: &'a HashMap<String, Vec<u8>>,
+    content_types: &'s ContentTypeLookup,
+    style_sheet: &'s ParsedStyleSheet,
     parsed_part_nodes_by_name: HashMap<String, Vec<DocNode>>,
+    context: Option<ParseContext<'a>>,
 }
 
-impl<'a> PartNodeCache<'a> {
-    fn new(
+impl<'a, 's> PartNodeCache<'a, 's> {
+    pub(crate) fn new(
         pkg: &'a OoxmlPackage,
-        content_types: ContentTypeLookup,
-        style_sheet: ParsedStyleSheet,
+        content_types: &'s ContentTypeLookup,
+        style_sheet: &'s ParsedStyleSheet,
+        binary_assets: &'a HashMap<String, Vec<u8>>,
     ) -> Self {
         Self {
             pkg,
+            binary_assets,
             content_types,
             style_sheet,
             parsed_part_nodes_by_name: HashMap::new(),
+            context: None,
         }
     }
 
@@ -72,16 +77,17 @@ impl<'a> PartNodeCache<'a> {
             return None;
         };
 
-        let part_context = ParseContext {
-            relationships: parse_part_relationships(self.pkg, part_name),
-            content_types: self.content_types.clone(),
-            parts: &self.pkg.parts,
-            binary_assets: &self.pkg.binary_assets,
-            style_sheet: self.style_sheet.clone(),
-            warnings: RefCell::new(Vec::new()),
-        };
-
-        let nodes = parse_document_xml(part_xml, &part_context);
+        if self.context.is_none() {
+            self.context = Some(ParseContext {
+                relationships: HashMap::new(), content_types: self.content_types.clone(),
+                parts: &self.pkg.parts, binary_assets: self.binary_assets,
+                style_sheet: self.style_sheet.clone(), warnings: RefCell::new(Vec::new()),
+            });
+        }
+        let context = self.context.as_mut().unwrap();
+        context.relationships = parse_part_relationships(self.pkg, part_name);
+        context.warnings.get_mut().clear();
+        let nodes = parse_document_xml(part_xml, context);
         self.parsed_part_nodes_by_name
             .insert(part_name.to_string(), nodes.clone());
         Some(nodes)
@@ -92,17 +98,15 @@ pub fn parse_header_sections(
     pkg: &OoxmlPackage,
     document_xml: &str,
     document_relationships: &HashMap<String, String>,
-    content_types: &ContentTypeLookup,
-    style_sheet: &ParsedStyleSheet,
     warnings: &mut Vec<String>,
+    cache: &mut PartNodeCache<'_, '_>,
 ) -> Vec<HeaderSection> {
     parse_referenced_sections(
         pkg,
         document_xml,
         document_relationships,
-        content_types,
-        style_sheet,
         warnings,
+        cache,
         "headerReference",
         "Missing header relationship target for",
         "Missing header part",
@@ -120,17 +124,15 @@ pub fn parse_footer_sections(
     pkg: &OoxmlPackage,
     document_xml: &str,
     document_relationships: &HashMap<String, String>,
-    content_types: &ContentTypeLookup,
-    style_sheet: &ParsedStyleSheet,
     warnings: &mut Vec<String>,
+    cache: &mut PartNodeCache<'_, '_>,
 ) -> Vec<FooterSection> {
     parse_referenced_sections(
         pkg,
         document_xml,
         document_relationships,
-        content_types,
-        style_sheet,
         warnings,
+        cache,
         "footerReference",
         "Missing footer relationship target for",
         "Missing footer part",
@@ -145,16 +147,13 @@ pub fn parse_footer_sections(
 }
 
 pub fn parse_document_sections(
-    pkg: &OoxmlPackage,
     document_xml: &str,
     document_relationships: &HashMap<String, String>,
-    content_types: &ContentTypeLookup,
-    style_sheet: &ParsedStyleSheet,
     warnings: &mut Vec<String>,
+    cache: &mut PartNodeCache<'_, '_>,
 ) -> Vec<DocumentSection> {
-    let body_xml = extract_body_xml(document_xml);
+    let body_xml = body_xml(document_xml);
     let token_ranges = extract_body_token_ranges(&body_xml);
-    let mut cache = PartNodeCache::new(pkg, content_types.clone(), style_sheet.clone());
     let mut node_count: i64 = 0;
     let mut section_start_node_index: i64 = 0;
     let mut sections = Vec::new();
@@ -175,7 +174,7 @@ pub fn parse_document_sections(
                         &section_properties_xml,
                         "headerReference",
                         document_relationships,
-                        &mut cache,
+                        cache,
                         warnings,
                     )
                     .into_iter()
@@ -189,7 +188,7 @@ pub fn parse_document_sections(
                         &section_properties_xml,
                         "footerReference",
                         document_relationships,
-                        &mut cache,
+                        cache,
                         warnings,
                     )
                     .into_iter()
@@ -218,7 +217,7 @@ pub fn parse_document_sections(
                 &section_properties_xml,
                 "headerReference",
                 document_relationships,
-                &mut cache,
+                cache,
                 warnings,
             )
             .into_iter()
@@ -232,7 +231,7 @@ pub fn parse_document_sections(
                 &section_properties_xml,
                 "footerReference",
                 document_relationships,
-                &mut cache,
+                cache,
                 warnings,
             )
             .into_iter()
@@ -281,6 +280,7 @@ pub fn parse_document_notes_from_part(
     content_types: &ContentTypeLookup,
     style_sheet: &ParsedStyleSheet,
     warnings: &mut Vec<String>,
+    binary_assets: &HashMap<String, Vec<u8>>,
 ) -> Vec<DocumentNoteDefinition> {
     let _ = warnings;
     let Some(notes_xml) = pkg.parts.get(part_name).map(|part| part.content.as_str()) else {
@@ -291,13 +291,13 @@ pub fn parse_document_notes_from_part(
         relationships: parse_part_relationships(pkg, part_name),
         content_types: content_types.clone(),
         parts: &pkg.parts,
-        binary_assets: &pkg.binary_assets,
+        binary_assets,
         style_sheet: style_sheet.clone(),
         warnings: RefCell::new(Vec::new()),
     };
 
     let mut notes = Vec::new();
-    for note_xml in extract_balanced_tag_blocks(notes_xml, tag_name) {
+    for note_xml in crate::xml::extract_balanced_tag_slices(notes_xml, tag_name) {
         let note_tag = find_opening_tag(&note_xml, tag_name).unwrap_or_default();
         if get_attribute(&note_tag, "w:type").is_some() {
             continue;
@@ -332,6 +332,7 @@ pub fn parse_document_comments(
     pkg: &OoxmlPackage,
     content_types: &ContentTypeLookup,
     style_sheet: &ParsedStyleSheet,
+    binary_assets: &HashMap<String, Vec<u8>>,
 ) -> Vec<DocumentCommentDefinition> {
     let Some(comments_xml) = crate::package::related_document_part(pkg, "comments")
         .map(|part| part.content.as_str())
@@ -343,7 +344,7 @@ pub fn parse_document_comments(
         relationships: parse_part_relationships(pkg, &crate::package::related_document_part_name(pkg, "comments")),
         content_types: content_types.clone(),
         parts: &pkg.parts,
-        binary_assets: &pkg.binary_assets,
+        binary_assets,
         style_sheet: style_sheet.clone(),
         warnings: RefCell::new(Vec::new()),
     };
@@ -442,9 +443,8 @@ fn parse_referenced_sections(
     pkg: &OoxmlPackage,
     document_xml: &str,
     document_relationships: &HashMap<String, String>,
-    content_types: &ContentTypeLookup,
-    style_sheet: &ParsedStyleSheet,
     warnings: &mut Vec<String>,
+    cache: &mut PartNodeCache<'_, '_>,
     relationship_tag_name: &str,
     missing_target_prefix: &str,
     missing_part_prefix: &str,
@@ -467,25 +467,18 @@ fn parse_referenced_sections(
             continue;
         }
 
-        let Some(header_xml) = pkg.parts.get(target_part_name).map(|part| part.content.as_str())
+        let Some(_header_xml) = pkg.parts.get(target_part_name).map(|part| part.content.as_str())
         else {
             warnings.push(format!("{missing_part_prefix} {target_part_name}"));
             continue;
         };
 
-        let header_context = ParseContext {
-            relationships: parse_part_relationships(pkg, target_part_name),
-            content_types: content_types.clone(),
-            parts: &pkg.parts,
-            binary_assets: &pkg.binary_assets,
-            style_sheet: style_sheet.clone(),
-            warnings: RefCell::new(Vec::new()),
-        };
+        let Some(nodes) = cache.resolve(target_part_name, relationship_tag_name, warnings) else { continue; };
 
         sections.push(ReferencedSectionPart {
             part_name: target_part_name.clone(),
             reference_type: get_attribute(&tag, "w:type"),
-            nodes: parse_document_xml(header_xml, &header_context),
+            nodes,
         });
     }
 
@@ -496,7 +489,7 @@ fn parse_section_references_from_properties(
     section_properties_xml: &str,
     relationship_tag_name: &str,
     document_relationships: &HashMap<String, String>,
-    cache: &mut PartNodeCache<'_>,
+    cache: &mut PartNodeCache<'_, '_>,
     warnings: &mut Vec<String>,
 ) -> Vec<ReferencedSectionPart> {
     let mut references = Vec::new();

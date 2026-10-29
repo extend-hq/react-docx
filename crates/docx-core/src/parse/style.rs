@@ -547,6 +547,15 @@ fn resolve_toggle_property(
 #[derive(Default)]
 struct RunStyleCache {
     entries: std::collections::HashMap<String, Vec<(u8, ThemeFontMap, Option<TextStyle>)>>,
+    resolved: std::collections::HashMap<String, Vec<ResolvedRunStyle>>,
+    paragraphs: std::collections::HashMap<String, Vec<(Option<ParagraphSpacing>, Option<ParagraphStyle>)>>,
+}
+
+struct ResolvedRunStyle {
+    scripts: u8,
+    paragraph: Option<String>,
+    table: Option<TextStyle>,
+    style: Option<TextStyle>,
 }
 
 thread_local! {
@@ -567,6 +576,10 @@ impl Drop for RunStyleCacheScope {
     }
 }
 
+pub(crate) fn cached_definition_style(xml: &str, fonts: &ThemeFontMap) -> Option<TextStyle> {
+    cached_text_style(xml, fonts, 128)
+}
+
 fn cached_text_style(xml: &str, fonts: &ThemeFontMap, scripts: u8) -> Option<TextStyle> {
     if xml.is_empty() {
         return None;
@@ -584,7 +597,11 @@ fn cached_text_style(xml: &str, fonts: &ThemeFontMap, scripts: u8) -> Option<Tex
     if let Some(style) = cached {
         return style;
     }
-    let style = parse_text_style_with_scripts(xml, fonts, scripts);
+    let style = if scripts == 128 {
+        super::styles::parse_definition_style_uncached(xml, fonts)
+    } else {
+        parse_text_style_with_scripts(xml, fonts, scripts)
+    };
     if xml.len() <= 8192 {
         RUN_STYLE_CACHE.with(|cache| {
             if let Some(cache) = cache
@@ -602,7 +619,20 @@ fn cached_text_style(xml: &str, fonts: &ThemeFontMap, scripts: u8) -> Option<Tex
     return style;
 }
 
-fn parse_direct_run_style(run_xml: &str, context: &ParseContext<'_>) -> Option<TextStyle> {
+fn ordinary_run_properties(run_xml: &str) -> Option<&str> {
+    let mut properties = None;
+    let mut seen = false;
+    if let Some(ordinary) = crate::xml_index::for_each_child(run_xml, |name, xml| {
+        seen = true;
+        if name.eq_ignore_ascii_case("w:rPr") {
+            return properties.replace(xml).is_none();
+        }
+        if name.eq_ignore_ascii_case("w:fldChar") && !xml.ends_with("/>") { return false; }
+        ["w:t", "w:tab", "w:br", "w:cr", "w:sym", "w:noBreakHyphen", "w:softHyphen", "w:footnoteReference", "w:endnoteReference", "w:instrText", "w:fldChar", "w:lastRenderedPageBreak"]
+            .iter().any(|tag| name.eq_ignore_ascii_case(tag))
+    }) {
+        return (ordinary && seen).then(|| properties.unwrap_or(""));
+    }
     let ranges = crate::xml::extract_direct_child_tag_ranges(run_xml);
     let ordinary = !ranges.is_empty()
         && ranges
@@ -640,13 +670,12 @@ fn parse_direct_run_style(run_xml: &str, context: &ParseContext<'_>) -> Option<T
             .find(|range| range.tag_name.eq_ignore_ascii_case("w:rPr"))
             .map(|range| &run_xml[range.start..range.end])
             .unwrap_or("");
-        if properties.is_empty() {
-            return None;
-        }
-        let scripts = text_script_flags(run_xml);
-        let fonts = &context.style_sheet.theme_fonts;
-        return cached_text_style(properties, fonts, scripts);
+        return Some(properties);
     }
+    None
+}
+
+fn parse_direct_run_style(run_xml: &str, context: &ParseContext<'_>) -> Option<TextStyle> {
     let text_box_content = prefer_alternate_content_choice(run_xml);
     let text_box_run_xml = extract_balanced_tag_blocks(&text_box_content, "w:txbxContent")
         .into_iter()
@@ -672,9 +701,42 @@ pub(crate) fn parse_run_style_in_table(
     paragraph_style_id: Option<&str>,
     table_run_style: Option<&TextStyle>,
 ) -> Option<TextStyle> {
+    let properties = ordinary_run_properties(run_xml);
+    resolve_run_style(run_xml, properties, context, paragraph_style_id, table_run_style)
+}
+
+pub(crate) fn parse_mark_run_style(
+    properties: &str,
+    context: &ParseContext<'_>,
+    paragraph_style_id: Option<&str>,
+    table_run_style: Option<&TextStyle>,
+) -> Option<TextStyle> {
+    resolve_run_style(properties, Some(properties), context, paragraph_style_id, table_run_style)
+}
+
+fn resolve_run_style(
+    run_xml: &str,
+    properties: Option<&str>,
+    context: &ParseContext<'_>,
+    paragraph_style_id: Option<&str>,
+    table_run_style: Option<&TextStyle>,
+) -> Option<TextStyle> {
+    let scripts = if properties.is_some_and(|xml| !xml.is_empty()) { text_script_flags(run_xml) } else { 0 };
+    if let Some(xml) = properties {
+        let cached = RUN_STYLE_CACHE.with(|cache| {
+            let cache = cache.borrow();
+            cache.as_ref()?.resolved.get(xml)?.iter()
+                .find(|entry| entry.scripts == scripts && entry.paragraph.as_deref() == paragraph_style_id && entry.table.as_ref() == table_run_style)
+                .map(|entry| entry.style.clone())
+        });
+        if let Some(style) = cached { return style; }
+    }
     let run_style_id = super::scan::find_attribute_value_in_tag(run_xml, "w:rStyle", "w:val")
         .filter(|value| !value.is_empty());
-    let direct = parse_direct_run_style(run_xml, context);
+    let direct = match properties {
+        Some(xml) => cached_text_style(xml, &context.style_sheet.theme_fonts, scripts),
+        None => parse_direct_run_style(run_xml, context),
+    };
     let inherited_paragraph_run_style = paragraph_style_id
         .and_then(|id| context.style_sheet.paragraph_style_by_id.get(id))
         .and_then(|style| style.run_style.as_ref());
@@ -706,14 +768,25 @@ pub(crate) fn parse_run_style_in_table(
         inherited_run_style,
         direct.as_ref(),
     ]);
-    merged.map(|mut style| {
+    let resolved = merged.map(|mut style| {
         style.bold = bold;
         style.italic = italic;
         style.strike = strike;
         style.all_caps = all_caps;
         style.small_caps = small_caps;
         style
-    })
+    });
+    if let Some(xml) = properties.filter(|xml| xml.len() <= 8192) {
+        RUN_STYLE_CACHE.with(|cache| {
+            if let Some(cache) = cache.borrow_mut().as_mut().filter(|cache| cache.resolved.len() < 4096) {
+                let variants = cache.resolved.entry(xml.to_owned()).or_default();
+                if variants.len() < 32 {
+                    variants.push(ResolvedRunStyle { scripts, paragraph: paragraph_style_id.map(str::to_owned), table: table_run_style.cloned(), style: resolved.clone() });
+                }
+            }
+        });
+    }
+    resolved
 }
 
 pub fn parse_paragraph_style(
@@ -728,17 +801,40 @@ pub fn parse_paragraph_style_in_table(
     context: &ParseContext<'_>,
     table_paragraph_spacing: Option<&ParagraphSpacing>,
 ) -> Option<ParagraphStyle> {
+    let xml = super::styles::direct_table_property(paragraph_xml, "w:pPr").unwrap_or("");
+    let cached = RUN_STYLE_CACHE.with(|cache| {
+        let cache = cache.borrow();
+        cache.as_ref()?.paragraphs.get(xml)?.iter()
+            .find(|(spacing, _)| spacing.as_ref() == table_paragraph_spacing)
+            .map(|(_, style)| style.clone())
+    });
+    if let Some(style) = cached { return style; }
+    let style = parse_paragraph_style_uncached(paragraph_xml, context, table_paragraph_spacing);
+    if xml.len() <= 8192 {
+        RUN_STYLE_CACHE.with(|cache| {
+            if let Some(cache) = cache.borrow_mut().as_mut().filter(|cache| cache.paragraphs.len() < 4096) {
+                let variants = cache.paragraphs.entry(xml.to_owned()).or_default();
+                if variants.len() < 16 { variants.push((table_paragraph_spacing.cloned(), style.clone())); }
+            }
+        });
+    }
+    style
+}
+
+fn parse_paragraph_style_uncached(
+    paragraph_xml: &str,
+    context: &ParseContext<'_>,
+    table_paragraph_spacing: Option<&ParagraphSpacing>,
+) -> Option<ParagraphStyle> {
     let original_paragraph_properties_xml =
-        super::styles::direct_table_property(paragraph_xml, "w:pPr")
-            .unwrap_or_default()
-            .to_string();
-    let mut paragraph_properties_xml = original_paragraph_properties_xml.clone();
+        super::styles::direct_table_property(paragraph_xml, "w:pPr").unwrap_or_default();
+    let mut paragraph_properties_xml = std::borrow::Cow::Borrowed(original_paragraph_properties_xml);
     for range in crate::xml::extract_direct_child_tag_ranges(&original_paragraph_properties_xml)
         .into_iter()
         .rev()
         .filter(|range| range.tag_name.eq_ignore_ascii_case("w:pPrChange"))
     {
-        paragraph_properties_xml.replace_range(range.start..range.end, "");
+        paragraph_properties_xml.to_mut().replace_range(range.start..range.end, "");
     }
     let alignment_match =
         super::scan::find_attribute_value_in_tag(&paragraph_properties_xml, "w:jc", "w:val")

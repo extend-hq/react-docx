@@ -1,9 +1,9 @@
 use std::borrow::Cow;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use crate::package::OoxmlPackage;
 
-fn prefix(uri: &str) -> Option<&'static str> {
+pub(crate) fn prefix(uri: &str) -> Option<&'static str> {
     match uri {
         "http://schemas.openxmlformats.org/package/2006/content-types"
         | "http://schemas.openxmlformats.org/package/2006/relationships"
@@ -36,26 +36,37 @@ fn prefix(uri: &str) -> Option<&'static str> {
     }
 }
 
-fn escape(value: &str, attribute: bool) -> String {
-    let value = value
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;");
-    if attribute {
-        value
-            .replace('"', "&quot;")
-            .replace('\r', "&#13;")
-            .replace('\n', "&#10;")
-            .replace('\t', "&#9;")
-    } else {
-        value
+fn escape_into(value: &str, attribute: bool, out: &mut String) {
+    let mut start = 0;
+    for (offset, byte) in value.bytes().enumerate() {
+        let escaped = match byte {
+            b'&' => "&amp;",
+            b'<' => "&lt;",
+            b'>' => "&gt;",
+            b'"' if attribute => "&quot;",
+            b'\r' if attribute => "&#13;",
+            b'\n' if attribute => "&#10;",
+            b'\t' if attribute => "&#9;",
+            _ => continue,
+        };
+        out.push_str(&value[start..offset]);
+        out.push_str(escaped);
+        start = offset + 1;
     }
+    out.push_str(&value[start..]);
 }
 
 pub fn normalize_xml(xml: &str) -> Result<String, String> {
     let document = roxmltree::Document::parse(xml).map_err(|e| e.to_string())?;
     let mut namespaces = BTreeMap::<String, String>::new();
     for node in document.descendants().filter(|node| node.is_element()) {
+        if node.parent().is_some_and(|parent| parent.is_element()) {
+            let start = node.range().start;
+            let end = crate::xml::tag_token_end(xml, start).unwrap_or(start);
+            if !xml[start..end].contains("xmlns") {
+                continue;
+            }
+        }
         for ns in node.namespaces() {
             if !namespaces.contains_key(ns.uri()) {
                 let name = prefix(ns.uri()).map(str::to_string).unwrap_or_else(|| {
@@ -81,16 +92,13 @@ pub fn normalize_xml(xml: &str) -> Result<String, String> {
             }
         }
     }
-    fn name(ns: Option<&str>, local: &str, namespaces: &BTreeMap<String, String>) -> String {
-        ns.and_then(|ns| {
-            namespaces
-                .get(ns)
-                .map(String::as_str)
-                .or_else(|| prefix(ns))
-        })
-        .filter(|prefix| !prefix.is_empty())
-        .map(|prefix| format!("{prefix}:{local}"))
-        .unwrap_or_else(|| local.to_string())
+    fn write_name(ns: Option<&str>, local: &str, namespaces: &BTreeMap<String, String>, out: &mut String) {
+        if let Some(prefix) = ns.and_then(|ns| namespaces.get(ns).map(String::as_str).or_else(|| prefix(ns)))
+            .filter(|prefix| !prefix.is_empty()) {
+            out.push_str(prefix);
+            out.push(':');
+        }
+        out.push_str(local);
     }
     fn write(
         node: roxmltree::Node<'_, '_>,
@@ -98,7 +106,7 @@ pub fn normalize_xml(xml: &str) -> Result<String, String> {
         out: &mut String,
     ) {
         if node.is_text() {
-            out.push_str(&escape(node.text().unwrap_or(""), false));
+            escape_into(node.text().unwrap_or(""), false, out);
             return;
         }
         if node.is_comment() {
@@ -110,13 +118,9 @@ pub fn normalize_xml(xml: &str) -> Result<String, String> {
         if !node.is_element() {
             return;
         }
-        let tag = name(
-            node.tag_name().namespace(),
-            node.tag_name().name(),
-            namespaces,
-        );
+        let tag = node.tag_name();
         out.push('<');
-        out.push_str(&tag);
+        write_name(tag.namespace(), tag.name(), namespaces, out);
         if node.parent().is_some_and(|parent| parent.is_root()) {
             let mut declarations = BTreeMap::<&str, &str>::new();
             for (uri, prefix) in namespaces {
@@ -127,18 +131,22 @@ pub fn normalize_xml(xml: &str) -> Result<String, String> {
             }
             for (prefix, uri) in declarations {
                 if prefix != "xml" {
-                    let attr = if prefix.is_empty() {
-                        "xmlns".to_string()
-                    } else {
-                        format!("xmlns:{prefix}")
-                    };
-                    out.push_str(&format!(" {attr}=\"{}\"", escape(uri, true)));
+                    out.push_str(" xmlns");
+                    if !prefix.is_empty() {
+                        out.push(':');
+                        out.push_str(prefix);
+                    }
+                    out.push_str("=\"");
+                    escape_into(uri, true, out);
+                    out.push('"');
                 }
             }
         }
         for attr in node.attributes() {
-            let attr_name = name(attr.namespace(), attr.name(), namespaces);
-            let value = if attr.name() == "Requires" || attr.name() == "Ignorable" {
+            out.push(' ');
+            write_name(attr.namespace(), attr.name(), namespaces, out);
+            out.push_str("=\"");
+            let value: Cow<'_ , str> = if attr.name() == "Requires" || attr.name() == "Ignorable" {
                 attr.value()
                     .split_whitespace()
                     .map(|p| {
@@ -148,11 +156,12 @@ pub fn normalize_xml(xml: &str) -> Result<String, String> {
                             .unwrap_or(p)
                     })
                     .collect::<Vec<_>>()
-                    .join(" ")
+                    .join(" ").into()
             } else {
-                attr.value().to_string()
+                Cow::Borrowed(attr.value())
             };
-            out.push_str(&format!(" {attr_name}=\"{}\"", escape(&value, true)));
+            escape_into(&value, true, out);
+            out.push('"');
         }
         if node.has_children() {
             out.push('>');
@@ -160,7 +169,7 @@ pub fn normalize_xml(xml: &str) -> Result<String, String> {
                 write(child, namespaces, out);
             }
             out.push_str("</");
-            out.push_str(&tag);
+            write_name(tag.namespace(), tag.name(), namespaces, out);
             out.push('>');
         } else {
             out.push_str("/>");
@@ -322,20 +331,26 @@ fn is_canonical_xml(xml: &str) -> bool {
     }
 }
 
-pub fn normalized_package(pkg: &OoxmlPackage) -> Cow<'_, OoxmlPackage> {
-    let replacements: Vec<_> = pkg
-        .parts
-        .values()
-        .filter(|part| {
-            (part.name.ends_with(".xml") || part.name.ends_with(".rels"))
-                && !is_canonical_xml(&part.content)
-        })
-        .map(|part| (part.name.clone(), normalize_xml(&part.content)))
-        .collect();
-    if replacements.is_empty() {
-        return Cow::Borrowed(pkg);
+/// Normalizes an XML-only view while the caller retains the original binary assets.
+pub(crate) fn normalized_package(pkg: &OoxmlPackage) -> (Cow<'_, OoxmlPackage>, HashMap<String, crate::xml_index::Index>) {
+    let mut indexes = HashMap::new();
+    let mut replacements = Vec::new();
+    for part in pkg.parts.values() {
+        if !part.name.ends_with(".xml") && !part.name.ends_with(".rels") { continue; }
+        if let Some(index) = crate::xml_index::Index::canonical(&part.content) {
+            indexes.insert(part.name.clone(), index);
+        } else if !is_canonical_xml(&part.content) {
+            replacements.push((part.name.clone(), normalize_xml(&part.content)));
+        }
     }
-    let mut normalized = pkg.clone();
+    if replacements.is_empty() {
+        return (Cow::Borrowed(pkg), indexes);
+    }
+    let mut normalized = OoxmlPackage {
+        parts: pkg.parts.clone(),
+        binary_assets: HashMap::new(),
+        warnings: pkg.warnings.clone(),
+    };
     for (name, replacement) in replacements {
         match replacement {
             Ok(xml) => {
@@ -348,5 +363,5 @@ pub fn normalized_package(pkg: &OoxmlPackage) -> Cow<'_, OoxmlPackage> {
                 .push(format!("XML normalization failed in {}: {error}", name)),
         }
     }
-    Cow::Owned(normalized)
+    (Cow::Owned(normalized), indexes)
 }

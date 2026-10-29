@@ -397,7 +397,9 @@ impl Extractor {
                 }
             }
         }
-        let mut block = self.block(id.to_string(), kind, content, json!({"type":"text_details", "kind":"paragraph", "style":p.style, "styleId":style_id, "headingLevel":style.and_then(|s|s.heading_level), "numbering":style.and_then(|s|s.numbering.as_ref()), "inlines":inline, "fieldInstructions":field_instructions}), children, parent);
+        let mut details = json!({"type":"text_details", "kind":"paragraph", "style":p.style, "styleId":style_id, "headingLevel":style.and_then(|s|s.heading_level), "numbering":style.and_then(|s|s.numbering.as_ref()), "fieldInstructions":field_instructions});
+        details.as_object_mut().unwrap().insert("inlines".into(), Value::Array(inline));
+        let mut block = self.block(id.to_string(), kind, content, details, children, parent);
         if self.include_words {
             block.words = Some(self.words(id, &block.content));
         }

@@ -6,11 +6,11 @@ use crate::model::{
 };
 use crate::package::OoxmlPackage;
 use super::colors::normalize_hex_color;
-use crate::xml::{extract_balanced_tag_blocks, get_attribute, parse_integer_attribute};
+use crate::xml::{get_attribute, parse_integer_attribute};
 
 use super::context::ContentTypeLookup;
 use super::relationships::{bytes_to_base64, content_type_for_part, parse_part_relationships};
-use super::scan::{decode_xml_attribute, find_tag_token, starts_with_ignore_ascii_case};
+use super::scan::{decode_xml_attribute, starts_with_ignore_ascii_case};
 use super::styles::{parse_paragraph_indent_from_xml, parse_text_style_from_xml};
 
 /// Mirrors TypeScript `pointsToPixels`.
@@ -77,11 +77,20 @@ pub fn parse_numbering_picture_bullet_definitions(
     numbering_xml: &str,
     content_types: &ContentTypeLookup,
 ) -> HashMap<i64, NumberingPictureBulletDefinition> {
+    parse_picture_bullets_with_assets(pkg, numbering_xml, content_types, &pkg.binary_assets)
+}
+
+fn parse_picture_bullets_with_assets(
+    pkg: &OoxmlPackage,
+    numbering_xml: &str,
+    content_types: &ContentTypeLookup,
+    binary_assets: &HashMap<String, Vec<u8>>,
+) -> HashMap<i64, NumberingPictureBulletDefinition> {
     let mut picture_bullets = HashMap::new();
     let numbering_relationships = parse_part_relationships(pkg, &crate::package::related_document_part_name(pkg, "numbering"));
 
-    for num_pic_bullet_xml in extract_balanced_tag_blocks(numbering_xml, "w:numPicBullet") {
-        let num_pic_bullet_tag = find_tag_token(&num_pic_bullet_xml, "w:numPicBullet").unwrap_or_default();
+    for num_pic_bullet_xml in crate::xml::extract_balanced_tag_slices(numbering_xml, "w:numPicBullet") {
+        let num_pic_bullet_tag = super::scan::find_tag_token_ref(&num_pic_bullet_xml, "w:numPicBullet").unwrap_or_default();
         let num_pic_bullet_id = get_attribute(&num_pic_bullet_tag, "w:numPicBulletId")
             .and_then(|raw| raw.parse::<f64>().ok())
             .filter(|value| value.is_finite());
@@ -89,20 +98,20 @@ pub fn parse_numbering_picture_bullet_definitions(
             continue;
         };
 
-        let shape_tag = find_tag_token(&num_pic_bullet_xml, "v:shape");
+        let shape_tag = super::scan::find_tag_token_ref(&num_pic_bullet_xml, "v:shape");
         let shape_style = shape_tag.as_deref().and_then(|tag| get_attribute(tag, "style"));
         let width_px = parse_css_point_value(shape_style.as_deref(), "width").map(|value| value as f64);
         let height_px =
             parse_css_point_value(shape_style.as_deref(), "height").map(|value| value as f64);
 
-        let image_tag = find_tag_token(&num_pic_bullet_xml, "v:imagedata");
+        let image_tag = super::scan::find_tag_token_ref(&num_pic_bullet_xml, "v:imagedata");
         let relationship_id = image_tag.as_deref().and_then(|tag| get_attribute(tag, "r:id"));
         let image_part_name = relationship_id
             .as_ref()
             .and_then(|id| numbering_relationships.get(id).cloned());
         let image_bytes = image_part_name
             .as_ref()
-            .and_then(|part_name| pkg.binary_assets.get(part_name).cloned());
+            .and_then(|part_name| binary_assets.get(part_name));
         let image_content_type = image_part_name
             .as_ref()
             .and_then(|part_name| content_type_for_part(part_name, content_types));
@@ -139,31 +148,31 @@ pub fn parse_numbering_level_definition(
         return None;
     }
 
-    let level_tag = find_tag_token(level_xml, "w:lvl").unwrap_or_default();
+    let level_tag = super::scan::find_tag_token_ref(level_xml, "w:lvl").unwrap_or_default();
     let ilvl = get_attribute(&level_tag, "w:ilvl")
         .and_then(|raw| raw.parse::<f64>().ok())
         .filter(|value| value.is_finite())?;
 
-    let start_tag = find_tag_token(level_xml, "w:start");
-    let lvl_restart_tag = find_tag_token(level_xml, "w:lvlRestart");
-    let is_lgl_tag = find_tag_token(level_xml, "w:isLgl");
-    let num_fmt_tag = find_tag_token(level_xml, "w:numFmt");
-    let lvl_text_tag = find_tag_token(level_xml, "w:lvlText");
-    let suffix_tag = find_tag_token(level_xml, "w:suff");
-    let level_run_properties_xml = extract_balanced_tag_blocks(level_xml, "w:rPr")
+    let start_tag = super::scan::find_tag_token_ref(level_xml, "w:start");
+    let lvl_restart_tag = super::scan::find_tag_token_ref(level_xml, "w:lvlRestart");
+    let is_lgl_tag = super::scan::find_tag_token_ref(level_xml, "w:isLgl");
+    let num_fmt_tag = super::scan::find_tag_token_ref(level_xml, "w:numFmt");
+    let lvl_text_tag = super::scan::find_tag_token_ref(level_xml, "w:lvlText");
+    let suffix_tag = super::scan::find_tag_token_ref(level_xml, "w:suff");
+    let level_run_properties_xml = crate::xml::extract_balanced_tag_slices(level_xml, "w:rPr")
         .into_iter()
         .next()
-        .or_else(|| find_tag_token(level_xml, "w:rPr"))
+        .or_else(|| super::scan::find_tag_token_ref(level_xml, "w:rPr"))
         .unwrap_or_default();
-    let level_paragraph_properties_xml = extract_balanced_tag_blocks(level_xml, "w:pPr")
+    let level_paragraph_properties_xml = crate::xml::extract_balanced_tag_slices(level_xml, "w:pPr")
         .into_iter()
         .next()
-        .or_else(|| find_tag_token(level_xml, "w:pPr"))
+        .or_else(|| super::scan::find_tag_token_ref(level_xml, "w:pPr"))
         .unwrap_or_default();
-    let level_fonts_tag = find_tag_token(&level_run_properties_xml, "w:rFonts");
-    let level_color_tag = find_tag_token(&level_run_properties_xml, "w:color");
+    let level_fonts_tag = super::scan::find_tag_token_ref(&level_run_properties_xml, "w:rFonts");
+    let level_color_tag = super::scan::find_tag_token_ref(&level_run_properties_xml, "w:color");
     let level_run_style = parse_text_style_from_xml(&level_run_properties_xml, &Default::default());
-    let picture_bullet_tag = find_tag_token(level_xml, "w:lvlPicBulletId");
+    let picture_bullet_tag = super::scan::find_tag_token_ref(level_xml, "w:lvlPicBulletId");
     let suffix_raw = suffix_tag
         .as_deref()
         .and_then(|tag| get_attribute(tag, "w:val"))
@@ -242,24 +251,32 @@ pub fn parse_numbering_definitions(
     pkg: &OoxmlPackage,
     content_types: &ContentTypeLookup,
 ) -> Option<NumberingDefinitionSet> {
+    parse_numbering_with_assets(pkg, content_types, &pkg.binary_assets)
+}
+
+pub(crate) fn parse_numbering_with_assets(
+    pkg: &OoxmlPackage,
+    content_types: &ContentTypeLookup,
+    binary_assets: &HashMap<String, Vec<u8>>,
+) -> Option<NumberingDefinitionSet> {
     let numbering_xml = crate::package::related_document_part(pkg, "numbering")?.content.as_str();
     let picture_bullets_by_id =
-        parse_numbering_picture_bullet_definitions(pkg, numbering_xml, content_types);
+        parse_picture_bullets_with_assets(pkg, numbering_xml, content_types, binary_assets);
 
     let parsed_abstracts: Vec<IntermediateAbstractDefinition> =
-        extract_balanced_tag_blocks(numbering_xml, "w:abstractNum")
+        crate::xml::extract_balanced_tag_slices(numbering_xml, "w:abstractNum")
             .into_iter()
             .filter_map(|abstract_xml| {
                 let abstract_tag =
-                    find_tag_token(&abstract_xml, "w:abstractNum").unwrap_or_default();
+                    super::scan::find_tag_token_ref(&abstract_xml, "w:abstractNum").unwrap_or_default();
                 let abstract_num_id = get_attribute(&abstract_tag, "w:abstractNumId")
                     .and_then(|raw| raw.parse::<f64>().ok())
                     .filter(|value| value.is_finite())?;
 
-                let style_link_tag = find_tag_token(&abstract_xml, "w:styleLink");
-                let num_style_link_tag = find_tag_token(&abstract_xml, "w:numStyleLink");
+                let style_link_tag = super::scan::find_tag_token_ref(&abstract_xml, "w:styleLink");
+                let num_style_link_tag = super::scan::find_tag_token_ref(&abstract_xml, "w:numStyleLink");
                 let mut levels: Vec<NumberingLevelDefinition> =
-                    extract_balanced_tag_blocks(&abstract_xml, "w:lvl")
+                    crate::xml::extract_balanced_tag_slices(&abstract_xml, "w:lvl")
                         .into_iter()
                         .filter_map(|level_xml| {
                             parse_numbering_level_definition(&level_xml, &picture_bullets_by_id)
@@ -310,15 +327,15 @@ pub fn parse_numbering_definitions(
         .collect();
 
     let instances: Vec<NumberingInstanceDefinition> =
-        extract_balanced_tag_blocks(numbering_xml, "w:num")
+        crate::xml::extract_balanced_tag_slices(numbering_xml, "w:num")
             .into_iter()
             .filter_map(|num_xml| {
-                let num_tag = find_tag_token(&num_xml, "w:num").unwrap_or_default();
+                let num_tag = super::scan::find_tag_token_ref(&num_xml, "w:num").unwrap_or_default();
                 let num_id = get_attribute(&num_tag, "w:numId")
                     .and_then(|raw| raw.parse::<f64>().ok())
                     .filter(|value| value.is_finite())?;
 
-                let abstract_num_id_tag = find_tag_token(&num_xml, "w:abstractNumId");
+                let abstract_num_id_tag = super::scan::find_tag_token_ref(&num_xml, "w:abstractNumId");
                 let abstract_num_id = abstract_num_id_tag
                     .as_deref()
                     .and_then(|tag| get_attribute(tag, "w:val"))
@@ -328,14 +345,14 @@ pub fn parse_numbering_definitions(
                 let mut level_start_overrides = HashMap::new();
                 let mut level_overrides = Vec::new();
 
-                for override_xml in extract_balanced_tag_blocks(&num_xml, "w:lvlOverride") {
+                for override_xml in crate::xml::extract_balanced_tag_slices(&num_xml, "w:lvlOverride") {
                     let override_tag =
-                        find_tag_token(&override_xml, "w:lvlOverride").unwrap_or_default();
+                        super::scan::find_tag_token_ref(&override_xml, "w:lvlOverride").unwrap_or_default();
                     let override_level = get_attribute(&override_tag, "w:ilvl")
                         .and_then(|raw| raw.parse::<f64>().ok())
                         .filter(|value| value.is_finite())?;
 
-                    let start_override_tag = find_tag_token(&override_xml, "w:startOverride");
+                    let start_override_tag = super::scan::find_tag_token_ref(&override_xml, "w:startOverride");
                     let start_override = start_override_tag
                         .as_deref()
                         .and_then(|tag| parse_integer_attribute(tag, "w:val"));
@@ -345,7 +362,7 @@ pub fn parse_numbering_definitions(
                     }
 
                     if let Some(level_xml) =
-                        extract_balanced_tag_blocks(&override_xml, "w:lvl").into_iter().next()
+                        crate::xml::extract_balanced_tag_slices(&override_xml, "w:lvl").into_iter().next()
                     {
                         if let Some(parsed_level) =
                             parse_numbering_level_definition(&level_xml, &picture_bullets_by_id)
