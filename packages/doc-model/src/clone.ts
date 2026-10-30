@@ -396,6 +396,9 @@ function cloneTable(table: TableNode): TableNode {
           columnWidthsTwips: table.style.columnWidthsTwips
             ? [...table.style.columnWidthsTwips]
             : undefined,
+          collapsedGridColumns: table.style.collapsedGridColumns
+            ? [...table.style.collapsedGridColumns]
+            : undefined,
           borders: cloneTableBorderSet(table.style.borders),
         }
       : undefined,

@@ -10,7 +10,7 @@ fi
 blocked_paths="$(
   printf '%s\n' "$staged_paths" |
     grep -v -E '^docs/readme-assets/[^/]+\.png$' |
-    grep -E '(\.docx$|\.pdf$|\.avif$|\.bmp$|\.gif$|\.ico$|\.jpe?g$|\.png$|\.svg$|\.tiff?$|\.webp$)' ||
+    grep -E '(\.docx?$|\.emf$|\.wmf$|\.pdf$|\.avif$|\.bmp$|\.gif$|\.ico$|\.jpe?g$|\.png$|\.svg$|\.tiff?$|\.webp$)' ||
     true
 )"
 

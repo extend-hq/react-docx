@@ -4,21 +4,23 @@ The standalone Cargo workspace pins docx-rs 0.4.22, office_oxide 0.1.15, and und
 
 Install Python dependencies from `requirements.txt` into `.python-deps`, then build with `cargo build --release --manifest-path scripts/parser-benchmark/Cargo.toml`. Run commands from the repository root. Generated results and binary snapshots belong under `output/`.
 
+Inventory an explicitly supplied input directory with `python3 scripts/parser-benchmark/corpus.py --roots /path/to/local/corpus`. Use only documents you are authorized to process and redistribute; input documents and generated reports are not included in the repository. Legacy DOC reference generation requires LibreOffice (`soffice`) on PATH.
+
 ## Original comparison
 
 `corpus.py` inventories local inputs by content hash and creates an independent OOXML extraction oracle. `run.py`, `assess.py`, and `report.py` run the four parsers, normalize outputs, and publish the original report. Actual format is determined from bytes; filename extensions do not determine format. Legacy DOC uses a different reference and is reported separately.
 
 ## Optimization experiments
 
-The optimization scripts reuse the original manifest and oracle under `output/parser-benchmark-20261028`. The dated default output is `output/parser-hillclimb-20261028`. Its saved split has 48 tuning documents, 336 ordinary holdout documents, and six large outliers, all DOCX. Two legacy DOC inputs are included in full-corpus runs.
+The optimization scripts reuse the manifest and oracle under `output/parser-benchmark` and write results to `output/parser-hillclimb`. The saved split defines tuning, holdout, and outlier cohorts. Keep its identity fixed throughout an experiment.
 
 Preserve a baseline binary before editing core. `src/bin/probe.rs` separately measures package decoding, complete model construction, and structured-block extraction. It reads input once, discards the first iteration, and excludes serialization and destruction from timings.
 
 ```sh
-python3 scripts/parser-benchmark/hillclimb.py --label final --baseline output/parser-hillclimb-20261028/baseline-probe --candidate output/parser-hillclimb-20261028/final-probe --repeats 5
-python3 scripts/parser-benchmark/hillclimb_accuracy.py --label final --binary output/parser-hillclimb-20261028/final-parser-benchmark --split full
-python3 scripts/parser-benchmark/compare.py --binary output/parser-hillclimb-20261028/final-parser-benchmark --split full --repeats 5
-python3 scripts/parser-benchmark/parity.py --label final --binary output/parser-hillclimb-20261028/final-parser-benchmark
+python3 scripts/parser-benchmark/hillclimb.py --label final --baseline output/parser-hillclimb/baseline-probe --candidate output/parser-hillclimb/final-probe --repeats 5
+python3 scripts/parser-benchmark/hillclimb_accuracy.py --label final --binary output/parser-hillclimb/final-parser-benchmark --split full
+python3 scripts/parser-benchmark/compare.py --binary output/parser-hillclimb/final-parser-benchmark --split full --repeats 5
+python3 scripts/parser-benchmark/parity.py --label final --binary output/parser-hillclimb/final-parser-benchmark
 python3 scripts/parser-benchmark/wasm_compare.py --repeats 5
 python3 scripts/parser-benchmark/hillclimb_report.py
 ```
@@ -36,3 +38,15 @@ For parser rewrites, use `strict_parity.py` with `--baseline`, `--binary`, `--ou
 Text scores normalize Unicode and whitespace and use character 5-grams plus paragraph anchors. Feature checks report recall with explicit denominators. They do not establish universal accuracy or Word-identical rendering. Adjacent styled spans, resolved table grids, grouped images, generated symbols, and form controls can differ legitimately from raw XML occurrence counts. Preserve original scores and document diagnostic limitations rather than changing an oracle to make a candidate appear perfect.
 
 Competitor accuracy can be reused only when pinned versions, dependencies, and normalization are unchanged. Fresh comparison timings use the common set of successful inputs; failures and legacy DOC are reported separately. Do not compare old timing totals with fresh totals as if they were paired observations.
+
+## Reporting
+
+Use charts as the primary comparison view in HTML reports, with tables for exact values. Include median and p95 latency by parser, full latency distributions, and selectable axes for document size and complexity. Show extraction quality and feature recall alongside speed, with their denominators and reference limitations. Keep the cohort identical across parsers, retain zero-count inputs on logarithmic axes, and label units, transforms, and timing exclusions.
+
+`chart_metrics.py` derives numeric input dimensions from the existing manifest and OOXML oracle without exporting document text or filenames. `frontier_report.py` combines those dimensions with measured latencies and verified accuracy receipts to produce a self-contained interactive report. Use the same charts for subsequent comparison reports rather than relying on summary tables alone.
+
+`wasm_parity.py` compares the complete model and package returned across the JavaScript boundary. It excludes runtime timing fields and normalizes only object-key and style-definition order. Run it separately from WASM timing measurements.
+
+## Tight feedback loop
+
+See [the feedback runner](../parser-feedback/README.md) for immutable baseline setup, single-document parity checks, and interleaved timings. The live publisher accepts explicit paths: `python3 scripts/parser-benchmark/live_report.py --run output/parser-next --site output/parser-frontier`. Serve that site locally with `python3 -m http.server 8772 --bind 127.0.0.1 --directory output/parser-frontier`.

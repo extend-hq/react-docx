@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{cell::RefCell, collections::HashMap, marker::PhantomData};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -22,7 +22,10 @@ mod byte_asset_map {
         D: Deserializer<'de>,
     {
         let raw = HashMap::<String, serde_bytes::ByteBuf>::deserialize(deserializer)?;
-        Ok(raw.into_iter().map(|(key, value)| (key, value.into_vec())).collect())
+        Ok(raw
+            .into_iter()
+            .map(|(key, value)| (key, value.into_vec()))
+            .collect())
     }
 }
 
@@ -62,14 +65,137 @@ pub fn with_part(pkg: &OoxmlPackage, part: OoxmlPart) -> OoxmlPackage {
     }
 }
 
+struct RelationshipTargets {
+    package_address: usize,
+    sources: HashMap<String, HashMap<String, Option<String>>>,
+}
+
+thread_local! {
+    static RELATIONSHIP_TARGETS: RefCell<Option<RelationshipTargets>> = const { RefCell::new(None) };
+}
+
+// The package borrow and thread affinity keep address-based cache keys valid.
+pub(crate) struct RelationshipCacheScope<'a> {
+    previous: Option<RelationshipTargets>,
+    package: PhantomData<std::rc::Rc<&'a OoxmlPackage>>,
+}
+
+pub(crate) fn relationship_cache_scope(pkg: &OoxmlPackage) -> RelationshipCacheScope<'_> {
+    let targets = RelationshipTargets {
+        package_address: pkg as *const OoxmlPackage as usize,
+        sources: HashMap::new(),
+    };
+    RelationshipCacheScope {
+        previous: RELATIONSHIP_TARGETS.with(|current| current.replace(Some(targets))),
+        package: PhantomData,
+    }
+}
+
+impl Drop for RelationshipCacheScope<'_> {
+    fn drop(&mut self) {
+        RELATIONSHIP_TARGETS.with(|current| current.replace(self.previous.take()));
+    }
+}
+
 pub fn relationship_target(pkg: &OoxmlPackage, source: &str, kind: &str) -> Option<String> {
-    let rel_name = if source.is_empty() { "_rels/.rels".to_string() } else { crate::parse::relationship_part_name_for_part(source) };
+    enum Cached {
+        Unscoped,
+        SourceMissing,
+        Target(Option<String>),
+    }
+    let address = pkg as *const OoxmlPackage as usize;
+    let cached = RELATIONSHIP_TARGETS.with(|current| {
+        let current = current.borrow();
+        let Some(targets) = current
+            .as_ref()
+            .filter(|targets| targets.package_address == address)
+        else {
+            return Cached::Unscoped;
+        };
+        match targets.sources.get(source) {
+            Some(targets) => Cached::Target(targets.get(kind).cloned().flatten()),
+            None => Cached::SourceMissing,
+        }
+    });
+    match cached {
+        Cached::Unscoped => uncached_relationship_target(pkg, source, kind),
+        Cached::Target(target) => target,
+        Cached::SourceMissing => {
+            let targets = collect_relationship_targets(pkg, source);
+            let target = targets.get(kind).cloned().flatten();
+            RELATIONSHIP_TARGETS.with(|current| {
+                let mut current = current.borrow_mut();
+                if let Some(cache) = current
+                    .as_mut()
+                    .filter(|cache| cache.package_address == address)
+                {
+                    cache.sources.insert(source.to_owned(), targets);
+                }
+            });
+            target
+        }
+    }
+}
+
+fn collect_relationship_targets(
+    pkg: &OoxmlPackage,
+    source: &str,
+) -> HashMap<String, Option<String>> {
+    let rel_name = if source.is_empty() {
+        "_rels/.rels".to_string()
+    } else {
+        crate::parse::relationship_part_name_for_part(source)
+    };
+    let Some(part) = pkg.parts.get(&rel_name) else {
+        return HashMap::new();
+    };
+    let Ok(xml) = roxmltree::Document::parse(&part.content) else {
+        return HashMap::new();
+    };
+    let mut targets = HashMap::new();
+    for rel in xml.descendants().filter(|node| {
+        node.is_element()
+            && node.tag_name().name() == "Relationship"
+            && node.attribute("TargetMode") != Some("External")
+    }) {
+        let Some(kind) = rel
+            .attribute("Type")
+            .and_then(|value| value.rsplit('/').next())
+        else {
+            continue;
+        };
+        // The first qualifying relationship wins even when its target is absent.
+        if !targets.contains_key(kind) {
+            targets.insert(
+                kind.to_owned(),
+                rel.attribute("Target")
+                    .map(|target| crate::parse::resolve_part_path(source, target)),
+            );
+        }
+    }
+    targets
+}
+
+fn uncached_relationship_target(pkg: &OoxmlPackage, source: &str, kind: &str) -> Option<String> {
+    let rel_name = if source.is_empty() {
+        "_rels/.rels".to_string()
+    } else {
+        crate::parse::relationship_part_name_for_part(source)
+    };
     let part = pkg.parts.get(&rel_name)?;
     let xml = roxmltree::Document::parse(&part.content).ok()?;
-    let rel = xml.descendants().find(|node| node.is_element() && node.tag_name().name() == "Relationship"
-        && node.attribute("Type").is_some_and(|value| value.rsplit('/').next() == Some(kind))
-        && node.attribute("TargetMode") != Some("External"))?;
-    Some(crate::parse::resolve_part_path(source, rel.attribute("Target")?))
+    let rel = xml.descendants().find(|node| {
+        node.is_element()
+            && node.tag_name().name() == "Relationship"
+            && node
+                .attribute("Type")
+                .is_some_and(|value| value.rsplit('/').next() == Some(kind))
+            && node.attribute("TargetMode") != Some("External")
+    })?;
+    Some(crate::parse::resolve_part_path(
+        source,
+        rel.attribute("Target")?,
+    ))
 }
 
 pub fn main_document_part_name(pkg: &OoxmlPackage) -> String {
@@ -78,7 +204,11 @@ pub fn main_document_part_name(pkg: &OoxmlPackage) -> String {
 
 pub fn related_document_part_name(pkg: &OoxmlPackage, kind: &str) -> String {
     relationship_target(pkg, &main_document_part_name(pkg), kind).unwrap_or_else(|| {
-        if kind == "theme" { "word/theme/theme1.xml".into() } else { format!("word/{kind}.xml") }
+        if kind == "theme" {
+            "word/theme/theme1.xml".into()
+        } else {
+            format!("word/{kind}.xml")
+        }
     })
 }
 

@@ -1,0 +1,517 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>docx-core · Expanded corpus comparison</title>
+<style>
+:root{color-scheme:light;font:15px/1.55 system-ui,-apple-system,sans-serif;color:#202b36;background:#f5f6f8}
+*{box-sizing:border-box}body{max-width:1220px;margin:0 auto;padding:48px 28px 70px}h1{font-size:38px;line-height:1.13;letter-spacing:-1.3px;font-weight:650;margin:10px 0 18px}h2{font-size:22px;letter-spacing:-.4px;margin:0 0 14px}h3{font-size:16px;margin:0 0 8px}.eyebrow{font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:#476282}.lede{max-width:900px;color:#49596c;font-size:17px}a{color:#2157a0;text-underline-offset:3px}a:focus-visible,select:focus-visible,summary:focus-visible{outline:3px solid #3c77c8;outline-offset:3px}.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin:30px 0}.card,section{background:white;border:1px solid #dfe4ea;border-radius:12px}.card{padding:20px}.card strong{display:block;font-size:34px;line-height:1.1;letter-spacing:-1px;margin:12px 0;color:#174f88}.card small{color:#59697b}.label{font-size:12px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:#637184}section{padding:26px;margin:20px 0}.note{background:#eff4f9;border-left:3px solid #376c9b;padding:13px 16px;margin:18px 0;font-size:14px;color:#40576f}.subtle{color:#667487;font-size:13px}.flex{display:flex;justify-content:space-between;align-items:center;gap:18px;flex-wrap:wrap}select{font:inherit;border:1px solid #cdd5df;background:white;padding:7px 12px;border-radius:7px}table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}th,td{padding:12px 10px;text-align:right;border-bottom:1px solid #e7ebef;vertical-align:middle}th{font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:#68798a}th:first-child,td:first-child{text-align:left}tbody tr:last-child td{border:0}.core{color:#174f88;font-weight:650}.bar{height:9px;background:#7e9bb6;border-radius:3px;margin-top:6px;min-width:2px}.core .bar{background:#2469a5}.barcell{min-width:160px}.scroll{overflow-x:auto}.detail{display:block;color:#667487;font-size:11px;font-weight:400}.grid{display:grid;grid-template-columns:1fr 1fr;gap:32px}p{margin:10px 0}ul{padding-left:20px}li{margin:7px 0}footer{color:#687789;font-size:12px;margin-top:25px;overflow-wrap:anywhere}code{font-size:12px;overflow-wrap:anywhere}details{margin:16px 0}summary{cursor:pointer;font-weight:600}.evidence{display:flex;flex-wrap:wrap;gap:10px 20px;margin-top:20px}.metric-note{max-width:100ch}.pending{color:#805a21}@media(max-width:800px){body{padding:26px 16px}.cards{grid-template-columns:repeat(2,1fr)}.grid{grid-template-columns:1fr}.card strong{font-size:29px}section{padding:19px}h1{font-size:31px}}@media(max-width:460px){.cards{grid-template-columns:1fr 1fr;gap:8px}.card{padding:14px}th,td{padding:9px 6px}}
+</style>
+<style>
+.cards{display:flex;flex-wrap:wrap;gap:18px;margin:22px 0 28px;border-top:1px solid #dfe4ea;border-bottom:1px solid #dfe4ea}.card{flex:1;min-width:180px;padding:12px 0;border:0;border-radius:0;background:transparent}.card strong{font-size:23px;margin:5px 0;letter-spacing:-.5px}.card small{display:block;font-size:12px}.chart-panel{position:relative;margin:22px 0 8px}.chart-scroll{overflow-x:auto;padding:3px}.chart-panel svg{display:block;width:100%;height:auto;min-width:650px;overflow:visible;background:#fff}.chart-panel svg:focus-visible{outline:3px solid #3c77c8;outline-offset:2px}.chart-panel text{font:12px system-ui,-apple-system,sans-serif;fill:#506174}.chart-panel .axis-label{font-size:13px;fill:#35485d}.chart-panel .chart-title{font-size:15px;font-weight:650;fill:#253c53}.chart-panel .guide-label{font-size:11px;fill:#536b83}.chart-panel figcaption{font-size:12px;color:#667487;margin-top:10px}.chart-controls{display:flex;align-items:flex-end;flex-wrap:wrap;gap:12px 20px;margin:16px 0 8px}.chart-controls label{display:flex;flex-direction:column;gap:4px;font-size:12px;color:#4d6074}.chart-controls select{font-size:14px;min-height:36px}.engine-controls{display:flex;flex-wrap:wrap;gap:10px 20px;border:0;padding:0;margin:18px 0}.engine-controls legend{float:left;margin-right:20px;font-size:12px;font-weight:600;color:#526779}.engine-controls label{display:inline-flex;gap:6px;align-items:center;font-size:13px}.engine-controls input{width:16px;height:16px;margin:0;accent-color:var(--series-color)}.chart-legend{display:flex;flex-wrap:wrap;gap:10px 24px;margin:12px 0 8px;font-size:13px;color:#43576b}.legend-item{display:inline-flex;align-items:center;gap:7px}.swatch{display:inline-block;width:21px;height:3px;background:var(--series-color)}.chart-tooltip{position:absolute;display:none;z-index:5;max-width:295px;padding:10px 13px;border-radius:5px;background:#1e3447;color:#f4f7fb;box-shadow:0 3px 12px #182b3b24;font-size:12px;line-height:1.6;white-space:pre-line;pointer-events:none}.chart-tooltip strong{font-weight:650}.chart-status{min-height:20px;font-size:13px;color:#526779}.feature-table td{min-width:118px}.feature-table th{white-space:nowrap}.feature-table tbody th{font-size:13px;text-transform:none;letter-spacing:0;color:#3b5066;font-weight:500;text-align:left}.metric-link{padding:0;border:0;background:transparent;color:inherit;text-align:left;font:inherit;cursor:pointer;text-decoration:underline;text-decoration-color:#b7c5d1;text-underline-offset:3px}.metric-link:focus-visible,input:focus-visible{outline:3px solid #3c77c8;outline-offset:3px}.feature-table .selected-metric th{color:#174f88;font-weight:650}.heatmap-legend{display:flex;flex-wrap:wrap;gap:8px 18px;font-size:12px;margin:12px 0;color:#5e6d7b}.heatmap-chip{display:inline-block;width:11px;height:11px;margin-right:5px;border:1px solid #dce4df;vertical-align:-1px}.chart-empty{text-anchor:middle;font-size:15px;fill:#667487}.series-muted{opacity:.45}.chart-scroll-hint{display:none;font-size:12px;color:#667487;margin:6px 0}#accuracy-table td:last-child{text-align:left;min-width:300px}@media(max-width:700px){.chart-scroll-hint{display:block}.cards{gap:0 22px}.card{flex-basis:40%;min-width:130px}.chart-controls{gap:12px}.chart-controls label{flex:1 1 145px}.chart-controls select{width:100%}.engine-controls legend{float:none;margin-bottom:8px}.chart-tooltip{max-width:240px}.chart-panel{margin-top:16px}}
+</style>
+<style>#live-banner{padding:16px 0 20px;margin-bottom:22px;border-bottom:1px solid #cdd9e5}#live-banner[hidden]{display:none}#live-banner progress{display:block;width:100%;height:8px;margin:12px 0;accent-color:#245f99}.evidence-control{display:flex;flex-direction:column;gap:6px;max-width:480px}.evidence-control select{width:100%;min-width:0}#semantic-audit-details h3{margin-top:30px}pre{font:12px/1.6 ui-monospace,monospace;white-space:pre-wrap;overflow-wrap:anywhere}.feature-table th:first-child{min-width:180px}#speed-table td:last-child{min-width:160px;text-align:left}</style>
+<style>#single-trace-section table{table-layout:fixed}#single-trace-section th,#single-trace-section td{text-align:left;overflow-wrap:anywhere}.table-scroll{overflow-x:auto}</style>
+</head>
+<body>
+<div id="report-root">
+<aside id="live-banner" hidden role="status" aria-live="polite"><div class="flex"><strong id="live-stage"></strong><span id="live-count"></span></div><progress id="live-progress" max="1" value="0"></progress><div id="live-detail" class="subtle"></div></aside>
+<header>
+<div class="eyebrow">docx-core · Expanded corpus · Native parser comparison</div>
+<h1>More documents. Clearer tradeoffs.</h1>
+<p class="lede" id="headline"></p>
+<p class="subtle" id="scope"></p>
+</header>
+<main>
+<section aria-labelledby="comparison-title">
+<h2 id="comparison-title">Median and tail latency</h2>
+<p id="comparison-scope" class="subtle"></p><p id="latency-build-notice" class="note"></p>
+<figure class="chart-panel" id="latency-figure"><div class="chart-scroll"><svg id="latency-chart" role="img" tabindex="0" aria-label="Median and 95th-percentile latency by parser"></svg></div><figcaption>Lower is faster. Median and p95 use separate, labeled millisecond scales. All parsers use the same common-success inputs.</figcaption><div class="chart-tooltip" id="latency-tooltip" role="tooltip"></div></figure>
+<p id="target-status" class="note"></p><p id="all-corpus-latency" class="subtle"></p>
+<details><summary>Exact latency values and every parser outcome</summary><div class="scroll"><table><thead><tr><th scope="col">Parser</th><th scope="col">Common median</th><th scope="col">Common p95</th><th scope="col">All successful median</th><th scope="col">All successful p95</th><th scope="col">Succeeded / attempted</th><th scope="col">Timing outcomes</th><th scope="col">Current accuracy outcomes</th></tr></thead><tbody id="speed-table"></tbody></table></div><p class="subtle">The all-success columns include each parser’s own successful inputs, so those columns may describe different cohorts. Failures are excluded from latency distributions and remain counted above.</p></details>
+<p class="subtle">Each percentile summarizes per-document warm medians. File reads, JSON output, and object destruction are excluded from every parser’s timer. docx-core builds its complete editable model and structured blocks inside the timer; office_oxide includes IR conversion. Other parsers expose their native models. Outputs and feature coverage differ.</p>
+</section>
+<section aria-labelledby="distribution-title">
+<div class="flex"><div><h2 id="distribution-title">The full latency distribution</h2><p class="subtle">Further left is faster. The vertical axis shows the share of inputs parsed within a given latency.</p></div><label>Latency scale <select id="ecdf-scale"><option value="log">Logarithmic</option><option value="linear">Linear</option></select></label></div>
+<p id="ecdf-build-scope" class="subtle"></p>
+<div id="ecdf-legend" class="chart-legend" aria-label="Parser legend"></div>
+<figure id="ecdf-figure" class="chart-panel"><div class="chart-scroll"><svg id="ecdf-chart" role="img" tabindex="0" aria-label="Latency distributions; arrow keys inspect points"></svg></div><figcaption id="ecdf-caption"></figcaption><div id="ecdf-tooltip" class="chart-tooltip" role="tooltip"></div></figure>
+</section>
+<section aria-labelledby="scatter-title">
+<h2 id="scatter-title">Latency across document complexity</h2>
+<p id="scatter-build-scope" class="subtle"></p>
+<p class="subtle">Each point represents one anonymous input and one parser. Compare absolute latency or docx-core’s latency relative to another parser.</p>
+<div class="chart-controls">
+<label>Horizontal axis<select id="scatter-x"></select></label>
+<label>Vertical axis<select id="scatter-y"><option value="latency">Parser latency</option><option value="ratio">docx-core / parser latency</option></select></label>
+<label>Horizontal scale<select id="scatter-x-scale"><option value="log1p">Log1p — retains zero</option><option value="linear">Linear</option></select></label>
+<label>Vertical scale<select id="scatter-y-scale"><option value="log">Logarithmic</option><option value="linear">Linear</option></select></label>
+</div>
+<fieldset id="scatter-engines" class="engine-controls"><legend>Visible parsers</legend></fieldset>
+<p id="scatter-status" class="chart-status" aria-live="polite"></p>
+<figure id="scatter-figure" class="chart-panel"><div class="chart-scroll"><svg id="scatter-chart" role="img" tabindex="0" aria-label="Latency and document complexity; arrow keys inspect points"></svg></div><figcaption id="scatter-caption"></figcaption><div id="scatter-tooltip" class="chart-tooltip" role="tooltip"></div></figure>
+<details id="scatter-data"><summary>Exact data for the selected axes</summary><div class="scroll"><table><thead id="scatter-data-head"></thead><tbody id="scatter-data-body"></tbody></table></div></details>
+</section>
+<section id="baseline-section" aria-labelledby="baseline-title">
+<h2 id="baseline-title">Change from the prior docx-core build</h2>
+<p id="baseline-summary"></p>
+<div class="scroll"><table><thead><tr><th scope="col">Paired inputs</th><th scope="col">Median paired speedup</th><th scope="col">Previous median</th><th scope="col">Current median</th><th scope="col">Previous p95</th><th scope="col">Current p95</th></tr></thead><tbody id="baseline-table"></tbody></table></div>
+<p class="subtle">Paired speedup is the median of previous/current latency ratios for matching inputs, rather than the ratio of the two corpus medians. A value above 1× means docx-core improved.</p>
+</section>
+<section id="feedback-section" aria-labelledby="feedback-title">
+<p class="eyebrow">EXPERIMENTAL · DOCUMENT FEEDBACK LOOP</p>
+<h2 id="feedback-title">One document, one measured change</h2>
+<p id="feedback-status"></p>
+<p id="feedback-scope" class="subtle"></p>
+<div class="scroll"><table><thead><tr><th>Document</th><th>Core before</th><th>Core trial</th><th>office_oxide</th><th>Paired speedup</th><th>CPU diagnostic</th><th>Full output parity</th><th>Loop time</th><th>Assessment</th></tr></thead><tbody id="feedback-table"></tbody></table></div>
+<p class="subtle">Each row uses the same input for every parser. Core timings use a faster compilation profile on both sides. Trial results do not replace the accepted corpus measurements; output parity preserves existing recall but does not establish missing-feature support.</p>
+<a id="feedback-receipt">Live experiment receipt</a>
+<details><summary>Experiment history and decisions</summary><ul id="feedback-history"></ul></details>
+</section>
+<section id="instruction-analysis-section" aria-labelledby="instruction-analysis-title">
+<p class="eyebrow">CURRENT INVESTIGATION · NATIVE INSTRUCTIONS AND CPU CYCLES</p>
+<h2 id="instruction-analysis-title">Where the processor spends its work</h2>
+<p id="instruction-analysis-status"></p>
+<p id="instruction-analysis-scope" class="subtle"></p>
+<div class="scroll"><table><thead><tr><th>Evidence</th><th>docx-core</th><th>office_oxide</th><th>Interpretation</th></tr></thead><tbody id="instruction-analysis-results"></tbody></table></div>
+<p id="instruction-analysis-findings"></p>
+<p id="instruction-analysis-limitations" class="note"></p>
+
+
+<div class="evidence"><a href="current/instruction-analysis/summary.json">Investigation receipt</a></div>
+</section>
+<section id="normalization-optimization-section" aria-labelledby="normalization-optimization-title">
+<p class="eyebrow">PREVIOUS TRIAL · NORMALIZATION AND INDEXING</p>
+<h2 id="normalization-optimization-title">Combine normalization and index construction</h2>
+<p id="normalization-optimization-status"></p>
+<p id="normalization-optimization-control"></p>
+<div class="scroll"><table><thead><tr><th>Measurement scope</th><th>Accepted baseline</th><th>Candidate</th><th>office_oxide</th></tr></thead><tbody id="normalization-optimization-results"></tbody></table></div>
+<p id="normalization-optimization-validation" class="subtle"></p>
+<p id="normalization-optimization-goal" class="note"></p>
+<div class="evidence"><a href="current/normalization-optimization.json">Optimization receipt</a></div>
+</section>
+<section id="table-optimization-section" aria-labelledby="table-optimization-title">
+<p class="eyebrow">ACCEPTED HISTORY · TABLE PROPERTIES</p>
+<h2 id="table-optimization-title">Single-pass table properties</h2>
+<p id="table-optimization-status"></p>
+<p id="table-optimization-control"></p>
+<div class="scroll"><table><thead><tr><th>Full release benchmark · common-success inputs</th><th>Median</th><th>p95</th></tr></thead><tbody id="table-optimization-results"></tbody></table></div>
+<p id="table-optimization-validation" class="subtle"></p>
+<p id="table-optimization-goal" class="note"></p>
+<div class="evidence"><a href="current/table-property-optimization.json">Optimization receipt</a></div>
+</section>
+<section id="tuning-section" aria-labelledby="tuning-title">
+<div class="eyebrow">Experimental · Fixed subset</div>
+<h2 id="tuning-title">Candidate tuning on 64 documents</h2>
+<p id="tuning-scope" class="subtle"></p>
+<figure id="tuning-figure" class="chart-panel"><div class="chart-scroll"><svg id="tuning-chart" role="img" tabindex="0" aria-label="Experimental subset median and 95th-percentile latency; arrow keys inspect values"></svg></div><figcaption>Lower is faster. Median and p95 summarize this subset’s per-document warm medians; p95 uses nearest rank. Each panel has its own millisecond scale.</figcaption><div id="tuning-tooltip" class="chart-tooltip" role="tooltip"></div></figure>
+<p id="tuning-paired" class="note"></p>
+<p id="tuning-method" class="subtle"></p>
+<details><summary>Exact experimental values and build identities</summary><div class="scroll"><table><thead><tr><th scope="col">Experimental build</th><th scope="col">Subset median</th><th scope="col">Subset p95</th><th scope="col">Probe SHA-256</th></tr></thead><tbody id="tuning-table"></tbody></table></div></details>
+<div class="evidence"><a id="tuning-receipt">Experimental timing receipt</a><a id="tuning-selection">Subset selection receipt</a><a id="tuning-raw">Raw probe measurements</a></div>
+</section>
+<section id="memory-section" aria-labelledby="memory-title">
+<div class="eyebrow">Experimental · Rust memory measurements</div>
+<h2 id="memory-title">Less metadata and fewer allocation calls</h2>
+<p class="subtle">Two isolated experiments measured different parts of memory use. Each uses the 1,000-document sample and its own recorded build identities. These values do not measure the combined current candidate.</p>
+<label class="evidence-control">Measured quantity <select id="memory-metric"></select></label>
+<p id="memory-status" class="chart-status" aria-live="polite"></p>
+<figure id="memory-figure" class="chart-panel"><div class="chart-scroll"><svg id="memory-chart" role="img" tabindex="0" aria-label="Experimental memory measurement before and after; arrow keys inspect values"></svg></div><figcaption id="memory-caption"></figcaption><div id="memory-tooltip" class="chart-tooltip" role="tooltip"></div></figure>
+<p id="memory-scope" class="subtle"></p><p id="memory-instrumentation" class="subtle"></p>
+<p class="note">Both changes were effectively neutral for latency in tuning. Reduced metadata or allocation counts do not establish a whole-parser speedup. The accepted latency comparison above remains unchanged.</p>
+<div class="scroll"><table><thead><tr><th scope="col">Measured quantity</th><th scope="col">Before</th><th scope="col">After</th><th scope="col">Reduction</th></tr></thead><tbody id="memory-table"></tbody></table></div>
+<details><summary>Selected experiment identity</summary><pre id="memory-identity"></pre></details>
+<div class="evidence"><a id="memory-receipt">Selected experiment receipt</a><a id="memory-measurements">Memory measurements</a><a id="memory-timing">Separate tuning result</a></div>
+</section>
+<section aria-labelledby="quality-title">
+<h2 id="quality-title">Speed and feature recall together</h2>
+<p id="quality-scope" class="subtle"></p>
+<div class="chart-controls">
+<label>Latency measure<select id="quality-latency"><option value="median_ms">Median latency</option><option value="p95_ms">95th-percentile latency</option></select></label>
+<label>Extraction metric<select id="quality-metric"></select></label>
+<label>Quality axis<select id="quality-scale"><option value="full">Full 0–100%</option><option value="zoom">Zoom to measured values</option></select></label>
+</div>
+<p id="quality-status" class="chart-status" aria-live="polite"></p>
+<figure id="quality-figure" class="chart-panel"><div class="chart-scroll"><svg id="quality-chart" role="img" tabindex="0" aria-label="Speed versus feature recall; arrow keys inspect points"></svg></div><figcaption>Left is faster; higher means more of the reference feature was recovered. These extraction checks do not establish Word-identical geometry, layout, or universal correctness.</figcaption><div id="quality-tooltip" class="chart-tooltip" role="tooltip"></div></figure>
+<h3>Every measured feature category</h3>
+<p class="subtle">Select a row to chart that metric. Each cell includes its denominator. “Unavailable” means that category was not measured; it is not a 100% result.</p>
+<div class="scroll"><table class="feature-table"><thead id="quality-heatmap-head"></thead><tbody id="quality-heatmap"></tbody></table></div>
+<div class="heatmap-legend" aria-label="Recall color bands"><span><i class="heatmap-chip" style="background:#e4f1e9"></i>99–100%</span><span><i class="heatmap-chip" style="background:#eff3e8"></i>95–99%</span><span><i class="heatmap-chip" style="background:#f6efdd"></i>85–95%</span><span><i class="heatmap-chip" style="background:#f7e8e3"></i>Below 85%</span></div>
+<details><summary>Quality across all attempted inputs, including parser failures</summary><p class="subtle">These totals keep expected reference features for failed parses. They use every input for which the independent reference is available, a broader scope than the common comparison above.</p><div class="scroll"><table class="feature-table"><thead id="all-quality-head"></thead><tbody id="all-quality-table"></tbody></table></div></details>
+<p class="note">Raw grid-span equality is sensitive to resolved table grids. Image counts do not prove composite rendering, and short marked spans can be segmentation-sensitive. The original scoring rules are retained; supplemental semantic checks must remain separately labeled.</p>
+</section>
+<section id="image-audit-section" aria-labelledby="image-audit-title">
+<p class="eyebrow">SUPPLEMENTAL · BODY IMAGE PAYLOADS</p>
+<h2 id="image-audit-title">What the image count misses</h2>
+<p id="image-audit-summary"></p>
+<div class="scroll"><table><thead><tr><th>Check</th><th>Result</th><th>Matched / expected</th></tr></thead><tbody id="image-audit-table"></tbody></table></div>
+<p class="note">A composite SVG can retain several source pictures while counting as one output image. This audit matches original image bytes and embedded SVG image bytes, including repeated occurrences. Retained package XML receives no credit. Payload retention does not establish placement, crop, or pixel accuracy. Other parsers have not been evaluated with this supplemental audit.</p>
+<p id="image-audit-scope" class="subtle"></p>
+<div class="source-links"><a id="image-audit-receipt">Payload audit receipt</a><a id="image-audit-equivalence">Current-build output equivalence</a></div>
+</section>
+<section id="backlog-section" aria-labelledby="backlog-title">
+<h2 id="backlog-title">Lowest-recall categories first</h2>
+<p id="backlog-scope" class="subtle"></p>
+<div class="scroll"><table><thead><tr><th scope="col">Feature</th><th scope="col">Recorded recall</th><th scope="col">Matched / expected</th><th scope="col">Unmatched reference units</th></tr></thead><tbody id="backlog-table"></tbody></table></div>
+<h3>Active work</h3><ul id="backlog-work"></ul>
+<details><summary>Remaining accuracy limits</summary><ul id="backlog-limits"></ul></details>
+<a id="backlog-link">Feature backlog receipt</a>
+</section>
+<section aria-labelledby="legacy-title">
+<h2 id="legacy-title">Keep the earlier benchmark distinct</h2>
+<p id="legacy-text"></p><a id="legacy-link">Open the earlier comparison</a>
+<div id="legacy-update">
+<h3>Matched inputs: previous and current docx-core</h3>
+<label class="evidence-control">Original-corpus metric <select id="legacy-update-metric"></select></label>
+<p id="legacy-update-status" class="chart-status" aria-live="polite"></p>
+<figure id="legacy-update-figure" class="chart-panel"><div class="chart-scroll"><svg id="legacy-update-chart" role="img" tabindex="0" aria-label="Original-corpus feature recall before and after; arrow keys inspect values"></svg></div><figcaption>Both builds use the same original-corpus inputs and unchanged extraction-reference scoring. The expanded sample above is a separate cohort.</figcaption><div id="legacy-update-tooltip" class="chart-tooltip" role="tooltip"></div></figure>
+<details><summary>Every matched original-corpus feature score</summary><div class="scroll"><table><thead><tr><th scope="col">Feature</th><th scope="col">Previous</th><th scope="col">Current</th><th scope="col">Previous evidence</th><th scope="col">Current evidence</th></tr></thead><tbody id="legacy-update-table"></tbody></table></div></details>
+<a id="legacy-update-link">Open matched accuracy measurements</a>
+</div>
+<p class="subtle">Changing the corpus changes feature frequencies and difficulty. A different score on this expanded sample is not by itself evidence of an accuracy improvement. Matched-input comparisons and justified case-level checks establish changes.</p>
+</section>
+<section id="semantic-section" aria-labelledby="semantic-title">
+<h2 id="semantic-title">Supplemental semantic checks</h2>
+<p>These body-only checks compare parsed model values with source meaning. They retain character order and multiplicity and check explicit formatting and hyperlink destinations at mapped literal offsets.</p>
+<p class="note">A 100% result here applies only to the stated check and denominator. It does not establish generated-content correctness, complete formatting support, merged-cell geometry, or Word-identical layout. Original extraction-reference scores above remain unchanged.</p>
+<label class="evidence-control">Supplemental check <select id="semantic-metric"></select></label>
+<p id="semantic-status" class="chart-status" aria-live="polite"></p>
+<figure id="semantic-figure" class="chart-panel"><div class="chart-scroll"><svg id="semantic-chart" role="img" tabindex="0" aria-label="Supplemental semantic recall by cohort; arrow keys inspect values"></svg></div><figcaption>Full 0–100% scale. Separate cohorts are labeled explicitly; previous and current results are shown only where an audit receipt is available.</figcaption><div id="semantic-tooltip" class="chart-tooltip" role="tooltip"></div></figure>
+<div id="semantic-audit-details"></div>
+</section>
+<section id="fidelity-section" aria-labelledby="fidelity-title"><h2 id="fidelity-title">Supported fidelity changes</h2><ul id="fidelity-changes"></ul><p class="subtle">Word-equivalent table geometry and page layout remain unverified by these extraction and semantic checks.</p></section>
+<section aria-labelledby="method-title">
+<h2 id="method-title">Evidence and reproducibility</h2>
+<p id="validation-note"></p>
+<p id="provenance-note" class="subtle"></p>
+<details><summary>Build and corpus receipts</summary><pre id="provenance-json"></pre></details>
+<p class="subtle">Raw timing samples and failures are retained. Timings come from a shared development machine. The report contains anonymous numeric chart data and no extracted document text.</p>
+<p id="timing-environment-note" class="subtle" hidden></p>
+<div class="evidence"><a id="receipt-chart" href="report-data.json">Chart data</a><a id="receipt-timing" href="timing-rows.json">Timing measurements</a><a id="receipt-accuracy" href="accuracy-rows.json">Accuracy measurements</a><a id="receipt-corpus" hidden>Corpus sampling receipt</a><a id="receipt-research" hidden>Rust optimization research</a><a id="receipt-validation" hidden>Candidate validation</a></div>
+</section>
+</main>
+<footer id="footer"></footer>
+</div>
+<script>
+(() => {
+const initialData=REPORT_DATA;
+const reportRoot=document.getElementById('report-root');
+reportRoot.querySelectorAll('details').forEach((node,index)=>node.dataset.stateKey=String(index));
+const reportTemplate=reportRoot.innerHTML;
+function captureState(){const active=document.activeElement;return {selects:Object.fromEntries([...reportRoot.querySelectorAll('select[id]')].map(node=>[node.id,node.value])),checks:Object.fromEntries([...reportRoot.querySelectorAll('input[type="checkbox"][id]')].map(node=>[node.id,node.checked])),details:[...reportRoot.querySelectorAll('details[open]')].map(node=>node.dataset.stateKey),focus:active?.id||null,x:window.scrollX,y:window.scrollY};}
+function reportApp(data,state){
+reportRoot.innerHTML=reportTemplate;
+const engines=data.engines;
+const latencySnapshot=data.latency_comparison||null;
+const latencyScope=latencySnapshot?.scope||latencySnapshot||{};
+const comparison={engines:latencySnapshot?.engines||data.summaries,fixed_common:latencySnapshot?.fixed_common??latencySnapshot?.common_success??latencyScope.common_success??data.scope.common_success};
+const metricDefinitions=latencySnapshot?.metric_definitions||data.charts.metric_definitions;
+const chartPoints=latencySnapshot?.points||data.charts.points;
+const latencyHash=latencyScope.binary_sha256||latencySnapshot?.binary_sha256||data.provenance.binary_sha256;
+const latencyMatchesQuality=!latencySnapshot||latencyHash===data.provenance.binary_sha256;
+const latencyLabel=latencyScope.label||latencySnapshot?.cohort_label||data.scope.cohort_name;
+const latencySource=latencyScope.source||'current_completed';
+const latencyIsPrior=['previous_completed','legacy_completed'].includes(latencySource)||!latencyMatchesQuality;
+const completedDisplay=latencyScope.completed_at?(typeof latencyScope.completed_at==='number'?new Date(latencyScope.completed_at*1000).toLocaleString():latencyScope.completed_at):'';
+const latencyScopeText=`${latencyIsPrior?'Last measured latency':'Measured latency'} · ${latencyLabel} · ${comparison.fixed_common} common inputs · build ${latencyHash?latencyHash.slice(0,12):'unrecorded'}${completedDisplay?' · '+completedDisplay:''}.`;
+const qualityEntries=Object.entries(data.quality_labels).sort(([a],[b])=>{if(a==='body_f1')return 1;if(b==='body_f1')return -1;const av=data.quality_comparison['docx-core']?.features?.[a]?.recall,bv=data.quality_comparison['docx-core']?.features?.[b]?.recall;return (Number.isFinite(av)?av:Infinity)-(Number.isFinite(bv)?bv:Infinity)||a.localeCompare(b);});
+const qualityLabels=Object.fromEntries(qualityEntries);
+const palette={'docx-core':'#245f99','docx-rs':'#a96b24','office_oxide':'#34785f','undoc':'#785d94'};
+const el=id=>document.getElementById(id);
+const set=(id,text)=>{el(id).textContent=text;};
+const finite=value=>typeof value==='number'&&Number.isFinite(value);
+const n=(value,digits=2)=>finite(value)?value.toLocaleString(undefined,{minimumFractionDigits:digits,maximumFractionDigits:digits}):'Unavailable';
+const integer=value=>finite(value)?value.toLocaleString():'Unavailable';
+const ms=value=>finite(value)?n(value)+' ms':'Unavailable';
+function row(cells,className=''){const tr=document.createElement('tr');tr.className=className;for(const value of cells){const td=document.createElement('td');td.textContent=value;tr.append(td);}return tr;}
+const svgNamespace='http://www.w3.org/2000/svg';
+function svgNode(name,attributes={},text){const node=document.createElementNS(svgNamespace,name);for(const [key,value]of Object.entries(attributes))node.setAttribute(key,String(value));if(text!==undefined)node.textContent=text;return node;}
+function svgText(svg,text,x,y,attributes={}){const node=svgNode('text',{x,y,...attributes},text);svg.append(node);return node;}
+function svgLine(svg,x1,y1,x2,y2,attributes={}){svg.append(svgNode('line',{x1,y1,x2,y2,stroke:'#e2e8ee',...attributes}));}
+function compact(value){if(Math.abs(value)>=1e6)return n(value/1e6,1)+'M';if(Math.abs(value)>=1e3)return n(value/1e3,1)+'k';return n(value,Math.abs(value)<1&&value!==0?2:Number.isInteger(value)?0:1);}
+function axisBytes(value){if(value>=1048576)return n(value/1048576,value>=10485760?0:1)+' MiB';if(value>=1024)return n(value/1024,value>=10240?0:1)+' KiB';return n(value,0)+' B';}
+function exactMetric(key,value){return integer(value)+' '+metricDefinitions[key].unit;}
+function inputName(point){return 'Input '+String(point.ordinal).padStart(3,'0');}
+function linearTicks(min,max,count=6){const rough=(max-min)/count;const power=10**Math.floor(Math.log10(rough||1));const normalized=rough/power;const step=(normalized<=1?1:normalized<=2?2:normalized<=5?5:10)*power;const ticks=[];for(let value=Math.ceil(min/step)*step;value<=max+step*1e-8;value+=step)ticks.push(Number(value.toPrecision(12)));return ticks;}
+function logarithmicTicks(min,max,zero){const ticks=zero&&min===0?[0]:[];const low=Math.max(min,zero?1:Number.MIN_VALUE);const first=Math.floor(Math.log10(low));const last=Math.ceil(Math.log10(max));const factors=last-first<=3?[1,2,5]:[1];for(let power=first;power<=last;power++)for(const factor of factors){const value=factor*10**power;if(value>=min&&value<=max)ticks.push(value);}return ticks;}
+function scaleFor(values,kind,start,end,domain={}){let min=domain.min??(kind==='linear'?0:Math.min(...values));let max=domain.max??Math.max(...values);if(kind==='log'){min=domain.min??min/1.12;max=domain.max??max*1.12;}else if(kind==='log1p'){min=domain.min??(min===0?0:min/1.12);max=domain.max??max*1.08+.1;}else max=domain.max??max*1.08;if(max<=min){max=min+1;if(kind==='log')min=Math.max(min/2,.000001);}const transform=kind==='log'?Math.log10:kind==='log1p'?Math.log1p:value=>value;const a=transform(min),b=transform(max);return {min,max,kind,map:value=>start+(transform(value)-a)/(b-a)*(end-start),ticks:kind==='linear'?linearTicks(min,max):logarithmicTicks(min,max,kind==='log1p')};}
+function chartFrame(id,title,description,height=430){const svg=el(id);svg.replaceChildren();svg.setAttribute('viewBox',`0 0 1060 ${height}`);svg.append(svgNode('title',{},title),svgNode('desc',{},description));return {svg,width:1060,height,left:108,right:1020,top:28,bottom:height-65};}
+function drawAxes(frame,x,y,xLabel,yLabel,xFormat=compact,yFormat=compact){const {svg,left,right,top,bottom,height}=frame;for(const value of x.ticks){const position=x.map(value);svgLine(svg,position,top,position,bottom);svgText(svg,xFormat(value),position,bottom+22,{'text-anchor':'middle'});}for(const value of y.ticks){const position=y.map(value);svgLine(svg,left,position,right,position);svgText(svg,yFormat(value),left-11,position+4,{'text-anchor':'end'});}svgLine(svg,left,bottom,right,bottom,{stroke:'#b8c6d4'});svgLine(svg,left,top,left,bottom,{stroke:'#b8c6d4'});svgText(svg,xLabel,(left+right)/2,height-14,{'text-anchor':'middle',class:'axis-label'});svgText(svg,yLabel,18,(top+bottom)/2,{transform:`rotate(-90 18 ${(top+bottom)/2})`,'text-anchor':'middle',class:'axis-label'});}
+function interactivePoints(svg,figureId,tooltipId,points,describe){const figure=el(figureId),tooltip=el(tooltipId);tooltip.style.display='none';let selected=-1;const halo=svgNode('circle',{r:6,fill:'none',stroke:'#182e43','stroke-width':2,visibility:'hidden','pointer-events':'none'});svg.append(halo);const hide=()=>{tooltip.style.display='none';halo.setAttribute('visibility','hidden');};const show=(index,event)=>{if(!points.length)return;selected=(index+points.length)%points.length;const point=points[selected];halo.setAttribute('cx',point.x);halo.setAttribute('cy',point.y);halo.setAttribute('visibility','visible');tooltip.textContent=describe(point);tooltip.style.display='block';const box=figure.getBoundingClientRect(),svgBox=svg.getBoundingClientRect(),view=svg.viewBox.baseVal;const anchorX=event?event.clientX-box.left:svgBox.left-box.left+point.x/view.width*svgBox.width;const anchorY=event?event.clientY-box.top:svgBox.top-box.top+point.y/view.height*svgBox.height;tooltip.style.left=Math.max(0,Math.min(anchorX+14,box.width-tooltip.offsetWidth-4))+'px';tooltip.style.top=Math.max(0,anchorY-tooltip.offsetHeight-12)+'px';};svg.onpointermove=event=>{const box=svg.getBoundingClientRect(),view=svg.viewBox.baseVal;const px=(event.clientX-box.left)/box.width*view.width,py=(event.clientY-box.top)/box.height*view.height;let best=-1,distance=(20*view.width/box.width)**2;for(let index=0;index<points.length;index++){const point=points[index],candidate=(point.x-px)**2+(point.y-py)**2;if(candidate<distance){distance=candidate;best=index;}}if(best>=0)show(best,event);else hide();};svg.onpointerleave=hide;svg.onblur=hide;svg.onfocus=()=>show(selected<0?0:selected);svg.onkeydown=event=>{if(['ArrowRight','ArrowDown','ArrowLeft','ArrowUp','Home','End'].includes(event.key)){event.preventDefault();const next=event.key==='Home'?0:event.key==='End'?points.length-1:selected+(event.key==='ArrowRight'||event.key==='ArrowDown'?1:-1);show(next);}else if(event.key==='Escape')hide();};svg.onpointerdown=()=>svg.focus({preventScroll:true});}
+function addLegend(target){const parent=el(target);for(const engine of engines){const item=document.createElement('span');item.className='legend-item';item.style.setProperty('--series-color',palette[engine]);const line=document.createElement('i');line.className='swatch';line.setAttribute('aria-hidden','true');item.append(line,document.createTextNode(engine));parent.append(item);}}
+
+function drawQualityLabels(frame,points){const placed=[];for(const point of points){const rightSide=point.x>frame.right-110;const label=svgText(frame.svg,point.engine,point.x+(rightSide?-11:11),point.y-12,{'text-anchor':rightSide?'end':'start',style:`fill:${palette[point.engine]};font-weight:650`});let chosen;for(const dy of [-12,24,-32,44,-52,64,-72,84]){label.setAttribute('y',point.y+dy);const box=label.getBBox();const bounds={left:box.x-4,right:box.x+box.width+4,top:box.y-4,bottom:box.y+box.height+4};if(bounds.top<frame.top||bounds.bottom>frame.bottom)continue;if(placed.some(other=>bounds.left<other.right&&bounds.right>other.left&&bounds.top<other.bottom&&bounds.bottom>other.top))continue;if(points.some(other=>other!==point&&other.x+9>bounds.left&&other.x-9<bounds.right&&other.y+9>bounds.top&&other.y-9<bounds.bottom))continue;chosen={bounds,dy};break;}if(!chosen){label.setAttribute('y',Math.max(frame.top+18,Math.min(frame.bottom-6,point.y+24)));const box=label.getBBox();chosen={bounds:{left:box.x-4,right:box.x+box.width+4,top:box.y-4,bottom:box.y+box.height+4},dy:24};}placed.push(chosen.bounds);if(chosen.dy!==-12){const edgeX=Math.max(chosen.bounds.left,Math.min(chosen.bounds.right,point.x));const edgeY=chosen.dy>0?chosen.bounds.top:chosen.bounds.bottom;svgLine(frame.svg,point.x,point.y,edgeX,edgeY,{stroke:palette[point.engine],'stroke-opacity':.5,'pointer-events':'none'});frame.svg.append(label);}}}
+function emptyChart(id,title,figure,tooltip){const frame=chartFrame(id,title,'No comparable measurements are available.');svgText(frame.svg,'No comparable measurements are available.',530,210,{class:'chart-empty'});interactivePoints(frame.svg,figure,tooltip,[],()=> '');return frame;}
+function renderLatency(){
+ if(!engines.some(engine=>finite(comparison.engines[engine].median_ms))){emptyChart('latency-chart','Latency comparison','latency-figure','latency-tooltip');return;}
+ const {svg}=chartFrame('latency-chart','Median and p95 latency by parser','Panels use separate millisecond scales.',350),points=[];
+ for(const panel of [{key:'median_ms',label:'MEDIAN',start:160,end:510},{key:'p95_ms',label:'95TH PERCENTILE',start:650,end:1000}]){
+  const values=engines.map(engine=>comparison.engines[engine][panel.key]).filter(finite);
+  const maximum=Math.max(...values,0.01)*1.2,x=scaleFor([maximum],'linear',panel.start,panel.end,{min:0,max:maximum});
+  svgText(svg,panel.label,panel.start,22,{class:'chart-title'});
+  for(const value of x.ticks){svgLine(svg,x.map(value),42,x.map(value),292);svgText(svg,n(value,value<1?2:1),x.map(value),314,{'text-anchor':'middle'});}
+  svgText(svg,'Latency (ms)',(panel.start+panel.end)/2,342,{'text-anchor':'middle',class:'axis-label'});
+  engines.forEach((engine,index)=>{const value=comparison.engines[engine][panel.key],y=66+index*61;if(finite(value)){svg.append(svgNode('rect',{x:panel.start,y:y-13,width:x.map(value)-panel.start,height:26,rx:2,fill:palette[engine]}));svgText(svg,ms(value),x.map(value)+7,y+4,{style:`fill:${palette[engine]};font-weight:650`});points.push({x:x.map(value),y,engine,value,measure:panel.label});}else svgText(svg,'Unavailable',panel.start,y+4);if(panel.key==='median_ms')svgText(svg,engine,137,y+4,{'text-anchor':'end'});});
+ }
+ interactivePoints(svg,'latency-figure','latency-tooltip',points,point=>`${point.engine}\n${point.measure}: ${ms(point.value)}\n${comparison.fixed_common} common-success inputs`);
+}
+function renderSingleTrace(){
+ const trace=data.single_document_trace;if(!trace)return;
+ const esc=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+ const ms=value=>Number.isFinite(value)?`${value.toFixed(2)} ms`:'Not recorded';
+ let section=el('single-trace-section');if(!section){section=document.createElement('section');section.id='single-trace-section';section.className='panel';el('feedback-section').after(section);}
+ const paths=trace.paths||{},core=paths['docx-core']||[],oxide=paths.office_oxide||[];
+ const rows=Array.from({length:Math.max(core.length,oxide.length)},(_,i)=>`<tr><td>${esc(core[i])}</td><td>${esc(oxide[i])}</td></tr>`).join('');
+ const trial=trace.trial,confirmation=trace.release_confirmation;
+ section.innerHTML=`<p class="eyebrow">RECORDED INPUT · RUST CALL PATHS</p><h2>Where the time goes</h2>
+ <p>Input ${esc(trace.ordinal)}. Recorded release medians: docx-core ${ms(trace.release_medians?.['docx-core']?.total_ms)}; office_oxide ${ms(trace.release_medians?.office_oxide?.total_ms)}.</p>
+ <div class="table-scroll"><table><thead><tr><th>docx-core</th><th>office_oxide</th></tr></thead><tbody>${rows}</tbody></table></div>
+ <div class="table-scroll"><table><thead><tr><th>Parser</th><th>Sampled function</th><th>Inclusive sampled stacks</th></tr></thead><tbody>${(trace.profile_rows||[]).map(row=>`<tr><td>${esc(row.engine)}</td><td>${esc(row.function)}</td><td>${esc(row.samples)}${row.worker_samples?` / ${esc(row.worker_samples)}`:''}</td></tr>`).join('')}</tbody></table></div>
+ <p>${esc(trace.profile_scope)}</p>
+ ${trial?`<p><strong>Targeted trial:</strong> ${ms(trial.baseline_ms)} → ${ms(trial.candidate_ms)}. Paired speedup: ${esc(trial.speedup)}×. This trial is separate from the release timings.</p>`:''}
+ ${confirmation?`<p><strong>Release confirmation:</strong> ${ms(confirmation.medians?.baseline?.total_ms)} → ${ms(confirmation.medians?.candidate?.total_ms)}; office_oxide ${ms(confirmation.medians?.office_oxide?.total_ms)}. ${esc(confirmation.rounds)} interleaved rounds.</p>`:''}
+ ${trace.followup?`<p><strong>Follow-up:</strong> ${esc(trace.followup.label)}. ${esc(trace.followup.decision)}</p>`:''}
+ <p>${esc(trace.validation)}</p><p>${esc(trace.conclusion)}</p><p>${esc(trace.next_target)}</p>
+ <p><a href="current/single-document-trace/summary.json">Comparison receipt and detailed results</a></p>`;
+}
+function renderImageAudit(){
+ const audit=data.image_payload_audit;if(!audit){el('image-audit-section').remove();return;}
+ const raw=data.summaries?.['docx-core']?.features_all?.images;
+ set('image-audit-summary',`${integer(audit.matched)} of ${integer(audit.expected)} source image payload occurrences are retained (${n(100*audit.matched/audit.expected,2)}%). ${integer(audit.expected-audit.matched)} remain unmatched. The original image-node count score above is unchanged.`);
+ if(raw)el('image-audit-table').append(row(['Original image-node count',n(raw.recall*100,2)+'%',`${integer(raw.matched)} / ${integer(raw.expected)}`]));
+ el('image-audit-table').append(row(['Source payload occurrence retention',n(100*audit.matched/audit.expected,2)+'%',`${integer(audit.matched)} / ${integer(audit.expected)}`]));
+ set('image-audit-scope',`${integer(audit.documents)} inputs · ${integer(audit.composites)} composite SVG nodes with embedded image payloads · ${integer(audit.unresolved_source_relationships)} unresolved source relationships. Audited native build ${audit.audited_binary_sha256.slice(0,12)}${audit.equivalence_url?'; complete native output equivalence also binds this result to the current build.':'.'}`);
+ el('image-audit-receipt').href=audit.receipt_url;
+ if(audit.equivalence_url)el('image-audit-equivalence').href=audit.equivalence_url;else el('image-audit-equivalence').remove();
+}
+function renderFeedbackLoop(){
+ const loop=data.feedback_loop;if(!loop){el('feedback-section').remove();return;}
+ set('feedback-status',`${loop.label} · ${loop.status} · ${loop.records.filter(r=>r.status==='passed').length} / ${loop.count} documents · ${loop.rounds} interleaved rounds${finite(loop.build_seconds)?` · build ${n(loop.build_seconds,1)} s`:''}${loop.error?` · ${loop.error}`:''}`);
+ set('feedback-scope',(loop.scope||'')+' CPU ratios include startup and destruction and help diagnose scheduling noise; they are not wall-clock latency.'+(loop.decision?' '+loop.decision:''));
+ for(const item of loop.records){const m=item.medians||{};el('feedback-table').append(row([`Document ${item.ordinal}`,finite(m.baseline?.total_ms)?n(m.baseline.total_ms)+' ms':'Pending',finite(m.candidate?.total_ms)?n(m.candidate.total_ms)+' ms':'Pending',finite(m.office_oxide?.total_ms)?n(m.office_oxide.total_ms)+' ms':'Pending',finite(item.speedup)?n(item.speedup,3)+'×':'Pending',finite(item.process_cpu_speedup)?n(item.process_cpu_speedup,3)+'×':'—',item.full_output_parity===true?'Exact match':item.full_output_parity===false?'Failed':'Checking',finite(item.seconds)?n(item.seconds,1)+' s':'Running',item.verdict||'Pending']));}
+ el('feedback-receipt').href=loop.receipt_url;
+ for(const item of loop.history||[]){const li=document.createElement('li'),link=document.createElement('a');link.href=item.url;link.textContent=item.label;li.append(link,document.createTextNode(` · ${item.status} · ${item.documents} documents · ${item.decision}`));el('feedback-history').append(li);}
+}
+function renderInstructionAnalysis(){
+ const result=data.instruction_analysis;
+ if(!result){el('instruction-analysis-section').remove();return;}
+ for(const field of ['status','scope','findings','limitations'])set('instruction-analysis-'+field,result[field+'_text']||'');
+ for(const item of result.rows||[])el('instruction-analysis-results').append(row([item.label,item.core,item.oxide,item.interpretation]));
+}
+function renderNormalizationOptimization(){
+ const result=data.normalization_optimization;
+ if(!result){el('normalization-optimization-section').remove();return;}
+ for(const field of ['status','control','validation','goal'])set('normalization-optimization-'+field,result[field+'_text']||'');
+ for(const item of result.rows||[])el('normalization-optimization-results').append(row([item.label,...['baseline_ms','candidate_ms','oxide_ms'].map(key=>finite(item[key])?n(item[key],3)+' ms':'Pending')]));
+}
+function renderTableOptimization(){
+ const result=data.table_property_optimization;
+ if(!result){el('table-optimization-section').remove();return;}
+ set('table-optimization-status',result.status_text);
+ set('table-optimization-control',result.control_text);
+ set('table-optimization-validation',result.validation_text);
+ set('table-optimization-goal',result.goal_text);
+ for(const item of result.release_rows||[]){
+  el('table-optimization-results').append(row([item.label,n(item.median_ms,3)+' ms',n(item.p95_ms,3)+' ms']));
+ }
+ if(!result.release_rows?.length)el('table-optimization-results').append(row(['Running after validation','Pending','Pending']));
+}
+function renderExperimentalTuning(){
+ const tuning=data.experimental_tuning;if(!tuning?.builds?.length){el('tuning-section').remove();return;}
+ set('tuning-title',`Candidate tuning on ${integer(tuning.inputs)} documents`);
+ set('tuning-scope',`${integer(tuning.inputs)} fixed seeded inputs from the ${integer(tuning.pool_inputs)}-document corpus · seed ${tuning.seed}. Selection was frozen before measurement with no outcome filtering. These candidate probe measurements are separate from the accepted full-corpus comparison and quality plots.`);
+ const {svg}=chartFrame('tuning-chart','Experimental subset latency','Controlled candidate and baseline, measured only on a fixed tuning subset.',225),points=[];
+ const colors={baseline:'#8297aa',candidate:'#245f99'};
+ for(const panel of [{key:'median_ms',label:'SUBSET MEDIAN',start:160,end:510},{key:'p95_ms',label:'SUBSET P95',start:650,end:1000}]){
+  const maximum=Math.max(...tuning.builds.map(build=>build[panel.key]),.01)*1.25,x=scaleFor([maximum],'linear',panel.start,panel.end,{min:0,max:maximum});
+  svgText(svg,panel.label,panel.start,22,{class:'chart-title'});
+  for(const value of x.ticks){svgLine(svg,x.map(value),42,x.map(value),163);svgText(svg,n(value,value<1?2:1),x.map(value),187,{'text-anchor':'middle'});}
+  svgText(svg,'Latency (ms)',(panel.start+panel.end)/2,216,{'text-anchor':'middle',class:'axis-label'});
+  tuning.builds.forEach((build,index)=>{const value=build[panel.key],y=69+index*61;svg.append(svgNode('rect',{x:panel.start,y:y-13,width:x.map(value)-panel.start,height:26,rx:2,fill:colors[build.key]}));svgText(svg,n(value,3)+' ms',x.map(value)+7,y+4,{style:`fill:${colors[build.key]};font-weight:650`});if(panel.key==='median_ms')svgText(svg,build.label,137,y+4,{'text-anchor':'end'});points.push({x:x.map(value),y,build,value,measure:panel.label});});
+ }
+ interactivePoints(svg,'tuning-figure','tuning-tooltip',points,point=>`${point.build.label}\n${point.measure}: ${n(point.value,6)} ms\n${tuning.inputs} fixed inputs\nProbe ${point.build.binary_sha256.slice(0,12)}`);
+ set('tuning-paired',`Median paired speedup: ${n(tuning.median_paired_speedup,4)}×; the candidate was faster on ${integer(tuning.inputs_faster)} / ${integer(tuning.inputs)} inputs. This is the median of baseline/candidate ratios for the same documents, a different quantity from the ratio of the subset medians or p95 values above.`);
+ set('tuning-method',`${integer(tuning.repeats)} single-parse samples per input after one warm-up, including package decoding, complete model construction and structured blocks. The main benchmark uses adaptive loop averages and interpolated percentiles. This shared-machine tuning result is provisional and does not establish full-corpus gains or comparator leadership.`);
+ for(const build of tuning.builds){const entry=row([build.label,n(build.median_ms,6)+' ms',n(build.p95_ms,6)+' ms','']);const code=document.createElement('code');code.textContent=build.binary_sha256;entry.lastChild.append(code);el('tuning-table').append(entry);}
+ el('tuning-receipt').href=tuning.receipt_url;el('tuning-selection').href=tuning.selection_url;el('tuning-raw').href=tuning.raw_url;
+}
+function renderMemoryChart(){
+ const memory=data.experimental_memory,metric=memory.metrics.find(value=>value.id===el('memory-metric').value);if(!metric)return;
+ const format=value=>metric.unit==='bytes'?axisBytes(value):compact(value),exact=value=>integer(value)+' '+metric.unit;
+ const {svg}=chartFrame('memory-chart',metric.label,metric.scope,225),left=190,right=920,maximum=Math.max(metric.baseline,metric.candidate)*1.22;
+ const x=scaleFor([maximum],'linear',left,right,{min:0,max:maximum}),points=[];
+ for(const value of x.ticks){svgLine(svg,x.map(value),34,x.map(value),161);svgText(svg,format(value),x.map(value),184,{'text-anchor':'middle'});}
+ svgText(svg,metric.unit==='bytes'?'Summed bytes · binary units':'Summed allocation calls',(left+right)/2,216,{'text-anchor':'middle',class:'axis-label'});
+ [{label:metric.baseline_label,value:metric.baseline,color:'#8297aa'},{label:metric.candidate_label,value:metric.candidate,color:'#245f99'}].forEach((item,index)=>{const y=64+index*63;svgText(svg,item.label,left-14,y+4,{'text-anchor':'end'});svg.append(svgNode('rect',{x:left,y:y-13,width:x.map(item.value)-left,height:26,rx:2,fill:item.color}));svgText(svg,format(item.value),x.map(item.value)+8,y+4,{style:`fill:${item.color};font-weight:650`});points.push({x:x.map(item.value),y,...item});});
+ interactivePoints(svg,'memory-figure','memory-tooltip',points,point=>`${metric.experiment}\n${point.label}: ${exact(point.value)}\n${metric.documents} inputs\n${metric.label}`);
+ set('memory-status',`${metric.experiment} · ${n(metric.reduction_percent,3)}% lower · ${integer(metric.documents)} inputs`);
+ set('memory-caption',`${metric.label}. Lower means less of this measured quantity; the scale starts at zero. Exact values are retained in the table.`);
+ set('memory-scope',(finite(metric.inspected_parts)?`${integer(metric.inspected_parts)} raw parts examined; ${integer(metric.indexed_parts)} successfully indexed and ${integer(metric.rejected_parts)} rejected. `:'')+metric.scope);
+ set('memory-instrumentation',metric.instrumentation_note||'');el('memory-instrumentation').hidden=!metric.instrumentation_note;
+ set('memory-identity',JSON.stringify({experiment:metric.experiment,manifest_sha256:memory.manifest_sha256,...metric.identity},null,2));
+ el('memory-receipt').href=metric.receipt_url;el('memory-measurements').href=metric.measurement_url;el('memory-timing').href=metric.timing_url;
+}
+function initializeExperimentalMemory(){
+ const memory=data.experimental_memory;if(!memory?.metrics?.length){el('memory-section').remove();return;}
+ for(const metric of memory.metrics){const option=document.createElement('option');option.value=metric.id;option.textContent=metric.label+(metric.unit==='bytes'?' (bytes)':' (count)');el('memory-metric').append(option);el('memory-table').append(row([metric.label,integer(metric.baseline)+' '+metric.unit,integer(metric.candidate)+' '+metric.unit,n(metric.reduction_percent,3)+'%']));}
+ el('memory-metric').addEventListener('change',renderMemoryChart);renderMemoryChart();
+}
+function renderEcdf(){
+ if(!chartPoints.length){emptyChart('ecdf-chart','Latency distribution','ecdf-figure','ecdf-tooltip');set('ecdf-caption','There are no common-success inputs.');return;}
+ const kind=el('ecdf-scale').value,frame=chartFrame('ecdf-chart','Empirical latency distributions','The full common-success cohort is shown.'),values=chartPoints.flatMap(point=>engines.map(engine=>point.latency_ms[engine]));
+ const x=scaleFor(values,kind,frame.left,frame.right),y=scaleFor([100],'linear',frame.bottom,frame.top,{min:0,max:100});y.ticks=[0,25,50,75,95,100];
+ drawAxes(frame,x,y,`Per-input warm median latency (ms) · ${kind==='log'?'logarithmic':'linear'} scale`,'Share of inputs at or below latency',compact,value=>n(value,0)+'%');
+ for(const [value,label]of [[50,'Median · 50%'],[95,'p95 · 95%']]){svgLine(frame.svg,frame.left,y.map(value),frame.right,y.map(value),{stroke:'#738ba3','stroke-dasharray':'5 4'});svgText(frame.svg,label,frame.right-6,y.map(value)-7,{'text-anchor':'end',class:'guide-label'});}
+ const hover=[];
+ for(const engine of engines){const sorted=[...chartPoints].sort((a,b)=>a.latency_ms[engine]-b.latency_ms[engine]);let path=`M ${x.map(sorted[0].latency_ms[engine])} ${y.map(0)}`;sorted.forEach((point,index)=>{const xx=x.map(point.latency_ms[engine]),percent=(index+1)/sorted.length;path+=` H ${xx} V ${y.map(percent*100)}`;hover.push({x:xx,y:y.map(percent*100),engine,point,percent});});path+=` H ${frame.right}`;frame.svg.append(svgNode('path',{d:path,fill:'none',stroke:palette[engine],'stroke-width':engine==='docx-core'?3:2,'stroke-linejoin':'round'}));for(const [metric,percent]of [['median_ms',50],['p95_ms',95]])if(finite(comparison.engines[engine][metric]))frame.svg.append(svgNode('circle',{cx:x.map(comparison.engines[engine][metric]),cy:y.map(percent),r:4,fill:palette[engine],stroke:'#fff','stroke-width':1.5}));}
+ interactivePoints(frame.svg,'ecdf-figure','ecdf-tooltip',hover,point=>`${point.engine} · ${inputName(point.point)}\n${ms(point.point.latency_ms[point.engine])}\n${n(100*point.percent,1)}% of the common cohort at or below this latency`);
+ set('ecdf-caption',`${comparison.fixed_common} inputs per curve; all common-cohort tail inputs are retained. The 50% and 95% guides mark median and p95. Hover or focus the chart and use arrow keys to inspect values.`);
+}
+function visibleScatterEngines(){return engines.filter(engine=>el('show-'+engine).checked&&!(el('scatter-y').value==='ratio'&&engine==='docx-core'));}
+function renderScatterTable(){
+ if(!el('scatter-data').open)return;
+ const key=el('scatter-x').value,ratio=el('scatter-y').value==='ratio',selected=visibleScatterEngines(),head=el('scatter-data-head');head.replaceChildren();const tr=document.createElement('tr');
+ for(const label of ['Anonymous input',`${metricDefinitions[key].label} (${metricDefinitions[key].unit})`,...selected.map(engine=>ratio?`Core / ${engine} (×)`:`${engine} (ms)`)]){const th=document.createElement('th');th.scope='col';th.textContent=label;tr.append(th);}head.append(tr);
+ const body=el('scatter-data-body');body.replaceChildren();for(const point of chartPoints)body.append(row([inputName(point),integer(point.metrics?.[key]),...selected.map(engine=>n(ratio?point.latency_ms['docx-core']/point.latency_ms[engine]:point.latency_ms[engine],3))]));
+}
+function renderScatter(){
+ const key=el('scatter-x').value,ratio=el('scatter-y').value==='ratio',xKind=el('scatter-x-scale').value,yKind=el('scatter-y-scale').value;el('show-docx-core').disabled=ratio;el('show-docx-core').parentElement.classList.toggle('series-muted',ratio);
+ const selected=visibleScatterEngines(),frame=chartFrame('scatter-chart','Latency against document complexity','Zero-valued complexity counts remain visible.',470);
+ if(!selected.length||!chartPoints.length){svgText(frame.svg,chartPoints.length?'Select a parser to show its measurements.':'No common-success inputs are available.',530,225,{class:'chart-empty'});set('scatter-status',chartPoints.length?'No parser series selected.':'No common-success inputs.');set('scatter-caption',metricDefinitions[key].description);interactivePoints(frame.svg,'scatter-figure','scatter-tooltip',[],()=> '');renderScatterTable();return;}
+ const eligible=chartPoints.filter(point=>finite(point.metrics?.[key])&&point.metrics?.[key]>=0);if(!eligible.length){svgText(frame.svg,'No measured input dimensions are available.',530,225,{class:'chart-empty'});set('scatter-status','No numeric reference dimensions for this axis.');set('scatter-caption',metricDefinitions[key].description);interactivePoints(frame.svg,'scatter-figure','scatter-tooltip',[],()=> '');renderScatterTable();return;}
+ const values=eligible.flatMap(point=>selected.map(engine=>({point,engine,value:ratio?point.latency_ms['docx-core']/point.latency_ms[engine]:point.latency_ms[engine]})));
+ const x=scaleFor(eligible.map(point=>point.metrics?.[key]),xKind,frame.left,frame.right),y=scaleFor([...values.map(value=>value.value),...(ratio?[1]:[])],yKind,frame.bottom,frame.top);
+ drawAxes(frame,x,y,`${metricDefinitions[key].label} (${metricDefinitions[key].unit})`,ratio?'docx-core / parser latency (×)':'Per-input warm median latency (ms)',metricDefinitions[key].unit==='bytes'?axisBytes:compact,value=>compact(value)+(ratio?'×':''));
+ if(ratio){svgLine(frame.svg,frame.left,y.map(1),frame.right,y.map(1),{stroke:'#566f85','stroke-width':1.5,'stroke-dasharray':'6 4'});svgText(frame.svg,'1× · equal latency',frame.right-8,y.map(1)-8,{'text-anchor':'end',class:'guide-label'});}
+ const points=values.map(value=>({...value,x:x.map(value.point.metrics?.[key]),y:y.map(value.value)}));for(const point of points)frame.svg.append(svgNode('circle',{cx:point.x,cy:point.y,r:point.engine==='docx-core'?3.1:2.6,fill:palette[point.engine],'fill-opacity':point.engine==='docx-core'?.62:.4}));
+ interactivePoints(frame.svg,'scatter-figure','scatter-tooltip',points,point=>`${inputName(point.point)} · ${point.engine}\n${metricDefinitions[key].label}: ${exactMetric(key,point.point.metrics?.[key])}\nParser latency: ${ms(point.point.latency_ms[point.engine])}${ratio?`\ndocx-core latency: ${ms(point.point.latency_ms['docx-core'])}\nCore / parser: ${n(point.value,3)}×`:''}`);
+ const zeroCount=eligible.filter(point=>point.metrics?.[key]===0).length;
+ set('scatter-status',`${integer(points.length)} plotted measurements · ${eligible.length} inputs per visible parser · ${zeroCount} zero-count inputs retained · ${chartPoints.length-eligible.length} inputs lack this dimension.${ratio?' Above 1× means docx-core is slower; below 1× means it is faster. docx-core is the 1× reference line.':''}`);
+ set('scatter-caption',`${metricDefinitions[key].description} ${xKind==='log1p'?'The horizontal transform is ln(1 + value), retaining zeros.':'The horizontal axis is linear.'} The vertical axis is ${yKind==='log'?'logarithmic':'linear'}.`);renderScatterTable();
+}
+function qualityRecord(engine,key,all=false){return all?data.summaries[engine].features_all?.[key]:data.quality_comparison[engine]?.features?.[key];}
+function qualityValue(engine,key,all=false){if(key==='body_f1')return all?data.summaries[engine].body_f1_all:data.quality_comparison[engine]?.body_f1;const value=qualityRecord(engine,key,all);return value&&value.expected>0?value.recall:null;}
+function qualityEvidence(engine,key,all=false){if(key==='body_f1')return all?`Macro F1 on ${integer(data.summaries[engine].body_all_scored??data.scope.attempted)} reference-bearing attempts`:`Macro F1 on ${data.scope.quality_common} inputs`;const value=qualityRecord(engine,key,all);return value?`${integer(value.matched)} matched / ${integer(value.expected)} expected`:'No measured reference features';}
+function renderQuality(){
+ if(!latencyMatchesQuality){const frame=chartFrame('quality-chart','Current quality and prior-build latency','Cross-build quality and latency are not plotted as a single result.',390);svgText(frame.svg,'Current-build latency is pending.',530,160,{class:'chart-empty'});svgText(frame.svg,'The latest feature scores are shown in the heatmap below.',530,190,{'text-anchor':'middle'});interactivePoints(frame.svg,'quality-figure','quality-tooltip',[],()=> '');set('quality-status','Latency charts retain the last measured build. The speed-versus-quality plot waits for matching build identities; current feature recall remains visible below.');return;}
+ const key=el('quality-metric').value,latencyKey=el('quality-latency').value,zoom=el('quality-scale').value==='zoom',selected=engines.filter(engine=>finite(qualityValue(engine,key))&&finite(comparison.engines[engine][latencyKey]));
+ if(!selected.length){emptyChart('quality-chart','Speed versus extraction quality','quality-figure','quality-tooltip');set('quality-status','No measured values are available for the selected category.');return;}
+ const frame=chartFrame('quality-chart','Speed versus extraction-reference quality','Extraction-reference metrics do not establish Word layout accuracy.',390),values=selected.map(engine=>qualityValue(engine,key)*100),spread=Math.max(.05,Math.max(...values)-Math.min(...values));
+ const domain=zoom?{min:Math.max(0,Math.min(...values)-spread*.2),max:Math.min(100,Math.max(...values)+spread*.2)}:{min:0,max:100};
+ const x=scaleFor(selected.map(engine=>comparison.engines[engine][latencyKey]),'linear',frame.left,frame.right),y=scaleFor(values,'linear',frame.bottom,frame.top,domain),digits=domain.max-domain.min<.2?3:domain.max-domain.min<2?2:domain.max-domain.min<10?1:0;
+ drawAxes(frame,x,y,`${latencyKey==='median_ms'?'Median':'95th-percentile'} latency (ms)`,`${qualityLabels[key]} (%)`,compact,value=>n(value,digits)+'%');
+ const points=selected.map(engine=>({engine,x:x.map(comparison.engines[engine][latencyKey]),y:y.map(qualityValue(engine,key)*100)}));for(const point of points)frame.svg.append(svgNode('circle',{cx:point.x,cy:point.y,r:7,fill:palette[point.engine],stroke:'#fff','stroke-width':2}));drawQualityLabels(frame,points);
+ interactivePoints(frame.svg,'quality-figure','quality-tooltip',points,point=>`${point.engine}\n${latencyKey==='median_ms'?'Median':'p95'} latency: ${ms(comparison.engines[point.engine][latencyKey])}\n${qualityLabels[key]}: ${n(qualityValue(point.engine,key)*100,5)}%\n${qualityEvidence(point.engine,key)}`);
+ set('quality-status',`${data.scope.quality_common} common quality inputs; ${comparison.fixed_common} common timing inputs. ${zoom?`Quality axis zoomed to ${n(domain.min,digits)}–${n(domain.max,digits)}%; small visual gaps may represent small score differences.`:'Quality axis shows the full 0–100% range.'}${selected.length<engines.length?' Parsers without a measured value are omitted from this chart.':''}`);
+ for(const tr of el('quality-heatmap').children)tr.classList.toggle('selected-metric',tr.dataset.metric===key);
+}
+function buildQualityTable(headId,bodyId,all){
+ const header=document.createElement('tr');for(const label of ['Extraction-reference metric',...engines]){const th=document.createElement('th');th.scope='col';th.textContent=label;header.append(th);}el(headId).append(header);
+ for(const [key,label]of Object.entries(qualityLabels)){
+  const tr=document.createElement('tr');tr.dataset.metric=key;const heading=document.createElement('th');heading.scope='row';
+  if(all)heading.textContent=label;else {const button=document.createElement('button');button.type='button';button.className='metric-link';button.textContent=label;button.addEventListener('click',()=>{el('quality-metric').value=key;renderQuality();});heading.append(button);}tr.append(heading);
+  for(const engine of engines){const value=qualityValue(engine,key,all),td=document.createElement('td');if(finite(value)){td.style.background=value>=.99?'#e4f1e9':value>=.95?'#eff3e8':value>=.85?'#f6efdd':'#f7e8e3';td.append(document.createTextNode(n(value*100,key==='body_f1'?3:2)+'%'));}else td.append(document.createTextNode('Unavailable'));const detail=document.createElement('span');detail.className='detail';detail.textContent=qualityEvidence(engine,key,all);td.append(detail);const evidence=qualityRecord(engine,key,all);if(evidence?.unit)td.title=evidence.unit;tr.append(td);}el(bodyId).append(tr);
+ }
+}
+const semanticLabels={ordered_literal_paragraphs:'Ordered literal paragraphs',literal_characters_in_matched_paragraphs:'Literal characters',explicit_bold_characters_at_literal_offsets:'Explicit bold at mapped offsets',explicit_italic_characters_at_literal_offsets:'Explicit italic at mapped offsets',hyperlink_target_characters_at_literal_offsets:'Hyperlink destinations at mapped offsets',hyperlink_presence_characters_at_literal_offsets:'Hyperlink presence at mapped offsets',vertical_restart_content_anchors:'Vertical restart content anchors'};
+function measuredRecall(value){return value&&value.expected>0&&finite(value.recall)?value.recall:null;}
+function evidenceValue(value){const recall=measuredRecall(value);return finite(recall)?`${n(100*recall)}% · ${integer(value.matched)} / ${integer(value.expected)}`:'Unavailable';}
+function renderEvidenceBars(id,figure,tooltip,title,rows){
+ const height=Math.max(220,105+rows.length*58),frame=chartFrame(id,title,'Full zero-to-one-hundred percent scale. Denominators are retained.',height);
+ const left=325,right=frame.right,x=scaleFor([100],'linear',left,right,{min:0,max:100}),top=36,bottom=height-58;
+ for(const value of [0,25,50,75,100]){svgLine(frame.svg,x.map(value),top,x.map(value),bottom);svgText(frame.svg,n(value,0)+'%',x.map(value),height-31,{'text-anchor':'middle'});}
+ const points=[];
+ rows.forEach((item,index)=>{const y=62+index*58,value=item.value;svgText(frame.svg,item.label,left-14,y+4,{'text-anchor':'end'});if(!finite(value)){svgText(frame.svg,'Unavailable',left+10,y+4);return;}frame.svg.append(svgNode('rect',{x:left,y:y-12,width:x.map(value*100)-left,height:24,fill:item.color,rx:2}));svgText(frame.svg,n(value*100)+'%',x.map(value*100)+(value>.15?-8:8),y+4,{'text-anchor':value>.15?'end':'start',style:value>.15?'fill:#fff;font-weight:650':'fill:#32465a;font-weight:650'});points.push({x:x.map(value*100),y,...item});});
+ interactivePoints(frame.svg,figure,tooltip,points,point=>`${point.label}\n${n(point.value*100,5)}%\n${point.evidence}`);
+}
+function legacyMetricValue(build,key){if(key==='body_f1')return build?.body_f1;return measuredRecall(build?.features?.[key]);}
+function legacyMetricEvidence(build,key){return key==='body_f1'?`Macro F1 on ${integer(data.legacy_update.documents)} matched inputs`:evidenceValue(build?.features?.[key]);}
+function renderLegacyUpdate(){
+ const update=data.legacy_update,key=el('legacy-update-metric').value,rows=[{label:'Previous docx-core',value:legacyMetricValue(update.before,key),color:'#8297aa',evidence:legacyMetricEvidence(update.before,key)},{label:'Current docx-core',value:legacyMetricValue(update.after,key),color:palette['docx-core'],evidence:legacyMetricEvidence(update.after,key)}];
+ renderEvidenceBars('legacy-update-chart','legacy-update-figure','legacy-update-tooltip',`Matched original-corpus ${update.labels[key]}`,rows);
+ const before=rows[0].value,after=rows[1].value;set('legacy-update-status',`${integer(update.documents)} matching original-corpus inputs. ${finite(before)&&finite(after)?`${update.labels[key]}: ${n(before*100)}% → ${n(after*100)}% (${after>=before?'+':''}${n((after-before)*100)} percentage points).`:'A matched score is unavailable for this category.'} Scoring rules are unchanged.`);
+}
+function renderSemanticChart(){
+ const key=el('semantic-metric').value,rows=[];
+ for(const audit of data.semantic_audits){if(audit.baseline)rows.push({label:audit.label+' · previous',value:measuredRecall(audit.baseline.summary?.[key]),color:'#8297aa',evidence:evidenceValue(audit.baseline.summary?.[key])});rows.push({label:audit.label+' · current',value:measuredRecall(audit.summary?.[key]),color:palette['docx-core'],evidence:evidenceValue(audit.summary?.[key])});}
+ renderEvidenceBars('semantic-chart','semantic-figure','semantic-tooltip',semanticLabels[key]||key,rows);
+ set('semantic-status',`${semanticLabels[key]||key}. Each cohort keeps its own denominator. These supplemental checks do not replace extraction-reference scores or establish Word geometry.`);
+}
+function appendSemanticAudit(audit){
+ const host=el('semantic-audit-details'),heading=document.createElement('h3');heading.textContent=audit.label;host.append(heading);
+ const paragraph=document.createElement('p');paragraph.className='subtle';paragraph.textContent=`Current audit: ${integer(audit.attempted)} attempted · ${Object.entries(audit.statuses||{}).map(([status,count])=>`${status}: ${count}`).join(' · ')}.${audit.baseline?` Previous audit: ${integer(audit.baseline.attempted)} attempted · ${Object.entries(audit.baseline.statuses||{}).map(([status,count])=>`${status}: ${count}`).join(' · ')}.`:''} Metric denominators cover completed audits only.`;host.append(paragraph);
+ const scroll=document.createElement('div');scroll.className='scroll';const table=document.createElement('table'),head=document.createElement('thead'),tr=document.createElement('tr');
+ for(const label of ['Supplemental check',...(audit.baseline?['Previous']:[]),'Current']){const th=document.createElement('th');th.scope='col';th.textContent=label;tr.append(th);}head.append(tr);table.append(head);const body=document.createElement('tbody');
+ for(const key of Object.keys(audit.summary||{})){body.append(row([semanticLabels[key]||key,...(audit.baseline?[evidenceValue(audit.baseline.summary?.[key])]:[]),evidenceValue(audit.summary[key])]));}table.append(body);scroll.append(table);host.append(scroll);
+ const detail=document.createElement('details'),summary=document.createElement('summary');summary.textContent='Method, limitations, and diagnostic counts';detail.append(summary);
+ for(const text of [audit.scope,audit.method])if(text){const p=document.createElement('p');p.textContent=text;detail.append(p);}
+ const list=document.createElement('ul');for(const text of audit.limitations||[]){const li=document.createElement('li');li.textContent=text;list.append(li);}detail.append(list);
+ const pre=document.createElement('pre');pre.textContent=JSON.stringify({current:audit.diagnostics,...(audit.baseline?{previous:audit.baseline.diagnostics}:{})},null,2);detail.append(pre);host.append(detail);
+ if(audit.receipt_url){const link=document.createElement('a');link.href=audit.receipt_url;link.textContent='Open this audit receipt';host.append(link);}
+}
+function initializeSupplementalEvidence(){
+ if(data.legacy_update){const update=data.legacy_update;for(const [key,label]of Object.entries(update.labels)){const option=document.createElement('option');option.value=key;option.textContent=label;el('legacy-update-metric').append(option);const before=legacyMetricValue(update.before,key),after=legacyMetricValue(update.after,key);el('legacy-update-table').append(row([label,finite(before)?n(before*100)+'%':'Unavailable',finite(after)?n(after*100)+'%':'Unavailable',legacyMetricEvidence(update.before,key),legacyMetricEvidence(update.after,key)]));}if(update.labels.horizontal_merges)el('legacy-update-metric').value='horizontal_merges';el('legacy-update-metric').addEventListener('change',renderLegacyUpdate);el('legacy-update-link').href=update.url;renderLegacyUpdate();}else el('legacy-update').remove();
+ if(data.semantic_audits?.length){const keys=new Set(data.semantic_audits.flatMap(audit=>Object.keys(audit.summary||{})));for(const key of keys){const option=document.createElement('option');option.value=key;option.textContent=semanticLabels[key]||key;el('semantic-metric').append(option);}if(keys.has('hyperlink_target_characters_at_literal_offsets'))el('semantic-metric').value='hyperlink_target_characters_at_literal_offsets';el('semantic-metric').addEventListener('change',renderSemanticChart);for(const audit of data.semantic_audits)appendSemanticAudit(audit);renderSemanticChart();}else el('semantic-section').remove();
+ if(data.fidelity_changes?.length){for(const change of data.fidelity_changes){const li=document.createElement('li'),strong=document.createElement('strong');strong.textContent=change.title+'. ';li.append(strong,document.createTextNode(change.description));if(change.evidence_url){const link=document.createElement('a');link.href=change.evidence_url;link.textContent=' Evidence';li.append(link);}el('fidelity-changes').append(li);}}else el('fidelity-section').remove();
+}
+
+function renderFeatureBacklog(){
+ const backlog=data.feature_backlog;if(!backlog?.ranked_features?.length){el('backlog-section').remove();return;}
+ const build=backlog.binary_sha256||backlog.wave1_binary||'';set('backlog-scope',`${integer(backlog.sample_documents??data.scope.attempted)} sampled inputs.${build?` Backlog measurement build: ${build.slice(0,12)}.`:''} Categories are ordered by lowest recorded docx-core recall. These recorded priorities remain separate from the live heatmap.`);
+ for(const item of [...backlog.ranked_features].sort((a,b)=>(finite(a.recall)?a.recall:Infinity)-(finite(b.recall)?b.recall:Infinity))){const tr=row([qualityLabels[item.feature]||item.feature.replaceAll('_',' '),finite(item.recall)?n(item.recall*100)+'%':'Unavailable',`${integer(item.matched)} / ${integer(item.expected)}`,integer(Math.max(0,(item.expected||0)-(item.matched||0)))]);el('backlog-table').append(tr);}
+ for(const item of backlog.active_work||[]){const li=document.createElement('li');li.textContent=typeof item==='string'?item:JSON.stringify(item);el('backlog-work').append(li);}
+ for(const item of backlog.remaining_accuracy_limits||[]){const li=document.createElement('li');li.textContent=item;el('backlog-limits').append(li);}
+ if(data.receipt_links?.backlog)el('backlog-link').href=data.receipt_links.backlog;else el('backlog-link').remove();
+}
+
+const leaders={};for(const metric of ['median_ms','p95_ms']){const available=engines.filter(engine=>finite(comparison.engines[engine][metric]));leaders[metric]=available.length?available.reduce((a,b)=>comparison.engines[a][metric]<=comparison.engines[b][metric]?a:b):null;}
+set('scope',`${data.scope.cohort_name} · ${integer(data.scope.attempted)} planned inputs · ${integer(data.scope.quality_common)} current common quality inputs · displayed latency: ${integer(comparison.fixed_common)} common inputs`);
+set('headline',leaders.median_ms?`Current feature recall is shown alongside the latest measured latency comparison. ${leaders.median_ms} has the lowest measured median, and ${leaders.p95_ms} the lowest measured p95 on the labeled latency cohort.`:'Feature recall is available below; the first shared latency measurement is pending.');
+set('comparison-scope',`${latencyScope.repeats??latencySnapshot?.repeats??data.scope.repeats} warm samples per input in the displayed latency snapshot. Comparison charts use successful warm timings shared by every parser.`);
+set('latency-build-notice',latencyScopeText+(latencyIsPrior?' A newer build is being evaluated. These latency values remain from the identified earlier build and are not presented as measurements of the current quality results.':latencySource==='current_partial'?' This timing cohort is still growing; partial-run rankings can change.':''));
+set('ecdf-build-scope',latencyScopeText);set('scatter-build-scope',latencyScopeText);
+const core=comparison.engines['docx-core'];set('target-status',leaders.median_ms?`docx-core: ${ms(core.median_ms)} median · ${ms(core.p95_ms)} p95. ${leaders.median_ms==='docx-core'&&leaders.p95_ms==='docx-core'?'It leads both measured latency metrics in this bounded comparison.':'The target of leading both median and p95 has not been reached.'}`:'A common latency comparison is unavailable.');
+const oxideAll=comparison.engines.office_oxide;if(finite(oxideAll?.all_median_ms)&&finite(oxideAll?.all_p95_ms)){set('all-corpus-latency',`Across all ${integer(oxideAll.attempted)} attempted documents in this latency snapshot, office_oxide parsed ${integer(oxideAll.success)} successfully: ${ms(oxideAll.all_median_ms)} median and ${ms(oxideAll.all_p95_ms)} p95 per document. These full-corpus figures are separate from the ${integer(comparison.fixed_common)}-input common-success charts.`);}else el('all-corpus-latency').remove();
+for(const engine of engines){const value=comparison.engines[engine];el('speed-table').append(row([engine,ms(value.median_ms),ms(value.p95_ms),ms(value.all_median_ms),ms(value.all_p95_ms),data.live?`${value.success}/${value.timed_attempted??0} completed; ${value.attempted} planned`:`${value.success}/${value.attempted}`,Object.entries(value.statuses).map(([key,count])=>`${key}: ${count}`).join(' · ')||(data.live?'Pending':'Unavailable'),Object.entries(data.summaries[engine].accuracy_statuses||{}).map(([key,count])=>`${key}: ${count}`).join(' · ')||'Unavailable'],engine==='docx-core'?'core':''));}
+const measuredBaseline=latencySnapshot?latencySnapshot.baseline:data.baseline;if(measuredBaseline){const value=measuredBaseline;set('baseline-summary',`${integer(value.documents)} inputs were successfully timed with both docx-core builds.${finite(value.attempted)?` The baseline attempted ${integer(value.attempted)} inputs.`:''}${value.statuses?` Baseline outcomes: ${Object.entries(value.statuses).map(([status,count])=>`${status}: ${count}`).join(' · ')}.`:''}`);el('baseline-table').append(row([integer(value.documents),n(value.median_paired_speedup)+'×',ms(value.baseline_median_ms),ms(value.candidate_median_ms),ms(value.baseline_p95_ms),ms(value.candidate_p95_ms)]));}else el('baseline-section').remove();
+set('quality-scope',`Current-build quality uses ${data.scope.quality_common} shared, reference-bearing inputs. Categories are ranked from lowest docx-core feature recall. ${latencyMatchesQuality?`Latency uses ${comparison.fixed_common} shared successful inputs.${data.scope.quality_timing_same_cohort===true?' These are the same cohort.':' Matching cohort membership is not established by counts alone.'}`:'The retained latency snapshot belongs to a different build, so the combined speed-versus-quality plot is disabled.'} The original independent extraction scorer is unchanged.`);
+for(const [key,value]of Object.entries(metricDefinitions)){const option=document.createElement('option');option.value=key;option.textContent=value.label;el('scatter-x').append(option);}
+for(const engine of engines){const label=document.createElement('label');label.style.setProperty('--series-color',palette[engine]);const checkbox=document.createElement('input');checkbox.type='checkbox';checkbox.value=engine;checkbox.checked=true;checkbox.id='show-'+engine;checkbox.addEventListener('change',renderScatter);label.append(checkbox,document.createTextNode(engine));el('scatter-engines').append(label);}
+for(const [key,label]of Object.entries(qualityLabels)){const option=document.createElement('option');option.value=key;option.textContent=label;el('quality-metric').append(option);}
+if(qualityEntries.length)el('quality-metric').value=qualityEntries[0][0];
+buildQualityTable('quality-heatmap-head','quality-heatmap',false);buildQualityTable('all-quality-head','all-quality-table',true);
+if(data.legacy){
+set('legacy-text',`The earlier local comparison reported ${n(data.legacy.horizontal_recall*100)}% horizontal-span recall on its retained reference checks. That report used ${data.legacy.documents} DOCX inputs, with ${data.legacy.common} common-success inputs for parser comparison. Those results are not combined with the expanded sample.`);
+el('legacy-link').href=data.legacy.url;
+}else {set('legacy-text','No earlier comparison receipt was supplied.');el('legacy-link').remove();}
+set('validation-note',data.validation_note||'Validation evidence for this candidate is reported separately from the extraction scores.');
+set('timing-environment-note',data.timing_environment_note||'');el('timing-environment-note').hidden=!data.timing_environment_note;
+set('provenance-note',`Randomized execution seed: ${data.provenance.seed}. Corpus identity, binary identity, and scorer identity are recorded together.`);
+set('provenance-json',JSON.stringify({provenance:data.provenance,corpus:data.corpus},null,2));
+for(const [key,url]of Object.entries(data.receipt_links||{})){const link=el('receipt-'+key);if(link&&url){link.href=url;link.hidden=false;}}
+set('footer',`Generated ${data.generated_at} · Native build SHA-256 ${data.provenance.binary_sha256}`);
+initializeSupplementalEvidence();renderFeatureBacklog();renderFeedbackLoop();renderSingleTrace();renderImageAudit();renderInstructionAnalysis();renderNormalizationOptimization();renderTableOptimization();renderExperimentalTuning();initializeExperimentalMemory();
+for(const scroll of document.querySelectorAll('.chart-scroll')){const hint=document.createElement('p');hint.className='chart-scroll-hint';hint.textContent='Scroll horizontally to see the full chart.';scroll.after(hint);}
+addLegend('ecdf-legend');el('ecdf-scale').addEventListener('change',renderEcdf);
+for(const id of ['scatter-x','scatter-y','scatter-x-scale','scatter-y-scale'])el(id).addEventListener('change',renderScatter);
+el('scatter-data').addEventListener('toggle',renderScatterTable);
+for(const id of ['quality-latency','quality-metric','quality-scale'])el(id).addEventListener('change',renderQuality);
+if(state){for(const [id,value]of Object.entries(state.selects)){const node=el(id);if(node&&[...node.options].some(option=>option.value===value))node.value=value;}for(const [id,value]of Object.entries(state.checks)){const node=el(id);if(node)node.checked=value;}for(const node of reportRoot.querySelectorAll('details'))node.open=state.details.includes(node.dataset.stateKey);}
+renderLatency();renderEcdf();renderScatter();renderQuality();
+if(data.legacy_update)renderLegacyUpdate();if(data.semantic_audits?.length)renderSemanticChart();
+if(data.experimental_memory?.metrics?.length)renderMemoryChart();
+if(data.live){el('live-banner').hidden=false;const live=data.live;set('live-stage',live.stage||'Benchmark in progress');set('live-count',`${integer(live.completed??0)} / ${integer(live.total??0)} · ${live.status||'running'}`);el('live-progress').max=Math.max(1,live.total||1);el('live-progress').value=live.completed||0;const stageText=Array.isArray(live.stages)?live.stages.map(stage=>typeof stage==='string'?stage:`${stage.label||stage.name||stage.stage||''}${stage.status?' · '+stage.status:''}`).join(' → '):'';set('live-detail',`${stageText}${stageText?' · ':''}${live.note?live.note+' ':''}Last update: ${live.updated_at||'pending'}. Updates automatically every 5 seconds.`);}
+if(state){if(state.focus){const active=el(state.focus);if(active)active.focus({preventScroll:true});}window.scrollTo(state.x,state.y);}
+}
+reportApp(initialData);
+window.addEventListener('resize',()=>{for(const tooltip of reportRoot.querySelectorAll('.chart-tooltip'))tooltip.style.display='none';});
+if(initialData.live&&/^https?:$/.test(location.protocol)){
+ let previous=JSON.stringify(initialData),busy=false;
+ async function refresh(){if(busy)return;busy=true;try{const response=await fetch(new URL('live-data.json',location.href),{cache:'no-store'});if(!response.ok)throw new Error(`HTTP ${response.status}`);const next=await response.json();if(!next.scope||!next.summaries||!next.charts||!Array.isArray(next.engines))throw new Error('Incomplete report payload');const serialized=JSON.stringify(next);if(serialized!==previous){const state=captureState();reportApp(next,state);previous=serialized;}}catch(error){const detail=document.getElementById('live-detail');if(detail)detail.textContent='The next update is temporarily unavailable. Showing the last received measurements; retrying automatically.';}finally{busy=false;}}
+ setInterval(refresh,5000);
+}
+})();
+</script>
+</body>
+</html>

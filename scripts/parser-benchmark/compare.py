@@ -11,14 +11,14 @@ import time
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--out', type=Path, default=Path('output/parser-hillclimb-20261028'))
+    parser.add_argument('--out', type=Path, default=Path('output/parser-hillclimb'))
     parser.add_argument('--binary', type=Path, required=True)
     parser.add_argument('--repeats', type=int, default=5)
     parser.add_argument('--split', default='full')
     args = parser.parse_args()
     binary = args.binary.resolve()
     binary_hash = hashlib.sha256(binary.read_bytes()).hexdigest()
-    entries = json.loads(Path('output/parser-benchmark-20261028/manifest.json').read_text())['entries']
+    entries = json.loads(Path('output/parser-benchmark/manifest.json').read_text())['entries']
     if args.split != 'full':
         ids = set(json.loads((args.out / 'split.json').read_text())[args.split])
         entries = [entry for entry in entries if entry['id'] in ids]

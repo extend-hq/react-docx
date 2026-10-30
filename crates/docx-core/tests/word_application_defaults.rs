@@ -3,7 +3,9 @@
 //! pitch in exported PDFs), recorded under output/playwright/word-breaks-20261012.
 use std::collections::HashMap;
 
-use docx_core::model::{DocModel, DocNode, ParagraphChildNode, ParagraphLineRule, ParagraphNode, TextStyle};
+use docx_core::model::{
+    DocModel, DocNode, ParagraphChildNode, ParagraphLineRule, ParagraphNode, TextStyle,
+};
 use docx_core::{build_doc_model, OoxmlPackage, OoxmlPart};
 
 const W: &str = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
@@ -15,7 +17,10 @@ fn package(styles: &str) -> OoxmlPackage {
     OoxmlPackage {
         parts: [
             ("word/document.xml", document),
-            ("word/styles.xml", format!(r#"<w:styles xmlns:w="{W}">{styles}</w:styles>"#)),
+            (
+                "word/styles.xml",
+                format!(r#"<w:styles xmlns:w="{W}">{styles}</w:styles>"#),
+            ),
         ]
         .into_iter()
         .map(|(name, content)| {
@@ -44,7 +49,7 @@ fn run_style(model: &DocModel) -> TextStyle {
     let ParagraphChildNode::Text(run) = &paragraph(model).children[0] else {
         panic!("text run")
     };
-    run.style.clone().expect("resolved run style")
+    run.style.as_deref().cloned().expect("resolved run style")
 }
 
 fn spacing(model: &DocModel) -> (Option<i64>, Option<i64>, Option<ParagraphLineRule>) {
@@ -111,5 +116,8 @@ fn normal_style_overrides_application_defaults() {
     let style = run_style(&model);
     assert_eq!(style.font_size_pt, Some(10.0));
     assert_eq!(style.font_family.as_deref(), Some("Arial"));
-    assert_eq!(spacing(&model), (Some(0), Some(240), Some(ParagraphLineRule::Auto)));
+    assert_eq!(
+        spacing(&model),
+        (Some(0), Some(240), Some(ParagraphLineRule::Auto))
+    );
 }

@@ -17,8 +17,8 @@ use crate::model::{
 };
 use crate::package::OoxmlPackage;
 use crate::xml::{
-    decode_xml_entities, get_attribute, normalize_alignment,
-    parse_integer_attribute, parse_on_off_attribute, parse_underline_attribute,
+    decode_xml_entities, get_attribute, normalize_alignment, parse_integer_attribute,
+    parse_on_off_attribute, parse_underline_attribute,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -482,15 +482,19 @@ pub fn parse_table_border_style(tag_xml: Option<&str>) -> Option<TableBorderStyl
 /// Mirrors TypeScript `parseTableBorderSet`.
 pub fn parse_table_border_set(xml: &str) -> Option<TableBorderSet> {
     let top = parse_table_border_style(super::scan::find_tag_token_ref(xml, "w:top").as_deref());
-    let right = parse_table_border_style(super::scan::find_tag_token_ref(xml, "w:right").as_deref());
-    let bottom = parse_table_border_style(super::scan::find_tag_token_ref(xml, "w:bottom").as_deref());
+    let right =
+        parse_table_border_style(super::scan::find_tag_token_ref(xml, "w:right").as_deref());
+    let bottom =
+        parse_table_border_style(super::scan::find_tag_token_ref(xml, "w:bottom").as_deref());
     let left = parse_table_border_style(super::scan::find_tag_token_ref(xml, "w:left").as_deref());
     let inside_h =
         parse_table_border_style(super::scan::find_tag_token_ref(xml, "w:insideH").as_deref());
     let inside_v =
         parse_table_border_style(super::scan::find_tag_token_ref(xml, "w:insideV").as_deref());
-    let tl2br = parse_table_border_style(super::scan::find_tag_token_ref(xml, "w:tl2br").as_deref());
-    let tr2bl = parse_table_border_style(super::scan::find_tag_token_ref(xml, "w:tr2bl").as_deref());
+    let tl2br =
+        parse_table_border_style(super::scan::find_tag_token_ref(xml, "w:tl2br").as_deref());
+    let tr2bl =
+        parse_table_border_style(super::scan::find_tag_token_ref(xml, "w:tr2bl").as_deref());
 
     if top.is_none()
         && right.is_none()
@@ -596,13 +600,13 @@ pub(crate) fn direct_table_property<'a>(xml: &'a str, name: &str) -> Option<&'a 
 }
 
 pub(crate) fn parse_table_preferred_width(tag: &str) -> Option<TablePreferredWidth> {
-    let raw = get_attribute(tag, "w:w").unwrap_or_else(|| "0".to_string());
+    let raw = crate::xml::get_attribute_ref(tag, "w:w").unwrap_or("0");
     let raw = raw.trim();
     if let Some(percent) = raw.strip_suffix('%') {
         let value = percent.trim().parse::<f64>().ok()?;
         return (value.is_finite() && value >= 0.0).then_some(TablePreferredWidth::Pct { value });
     }
-    match get_attribute(tag, "w:type").as_deref().unwrap_or("dxa") {
+    match crate::xml::get_attribute_ref(tag, "w:type").unwrap_or("dxa") {
         "auto" => Some(TablePreferredWidth::Auto),
         "nil" => Some(TablePreferredWidth::Nil),
         "pct" => {
@@ -705,10 +709,11 @@ pub fn parse_table_style_properties_from_xml(
         None
     };
 
-    let table_cell_margin_xml = crate::xml::extract_balanced_tag_slices(table_properties_xml, "w:tblCellMar")
-        .into_iter()
-        .next()
-        .or_else(|| super::scan::find_tag_token_ref(table_properties_xml, "w:tblCellMar"));
+    let table_cell_margin_xml =
+        crate::xml::extract_balanced_tag_slices(table_properties_xml, "w:tblCellMar")
+            .into_iter()
+            .next()
+            .or_else(|| super::scan::find_tag_token_ref(table_properties_xml, "w:tblCellMar"));
     let cell_margin_twips = table_cell_margin_xml
         .as_deref()
         .and_then(parse_table_box_spacing);
@@ -871,18 +876,24 @@ pub fn parse_table_look(table_properties_xml: Option<&str>) -> Option<ParsedTabl
         .as_deref()
         .and_then(|raw| i64::from_str_radix(raw, 16).ok());
 
-    let row_band_size_tag =
-        super::scan::find_tag_token_ref(table_properties_xml, "w:tblStyleRowBandSize").or_else(|| {
-            crate::xml::extract_balanced_tag_slices(table_properties_xml, "w:tblStyleRowBandSize")
-                .into_iter()
-                .next()
-        });
-    let col_band_size_tag =
-        super::scan::find_tag_token_ref(table_properties_xml, "w:tblStyleColBandSize").or_else(|| {
-            crate::xml::extract_balanced_tag_slices(table_properties_xml, "w:tblStyleColBandSize")
-                .into_iter()
-                .next()
-        });
+    let row_band_size_tag = super::scan::find_tag_token_ref(
+        table_properties_xml,
+        "w:tblStyleRowBandSize",
+    )
+    .or_else(|| {
+        crate::xml::extract_balanced_tag_slices(table_properties_xml, "w:tblStyleRowBandSize")
+            .into_iter()
+            .next()
+    });
+    let col_band_size_tag = super::scan::find_tag_token_ref(
+        table_properties_xml,
+        "w:tblStyleColBandSize",
+    )
+    .or_else(|| {
+        crate::xml::extract_balanced_tag_slices(table_properties_xml, "w:tblStyleColBandSize")
+            .into_iter()
+            .next()
+    });
     let row_band_size_raw = row_band_size_tag
         .as_deref()
         .and_then(|tag| parse_integer_attribute(tag, "w:val"))
@@ -901,7 +912,6 @@ pub fn parse_table_look(table_properties_xml: Option<&str>) -> Option<ParsedTabl
         }
     };
 
-    let has_look_mask = look_mask.is_some();
     let mask_value = look_mask.unwrap_or(0);
 
     Some(ParsedTableLook {
@@ -925,8 +935,7 @@ pub fn parse_table_conditional_style_from_xml(
         return None;
     }
 
-    let table_properties_xml = direct_table_property(xml, "w:tblPr")
-        .unwrap_or_default();
+    let table_properties_xml = direct_table_property(xml, "w:tblPr").unwrap_or_default();
     let paragraph_properties_xml = crate::xml::extract_balanced_tag_slices(xml, "w:pPr")
         .into_iter()
         .next()
@@ -935,8 +944,7 @@ pub fn parse_table_conditional_style_from_xml(
         .into_iter()
         .next()
         .unwrap_or_default();
-    let cell_properties_xml = direct_table_property(xml, "w:tcPr")
-        .unwrap_or_default();
+    let cell_properties_xml = direct_table_property(xml, "w:tcPr").unwrap_or_default();
     let cell_preferred_width =
         direct_table_property(&cell_properties_xml, "w:tcW").and_then(parse_table_preferred_width);
     let run_properties_xml = resolve_style_properties_block(xml, "w:rPr");
@@ -968,14 +976,16 @@ pub fn parse_table_conditional_style_from_xml(
         .and_then(|value| normalize_hex_color(Some(value)));
     let run_style = parse_text_style_from_xml(&run_properties_xml, theme_fonts);
 
-    let table_borders_xml = crate::xml::extract_balanced_tag_slices(&table_properties_xml, "w:tblBorders")
-        .into_iter()
-        .next()
-        .or_else(|| super::scan::find_tag_token_ref(&table_properties_xml, "w:tblBorders"));
-    let cell_borders_xml = crate::xml::extract_balanced_tag_slices(&cell_properties_xml, "w:tcBorders")
-        .into_iter()
-        .next()
-        .or_else(|| super::scan::find_tag_token_ref(&cell_properties_xml, "w:tcBorders"));
+    let table_borders_xml =
+        crate::xml::extract_balanced_tag_slices(&table_properties_xml, "w:tblBorders")
+            .into_iter()
+            .next()
+            .or_else(|| super::scan::find_tag_token_ref(&table_properties_xml, "w:tblBorders"));
+    let cell_borders_xml =
+        crate::xml::extract_balanced_tag_slices(&cell_properties_xml, "w:tcBorders")
+            .into_iter()
+            .next()
+            .or_else(|| super::scan::find_tag_token_ref(&cell_properties_xml, "w:tcBorders"));
     let table_borders = table_borders_xml
         .as_deref()
         .and_then(parse_table_border_set);
@@ -1537,7 +1547,10 @@ fn find_drawing_rpr_attribute(xml: &str, attribute: &str) -> Option<String> {
 }
 
 fn find_drawing_latin_typeface(xml: &str) -> Option<String> {
-    if let Some(block) = crate::xml::extract_balanced_tag_slices(xml, "a:rPr").into_iter().next() {
+    if let Some(block) = crate::xml::extract_balanced_tag_slices(xml, "a:rPr")
+        .into_iter()
+        .next()
+    {
         if let Some(latin) = crate::xml::extract_balanced_tag_slices(&block, "a:latin")
             .into_iter()
             .next()
@@ -1564,11 +1577,15 @@ fn find_drawing_latin_typeface(xml: &str) -> Option<String> {
         }
     }
 
-    super::scan::find_tag_token_ref(xml, "a:latin").and_then(|latin| get_attribute(&latin, "typeface"))
+    super::scan::find_tag_token_ref(xml, "a:latin")
+        .and_then(|latin| get_attribute(&latin, "typeface"))
 }
 
 fn find_drawing_color(xml: &str) -> Option<String> {
-    if let Some(block) = crate::xml::extract_balanced_tag_slices(xml, "a:rPr").into_iter().next() {
+    if let Some(block) = crate::xml::extract_balanced_tag_slices(xml, "a:rPr")
+        .into_iter()
+        .next()
+    {
         if let Some(color_xml) = crate::xml::extract_balanced_tag_slices(&block, "a:solidFill")
             .into_iter()
             .next()
@@ -1633,7 +1650,10 @@ pub fn parse_text_style_from_xml(xml: &str, theme_fonts: &ThemeFontMap) -> Optio
     super::style::cached_definition_style(xml, theme_fonts)
 }
 
-pub(crate) fn parse_definition_style_uncached(xml: &str, theme_fonts: &ThemeFontMap) -> Option<TextStyle> {
+pub(crate) fn parse_definition_style_uncached(
+    xml: &str,
+    theme_fonts: &ThemeFontMap,
+) -> Option<TextStyle> {
     if xml.is_empty() {
         return None;
     }
@@ -2047,10 +2067,9 @@ pub fn parse_theme_fonts(pkg: &OoxmlPackage) -> ThemeFontMap {
 }
 
 fn parse_theme_color_from_tag(color_xml: &str) -> Option<String> {
-    if let Some(explicit) =
-        super::scan::find_attribute_value_in_tag(color_xml, "a:srgbClr", "w:val")
-            .as_deref()
-            .and_then(|value| normalize_hex_color(Some(value)))
+    if let Some(explicit) = super::scan::find_attribute_value_in_tag(color_xml, "a:srgbClr", "val")
+        .as_deref()
+        .and_then(|value| normalize_hex_color(Some(value)))
     {
         return Some(explicit);
     }
@@ -2098,10 +2117,13 @@ pub fn parse_theme_colors(pkg: &OoxmlPackage) -> ThemeColorMap {
 
     let mut colors = ThemeColorMap::new();
     for name in color_names {
-        let tag_match = crate::xml::extract_balanced_tag_slices(&color_scheme_xml, &format!("a:{name}"))
-            .into_iter()
-            .next()
-            .or_else(|| super::scan::find_tag_token_ref(&color_scheme_xml, &format!("a:{name}")));
+        let tag_match =
+            crate::xml::extract_balanced_tag_slices(&color_scheme_xml, &format!("a:{name}"))
+                .into_iter()
+                .next()
+                .or_else(|| {
+                    super::scan::find_tag_token_ref(&color_scheme_xml, &format!("a:{name}"))
+                });
         let Some(tag_match) = tag_match else {
             continue;
         };
@@ -2164,7 +2186,9 @@ pub(crate) fn parse_document_style_sheet(pkg: &OoxmlPackage) -> ParsedStyleSheet
     for part in pkg.parts.values() {
         for name in ["w:tblStyle", "w:rStyle", "w:pStyle"] {
             for tag in crate::xml::extract_balanced_tag_slices(&part.content, name) {
-                if let Some(id) = get_attribute(tag, "w:val") { referenced.insert(id); }
+                if let Some(id) = get_attribute(tag, "w:val") {
+                    referenced.insert(id);
+                }
             }
         }
     }
@@ -2172,28 +2196,39 @@ pub(crate) fn parse_document_style_sheet(pkg: &OoxmlPackage) -> ParsedStyleSheet
         let mut parents = HashMap::new();
         for style in crate::xml::extract_balanced_tag_slices(&part.content, "w:style") {
             let tag = super::scan::find_tag_token_ref(style, "w:style").unwrap_or("");
-            let Some(id) = get_attribute(tag, "w:styleId") else { continue };
-            if let Some(parent) = super::scan::find_attribute_value_in_tag(style, "w:basedOn", "w:val") {
+            let Some(id) = get_attribute(tag, "w:styleId") else {
+                continue;
+            };
+            if let Some(parent) =
+                super::scan::find_attribute_value_in_tag(style, "w:basedOn", "w:val")
+            {
                 parents.insert(id.clone(), parent);
             }
             let kind = parse_style_type(get_attribute(tag, "w:type").as_deref());
             if kind == Some(RawStyleType::Paragraph)
                 || (kind == Some(RawStyleType::Table)
-                    && get_attribute(tag, "w:default").is_some_and(|v| matches!(v.as_str(), "1" | "true" | "on"))) {
+                    && get_attribute(tag, "w:default")
+                        .is_some_and(|v| matches!(v.as_str(), "1" | "true" | "on")))
+            {
                 referenced.insert(id);
             }
         }
         let mut pending: Vec<_> = referenced.iter().cloned().collect();
         while let Some(id) = pending.pop() {
             if let Some(parent) = parents.get(&id) {
-                if referenced.insert(parent.clone()) { pending.push(parent.clone()); }
+                if referenced.insert(parent.clone()) {
+                    pending.push(parent.clone());
+                }
             }
         }
     }
     parse_style_sheet_selected(pkg, Some(&referenced))
 }
 
-fn parse_style_sheet_selected(pkg: &OoxmlPackage, selected_styles: Option<&HashSet<String>>) -> ParsedStyleSheet {
+fn parse_style_sheet_selected(
+    pkg: &OoxmlPackage,
+    selected_styles: Option<&HashSet<String>>,
+) -> ParsedStyleSheet {
     let Some(styles_xml) =
         crate::package::related_document_part(pkg, "styles").map(|part| part.content.as_str())
     else {
@@ -2202,10 +2237,11 @@ fn parse_style_sheet_selected(pkg: &OoxmlPackage, selected_styles: Option<&HashS
 
     let theme_fonts = parse_theme_fonts(pkg);
     let theme_colors = parse_theme_colors(pkg);
-    let declared_doc_defaults_xml = crate::xml::extract_balanced_tag_slices(styles_xml, "w:docDefaults")
-        .into_iter()
-        .next()
-        .unwrap_or_default();
+    let declared_doc_defaults_xml =
+        crate::xml::extract_balanced_tag_slices(styles_xml, "w:docDefaults")
+            .into_iter()
+            .next()
+            .unwrap_or_default();
     let declares_run_defaults =
         super::scan::contains_tag(&declared_doc_defaults_xml, "w:rPrDefault");
     let doc_defaults_xml = with_word_application_defaults(&declared_doc_defaults_xml, &theme_fonts);
@@ -2332,7 +2368,8 @@ fn parse_style_sheet_selected(pkg: &OoxmlPackage, selected_styles: Option<&HashS
         }
 
         let name_tag = super::scan::find_tag_token_ref(&style_xml, "w:name").unwrap_or_default();
-        let based_on_tag = super::scan::find_tag_token_ref(&style_xml, "w:basedOn").unwrap_or_default();
+        let based_on_tag =
+            super::scan::find_tag_token_ref(&style_xml, "w:basedOn").unwrap_or_default();
         let next_tag = super::scan::find_tag_token_ref(&style_xml, "w:next").unwrap_or_default();
         let ui_priority_tag =
             super::scan::find_tag_token_ref(&style_xml, "w:uiPriority").unwrap_or_default();
@@ -2400,7 +2437,9 @@ fn parse_style_sheet_selected(pkg: &OoxmlPackage, selected_styles: Option<&HashS
             },
         );
 
-        if style_type == RawStyleType::Table && selected_styles.is_none_or(|ids| ids.contains(&style_id)) {
+        if style_type == RawStyleType::Table
+            && selected_styles.is_none_or(|ids| ids.contains(&style_id))
+        {
             if get_attribute(&style_tag, "w:default")
                 .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "on"))
             {
@@ -2414,7 +2453,9 @@ fn parse_style_sheet_selected(pkg: &OoxmlPackage, selected_styles: Option<&HashS
                 conditions.insert(TableConditionalStyleType::WholeTable, whole_table_condition);
             }
 
-            for conditional_style_xml in crate::xml::extract_balanced_tag_slices(&style_xml, "w:tblStylePr") {
+            for conditional_style_xml in
+                crate::xml::extract_balanced_tag_slices(&style_xml, "w:tblStylePr")
+            {
                 let conditional_style_tag =
                     super::scan::find_tag_token_ref(&conditional_style_xml, "w:tblStylePr")
                         .unwrap_or_default();
@@ -2439,6 +2480,13 @@ fn parse_style_sheet_selected(pkg: &OoxmlPackage, selected_styles: Option<&HashS
                     conditions,
                     floating: None,
                     properties: None,
+                    has_row_cell_spacing: crate::xml::extract_balanced_tag_slices(
+                        &style_xml, "w:trPr",
+                    )
+                    .into_iter()
+                    .any(|properties| {
+                        direct_table_property(properties, "w:tblCellSpacing").is_some()
+                    }),
                 },
             );
         }
@@ -2715,6 +2763,10 @@ fn parse_style_sheet_selected(pkg: &OoxmlPackage, selected_styles: Option<&HashS
             conditions,
             floating: style.floating.clone(),
             properties: style.properties.clone(),
+            has_row_cell_spacing: style.has_row_cell_spacing
+                || inherited
+                    .as_ref()
+                    .is_some_and(|value| value.has_row_cell_spacing),
         };
 
         table_style_cache.insert(style_id.to_string(), Some(resolved.clone()));
@@ -2846,7 +2898,7 @@ fn parse_style_sheet_selected(pkg: &OoxmlPackage, selected_styles: Option<&HashS
             });
 
     let mut table_paragraph_spacing_by_style_id = HashMap::new();
-    for (style_id, style) in raw_styles_by_id
+    for (style_id, _) in raw_styles_by_id
         .iter()
         .filter(|(_, style)| style.style_type == RawStyleType::Table)
     {

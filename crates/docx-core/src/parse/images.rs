@@ -251,46 +251,44 @@ pub fn parse_floating_anchor_from_run_xml(run_xml: &str) -> Option<ImageFloating
     })
 }
 
-pub fn parse_drawing_image_css_filter(run_xml: &str) -> Option<String> {
-    let mut filters = Vec::new();
+/// Image effects are resolved into the rendered source, with no CSS approximation.
+pub fn parse_drawing_image_css_filter(_run_xml: &str) -> Option<String> {
+    None
+}
 
-    if re::get(r"(?i)<a14:artisticPastelsSmooth\b").is_some_and(|re| re.is_match(run_xml)) {
-        filters.extend(["saturate(0.76)", "contrast(0.94)", "brightness(1.04)"]);
+fn drawing_duotone_svg(run_xml: &str, source: &str, context: &ParseContext<'_>) -> Option<String> {
+    let effect = extract_balanced_tag_blocks(run_xml, "a:duotone")
+        .into_iter()
+        .next()?;
+    let tags = ["a:srgbClr", "a:schemeClr", "a:sysClr", "a:prstClr"];
+    let colors = extract_balanced_tag_blocks_in_order(&effect, &tags);
+    if colors.len() != 2 {
+        return None;
     }
-
-    let color_temperature_raw = regex_capture(
-        run_xml,
-        r#"(?i)<a14:colorTemperature\b[^>]*colorTemp="(\d+)""#,
-    );
-    if let Some(raw) = color_temperature_raw.as_deref() {
-        if let Ok(color_temperature) = raw.parse::<f64>() {
-            if color_temperature.is_finite() {
-                if color_temperature >= 9000.0 {
-                    filters.extend(["hue-rotate(-6deg)", "saturate(1.04)"]);
-                } else if color_temperature <= 4500.0 {
-                    filters.extend(["sepia(0.1)", "saturate(1.02)"]);
-                }
-            }
+    let mut endpoints = [[0.0; 3]; 2];
+    for (index, range) in colors.iter().enumerate() {
+        let resolved = super::colors::resolve_drawing_color_from_xml(
+            Some(&effect[range.start..range.end]),
+            &context.style_sheet.theme_colors,
+        )?;
+        for channel in 0..3 {
+            endpoints[index][channel] =
+                u8::from_str_radix(&resolved.color[1 + channel * 2..3 + channel * 2], 16).ok()?
+                    as f64
+                    / 255.0;
         }
     }
-
-    if re::get(r#"(?is)<a:duotone>[\s\S]*?<a:schemeClr\b[^>]*val="accent3""#)
-        .is_some_and(|re| re.is_match(run_xml))
-    {
-        filters.extend([
-            "grayscale(1)",
-            "sepia(0.55)",
-            "hue-rotate(35deg)",
-            "saturate(1.55)",
-            "brightness(0.9)",
-        ]);
-    }
-
-    if filters.is_empty() {
-        None
-    } else {
-        Some(filters.join(" "))
-    }
+    let [dark, light] = endpoints;
+    Some(svg_data_uri(&format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="1" height="1" viewBox="0 0 1 1" preserveAspectRatio="none"><defs><filter id="duotone" x="0" y="0" width="100%" height="100%" color-interpolation-filters="linearRGB"><feColorMatrix type="matrix" values="0.299 0.587 0.114 0 0 0.299 0.587 0.114 0 0 0.299 0.587 0.114 0 0 0 0 0 1 0"/><feComponentTransfer><feFuncR type="table" tableValues="{} {}"/><feFuncG type="table" tableValues="{} {}"/><feFuncB type="table" tableValues="{} {}"/></feComponentTransfer></filter></defs><image xlink:href="{}" width="1" height="1" preserveAspectRatio="none" filter="url(#duotone)"/></svg>"#,
+        dark[0],
+        light[0],
+        dark[1],
+        light[1],
+        dark[2],
+        light[2],
+        escape_xml_text(source)
+    )))
 }
 
 pub fn parse_drawing_image_opacity(run_xml: &str) -> Option<f64> {
@@ -1068,9 +1066,495 @@ fn resolve_doc_pr_alt(run_xml: &str) -> Option<String> {
         .or_else(|| get_attribute(&doc_pr_tag, "name"))
 }
 
+fn vml_finite(value: &str) -> Option<f64> {
+    let value: f64 = value.trim().parse().ok()?;
+    value.is_finite().then_some(value)
+}
+
+fn vml_pixels(value: &str) -> Option<f64> {
+    let value = value.trim();
+    let split = value.find(|c: char| c.is_ascii_alphabetic())?;
+    let number = vml_finite(&value[..split])?;
+    let factor = match value[split..].trim().to_ascii_lowercase().as_str() {
+        "px" => 1.0,
+        "pt" => 96.0 / 72.0,
+        "in" => 96.0,
+        "cm" => 96.0 / 2.54,
+        "mm" => 96.0 / 25.4,
+        _ => return None,
+    };
+    let pixels = number * factor;
+    pixels.is_finite().then_some(pixels)
+}
+
+fn vml_pair(value: &str) -> Option<(f64, f64)> {
+    let mut parts = value
+        .split(|c: char| c == ',' || c.is_ascii_whitespace())
+        .filter(|v| !v.is_empty());
+    let result = (vml_finite(parts.next()?)?, vml_finite(parts.next()?)?);
+    parts.next().is_none().then_some(result)
+}
+
+fn vml_svg_path(path: &str) -> Option<String> {
+    let mut result = String::with_capacity(path.len());
+    let mut remaining = path.trim();
+    while !remaining.is_empty() {
+        let command = *remaining.as_bytes().first()?;
+        if !matches!(command, b'm' | b'l' | b'c' | b'x' | b'e') {
+            return None;
+        }
+        if result.is_empty() && command != b'm' {
+            return None;
+        }
+        remaining = &remaining[1..];
+        let end = remaining
+            .find(|c: char| c.is_ascii_alphabetic())
+            .unwrap_or(remaining.len());
+        let parameters = remaining[..end].trim();
+        if parameters.starts_with(',')
+            || parameters.ends_with(',')
+            || parameters.split(',').any(|value| value.trim().is_empty()) && !parameters.is_empty()
+        {
+            return None;
+        }
+        let numbers = parameters
+            .split(|c: char| c == ',' || c.is_ascii_whitespace())
+            .filter(|value| !value.is_empty())
+            .map(vml_finite)
+            .collect::<Option<Vec<_>>>()?;
+        let valid = match command {
+            b'm' | b'l' => !numbers.is_empty() && numbers.len() % 2 == 0,
+            b'c' => !numbers.is_empty() && numbers.len() % 6 == 0,
+            _ => numbers.is_empty(),
+        };
+        if !valid {
+            return None;
+        }
+        remaining = remaining[end..].trim();
+        if command == b'e' {
+            if !remaining.is_empty() {
+                return None;
+            }
+        } else {
+            result.push(if command == b'x' {
+                'Z'
+            } else {
+                (command as char).to_ascii_uppercase()
+            });
+            result.push_str(parameters);
+        }
+    }
+    (!result.is_empty()).then_some(result)
+}
+
+fn vml_path_stays_on_axis(path: &str, axis: usize, origin: f64) -> bool {
+    path.split(|c: char| c.is_ascii_alphabetic() || c == ',' || c.is_ascii_whitespace())
+        .filter(|value| !value.is_empty())
+        .enumerate()
+        .all(|(index, value)| index % 2 != axis || vml_finite(value) == Some(origin))
+}
+
+fn vml_path_bounds(
+    path: &str,
+    x: f64,
+    y: f64,
+    scale_x: f64,
+    scale_y: f64,
+    origin_x: f64,
+    origin_y: f64,
+) -> Option<(f64, f64, f64, f64)> {
+    let mut values = path
+        .split(|c: char| c.is_ascii_alphabetic() || c == ',' || c.is_ascii_whitespace())
+        .filter(|value| !value.is_empty());
+    let mut bounds = (
+        f64::INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+    );
+    while let Some(value) = values.next() {
+        let px = x + (vml_finite(value)? - origin_x) * scale_x;
+        let py = y + (vml_finite(values.next()?)? - origin_y) * scale_y;
+        if !px.is_finite() || !py.is_finite() {
+            return None;
+        }
+        bounds.0 = bounds.0.min(px);
+        bounds.1 = bounds.1.min(py);
+        bounds.2 = bounds.2.max(px);
+        bounds.3 = bounds.3.max(py);
+    }
+    bounds.0.is_finite().then_some(bounds)
+}
+
+fn vml_group_image(run_xml: &str, context: &ParseContext<'_>) -> Option<ImageRunNode> {
+    if !run_xml.contains("<v:group") || run_xml.contains("<w:txbxContent") {
+        return None;
+    }
+    let groups = extract_balanced_tag_blocks(run_xml, "v:group");
+    if groups.len() != 1 {
+        return None;
+    }
+    let group = &groups[0];
+    if group.matches("<v:imagedata").count() < 2
+        || run_xml.matches("<v:imagedata").count() != group.matches("<v:imagedata").count()
+    {
+        return None;
+    }
+    {
+        let _scope = crate::xml_index::scope(std::iter::once(("", run_xml)), Default::default());
+        let roots = crate::xml_index::children(run_xml)?;
+        if roots
+            .iter()
+            .any(|child| !matches!(child.tag_name.as_str(), "v:group" | "v:shapetype"))
+        {
+            return None;
+        }
+    }
+    let opening = &group[..crate::xml::tag_token_end(group, 0)?];
+    if [
+        "filled",
+        "fillcolor",
+        "stroked",
+        "strokecolor",
+        "strokeweight",
+        "opacity",
+    ]
+    .iter()
+    .any(|name| get_attribute(opening, name).is_some())
+    {
+        return None;
+    }
+    let style_text = get_attribute(opening, "style")?;
+    let style = parse_css_style_declarations(&style_text);
+    if ["rotation", "flip", "visibility", "display"]
+        .iter()
+        .any(|key| style.contains_key(*key))
+    {
+        return None;
+    }
+    let width = vml_pixels(style.get("width")?)?;
+    let height = vml_pixels(style.get("height")?)?;
+    if width <= 0.0 || height <= 0.0 {
+        return None;
+    }
+    let (origin_x, origin_y) =
+        vml_pair(&get_attribute(opening, "coordorigin").unwrap_or_else(|| "0,0".into()))?;
+    let (extent_x, extent_y) =
+        vml_pair(&get_attribute(opening, "coordsize").unwrap_or_else(|| "1000,1000".into()))?;
+    if extent_x <= 0.0 || extent_y <= 0.0 {
+        return None;
+    }
+    let _index_scope =
+        crate::xml_index::scope(std::iter::once(("", group.as_str())), Default::default());
+    let children = crate::xml_index::children(group)?;
+    let mut elements = Vec::new();
+    let mut canvas = (origin_x, origin_y, origin_x + extent_x, origin_y + extent_y);
+    for child in children {
+        let xml = &group[child.start..child.end];
+        if child.tag_name == "w10:wrap" {
+            continue;
+        }
+        if !matches!(child.tag_name.as_str(), "v:shape" | "v:rect" | "v:line") {
+            return None;
+        }
+        let tag = &xml[..crate::xml::tag_token_end(xml, 0)?];
+        let declarations =
+            parse_css_style_declarations(&get_attribute(tag, "style").unwrap_or_default());
+        if declarations.keys().any(|key| {
+            !matches!(
+                key.as_str(),
+                "position" | "left" | "top" | "width" | "height" | "z-index"
+            )
+        }) {
+            return None;
+        }
+        if get_attribute(tag, "opacity").is_some() {
+            return None;
+        }
+        let z = declarations
+            .get("z-index")
+            .map(|value| vml_finite(value))
+            .unwrap_or(Some(0.0))?;
+        if child.tag_name != "v:shape" && xml.contains("<v:imagedata") {
+            return None;
+        }
+        let mut dotted = false;
+        for item in crate::xml_index::children(xml)? {
+            let inner = &xml[item.start..item.end];
+            match item.tag_name.as_str() {
+                "v:imagedata" => {
+                    for attribute in [
+                        "croptop",
+                        "cropleft",
+                        "cropright",
+                        "cropbottom",
+                        "gain",
+                        "blacklevel",
+                        "gamma",
+                        "chromakey",
+                        "grayscale",
+                        "bilevel",
+                    ] {
+                        if get_attribute(inner, attribute).is_some() {
+                            return None;
+                        }
+                    }
+                }
+                "v:fill" => {
+                    if get_attribute(inner, "type")
+                        .as_deref()
+                        .is_some_and(|value| value != "solid")
+                        || ["opacity", "color", "color2", "on"]
+                            .iter()
+                            .any(|name| get_attribute(inner, name).is_some())
+                    {
+                        return None;
+                    }
+                }
+                "v:path" => {
+                    if ["v", "fillok", "strokeok", "shadowok", "limo"]
+                        .iter()
+                        .any(|name| get_attribute(inner, name).is_some())
+                    {
+                        return None;
+                    }
+                }
+                "v:stroke" => {
+                    if [
+                        "on",
+                        "weight",
+                        "color",
+                        "color2",
+                        "opacity",
+                        "style",
+                        "linestyle",
+                        "miterlimit",
+                        "joinstyle",
+                        "endcap",
+                        "filltype",
+                        "src",
+                        "imagesize",
+                        "imagealignshape",
+                        "startarrow",
+                        "startarrowwidth",
+                        "startarrowlength",
+                        "endarrow",
+                        "endarrowwidth",
+                        "endarrowlength",
+                    ]
+                    .iter()
+                    .any(|name| get_attribute(inner, name).is_some())
+                        || !crate::xml_index::children(inner)?.is_empty()
+                    {
+                        return None;
+                    }
+                    match get_attribute(inner, "dashstyle")
+                        .as_deref()
+                        .unwrap_or("solid")
+                    {
+                        "solid" => {}
+                        "dot" => dotted = true,
+                        _ => return None,
+                    }
+                }
+                _ => return None,
+            }
+        }
+        let fill = if get_attribute(tag, "filled")
+            .as_deref()
+            .is_some_and(|v| matches!(v, "false" | "f" | "0"))
+        {
+            "none".to_string()
+        } else {
+            match get_attribute(tag, "fillcolor") {
+                Some(value) => normalize_hex_color(Some(&value))?,
+                None => "#ffffff".to_string(),
+            }
+        };
+        let stroke = if get_attribute(tag, "stroked")
+            .as_deref()
+            .is_some_and(|v| matches!(v, "false" | "f" | "0"))
+        {
+            "none".to_string()
+        } else {
+            match get_attribute(tag, "strokecolor") {
+                Some(value) => normalize_hex_color(Some(&value))?,
+                None => "#000000".to_string(),
+            }
+        };
+        let stroke_weight = get_attribute(tag, "strokeweight");
+        if stroke != "none" && stroke_weight.is_none() {
+            return None;
+        }
+        let stroke_width = stroke_weight
+            .map(|value| vml_pixels(&value))
+            .unwrap_or(Some(1.0))?;
+        if stroke_width < 0.0 {
+            return None;
+        }
+        let dash = if dotted {
+            format!(
+                r#" stroke-dasharray="{} {}""#,
+                stroke_width,
+                stroke_width * 2.0
+            )
+        } else {
+            String::new()
+        };
+        let paint = format!(
+            r#"fill="{fill}" fill-rule="evenodd" stroke="{stroke}" stroke-width="{stroke_width}" stroke-linejoin="round" vector-effect="non-scaling-stroke"{dash}"#
+        );
+        let bounds;
+        let element = if child.tag_name == "v:line" {
+            let (x1, y1) = vml_pair(&get_attribute(tag, "from")?)?;
+            let (x2, y2) = vml_pair(&get_attribute(tag, "to")?)?;
+            bounds = (x1.min(x2), y1.min(y2), x1.max(x2), y1.max(y2));
+            format!(r#"<line x1="{x1}" y1="{y1}" x2="{x2}" y2="{y2}" {paint}/>"#)
+        } else {
+            let x = declarations
+                .get("left")
+                .map(|value| vml_finite(value))
+                .unwrap_or(Some(0.0))?;
+            let y = declarations
+                .get("top")
+                .map(|value| vml_finite(value))
+                .unwrap_or(Some(0.0))?;
+            let w = vml_finite(declarations.get("width")?)?;
+            let h = vml_finite(declarations.get("height")?)?;
+            if w <= 0.0 || h <= 0.0 {
+                return None;
+            }
+            if child.tag_name == "v:rect" {
+                bounds = (x, y, x + w, y + h);
+                format!(r#"<rect x="{x}" y="{y}" width="{w}" height="{h}" {paint}/>"#)
+            } else if xml.contains("<v:imagedata") {
+                if xml.matches("<v:imagedata").count() != 1
+                    || get_attribute(tag, "path").is_some()
+                    || get_attribute(tag, "type").as_deref() != Some("#_x0000_t75")
+                    || stroke != "none"
+                    || get_attribute(tag, "fillcolor").is_some()
+                {
+                    return None;
+                }
+                let image = parse_run_image_block(xml, context)?;
+                let src = escape_xml_text(image.src.as_deref()?);
+                bounds = (x, y, x + w, y + h);
+                format!(
+                    r#"<image href="{src}" x="{x}" y="{y}" width="{w}" height="{h}" preserveAspectRatio="none"/>"#
+                )
+            } else {
+                let path = vml_svg_path(&get_attribute(tag, "path")?)?;
+                let (cx, cy) =
+                    vml_pair(&get_attribute(tag, "coordorigin").unwrap_or_else(|| "0,0".into()))?;
+                let (cw, ch) = vml_pair(&get_attribute(tag, "coordsize")?)?;
+                if cw < 0.0 || ch < 0.0 || (cw == 0.0 && ch == 0.0) {
+                    return None;
+                }
+                if (cw == 0.0 && (fill != "none" || !vml_path_stays_on_axis(&path, 0, cx)))
+                    || (ch == 0.0 && (fill != "none" || !vml_path_stays_on_axis(&path, 1, cy)))
+                {
+                    return None;
+                }
+                let scale_x = if cw == 0.0 { 1.0 } else { w / cw };
+                let scale_y = if ch == 0.0 { 1.0 } else { h / ch };
+                if !scale_x.is_finite() || !scale_y.is_finite() {
+                    return None;
+                }
+                bounds = vml_path_bounds(&path, x, y, scale_x, scale_y, cx, cy)?;
+                format!(
+                    r#"<path d="{path}" transform="translate({x} {y}) scale({scale_x} {scale_y}) translate({} {})" {paint}/>"#,
+                    -cx, -cy
+                )
+            }
+        };
+        let stroke_radius = if stroke == "none" {
+            0.0
+        } else {
+            stroke_width * 0.5
+        };
+        let padding_x = stroke_radius * extent_x / width;
+        let padding_y = stroke_radius * extent_y / height;
+        canvas.0 = canvas.0.min(bounds.0 - padding_x);
+        canvas.1 = canvas.1.min(bounds.1 - padding_y);
+        canvas.2 = canvas.2.max(bounds.2 + padding_x);
+        canvas.3 = canvas.3.max(bounds.3 + padding_y);
+        elements.push((z, element));
+    }
+    elements.sort_by(|left, right| left.0.total_cmp(&right.0));
+    let body = elements
+        .into_iter()
+        .map(|(_, element)| element)
+        .collect::<String>();
+    let canvas_width = canvas.2 - canvas.0;
+    let canvas_height = canvas.3 - canvas.1;
+    let width_px = if canvas_width == extent_x {
+        width
+    } else {
+        canvas_width * width / extent_x
+    };
+    let height_px = if canvas_height == extent_y {
+        height
+    } else {
+        canvas_height * height / extent_y
+    };
+    if !width_px.is_finite() || !height_px.is_finite() {
+        return None;
+    }
+    let anchor = format!(r#"<v:shape style="{}">"#, escape_xml_text(&style_text));
+    let mut floating = parse_vml_floating_anchor_from_run_xml(&anchor);
+    if let Some(anchor) = floating.as_mut() {
+        if anchor.horizontal_align.is_none() {
+            if let Some(value) = style.get("margin-left") {
+                anchor.x_px = Some(vml_pixels(value)?);
+            }
+        }
+        if anchor.vertical_align.is_none() {
+            if let Some(value) = style.get("margin-top") {
+                anchor.y_px = Some(vml_pixels(value)?);
+            }
+        }
+    }
+    if canvas != (origin_x, origin_y, origin_x + extent_x, origin_y + extent_y) {
+        let anchor = floating.as_mut()?;
+        if anchor.horizontal_align.is_some() || anchor.vertical_align.is_some() {
+            return None;
+        }
+        *anchor.x_px.as_mut()? += (canvas.0 - origin_x) * width / extent_x;
+        *anchor.y_px.as_mut()? += (canvas.1 - origin_y) * height / extent_y;
+    }
+    let svg = format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{width_px}" height="{height_px}" viewBox="{} {} {canvas_width} {canvas_height}" preserveAspectRatio="none">{body}</svg>"#,
+        canvas.0, canvas.1
+    );
+    Some(ImageRunNode {
+        r#type: ImageRunNodeType::Image,
+        block_id: None,
+        content_nodes: None,
+        semantic_kind: None,
+        math_ml: None,
+        src: Some(svg_data_uri(&svg)),
+        alt: None,
+        width_px: Some(width_px),
+        height_px: Some(height_px),
+        part_name: None,
+        content_type: Some("image/svg+xml".to_string()),
+        data: None,
+        source_xml: Some(run_xml.to_string()),
+        crop: None,
+        css_filter: None,
+        css_opacity: None,
+        floating,
+        synthetic_text_box: None,
+        text_box_text: None,
+    })
+}
+
 pub fn parse_run_image_block(run_xml: &str, context: &ParseContext<'_>) -> Option<ImageRunNode> {
     let normalized_run_xml = prefer_alternate_content_choice(run_xml);
     let mut active_run_xml = normalized_run_xml.as_ref();
+    if let Some(image) = vml_group_image(active_run_xml, context) {
+        return Some(image);
+    }
     let (mut width_px, mut height_px, mut floating) = resolve_run_image_layout(active_run_xml);
     let mut alt = resolve_doc_pr_alt(active_run_xml);
     let mut chart_relationship_id =
@@ -1162,6 +1646,38 @@ pub fn parse_run_image_block(run_xml: &str, context: &ParseContext<'_>) -> Optio
     if standalone_shape_svg.is_some()
         && (contains_grouped_or_standalone_shape || relationship_id.is_none())
     {
+        let svg = standalone_shape_svg.as_deref().unwrap_or_default();
+        if !re::get_unchecked(r"(?i)<wpg:wgp\b").is_match(active_run_xml) {
+            let transform = extract_balanced_tag_blocks(active_run_xml, "a:xfrm")
+                .into_iter()
+                .next()
+                .unwrap_or_default();
+            let angle = get_attribute(&transform, "rot")
+                .and_then(|v| v.parse::<f64>().ok())
+                .filter(|v| v.is_finite())
+                .unwrap_or(0.0)
+                / 60000.0;
+            let svg_tag = regex_capture_tag(svg, r"<svg\b[^>]*>").unwrap_or_default();
+            let source_width =
+                width_px.or_else(|| get_attribute(&svg_tag, "width").and_then(|v| v.parse().ok()));
+            let source_height = height_px
+                .or_else(|| get_attribute(&svg_tag, "height").and_then(|v| v.parse().ok()));
+            if let (Some(old_width), Some(old_height)) = (source_width, source_height) {
+                let (sin, cos) = angle.to_radians().sin_cos();
+                let width = (old_width * cos.abs() + old_height * sin.abs()).max(1.0);
+                let height = (old_width * sin.abs() + old_height * cos.abs()).max(1.0);
+                if let Some(anchor) = floating.as_mut() {
+                    if let Some(x) = anchor.x_px.as_mut() {
+                        *x += (old_width - width) / 2.0;
+                    }
+                    if let Some(y) = anchor.y_px.as_mut() {
+                        *y += (old_height - height) / 2.0;
+                    }
+                }
+                width_px = Some(width);
+                height_px = Some(height);
+            }
+        }
         return Some(ImageRunNode {
             r#type: ImageRunNodeType::Image,
             block_id: None,
@@ -1302,6 +1818,12 @@ pub fn parse_run_image_block(run_xml: &str, context: &ParseContext<'_>) -> Optio
         }
     }
 
+    if let Some(source) = src.as_deref() {
+        if let Some(duotone) = drawing_duotone_svg(active_run_xml, source, context) {
+            src = Some(duotone);
+        }
+    }
+
     Some(ImageRunNode {
         r#type: ImageRunNodeType::Image,
         block_id: None,
@@ -1336,7 +1858,8 @@ pub fn parse_run_image_tokens(
     run_xml: &str,
     context: &ParseContext<'_>,
 ) -> Vec<(usize, ImageRunNode)> {
-    if !run_xml.split('<').skip(1).any(|tag| {
+    if !memchr::memchr_iter(b'<', run_xml.as_bytes()).any(|position| {
+        let tag = &run_xml[position + 1..];
         ["a:", "wp:", "v:", "c:", "wps:", "wpg:", "w:txbxContent"]
             .iter()
             .any(|prefix| super::scan::starts_with_ignore_ascii_case(tag, prefix))

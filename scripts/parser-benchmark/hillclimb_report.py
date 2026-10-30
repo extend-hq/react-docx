@@ -53,8 +53,8 @@ def percent(value, digits=2):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--out', type=Path, default=Path('output/parser-hillclimb-20261028'))
-    parser.add_argument('--baseline', type=Path, default=Path('output/parser-benchmark-20261028'))
+    parser.add_argument('--out', type=Path, default=Path('output/parser-hillclimb'))
+    parser.add_argument('--baseline', type=Path, default=Path('output/parser-benchmark'))
     args = parser.parse_args()
     out, baseline = args.out, args.baseline
     old = json.loads((baseline / 'summary.json').read_text())

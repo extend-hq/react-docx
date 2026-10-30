@@ -36,7 +36,7 @@ describe("automatic body paragraph spacing", () => {
     delete p.style!.spacing!.afterAutoSpacing;
     const minimal = { nodes: [p] } as DocModel;
     expect(bodyAutomaticParagraphSpacingPx(minimal, 0, p, "before")).toBeUndefined();
-    expect(estimateRenderedPageSegmentHeightPx(p, { nodeIndex: 0 }, minimal, 600)).toBe(30);
+    expect(estimateRenderedPageSegmentHeightPx(p, { nodeIndex: 0 }, minimal, 600)).toBeCloseTo(16 + 200 / 15);
   });
 
   it.each([12, 15])("retains ordinary numeric fallback in compatibility mode %s without changing source formatting", mode => {
@@ -45,18 +45,18 @@ describe("automatic body paragraph spacing", () => {
     const d = model([lead, p], mode), before = JSON.stringify(d);
     expect(bodyAutomaticParagraphSpacingPx(d, 1, p, "before")).toBeUndefined();
     const result = margins(d).get("text")!;
-    expect(result).toEqual([7, 7]);
-    expect(estimateRenderedPageSegmentHeightPx(p, { nodeIndex: 1 }, d, 600)).toBe(30);
+    expect(result).toEqual([100 / 15, 100 / 15]);
+    expect(estimateRenderedPageSegmentHeightPx(p, { nodeIndex: 1 }, d, 600)).toBeCloseTo(16 + 200 / 15);
     expect(JSON.stringify(d)).toBe(before);
   });
 
   it.each([12, 15])("suppresses only automatic before-spacing at the story start in compatibility mode %s", mode => {
     const p = paragraph("first"), d = model([p], mode);
-    expect(margins(d).get("first")).toEqual([0, 7]);
-    expect(estimateRenderedPageSegmentHeightPx(p, { nodeIndex: 0 }, d, 600)).toBe(23);
+    expect(margins(d).get("first")).toEqual([0, 100 / 15]);
+    expect(estimateRenderedPageSegmentHeightPx(p, { nodeIndex: 0 }, d, 600)).toBeCloseTo(16 + 100 / 15);
     p.style!.spacing!.beforeAutoSpacing = false;
-    expect(margins(d).get("first")).toEqual([7, 7]);
-    expect(estimateRenderedPageSegmentHeightPx(p, { nodeIndex: 0 }, d, 600)).toBe(30);
+    expect(margins(d).get("first")).toEqual([100 / 15, 100 / 15]);
+    expect(estimateRenderedPageSegmentHeightPx(p, { nodeIndex: 0 }, d, 600)).toBeCloseTo(16 + 200 / 15);
   });
 
   it("suppresses automatic list interiors across levels and instances of the same abstract list", () => {
@@ -64,7 +64,7 @@ describe("automatic body paragraph spacing", () => {
     a.style!.numbering = { numId: 1, ilvl: 0 }; b.style!.numbering = { numId: 2, ilvl: 1 };
     const d = model([a, b]), result = margins(d);
     expect(result.get("first")).toEqual([0, 0]);
-    expect(result.get("last")).toEqual([0, 7]);
+    expect(result.get("last")).toEqual([0, 100 / 15]);
     expect(estimateRenderedPageSegmentHeightPx(a, { nodeIndex: 0 }, d, 600)).toBe(16);
   });
 
@@ -72,22 +72,22 @@ describe("automatic body paragraph spacing", () => {
     const a = paragraph("first"), b = paragraph("last", false);
     a.style!.numbering = { numId: 1, ilvl: 0 }; b.style!.numbering = { numId: 1, ilvl: 0 };
     const result = margins(model([a, b]));
-    expect(result.get("first")).toEqual([0, 0]); expect(result.get("last")).toEqual([7, 7]);
+    expect(result.get("first")).toEqual([0, 0]); expect(result.get("last")).toEqual([100 / 15, 100 / 15]);
   });
 
   it("keeps contextual suppression and explicit page-start overrides", () => {
     const a = paragraph("first"), b = paragraph("last");
     for (const p of [a, b]) { p.style!.styleId = "Shared"; p.style!.contextualSpacing = true; }
     const d = model([a, b]), result = margins(d);
-    expect(result.get("first")).toEqual([0, 0]); expect(result.get("last")).toEqual([0, 7]);
-    expect(estimateRenderedPageSegmentHeightPx(b, { nodeIndex: 1, paragraphBeforeSpacingPx: 0 }, d, 600)).toBe(23);
+    expect(result.get("first")).toEqual([0, 0]); expect(result.get("last")).toEqual([0, 100 / 15]);
+    expect(estimateRenderedPageSegmentHeightPx(b, { nodeIndex: 1, paragraphBeforeSpacingPx: 0 }, d, 600)).toBeCloseTo(16 + 100 / 15);
   });
 
   it("preserves fallback for fixed HTML spacing, other compatibility modes, foreign stories and unqualified list boundaries", () => {
     const p = paragraph("first"), d = model([p]);
     d.metadata.compatibility!.useFixedHtmlParagraphSpacing = true;
     expect(bodyAutomaticParagraphSpacingPx(d, 0, p, "before")).toBeUndefined();
-    expect(margins(d).get("first")).toEqual([7, 7]);
+    expect(margins(d).get("first")).toEqual([100 / 15, 100 / 15]);
     expect(bodyAutomaticParagraphSpacingPx(model([p], 11), 0, p, "before")).toBeUndefined();
     expect(bodyAutomaticParagraphSpacingPx(model([]), 0, p, "before")).toBeUndefined();
     const q = paragraph("last"); p.style!.numbering = { numId: 1, ilvl: 0 }; q.style!.numbering = { numId: 4, ilvl: 0 };

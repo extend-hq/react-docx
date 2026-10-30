@@ -11,7 +11,7 @@ import time
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--out', type=Path, default=Path('output/parser-hillclimb-20261028'))
+    parser.add_argument('--out', type=Path, default=Path('output/parser-hillclimb'))
     parser.add_argument('--label', required=True)
     parser.add_argument('--baseline', type=Path)
     parser.add_argument('--candidate', type=Path, default=Path('scripts/parser-benchmark/target/release/probe'))
@@ -19,7 +19,7 @@ def main():
     parser.add_argument('--repeats', type=int, default=5)
     args = parser.parse_args()
     ids = json.loads((args.out / 'split.json').read_text())[args.split]
-    manifest = json.loads(Path('output/parser-benchmark-20261028/manifest.json').read_text())
+    manifest = json.loads(Path('output/parser-benchmark/manifest.json').read_text())
     entries = {e['id']: e for e in manifest['entries']}
     binaries = {'candidate': args.candidate.resolve()}
     if args.baseline:

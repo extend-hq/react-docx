@@ -37,6 +37,20 @@ pub(crate) fn prefix(uri: &str) -> Option<&'static str> {
 }
 
 fn escape_into(value: &str, attribute: bool, out: &mut String) {
+    if !attribute {
+        let mut start = 0;
+        for offset in memchr::memchr3_iter(b'&', b'<', b'>', value.as_bytes()) {
+            out.push_str(&value[start..offset]);
+            out.push_str(match value.as_bytes()[offset] {
+                b'&' => "&amp;",
+                b'<' => "&lt;",
+                _ => "&gt;",
+            });
+            start = offset + 1;
+        }
+        out.push_str(&value[start..]);
+        return;
+    }
     let mut start = 0;
     for (offset, byte) in value.bytes().enumerate() {
         let escaped = match byte {
@@ -59,7 +73,15 @@ fn escape_into(value: &str, attribute: bool, out: &mut String) {
 pub fn normalize_xml(xml: &str) -> Result<String, String> {
     let document = roxmltree::Document::parse(xml).map_err(|e| e.to_string())?;
     let mut namespaces = BTreeMap::<String, String>::new();
-    for node in document.descendants().filter(|node| node.is_element()) {
+    let root = document.root_element();
+    let root_open_end =
+        crate::xml::tag_token_end(xml, root.range().start).unwrap_or(root.range().start);
+    let root_only_namespaces = !xml[root_open_end..].contains("xmlns");
+    let namespace_nodes = document
+        .descendants()
+        .filter(|node| node.is_element())
+        .take(if root_only_namespaces { 1 } else { usize::MAX });
+    for node in namespace_nodes {
         if node.parent().is_some_and(|parent| parent.is_element()) {
             let start = node.range().start;
             let end = crate::xml::tag_token_end(xml, start).unwrap_or(start);
@@ -92,9 +114,16 @@ pub fn normalize_xml(xml: &str) -> Result<String, String> {
             }
         }
     }
-    fn write_name(ns: Option<&str>, local: &str, namespaces: &BTreeMap<String, String>, out: &mut String) {
-        if let Some(prefix) = ns.and_then(|ns| namespaces.get(ns).map(String::as_str).or_else(|| prefix(ns)))
-            .filter(|prefix| !prefix.is_empty()) {
+    fn write_name(
+        ns: Option<&str>,
+        local: &str,
+        namespaces: &BTreeMap<String, String>,
+        out: &mut String,
+    ) {
+        if let Some(prefix) = ns
+            .and_then(|ns| prefix(ns).or_else(|| namespaces.get(ns).map(String::as_str)))
+            .filter(|prefix| !prefix.is_empty())
+        {
             out.push_str(prefix);
             out.push(':');
         }
@@ -146,7 +175,7 @@ pub fn normalize_xml(xml: &str) -> Result<String, String> {
             out.push(' ');
             write_name(attr.namespace(), attr.name(), namespaces, out);
             out.push_str("=\"");
-            let value: Cow<'_ , str> = if attr.name() == "Requires" || attr.name() == "Ignorable" {
+            let value: Cow<'_, str> = if attr.name() == "Requires" || attr.name() == "Ignorable" {
                 attr.value()
                     .split_whitespace()
                     .map(|p| {
@@ -156,7 +185,8 @@ pub fn normalize_xml(xml: &str) -> Result<String, String> {
                             .unwrap_or(p)
                     })
                     .collect::<Vec<_>>()
-                    .join(" ").into()
+                    .join(" ")
+                    .into()
             } else {
                 Cow::Borrowed(attr.value())
             };
@@ -182,9 +212,16 @@ pub fn normalize_xml(xml: &str) -> Result<String, String> {
     Ok(result)
 }
 
+fn contains_bmp_noncharacter(xml: &str) -> bool {
+    let bytes = xml.as_bytes();
+    memchr::memchr_iter(0xef, bytes).any(|offset| {
+        bytes[offset..].starts_with(b"\xef\xbf\xbe") || bytes[offset..].starts_with(b"\xef\xbf\xbf")
+    })
+}
+
 fn is_canonical_xml(xml: &str) -> bool {
     use quick_xml::events::Event;
-    if xml.contains('\r') {
+    if memchr::memchr(b'\r', xml.as_bytes()).is_some() {
         return false;
     }
     let mut reader = quick_xml::Reader::from_str(xml);
@@ -331,20 +368,148 @@ fn is_canonical_xml(xml: &str) -> bool {
     }
 }
 
+fn normalize_prolog_xml(xml: &str) -> Option<(String, crate::xml_index::Index)> {
+    if memchr::memchr(b'\r', xml.as_bytes()).is_none() {
+        return None;
+    }
+    let declaration_end = xml.strip_prefix("<?xml ").and_then(|_| xml.find("?>"))? + 2;
+    let body = xml[declaration_end..].trim_matches([' ', '\t', '\r', '\n']);
+    if !body.starts_with('<')
+        || body.contains("<?")
+        || body.contains("]]>")
+        || body
+            .bytes()
+            .any(|byte| byte < 0x20 && !matches!(byte, b'\n' | b'\t'))
+        || contains_bmp_noncharacter(body)
+    {
+        return None;
+    }
+    roxmltree::Document::parse(&format!("{}<root/>", &xml[..declaration_end])).ok()?;
+    let root_end = crate::xml::tag_token_end(body, 0)?;
+    let empty_root = body[..root_end].ends_with("/>");
+    let mut root = body[..root_end].to_owned();
+    if !empty_root {
+        root.pop();
+        root.push_str("/>");
+    }
+    let mut normalized = normalize_xml(&root).ok()?;
+    if !empty_root {
+        normalized.truncate(normalized.len() - 2);
+        normalized.push('>');
+    }
+    let root_name_end =
+        body[1..root_end].find(|ch: char| ch.is_ascii_whitespace() || matches!(ch, '/' | '>'))? + 1;
+    if normalized.len() != root_end
+        || normalized.as_bytes().get(..=root_name_end) != body.as_bytes().get(..=root_name_end)
+    {
+        return None;
+    }
+    let index = crate::xml_index::Index::canonical_serialized(body)?;
+    if !index.serialization_equivalent() {
+        return None;
+    }
+    // Attribute ordering does not affect indexed ranges when the root token keeps its width.
+    normalized.reserve(body.len() - root_end);
+    normalized.push_str(&body[root_end..]);
+    Some((normalized, index))
+}
+
+fn normalize_hoisted_xml(xml: &str) -> Option<(String, crate::xml_index::Index)> {
+    let body = if xml.starts_with("<?xml ") {
+        let end = xml.find("?>")? + 2;
+        roxmltree::Document::parse(&format!("{}<root/>", &xml[..end])).ok()?;
+        &xml[end..]
+    } else {
+        xml
+    };
+    let body = body.trim_matches([' ', '\t', '\r', '\n']);
+    if body.contains("]]>")
+        || body
+            .bytes()
+            .any(|b| b < 0x20 && !matches!(b, b'\n' | b'\t'))
+        || contains_bmp_noncharacter(body)
+    {
+        return None;
+    }
+    crate::xml_index::Index::canonical_hoisted(body)
+}
+
 /// Normalizes an XML-only view while the caller retains the original binary assets.
-pub(crate) fn normalized_package(pkg: &OoxmlPackage) -> (Cow<'_, OoxmlPackage>, HashMap<String, crate::xml_index::Index>) {
+pub(crate) fn normalized_package(
+    pkg: &OoxmlPackage,
+) -> (
+    Cow<'_, OoxmlPackage>,
+    HashMap<String, crate::xml_index::Index>,
+) {
     let mut indexes = HashMap::new();
     let mut replacements = Vec::new();
+    let normalized_index_names_match = pkg.parts.iter().all(|(name, part)| name == &part.name);
     for part in pkg.parts.values() {
-        if !part.name.ends_with(".xml") && !part.name.ends_with(".rels") { continue; }
+        if !part.name.ends_with(".xml") && !part.name.ends_with(".rels") {
+            continue;
+        }
         if let Some(index) = crate::xml_index::Index::canonical(&part.content) {
             indexes.insert(part.name.clone(), index);
+        } else if let Some((xml, index)) = normalize_prolog_xml(&part.content) {
+            indexes.insert(part.name.clone(), index);
+            replacements.push((part.name.clone(), Ok(xml)));
+        } else if let Some((xml, index)) = normalized_index_names_match
+            .then(|| normalize_hoisted_xml(&part.content))
+            .flatten()
+        {
+            indexes.insert(part.name.clone(), index);
+            replacements.push((part.name.clone(), Ok(xml)));
         } else if !is_canonical_xml(&part.content) {
-            replacements.push((part.name.clone(), normalize_xml(&part.content)));
+            let replacement = normalize_xml(&part.content);
+            if normalized_index_names_match {
+                if let Ok(xml) = &replacement {
+                    if let Some(index) = crate::xml_index::Index::canonical_normalized(xml) {
+                        indexes.insert(part.name.clone(), index);
+                    }
+                }
+            }
+            replacements.push((part.name.clone(), replacement));
         }
     }
     if replacements.is_empty() {
         return (Cow::Borrowed(pkg), indexes);
+    }
+    if normalized_index_names_match {
+        let mut replacements = replacements.into_iter().peekable();
+        let mut warnings = pkg.warnings.clone();
+        let mut parts =
+            HashMap::with_capacity_and_hasher(pkg.parts.capacity(), pkg.parts.hasher().clone());
+        for (name, part) in &pkg.parts {
+            let content = if replacements
+                .peek()
+                .is_some_and(|(replacement_name, _)| replacement_name == name)
+            {
+                match replacements.next().unwrap().1 {
+                    Ok(xml) => xml,
+                    Err(error) => {
+                        warnings.push(format!("XML normalization failed in {}: {error}", name));
+                        part.content.clone()
+                    }
+                }
+            } else {
+                part.content.clone()
+            };
+            parts.insert(
+                name.clone(),
+                crate::package::OoxmlPart {
+                    name: part.name.clone(),
+                    content,
+                },
+            );
+        }
+        return (
+            Cow::Owned(OoxmlPackage {
+                parts,
+                binary_assets: HashMap::new(),
+                warnings,
+            }),
+            indexes,
+        );
     }
     let mut normalized = OoxmlPackage {
         parts: pkg.parts.clone(),

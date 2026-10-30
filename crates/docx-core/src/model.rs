@@ -262,6 +262,37 @@ pub struct TextStyle {
     pub run_border: Option<TextRunBorderStyle>,
 }
 
+/// Fully resolved formatting shared until a caller edits its value.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct SharedTextStyle(std::sync::Arc<TextStyle>);
+
+impl SharedTextStyle {
+    pub fn into_owned(self) -> TextStyle {
+        std::sync::Arc::unwrap_or_clone(self.0)
+    }
+}
+
+impl From<TextStyle> for SharedTextStyle {
+    fn from(style: TextStyle) -> Self {
+        Self(std::sync::Arc::new(style))
+    }
+}
+
+impl std::ops::Deref for SharedTextStyle {
+    type Target = TextStyle;
+
+    fn deref(&self) -> &TextStyle {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for SharedTextStyle {
+    fn deref_mut(&mut self) -> &mut TextStyle {
+        std::sync::Arc::make_mut(&mut self.0)
+    }
+}
+
 /// Mirrors TypeScript `TextRunNode.noteReference`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -287,7 +318,7 @@ pub struct TextRunNode {
     pub r#type: TextRunNodeType,
     pub text: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub style: Option<TextStyle>,
+    pub style: Option<SharedTextStyle>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub link: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -575,7 +606,7 @@ pub struct FormFieldRunNode {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unchecked_symbol: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub style: Option<TextStyle>,
+    pub style: Option<SharedTextStyle>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub link: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -594,8 +625,8 @@ pub enum FormFieldRunNodeType {
 #[serde(untagged)]
 pub enum ParagraphChildNode {
     Text(TextRunNode),
-    Image(ImageRunNode),
-    FormField(FormFieldRunNode),
+    Image(Box<ImageRunNode>),
+    FormField(Box<FormFieldRunNode>),
 }
 
 /// Mirrors TypeScript `ParagraphNumbering`.
@@ -834,7 +865,7 @@ pub struct ParagraphStyle {
 #[serde(rename_all = "camelCase")]
 pub struct ParagraphSourceTextPatchRun {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub style: Option<TextStyle>,
+    pub style: Option<SharedTextStyle>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub link: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -852,11 +883,11 @@ pub struct ParagraphSourceTextPatch {
 #[serde(rename_all = "camelCase")]
 pub struct ParagraphMarkFormattingSource {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub default_style: Option<TextStyle>,
+    pub default_style: Option<SharedTextStyle>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub character_style: Option<TextStyle>,
+    pub character_style: Option<SharedTextStyle>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub direct_style: Option<TextStyle>,
+    pub direct_style: Option<SharedTextStyle>,
 }
 
 /// Mirrors TypeScript `ParagraphNode`.
@@ -871,9 +902,9 @@ pub struct ParagraphNode {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub style: Option<ParagraphStyle>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub paragraph_mark_style: Option<TextStyle>,
+    pub paragraph_mark_style: Option<SharedTextStyle>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub source_paragraph_mark_style: Option<TextStyle>,
+    pub source_paragraph_mark_style: Option<SharedTextStyle>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_paragraph_mark_formatting: Option<ParagraphMarkFormattingSource>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1184,6 +1215,10 @@ pub struct TableStyle {
     pub cell_margin_twips: Option<TableBoxSpacing>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub column_widths_twips: Option<Vec<i64>>,
+    /// Logical intervals with coincident physical boundaries. Project these
+    /// columns for layout and materialize them before structural edits.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub collapsed_grid_columns: Option<Vec<usize>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub borders: Option<TableBorderSet>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1455,9 +1490,15 @@ pub struct DocumentCompatibilitySettings {
     pub adjust_line_height_in_table: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub no_leading: Option<bool>,
-    #[serde(rename = "suppressTopSpacingWP", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "suppressTopSpacingWP",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub suppress_top_spacing_wp: Option<bool>,
-    #[serde(rename = "truncateFontHeightsLikeWP6", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "truncateFontHeightsLikeWP6",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub truncate_font_heights_like_wp6: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub no_extra_line_spacing: Option<bool>,
@@ -1467,7 +1508,10 @@ pub struct DocumentCompatibilitySettings {
     pub suppress_bottom_spacing: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub compatibility_mode: Option<i64>,
-    #[serde(rename = "enableOpenTypeFeatures", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "enableOpenTypeFeatures",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub enable_open_type_features: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub suppress_spacing_before_after_page_break: Option<bool>,

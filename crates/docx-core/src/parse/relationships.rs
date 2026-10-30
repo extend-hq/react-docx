@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::package::{OoxmlPackage, OoxmlPart};
 use crate::parse::context::ContentTypeLookup;
-use crate::xml::get_attribute;
+use crate::xml::{decode_xml_entities, get_attribute, get_attribute_ref};
 
 /// Mirrors TypeScript `MIME_BY_EXTENSION`.
 pub fn mime_by_extension(extension: &str) -> Option<&'static str> {
@@ -92,9 +92,14 @@ pub fn parse_relationships_from_parts(
 
     for tag in find_opening_tags(&relationships_part.content, "Relationship") {
         let id = get_attribute(&tag, "Id");
-        let target = get_attribute(&tag, "Target");
+        let target = get_attribute_ref(&tag, "Target").map(decode_xml_entities);
         if let (Some(id), Some(target)) = (id, target) {
-            map.insert(id, resolve_part_path(part_name, &target));
+            let resolved = if get_attribute_ref(&tag, "TargetMode") == Some("External") {
+                target
+            } else {
+                resolve_part_path(part_name, &target)
+            };
+            map.insert(id, resolved);
         }
     }
 
@@ -115,7 +120,11 @@ pub fn content_type_for_part(part_name: &str, content_types: &ContentTypeLookup)
     if let Some(override_type) = content_types
         .override_by_part_name
         .get(part_name)
-        .or_else(|| content_types.override_by_part_name.get(&format!("/{part_name}")))
+        .or_else(|| {
+            content_types
+                .override_by_part_name
+                .get(&format!("/{part_name}"))
+        })
     {
         return Some(override_type.clone());
     }
@@ -130,35 +139,7 @@ pub fn content_type_for_part(part_name: &str, content_types: &ContentTypeLookup)
 
 /// Mirrors TypeScript `bytesToBase64`.
 pub fn bytes_to_base64(bytes: &[u8]) -> String {
-    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut output = String::new();
-    let mut index = 0;
-
-    while index < bytes.len() {
-        let b0 = bytes[index] as u32;
-        let b1 = bytes.get(index + 1).copied().unwrap_or(0) as u32;
-        let b2 = bytes.get(index + 2).copied().unwrap_or(0) as u32;
-        let triple = (b0 << 16) | (b1 << 8) | b2;
-
-        output.push(TABLE[((triple >> 18) & 0x3F) as usize] as char);
-        output.push(TABLE[((triple >> 12) & 0x3F) as usize] as char);
-
-        if index + 1 < bytes.len() {
-            output.push(TABLE[((triple >> 6) & 0x3F) as usize] as char);
-        } else {
-            output.push('=');
-        }
-
-        if index + 2 < bytes.len() {
-            output.push(TABLE[(triple & 0x3F) as usize] as char);
-        } else {
-            output.push('=');
-        }
-
-        index += 3;
-    }
-
-    output
+    super::util::bytes_to_base64(bytes)
 }
 
 fn find_opening_tags(xml: &str, local_name: &str) -> Vec<String> {
@@ -195,23 +176,5 @@ fn has_word_boundary_after(xml: &str, index: usize) -> bool {
 }
 
 fn find_case_insensitive_at(haystack: &str, start: usize, needle: &str) -> Option<usize> {
-    if needle.is_empty() || start >= haystack.len() || needle.len() > haystack.len() {
-        return None;
-    }
-
-    let haystack_bytes = haystack.as_bytes();
-    let needle_bytes = needle.as_bytes();
-    let max_start = haystack.len() - needle.len();
-
-    for index in start..=max_start {
-        if haystack_bytes[index..index + needle.len()]
-            .iter()
-            .zip(needle_bytes.iter())
-            .all(|(left, right)| left.eq_ignore_ascii_case(right))
-        {
-            return Some(index);
-        }
-    }
-
-    None
+    crate::xml::find_ignore_ascii_case(haystack, start, needle)
 }

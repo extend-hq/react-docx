@@ -9,7 +9,7 @@ import subprocess
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--out', type=Path, default=Path('output/parser-hillclimb-20261028'))
+    parser.add_argument('--out', type=Path, default=Path('output/parser-hillclimb'))
     parser.add_argument('--repeats', type=int, default=5)
     args = parser.parse_args()
     baseline = args.out / 'baseline.wasm'
@@ -18,7 +18,7 @@ def main():
     binaries = {'baseline': baseline, 'candidate': Path('packages/wasm/src/docx_wasm_bg.wasm')}
     hashes = {key: hashlib.sha256(value.read_bytes()).hexdigest() for key, value in binaries.items()}
     ids = set(json.loads((args.out / 'split.json').read_text())['tuning'])
-    entries = [e for e in json.loads(Path('output/parser-benchmark-20261028/manifest.json').read_text())['entries'] if e['id'] in ids]
+    entries = [e for e in json.loads(Path('output/parser-benchmark/manifest.json').read_text())['entries'] if e['id'] in ids]
     rng = random.Random(9816)
     rng.shuffle(entries)
     result = {'binaries': hashes, 'repeats': args.repeats,

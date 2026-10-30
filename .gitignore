@@ -33,7 +33,10 @@ tests/fixtures/docx-regression/
 tests/fixtures/docx-regression-local/
 tests/visual/legacy-doc-render.spec.ts
 tests/visual/zoomed-virtualization.spec.ts
+*.doc
 *.docx
+*.emf
+*.wmf
 *.pdf
 *.avif
 *.bmp
@@ -54,3 +57,8 @@ packages/wasm/pkg/
 packages/wasm/src/generated/docx_wasm_bg.wasm
 
 !docs/readme-assets/*.png
+
+# Local diagnostic artifacts
+*.trace/
+*.trace
+tests/local/

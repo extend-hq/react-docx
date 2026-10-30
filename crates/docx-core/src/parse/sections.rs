@@ -13,8 +13,8 @@ use crate::xml::{
     decode_xml_entities, extract_balanced_tag_blocks, get_attribute, parse_integer_attribute,
 };
 
-use super::context::{ContentTypeLookup, ParseContext, ParsedStyleSheet};
 use super::body::body_xml;
+use super::context::{ContentTypeLookup, ParseContext, ParsedStyleSheet};
 use super::document::{
     extract_body_token_ranges, is_go_back_bookmark_paragraph, parse_document_xml, BodyTokenKind,
 };
@@ -64,7 +64,12 @@ impl<'a, 's> PartNodeCache<'a, 's> {
             return Some(cached_nodes.clone());
         }
 
-        let Some(part_xml) = self.pkg.parts.get(part_name).map(|part| part.content.as_str()) else {
+        let Some(part_xml) = self
+            .pkg
+            .parts
+            .get(part_name)
+            .map(|part| part.content.as_str())
+        else {
             warnings.push(format!(
                 "{} {}",
                 if relationship_tag_name == "headerReference" {
@@ -79,9 +84,12 @@ impl<'a, 's> PartNodeCache<'a, 's> {
 
         if self.context.is_none() {
             self.context = Some(ParseContext {
-                relationships: HashMap::new(), content_types: self.content_types.clone(),
-                parts: &self.pkg.parts, binary_assets: self.binary_assets,
-                style_sheet: self.style_sheet.clone(), warnings: RefCell::new(Vec::new()),
+                relationships: HashMap::new(),
+                content_types: self.content_types.clone(),
+                parts: &self.pkg.parts,
+                binary_assets: self.binary_assets,
+                style_sheet: self.style_sheet.clone(),
+                warnings: RefCell::new(Vec::new()),
             });
         }
         let context = self.context.as_mut().unwrap();
@@ -164,8 +172,9 @@ pub fn parse_document_sections(
             token.kind == BodyTokenKind::Table || !is_go_back_bookmark_paragraph(token_xml);
 
         if token.kind == BodyTokenKind::Paragraph {
-            if let Some(section_properties_xml) =
-                extract_balanced_tag_blocks(token_xml, "w:sectPr").into_iter().next()
+            if let Some(section_properties_xml) = extract_balanced_tag_blocks(token_xml, "w:sectPr")
+                .into_iter()
+                .next()
             {
                 sections.push(DocumentSection {
                     start_node_index: section_start_node_index,
@@ -250,10 +259,12 @@ pub fn parse_document_sections(
             continue;
         }
 
-        let duplicate = normalized_sections.last().is_some_and(|previous: &DocumentSection| {
-            previous.start_node_index == section.start_node_index
-                && previous.section_properties_xml == section.section_properties_xml
-        });
+        let duplicate = normalized_sections
+            .last()
+            .is_some_and(|previous: &DocumentSection| {
+                previous.start_node_index == section.start_node_index
+                    && previous.section_properties_xml == section.section_properties_xml
+            });
         if duplicate {
             continue;
         }
@@ -334,14 +345,17 @@ pub fn parse_document_comments(
     style_sheet: &ParsedStyleSheet,
     binary_assets: &HashMap<String, Vec<u8>>,
 ) -> Vec<DocumentCommentDefinition> {
-    let Some(comments_xml) = crate::package::related_document_part(pkg, "comments")
-        .map(|part| part.content.as_str())
+    let Some(comments_xml) =
+        crate::package::related_document_part(pkg, "comments").map(|part| part.content.as_str())
     else {
         return Vec::new();
     };
 
     let context = ParseContext {
-        relationships: parse_part_relationships(pkg, &crate::package::related_document_part_name(pkg, "comments")),
+        relationships: parse_part_relationships(
+            pkg,
+            &crate::package::related_document_part_name(pkg, "comments"),
+        ),
         content_types: content_types.clone(),
         parts: &pkg.parts,
         binary_assets,
@@ -467,13 +481,18 @@ fn parse_referenced_sections(
             continue;
         }
 
-        let Some(_header_xml) = pkg.parts.get(target_part_name).map(|part| part.content.as_str())
+        let Some(_header_xml) = pkg
+            .parts
+            .get(target_part_name)
+            .map(|part| part.content.as_str())
         else {
             warnings.push(format!("{missing_part_prefix} {target_part_name}"));
             continue;
         };
 
-        let Some(nodes) = cache.resolve(target_part_name, relationship_tag_name, warnings) else { continue; };
+        let Some(nodes) = cache.resolve(target_part_name, relationship_tag_name, warnings) else {
+            continue;
+        };
 
         sections.push(ReferencedSectionPart {
             part_name: target_part_name.clone(),
@@ -515,7 +534,10 @@ fn parse_section_references_from_properties(
         };
 
         let reference_type = get_attribute(&tag, "w:type");
-        let dedupe_key = format!("{target_part_name}::{}", reference_type.as_deref().unwrap_or(""));
+        let dedupe_key = format!(
+            "{target_part_name}::{}",
+            reference_type.as_deref().unwrap_or("")
+        );
         if !seen_references.insert(dedupe_key) {
             continue;
         }
@@ -726,23 +748,5 @@ fn has_word_boundary_after(xml: &str, index: usize) -> bool {
 }
 
 fn find_case_insensitive_at(haystack: &str, start: usize, needle: &str) -> Option<usize> {
-    if needle.is_empty() || start >= haystack.len() || needle.len() > haystack.len() {
-        return None;
-    }
-
-    let haystack_bytes = haystack.as_bytes();
-    let needle_bytes = needle.as_bytes();
-    let max_start = haystack.len() - needle.len();
-
-    for index in start..=max_start {
-        if haystack_bytes[index..index + needle.len()]
-            .iter()
-            .zip(needle_bytes.iter())
-            .all(|(left, right)| left.eq_ignore_ascii_case(right))
-        {
-            return Some(index);
-        }
-    }
-
-    None
+    crate::xml::find_ignore_ascii_case(haystack, start, needle)
 }

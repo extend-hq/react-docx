@@ -1,60 +1,25 @@
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { buildDocModelFromBytes } from "@extend-ai/react-docx-doc-model";
 import { layoutDocument } from "@extend-ai/react-docx-layout-engine";
+import { createLegacyDoc, createDocxTwin, LEGACY_PARAGRAPHS } from "./helpers/legacy-doc";
 
-const FIXTURES = join(__dirname, "../../crates/docx-core/tests/fixtures-doc");
-const DOCX_TWINS = ["DOCX_TestPage", "patient_original (3)"];
-const HAS_DOCX_TWINS = DOCX_TWINS.every((base) =>
-  existsSync(join(FIXTURES, `${base}.docx`))
-);
-
-function fixtureBuffer(name: string): ArrayBuffer {
-  const bytes = readFileSync(join(FIXTURES, name));
-  return bytes.buffer.slice(
-    bytes.byteOffset,
-    bytes.byteOffset + bytes.byteLength
-  );
-}
-
-describe("legacy .doc import through wasm", () => {
-  it("parses a Word 97 binary file into a DocModel and lays it out", async () => {
-    const { package: pkg, model } = await buildDocModelFromBytes(
-      fixtureBuffer("Downloadable-Word-Invoice-Template.doc")
-    );
-    const partNames =
-      pkg.parts instanceof Map ? [...pkg.parts.keys()] : Object.keys(pkg.parts);
-    expect(partNames).toContain("word/document.xml");
-
-    const docModel = model as {
-      nodes: Array<{ type?: string }>;
-      metadata: { warnings: string[] };
-    };
-    expect(docModel.nodes.length).toBeGreaterThan(0);
-
-    const text = JSON.stringify(model).toLowerCase();
-    expect(text).toContain("invoice");
-
-    const pages = layoutDocument(model as never, {});
+describe("legacy document import through wasm", () => {
+  it("parses binary text into a model and lays it out", async () => {
+    const { package: pkg, model } = await buildDocModelFromBytes(createLegacyDoc());
+    expect([...pkg.parts.keys()]).toContain("word/document.xml");
+    const text = JSON.stringify(model);
+    for (const paragraph of LEGACY_PARAGRAPHS) expect(text).toContain(paragraph);
+    const pages = layoutDocument(model, {});
     expect(pages.length).toBeGreaterThan(0);
     expect(pages[0].blocks.length).toBeGreaterThan(0);
   });
 
-  it.skipIf(!HAS_DOCX_TWINS)(
-    "produces equivalent page counts for a .doc and its .docx twin",
-    async () => {
-      for (const base of DOCX_TWINS) {
-        const docResult = await buildDocModelFromBytes(
-          fixtureBuffer(`${base}.doc`)
-        );
-        const docxResult = await buildDocModelFromBytes(
-          fixtureBuffer(`${base}.docx`)
-        );
-        const docPages = layoutDocument(docResult.model as never, {}).length;
-        const docxPages = layoutDocument(docxResult.model as never, {}).length;
-        expect(Math.abs(docPages - docxPages)).toBeLessThanOrEqual(1);
-      }
-    }
-  );
+  it("produces equivalent page counts for binary and OOXML inputs", async () => {
+    const doc = await buildDocModelFromBytes(createLegacyDoc());
+    const docx = await buildDocModelFromBytes(await createDocxTwin());
+    const docPages = layoutDocument(doc.model, {});
+    const docxPages = layoutDocument(docx.model, {});
+    expect(docPages.length).toBeGreaterThan(0);
+    expect(docPages.length).toBe(docxPages.length);
+  });
 });

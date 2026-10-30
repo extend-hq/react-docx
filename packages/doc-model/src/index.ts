@@ -13,6 +13,14 @@ export * from "./types";
 export * from "./blocks";
 export { resolveTableGridSkipCount, tableGridColumnBound, tableRowGridSkipCount } from "./table-grid";
 export {
+  projectCollapsedTableGrid,
+  materializeCollapsedTableGrid,
+  type GridTable,
+  type GridProjectionOptions,
+  type GridProjectionResult,
+  type LogicalBoundaryRange,
+} from "./table-grid-projection";
+export {
   allocateBlockId,
   collectDuplicateDocModelBlockIds,
   ensureDocModelBlockIds

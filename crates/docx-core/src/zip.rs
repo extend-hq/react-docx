@@ -144,7 +144,32 @@ fn inflate_raw(data: &[u8]) -> Result<Vec<u8>, String> {
         .map_err(|error| format!("Failed to inflate DOCX ZIP entry: {error:?}"))
 }
 
-fn extract_entry_data(bytes: &[u8], entry: &ZipEntry) -> Result<Vec<u8>, String> {
+#[derive(Default)]
+struct ZipInflater {
+    #[cfg(all(feature = "native-deflate", not(target_arch = "wasm32")))]
+    native: libdeflater::Decompressor,
+}
+
+impl ZipInflater {
+    fn decode(&mut self, compressed: &[u8], output: &mut [u8]) -> Option<usize> {
+        #[cfg(all(feature = "native-deflate", not(target_arch = "wasm32")))]
+        if let Ok(length) = self.native.deflate_decompress(compressed, output) {
+            return Some(length);
+        }
+        let (decoded, status) = zlib_rs::decompress_slice(
+            output,
+            compressed,
+            zlib_rs::InflateConfig { window_bits: -15 },
+        );
+        (status == zlib_rs::ReturnCode::Ok).then_some(decoded.len())
+    }
+}
+
+fn extract_entry_data(
+    bytes: &[u8],
+    entry: &ZipEntry,
+    inflater: &mut ZipInflater,
+) -> Result<Vec<u8>, String> {
     let local_header_offset = entry.local_header_offset as usize;
 
     if local_header_offset
@@ -178,13 +203,7 @@ fn extract_entry_data(bytes: &[u8], entry: &ZipEntry) -> Result<Vec<u8>, String>
             && expected <= compressed_data.len().saturating_mul(512).max(1024 * 1024)
         {
             let mut output = vec![0; expected];
-            let (decoded, status) = zlib_rs::decompress_slice(
-                &mut output,
-                compressed_data,
-                zlib_rs::InflateConfig { window_bits: -15 },
-            );
-            if status == zlib_rs::ReturnCode::Ok {
-                let length = decoded.len();
+            if let Some(length) = inflater.decode(compressed_data, &mut output) {
                 output.truncate(length);
                 return Ok(output);
             }
@@ -213,7 +232,7 @@ pub fn is_text_part(part_name: &str) -> bool {
     }
 }
 
-fn decode_xml_part(bytes: &[u8]) -> Result<String, String> {
+fn decode_xml_part(bytes: Vec<u8>) -> Result<String, String> {
     let big_endian = bytes.starts_with(&[0xfe, 0xff]) || bytes.starts_with(&[0, b'<', 0, b'?']);
     let little_endian = bytes.starts_with(&[0xff, 0xfe]) || bytes.starts_with(&[b'<', 0, b'?', 0]);
     if big_endian || little_endian {
@@ -247,7 +266,7 @@ fn decode_xml_part(bytes: &[u8]) -> Result<String, String> {
         let encoding = &*ENCODING;
         return Ok(encoding.replace(&xml, "encoding=\"UTF-8\"").into_owned());
     }
-    String::from_utf8(bytes.to_vec())
+    String::from_utf8(bytes)
         .map_err(|error| format!("Invalid or unsupported XML encoding: {error}"))
 }
 
@@ -259,20 +278,21 @@ pub fn parse_docx(bytes: &[u8]) -> Result<OoxmlPackage, String> {
     let entries = parse_central_directory(bytes)?;
     let mut parts = HashMap::new();
     let mut binary_assets = HashMap::new();
+    let mut inflater = ZipInflater::default();
 
     for entry in entries {
         if entry.name.ends_with('/') {
             continue;
         }
 
-        let file_bytes = extract_entry_data(bytes, &entry)?;
+        let file_bytes = extract_entry_data(bytes, &entry, &mut inflater)?;
 
         if is_text_part(&entry.name) {
             parts.insert(
                 entry.name.clone(),
                 OoxmlPart {
                     name: entry.name,
-                    content: decode_xml_part(&file_bytes)?,
+                    content: decode_xml_part(file_bytes)?,
                 },
             );
             continue;

@@ -1,6 +1,6 @@
 use crate::model::{
     ParagraphDropCap, ParagraphDropCapType, ParagraphSpacing, ParagraphStyle,
-    ParagraphTextAlignment, TextLigatures, TextStyle, VerticalAlign,
+    ParagraphTextAlignment, SharedTextStyle, TextLigatures, TextStyle, VerticalAlign,
 };
 use crate::parse::context::{ParseContext, ThemeFontMap};
 use crate::parse::re;
@@ -11,8 +11,8 @@ use crate::parse::util::{
     parse_paragraph_border_set_from_xml, parse_paragraph_indent_from_xml,
     parse_paragraph_numbering_from_xml, parse_paragraph_numbering_parts_from_xml,
     parse_paragraph_shading_from_xml, parse_paragraph_spacing_from_xml,
-    parse_paragraph_tab_stops_from_xml, parse_text_run_border_style,
-    resolve_theme_font, to_model_alignment,
+    parse_paragraph_tab_stops_from_xml, parse_text_run_border_style, resolve_theme_font,
+    to_model_alignment,
 };
 use crate::xml::{
     extract_balanced_tag_blocks, get_attribute, parse_integer_attribute, parse_on_off_attribute,
@@ -548,14 +548,22 @@ fn resolve_toggle_property(
 struct RunStyleCache {
     entries: std::collections::HashMap<String, Vec<(u8, ThemeFontMap, Option<TextStyle>)>>,
     resolved: std::collections::HashMap<String, Vec<ResolvedRunStyle>>,
-    paragraphs: std::collections::HashMap<String, Vec<(Option<ParagraphSpacing>, Option<ParagraphStyle>)>>,
+    paragraphs:
+        std::collections::HashMap<String, Vec<(Option<ParagraphSpacing>, Option<ParagraphStyle>)>>,
+    mark_default: Option<CachedMarkDefaultStyle>,
+}
+
+struct CachedMarkDefaultStyle {
+    document: Option<TextStyle>,
+    table: Option<TextStyle>,
+    style: Option<SharedTextStyle>,
 }
 
 struct ResolvedRunStyle {
     scripts: u8,
     paragraph: Option<String>,
-    table: Option<TextStyle>,
-    style: Option<TextStyle>,
+    table: Option<Box<TextStyle>>,
+    style: Option<SharedTextStyle>,
 }
 
 thread_local! {
@@ -574,6 +582,67 @@ impl Drop for RunStyleCacheScope {
             cache.replace(self.0.take());
         });
     }
+}
+
+fn same_mark_default_style(left: Option<&TextStyle>, right: Option<&TextStyle>) -> bool {
+    if left != right {
+        return false;
+    }
+    let (Some(left), Some(right)) = (left, right) else {
+        return true;
+    };
+    left.font_size_pt.map(f64::to_bits) == right.font_size_pt.map(f64::to_bits)
+        && left.font_size_cs_pt.map(f64::to_bits) == right.font_size_cs_pt.map(f64::to_bits)
+        && left.kerning_min_font_size_pt.map(f64::to_bits)
+            == right.kerning_min_font_size_pt.map(f64::to_bits)
+        && left
+            .run_border
+            .as_ref()
+            .and_then(|border| border.size_eighth_pt)
+            .map(f64::to_bits)
+            == right
+                .run_border
+                .as_ref()
+                .and_then(|border| border.size_eighth_pt)
+                .map(f64::to_bits)
+        && left
+            .run_border
+            .as_ref()
+            .and_then(|border| border.space_pt)
+            .map(f64::to_bits)
+            == right
+                .run_border
+                .as_ref()
+                .and_then(|border| border.space_pt)
+                .map(f64::to_bits)
+}
+
+pub(crate) fn cached_mark_default_style(
+    document: Option<&TextStyle>,
+    table: Option<&TextStyle>,
+) -> Option<SharedTextStyle> {
+    let cached = RUN_STYLE_CACHE.with(|cache| {
+        let cache = cache.borrow();
+        let entry = cache.as_ref()?.mark_default.as_ref()?;
+        (same_mark_default_style(entry.document.as_ref(), document)
+            && same_mark_default_style(entry.table.as_ref(), table))
+        .then(|| entry.style.clone())
+    });
+    if let Some(style) = cached {
+        return style;
+    }
+    let style: Option<SharedTextStyle> =
+        super::util::merge_text_style_refs(&[document, table]).map(Into::into);
+    RUN_STYLE_CACHE.with(|cache| {
+        if let Some(cache) = cache.borrow_mut().as_mut() {
+            cache.mark_default = Some(CachedMarkDefaultStyle {
+                document: document.cloned(),
+                table: table.cloned(),
+                style: style.clone(),
+            });
+        }
+    });
+    style
 }
 
 pub(crate) fn cached_definition_style(xml: &str, fonts: &ThemeFontMap) -> Option<TextStyle> {
@@ -609,7 +678,10 @@ fn cached_text_style(xml: &str, fonts: &ThemeFontMap, scripts: u8) -> Option<Tex
                 .as_mut()
                 .filter(|cache| cache.entries.len() < 4096)
             {
-                let variants = cache.entries.entry(xml.to_owned()).or_default();
+                let variants = cache
+                    .entries
+                    .entry(xml.to_owned())
+                    .or_insert_with(|| Vec::with_capacity(1));
                 if variants.len() < 16 {
                     variants.push((scripts, fonts.clone(), style.clone()));
                 }
@@ -627,9 +699,25 @@ fn ordinary_run_properties(run_xml: &str) -> Option<&str> {
         if name.eq_ignore_ascii_case("w:rPr") {
             return properties.replace(xml).is_none();
         }
-        if name.eq_ignore_ascii_case("w:fldChar") && !xml.ends_with("/>") { return false; }
-        ["w:t", "w:tab", "w:br", "w:cr", "w:sym", "w:noBreakHyphen", "w:softHyphen", "w:footnoteReference", "w:endnoteReference", "w:instrText", "w:fldChar", "w:lastRenderedPageBreak"]
-            .iter().any(|tag| name.eq_ignore_ascii_case(tag))
+        if name.eq_ignore_ascii_case("w:fldChar") && !xml.ends_with("/>") {
+            return false;
+        }
+        [
+            "w:t",
+            "w:tab",
+            "w:br",
+            "w:cr",
+            "w:sym",
+            "w:noBreakHyphen",
+            "w:softHyphen",
+            "w:footnoteReference",
+            "w:endnoteReference",
+            "w:instrText",
+            "w:fldChar",
+            "w:lastRenderedPageBreak",
+        ]
+        .iter()
+        .any(|tag| name.eq_ignore_ascii_case(tag))
     }) {
         return (ordinary && seen).then(|| properties.unwrap_or(""));
     }
@@ -693,6 +781,7 @@ pub fn parse_run_style(
     paragraph_style_id: Option<&str>,
 ) -> Option<TextStyle> {
     parse_run_style_in_table(run_xml, context, paragraph_style_id, None)
+        .map(SharedTextStyle::into_owned)
 }
 
 pub(crate) fn parse_run_style_in_table(
@@ -700,9 +789,15 @@ pub(crate) fn parse_run_style_in_table(
     context: &ParseContext<'_>,
     paragraph_style_id: Option<&str>,
     table_run_style: Option<&TextStyle>,
-) -> Option<TextStyle> {
+) -> Option<SharedTextStyle> {
     let properties = ordinary_run_properties(run_xml);
-    resolve_run_style(run_xml, properties, context, paragraph_style_id, table_run_style)
+    resolve_run_style(
+        run_xml,
+        properties,
+        context,
+        paragraph_style_id,
+        table_run_style,
+    )
 }
 
 pub(crate) fn parse_mark_run_style(
@@ -710,8 +805,14 @@ pub(crate) fn parse_mark_run_style(
     context: &ParseContext<'_>,
     paragraph_style_id: Option<&str>,
     table_run_style: Option<&TextStyle>,
-) -> Option<TextStyle> {
-    resolve_run_style(properties, Some(properties), context, paragraph_style_id, table_run_style)
+) -> Option<SharedTextStyle> {
+    resolve_run_style(
+        properties,
+        Some(properties),
+        context,
+        paragraph_style_id,
+        table_run_style,
+    )
 }
 
 fn resolve_run_style(
@@ -720,16 +821,66 @@ fn resolve_run_style(
     context: &ParseContext<'_>,
     paragraph_style_id: Option<&str>,
     table_run_style: Option<&TextStyle>,
-) -> Option<TextStyle> {
-    let scripts = if properties.is_some_and(|xml| !xml.is_empty()) { text_script_flags(run_xml) } else { 0 };
+) -> Option<SharedTextStyle> {
+    let scripts = if properties.is_some_and(|xml| !xml.is_empty()) {
+        text_script_flags(run_xml)
+    } else {
+        0
+    };
+    resolve_run_style_with_scripts(
+        run_xml,
+        properties,
+        scripts,
+        context,
+        paragraph_style_id,
+        table_run_style,
+    )
+}
+
+pub(crate) fn parse_run_style_from_properties(
+    run_xml: &str,
+    properties: &str,
+    scripts: u8,
+    context: &ParseContext<'_>,
+    paragraph_style_id: Option<&str>,
+    table_run_style: Option<&TextStyle>,
+) -> Option<SharedTextStyle> {
+    resolve_run_style_with_scripts(
+        run_xml,
+        Some(properties),
+        if properties.is_empty() { 0 } else { scripts },
+        context,
+        paragraph_style_id,
+        table_run_style,
+    )
+}
+
+fn resolve_run_style_with_scripts(
+    run_xml: &str,
+    properties: Option<&str>,
+    scripts: u8,
+    context: &ParseContext<'_>,
+    paragraph_style_id: Option<&str>,
+    table_run_style: Option<&TextStyle>,
+) -> Option<SharedTextStyle> {
     if let Some(xml) = properties {
         let cached = RUN_STYLE_CACHE.with(|cache| {
             let cache = cache.borrow();
-            cache.as_ref()?.resolved.get(xml)?.iter()
-                .find(|entry| entry.scripts == scripts && entry.paragraph.as_deref() == paragraph_style_id && entry.table.as_ref() == table_run_style)
+            cache
+                .as_ref()?
+                .resolved
+                .get(xml)?
+                .iter()
+                .find(|entry| {
+                    entry.scripts == scripts
+                        && entry.paragraph.as_deref() == paragraph_style_id
+                        && entry.table.as_deref() == table_run_style
+                })
                 .map(|entry| entry.style.clone())
         });
-        if let Some(style) = cached { return style; }
+        if let Some(style) = cached {
+            return style;
+        }
     }
     let run_style_id = super::scan::find_attribute_value_in_tag(run_xml, "w:rStyle", "w:val")
         .filter(|value| !value.is_empty());
@@ -774,14 +925,26 @@ fn resolve_run_style(
         style.strike = strike;
         style.all_caps = all_caps;
         style.small_caps = small_caps;
-        style
+        SharedTextStyle::from(style)
     });
     if let Some(xml) = properties.filter(|xml| xml.len() <= 8192) {
         RUN_STYLE_CACHE.with(|cache| {
-            if let Some(cache) = cache.borrow_mut().as_mut().filter(|cache| cache.resolved.len() < 4096) {
-                let variants = cache.resolved.entry(xml.to_owned()).or_default();
+            if let Some(cache) = cache
+                .borrow_mut()
+                .as_mut()
+                .filter(|cache| cache.resolved.len() < 4096)
+            {
+                let variants = cache
+                    .resolved
+                    .entry(xml.to_owned())
+                    .or_insert_with(|| Vec::with_capacity(1));
                 if variants.len() < 32 {
-                    variants.push(ResolvedRunStyle { scripts, paragraph: paragraph_style_id.map(str::to_owned), table: table_run_style.cloned(), style: resolved.clone() });
+                    variants.push(ResolvedRunStyle {
+                        scripts,
+                        paragraph: paragraph_style_id.map(str::to_owned),
+                        table: table_run_style.cloned().map(Box::new),
+                        style: resolved.clone(),
+                    });
                 }
             }
         });
@@ -804,17 +967,32 @@ pub fn parse_paragraph_style_in_table(
     let xml = super::styles::direct_table_property(paragraph_xml, "w:pPr").unwrap_or("");
     let cached = RUN_STYLE_CACHE.with(|cache| {
         let cache = cache.borrow();
-        cache.as_ref()?.paragraphs.get(xml)?.iter()
+        cache
+            .as_ref()?
+            .paragraphs
+            .get(xml)?
+            .iter()
             .find(|(spacing, _)| spacing.as_ref() == table_paragraph_spacing)
             .map(|(_, style)| style.clone())
     });
-    if let Some(style) = cached { return style; }
+    if let Some(style) = cached {
+        return style;
+    }
     let style = parse_paragraph_style_uncached(paragraph_xml, context, table_paragraph_spacing);
     if xml.len() <= 8192 {
         RUN_STYLE_CACHE.with(|cache| {
-            if let Some(cache) = cache.borrow_mut().as_mut().filter(|cache| cache.paragraphs.len() < 4096) {
-                let variants = cache.paragraphs.entry(xml.to_owned()).or_default();
-                if variants.len() < 16 { variants.push((table_paragraph_spacing.cloned(), style.clone())); }
+            if let Some(cache) = cache
+                .borrow_mut()
+                .as_mut()
+                .filter(|cache| cache.paragraphs.len() < 4096)
+            {
+                let variants = cache
+                    .paragraphs
+                    .entry(xml.to_owned())
+                    .or_insert_with(|| Vec::with_capacity(1));
+                if variants.len() < 16 {
+                    variants.push((table_paragraph_spacing.cloned(), style.clone()));
+                }
             }
         });
     }
@@ -828,13 +1006,16 @@ fn parse_paragraph_style_uncached(
 ) -> Option<ParagraphStyle> {
     let original_paragraph_properties_xml =
         super::styles::direct_table_property(paragraph_xml, "w:pPr").unwrap_or_default();
-    let mut paragraph_properties_xml = std::borrow::Cow::Borrowed(original_paragraph_properties_xml);
+    let mut paragraph_properties_xml =
+        std::borrow::Cow::Borrowed(original_paragraph_properties_xml);
     for range in crate::xml::extract_direct_child_tag_ranges(&original_paragraph_properties_xml)
         .into_iter()
         .rev()
         .filter(|range| range.tag_name.eq_ignore_ascii_case("w:pPrChange"))
     {
-        paragraph_properties_xml.to_mut().replace_range(range.start..range.end, "");
+        paragraph_properties_xml
+            .to_mut()
+            .replace_range(range.start..range.end, "");
     }
     let alignment_match =
         super::scan::find_attribute_value_in_tag(&paragraph_properties_xml, "w:jc", "w:val")

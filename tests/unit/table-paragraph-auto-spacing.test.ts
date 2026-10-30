@@ -54,7 +54,7 @@ describe("table paragraph automatic spacing", () => {
     const direct = table([paragraph("one", automatic, true)]);
     expect(estimateTableRowHeightsPx(inherited, 480)).toEqual(estimateTableRowHeightsPx(direct, 480));
     const style = render(inherited).get("one");
-    expect(margins(style)).toEqual(["7px", "7px"]);
+    expect(margins(style)).toEqual([`${100 / 15}px`, `${100 / 15}px`]);
     expect(style?.["line-height"]).toBe("16px");
   });
 
@@ -70,17 +70,17 @@ describe("table paragraph automatic spacing", () => {
   it("only clears true automatic margins at the first and last cell content edges", () => {
     const value = table([paragraph("first", true), paragraph("middle", true), paragraph("last", true)]);
     const rendered = render(value);
-    expect(margins(rendered.get("first"))).toEqual(["0", "7px"]);
-    expect(margins(rendered.get("middle"))).toEqual(["7px", "7px"]);
-    expect(margins(rendered.get("last"))).toEqual(["7px", "0"]);
+    expect(margins(rendered.get("first"))).toEqual(["0", `${100 / 15}px`]);
+    expect(margins(rendered.get("middle"))).toEqual([`${100 / 15}px`, `${100 / 15}px`]);
+    expect(margins(rendered.get("last"))).toEqual([`${100 / 15}px`, "0"]);
   });
 
   it("uses actual content edges around nested tables and applies the same rules inside them", () => {
     const nested = table([paragraph("nested", true)], "nested-table");
     const rendered = render(table([nested, paragraph("after-table", true)]));
     expect(margins(rendered.get("nested"))).toEqual(["0", "0"]);
-    expect(margins(rendered.get("after-table"))).toEqual(["7px", "0"]);
+    expect(margins(rendered.get("after-table"))).toEqual([`${100 / 15}px`, "0"]);
     const trailing = render(table([paragraph("before-table", true), nested]));
-    expect(margins(trailing.get("before-table"))).toEqual(["0", "7px"]);
+    expect(margins(trailing.get("before-table"))).toEqual(["0", `${100 / 15}px`]);
   });
 });

@@ -4,7 +4,6 @@ use crate::model::{
 
 use super::body::body_xml;
 use super::context::ParseContext;
-use super::metadata::extract_section_properties_xml;
 use super::paragraph::parse_paragraph;
 use super::table::parse_table;
 
@@ -21,23 +20,32 @@ pub enum BodyTokenKind {
     Paragraph,
 }
 
-pub fn extract_section_properties_xml_from_document(document_xml: &str) -> Option<String> {
-    extract_section_properties_xml(document_xml)
-}
-
 pub fn extract_body_token_ranges(body_xml: &str) -> Vec<BodyTokenRange> {
-    crate::xml::extract_balanced_tag_blocks_in_order(body_xml, &["w:tbl", "w:p"])
-        .into_iter()
-        .map(|range| BodyTokenRange {
-            start: range.start,
-            end: range.end,
-            kind: if range.tag_name.eq_ignore_ascii_case("w:tbl") {
-                BodyTokenKind::Table
-            } else {
-                BodyTokenKind::Paragraph
-            },
-        })
-        .collect()
+    let mut ranges = Vec::new();
+    for (name, kind) in [
+        ("w:tbl", BodyTokenKind::Table),
+        ("w:p", BodyTokenKind::Paragraph),
+    ] {
+        ranges.extend(
+            crate::xml::extract_balanced_tag_ranges(body_xml, name)
+                .into_iter()
+                .map(|range| BodyTokenRange {
+                    start: range.start,
+                    end: range.end,
+                    kind,
+                }),
+        );
+    }
+    ranges.sort_by_key(|range| range.start);
+    let mut covered_end = 0;
+    ranges.retain(|range| {
+        if range.end <= covered_end {
+            return false;
+        }
+        covered_end = range.end;
+        true
+    });
+    ranges
 }
 
 pub fn is_go_back_bookmark_paragraph(paragraph_xml: &str) -> bool {
@@ -52,7 +60,7 @@ pub fn is_go_back_bookmark_paragraph(paragraph_xml: &str) -> bool {
 pub fn parse_document_xml(document_xml: &str, context: &ParseContext<'_>) -> Vec<DocNode> {
     let body_xml = body_xml(document_xml);
     let token_ranges = extract_body_token_ranges(&body_xml);
-    let mut nodes = Vec::new();
+    let mut nodes = Vec::with_capacity(token_ranges.len());
 
     for token in token_ranges {
         let token_xml = &body_xml[token.start..token.end];
@@ -100,25 +108,7 @@ fn contains_case_insensitive_tag(haystack: &str, tag_name: &str) -> bool {
 }
 
 fn find_case_insensitive_at(haystack: &str, start: usize, needle: &str) -> Option<usize> {
-    if needle.is_empty() || start >= haystack.len() || needle.len() > haystack.len() {
-        return None;
-    }
-
-    let haystack_bytes = haystack.as_bytes();
-    let needle_bytes = needle.as_bytes();
-    let max_start = haystack.len() - needle.len();
-
-    for index in start..=max_start {
-        if haystack_bytes[index..index + needle.len()]
-            .iter()
-            .zip(needle_bytes.iter())
-            .all(|(left, right)| left.eq_ignore_ascii_case(right))
-        {
-            return Some(index);
-        }
-    }
-
-    None
+    crate::xml::find_ignore_ascii_case(haystack, start, needle)
 }
 
 #[cfg(test)]

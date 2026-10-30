@@ -388,10 +388,18 @@ pub fn extract_balanced_tag_blocks_in_order(xml: &str, tag_names: &[&str]) -> Ve
     top_level_ranges
 }
 
-fn find_namespaced_tag_attributes(xml: &str, tag_name: &str) -> Option<String> {
-    let open_prefix = format!("<w:{tag_name}");
-    if let Some(tag) = crate::xml_index::tag(xml, &format!("w:{tag_name}")) {
-        return tag.map(|tag| tag[open_prefix.len()..tag.len() - 1].trim_end_matches('/').to_owned());
+fn find_namespaced_tag_attributes<'a>(xml: &'a str, tag_name: &str) -> Option<&'a str> {
+    let mut name_buffer = [0u8; 128];
+    let qualified_name = if tag_name.len() <= name_buffer.len() - 2 {
+        name_buffer[..2].copy_from_slice(b"w:");
+        name_buffer[2..tag_name.len() + 2].copy_from_slice(tag_name.as_bytes());
+        std::borrow::Cow::Borrowed(std::str::from_utf8(&name_buffer[..tag_name.len() + 2]).ok()?)
+    } else {
+        std::borrow::Cow::Owned(format!("w:{tag_name}"))
+    };
+    let prefix_len = qualified_name.len() + 1;
+    if let Some(tag) = crate::xml_index::tag(xml, &qualified_name) {
+        return tag.map(|tag| tag[prefix_len..tag.len() - 1].trim_end_matches('/'));
     }
     let mut index = 0;
 
@@ -401,12 +409,12 @@ fn find_namespaced_tag_attributes(xml: &str, tag_name: &str) -> Option<String> {
             continue;
         }
 
-        if !starts_with_ignore_ascii_case(&xml[index..], &open_prefix) {
+        if !starts_with_ignore_ascii_case(&xml[index + 1..], &qualified_name) {
             index += 1;
             continue;
         }
 
-        let after_prefix = index + open_prefix.len();
+        let after_prefix = index + prefix_len;
         if !has_word_boundary_after(xml, after_prefix) {
             index += 1;
             continue;
@@ -417,7 +425,7 @@ fn find_namespaced_tag_attributes(xml: &str, tag_name: &str) -> Option<String> {
         while cursor < xml_bytes.len() {
             let byte = xml_bytes[cursor];
             if byte == b'>' {
-                let attributes = xml[after_prefix..cursor].trim_end_matches('/').to_string();
+                let attributes = xml[after_prefix..cursor].trim_end_matches('/');
                 return Some(attributes);
             }
             cursor += 1;
@@ -474,12 +482,13 @@ fn has_word_boundary_before(text: &str, index: usize) -> bool {
 }
 
 fn parse_on_off_value(attributes: &str) -> bool {
-    let Some(value) = get_attribute(attributes, "w:val") else {
+    let Some(value) = get_attribute_ref(attributes, "w:val") else {
         return true;
     };
-
-    let value = value.to_ascii_lowercase();
-    value != "0" && value != "false" && value != "none" && value != "off"
+    value != "0"
+        && !value.eq_ignore_ascii_case("false")
+        && !value.eq_ignore_ascii_case("none")
+        && !value.eq_ignore_ascii_case("off")
 }
 
 pub fn parse_on_off_attribute(xml: &str, tag_name: &str) -> Option<bool> {
@@ -490,8 +499,15 @@ pub fn parse_on_off_attribute(xml: &str, tag_name: &str) -> Option<bool> {
 pub fn parse_underline_attribute(xml: &str) -> Option<bool> {
     let attributes = find_namespaced_tag_attributes(xml, "u")?;
 
-    if get_attribute(&attributes, "w:val").is_some() {
+    if get_attribute_ref(attributes, "w:val").is_some() {
         return Some(parse_on_off_value(&attributes));
+    }
+
+    if attributes
+        .bytes()
+        .all(|byte| byte.is_ascii_whitespace() || byte == b'/')
+    {
+        return Some(true);
     }
 
     let compact_attributes: String = attributes
@@ -546,9 +562,13 @@ pub fn normalize_alignment(raw_alignment: Option<&str>) -> Option<ParagraphAlign
 }
 
 pub fn get_attribute(tag_xml: &str, attribute: &str) -> Option<String> {
+    get_attribute_ref(tag_xml, attribute).map(str::to_owned)
+}
+
+pub(crate) fn get_attribute_ref<'a>(tag_xml: &'a str, attribute: &str) -> Option<&'a str> {
     let bytes = tag_xml.as_bytes();
     let mut cursor = 0;
-    while let Some(offset) = tag_xml[cursor..].find('=') {
+    while let Some(offset) = memchr::memchr(b'=', &bytes[cursor..]) {
         let equals = cursor + offset;
         let mut name_end = equals;
         while name_end > 0 && bytes[name_end - 1].is_ascii_whitespace() {
@@ -573,17 +593,45 @@ pub fn get_attribute(tag_xml: &str, attribute: &str) -> Option<String> {
             continue;
         }
         let start = quote_start + 1;
-        let end = start + tag_xml[start..].find(quote as char)?;
+        let end = start + memchr::memchr(quote, &bytes[start..])?;
         if bytes[name_start..name_end].eq_ignore_ascii_case(attribute.as_bytes()) {
-            return Some(tag_xml[start..end].to_owned());
+            return Some(&tag_xml[start..end]);
         }
         cursor = end + 1;
     }
     None
 }
 
+pub(crate) fn find_ignore_ascii_case(haystack: &str, start: usize, needle: &str) -> Option<usize> {
+    let source = haystack.as_bytes();
+    let needle = needle.as_bytes();
+    let anchor = needle.len() / 2;
+    let byte = *needle.get(anchor)?;
+    let limit = source.len().checked_sub(needle.len())? + 1;
+    if start >= limit {
+        return None;
+    }
+    let lower = byte.to_ascii_lowercase();
+    let upper = byte.to_ascii_uppercase();
+    let search_end = limit + anchor;
+    let mut cursor = start + anchor;
+    while cursor < search_end {
+        let offset = if lower == upper {
+            memchr::memchr(byte, &source[cursor..search_end])
+        } else {
+            memchr::memchr2(lower, upper, &source[cursor..search_end])
+        }?;
+        let position = cursor + offset - anchor;
+        if source[position..position + needle.len()].eq_ignore_ascii_case(needle) {
+            return Some(position);
+        }
+        cursor = position + anchor + 1;
+    }
+    None
+}
+
 pub fn parse_integer_attribute(tag_xml: &str, attribute: &str) -> Option<i64> {
-    let raw = get_attribute(tag_xml, attribute)?;
+    let raw = get_attribute_ref(tag_xml, attribute)?;
     if raw.is_empty() {
         return None;
     }

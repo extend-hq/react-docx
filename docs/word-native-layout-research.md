@@ -449,7 +449,7 @@ A hash-pinned native geometry probe verified **3,003 cases**, including distinct
 finite bottoms and bottomless geometry. Obstacle branches, direction transforms,
 and the mapping from effective DOCX regions to these native rectangles remain
 incomplete. The line-fit helper does not itself rewrite metrics when suppression
-permits a fit. Evidence: [upstream metric and geometry report](/Users/andrewluo/react-docx/tmp/word-parity-native/metrics/REPORT.md).
+permits a fit. Evidence: upstream metric and geometry report (local investigation artifact).
 
 Controlled native calls demonstrate several consequential details:
 
@@ -474,7 +474,7 @@ cannot be substituted for the recovered layouts.
 
 ## Conditional Word-story fitting
 
-The [story-dispatch audit](/Users/andrewluo/react-docx/tmp/word-parity-native/paragraphs/native-fitter-active-contract.md)
+The story-dispatch audit (local investigation artifact)
 distinguishes the generic fitter above from Word's simple and chained fitters.
 Compatibility version, document policy and view gates select the branch;
 compatibility version 15 can use the generic branch. The generic algorithm is
@@ -489,7 +489,7 @@ after-spacing input must not be replaced with the generic suppression formula.
 The native zero-height boundary is also outside the browser adapter's current
 positive-height contract.
 
-The [border-producer follow-up](/Users/andrewluo/react-docx/tmp/word-parity-native/paragraphs/native-fitter-border-producer-contract.md)
+The border-producer follow-up (local investigation artifact)
 traces the ordinary suppression record through the bottom paragraph border and
 its formatting-domain contribution. Its signed truncating conversion passed
 5,008 isolated native cases; it differs from the rounded conversion used at
@@ -555,7 +555,7 @@ defaults still need qualification before these records can replace general
 browser line-metric inputs. The controlled mixed-source marks explicitly use
 11pt formatting; mark participation remains a separate qualification target.
 
-The later [print profile contract](/Users/andrewluo/react-docx/tmp/word-parity-native/metrics/PROFILE-CONTRACT.md)
+The later print profile contract (local investigation artifact)
 traces a successful normal print selector to 294912 formatting units/inch and
 device presentation units; the separate print-file policy gives 300 presentation
 units/inch. Request/device gates can fall back, and loaded compatibility/provider
@@ -564,7 +564,7 @@ a separate second-component adjustment. The 240/264-twip captures cannot
 distinguish competing profiles. No universal Word baseline rule or independently
 executed native baseline vectors were added from this follow-up.
 
-The later [presentation and record-origin audit](/Users/andrewluo/react-docx/tmp/word-parity-native/metrics/PRESENTATION-AVAILABILITY-AND-RECORD-ORIGIN.md)
+The later presentation and record-origin audit (local investigation artifact)
 qualifies this further: the conventional page route establishes presentation
 availability through a temporary provider, replaces the initial print device,
 and selects presentation units from prepared cached geometry. That preparation
@@ -575,7 +575,7 @@ with independently qualified stored presentation axes and origins. The incoming
 text rectangle and paragraph details still need their upstream margin and
 first-line producers before the browser can choose the same baseline phase.
 
-The [embedded-font comparison](/Users/andrewluo/react-docx/tmp/word-parity-native/typography/font-identity/REPORT.md)
+The embedded-font comparison (local investigation artifact)
 also narrows the paint-face uncertainty: all 71 encoded Arial glyph instances
 (43 unique characters) match the examined bundled Arial 6.80i subset data and
 metrics. Retained Calibri subset tables match version 6.20. System Arial shares
@@ -584,7 +584,7 @@ This identifies the observed PDF paint data among the inspected candidates;
 the formatting provider, unobserved fallback and original filesystem path remain
 separate questions.
 
-The later [browser face audit](/Users/andrewluo/react-docx/tmp/word-parity-native/typography/browser-font-probe/REPORT.md)
+The later browser face audit (local investigation artifact)
 reports platform ArialMT for all 84 examined text leaves across the three
 controlled documents. Chrome's exposed font data matches all 24 SFNT table
 contents of the inspected system Arial 5.01.2x candidate. Four controlled font
@@ -594,7 +594,7 @@ Canvas raster comparisons also match. This rules out swapping those faces as a
 correction for the measured browser baseline residual in this profile. It does
 not equate browser row placement or rasterization with Word's PDF output.
 
-The subsequent [plan-to-paint trace](/Users/andrewluo/react-docx/tmp/word-parity-native/typography/browser-baseline-trace/REPORT.md)
+The subsequent plan-to-paint trace (local investigation artifact)
 joins all 84 text leaves to their planned rows and restored DOM baselines.
 The largest planned-versus-painted difference is 0.008334 CSS pixels, while the
 Word residual remains approximately 0.56pt for the uniform case and 0.99–2.15pt
@@ -602,7 +602,7 @@ across the table case. This places the remaining discrepancy upstream of the
 qualified fragment paint subtraction; it does not establish a universal baseline
 correction. The trace records its source and WASM observation epochs separately.
 
-The [real-document font audit](/Users/andrewluo/react-docx/tmp/word-parity-native/typography/corpus-platform-fonts/REPORT.md)
+The real-document font audit (local investigation artifact)
 finds a different problem in the wider corpus: sampled Calibri regular and bold
 text actually uses Helvetica and Helvetica-Bold. Those documents contain no
 embedded Calibri resource. Embedded Ubuntu faces, by contrast, are loaded and
@@ -624,20 +624,20 @@ selecting compatibility version 12 when the package-format flag is clear. An
 explicit compatibility setting can then replace it. This is a qualified static
 branch, not a universal default inferred from a missing settings part or an
 observation of the captured process. No new global font scale or compatibility
-default was added. See the [provider and import contract](/Users/andrewluo/react-docx/tmp/word-parity-native/metrics/EFFECTIVE-PROVIDER-IMPORT.md).
+default was added. See the provider and import contract (local investigation artifact).
 
-Supporting reports: [upstream metrics](/Users/andrewluo/react-docx/tmp/word-parity-native/metrics/REPORT.md),
-[font-record/print-profile qualification](/Users/andrewluo/react-docx/tmp/word-parity-native/metrics/MINIMUM-LINE-METRICS.md),
-[conditional formatting/presentation profile](/Users/andrewluo/react-docx/tmp/word-parity-native/metrics/PROFILE-CONTRACT.md),
-[paragraph properties](/Users/andrewluo/react-docx/tmp/word-parity-native/paragraphs/REPORT.md),
-and [glyph advance investigation](/Users/andrewluo/react-docx/tmp/word-parity-native/typography/README.md).
+Supporting reports: upstream metrics (local investigation artifact),
+font-record/print-profile qualification (local investigation artifact),
+conditional formatting/presentation profile (local investigation artifact),
+paragraph properties (local investigation artifact),
+and glyph advance investigation (local investigation artifact).
 These are static Word-side reconstructions checked against assembly, except for
 the separately identified native geometry calls and controlled PDF observations.
 No decompiler body is used as an unverified browser replacement.
 
 ## Section origins and the print baseline
 
-The [section-origin trace](/Users/andrewluo/react-docx/tmp/word-parity-native/metrics/record-origin-epoch2/FRAME-PARAGRAPH-ORIGIN.md)
+The section-origin trace (local investigation artifact)
 follows raw section bounds through formatting-domain projection, body-shaft
 geometry, the first section cursor, and stored column/paragraph positions.
 One thousand bounded calls to named framework query functions validate the
@@ -645,7 +645,7 @@ stored-coordinate contract. This ordering supports retaining fractional source
 page geometry; it does not support rounding every margin to whole CSS pixels.
 Effective overrides and later paragraph placement remain separate inputs.
 
-The [baseline-field trace](/Users/andrewluo/react-docx/tmp/word-parity-native/paragraphs/baseline-field-epoch1/REPORT.md)
+The baseline-field trace (local investigation artifact)
 also resolves a representation-dependent field: cached text details expose a
 relative rectangle top where live/simple details expose an object count or
 presence flag. The cached coordinate is not a font ascent. On the recovered
@@ -660,7 +660,7 @@ origin phase are unobserved. No fixed baseline shift or global native unit scale
 was added to the viewer. The installed debug/source inventory still contains no
 original source or source-bearing DWARF information.
 
-The subsequent [paragraph-position trace](/Users/andrewluo/react-docx/tmp/word-parity-native/metrics/paragraph-position-epoch3/PARAGRAPH-POSITION.md)
+The subsequent paragraph-position trace (local investigation artifact)
 closes the additional position term for a successful fresh finite page on the
 qualified initializer branch: its first paragraph has zero track progress and
 zero framework leading offset before any restart or repositioning. Five thousand
@@ -789,7 +789,7 @@ Implemented scope:
   baselines account for viewer/ancestor CSS zoom; font, DPR and viewport-scale
   changes invalidate metrics. Eight measured paint-zoom combinations preserve
   logical rows and the qualified browser baseline. Word baseline equality is a
-  separate gate. See [strut qualification](/Users/andrewluo/react-docx/tmp/word-parity-native/typography/exact-baseline-qualification.md).
+  separate gate. See strut qualification (local investigation artifact).
 - Page and column splits share the minimum-line constraint. Two lines are
   required on each side when model widow/orphan control is enabled; forced
   progress for content that cannot fit an empty page remains. Page capacity now
@@ -817,7 +817,7 @@ Implemented scope:
   Separately, 24 live caret/active-and-inactive double-click scenarios pass on the
   controlled three-word/tab source at viewer 50/100/200% and external CSS zoom
   1/1.25 in Chrome/DPR 1. Multiline zoom was not qualified. Evidence:
-  [zoom selection](/Users/andrewluo/react-docx/tmp/word-fidelity-fleet/zoom-caret-browser-qualification.json).
+  zoom selection (local investigation artifact).
 - Explicit compatibility mode, document tabs, and even/odd headers survive Rust
   import and export. Imported-settings provenance allows a deliberate cleared
   value to remove its corresponding source setting, while an unspecified caller
@@ -833,8 +833,8 @@ Implemented scope:
   Ordinary text edits retain the provenance when invalidating paragraph XML.
   The initial implementation provided semantic preservation. The later empty-mark
   and ending-ownership integration is described below. A temporary API probe verifies
-  [clone/clipboard isolation](/Users/andrewluo/react-docx/tmp/word-fidelity-implementation/paragraph-mark-clone-qualification.json);
-  the final [packaged viewer/WASM verification](/Users/andrewluo/react-docx/tmp/word-fidelity-implementation/packaged-settings-marks-verification.json)
+  clone/clipboard isolation (local investigation artifact);
+  the final packaged viewer/WASM verification (local investigation artifact)
   also checks current-versus-historical formatting, source-preserving text edits
   and regeneration, clearing, and complex-script size fallback.
 - Table exact/minimum/auto row restrictions, a 31,680-twip declared-height bound,
@@ -854,8 +854,8 @@ Implemented scope:
   reference. Header/footer inline tables use the text region even with a page-wide
   drawing host. The later fixed-grid integration removes selected width rounding;
   native autofit, nested percentage behavior and broader RTL ordering remain open.
-  See [input/export contract](/Users/andrewluo/react-docx/tmp/word-fidelity-fleet/table-input-implementation.md)
-  and [active width/placement scope](/Users/andrewluo/react-docx/tmp/word-parity-native/tables/WIDTH-ALIGNMENT-REPORT.md).
+  See input/export contract (local investigation artifact)
+  and active width/placement scope (local investigation artifact).
 
 The browser page-fit adapter supplies zero suppressible spacing and equal limits.
 That positive-height comparison is valid in both recovered story paths. Distinct
@@ -887,9 +887,9 @@ outside that claim. Trailing empty lines within nonempty paragraphs remain a
 separate qualification target. Imported mark layers retain default, character-style
 and direct ownership so empty paragraph style changes can recompute inherited
 metrics without discarding explicit formatting or promoting inheritance into
-direct XML. See the [empty-line browser record](/Users/andrewluo/react-docx/tmp/word-parity-native/typography/empty-editor-consistency.md),
-[header reserve correction](/Users/andrewluo/react-docx/tmp/word-parity-native/typography/header-reserve-regression.md),
-and [native paragraph contract](/Users/andrewluo/react-docx/tmp/word-parity-native/paragraphs/paragraph-metrics-contract.md).
+direct XML. See the empty-line browser record (local investigation artifact),
+header reserve correction (local investigation artifact),
+and native paragraph contract (local investigation artifact).
 
 Splitting a paragraph now gives the new ending fresh ownership and leaves the
 original ending on the trailing paragraph. Actual paragraph merges retain the
@@ -907,8 +907,8 @@ keeping public addresses in actual cell indices. Table selection gives the
 editable viewer keyboard focus so Delete reaches its selection handler.
 The first-row constraint order
 is a standards-derived interpretation awaiting a Word reference; autofit and
-complete merge/continuation behavior are still open. See the [fixed-grid record](/Users/andrewluo/react-docx/tmp/word-parity-native/tables/FIXED-WIDTH-REPORT.md)
-and [input/export contract](/Users/andrewluo/react-docx/tmp/word-fidelity-fleet/line-layout-and-row-input-implementation.md).
+complete merge/continuation behavior are still open. See the fixed-grid record (local investigation artifact)
+and input/export contract (local investigation artifact).
 
 ### Whole paragraph paint and editing
 
@@ -946,7 +946,7 @@ These context-menu commands retain their existing plain-text clipboard behavior.
 Existing smoke checks cover deletion/caret collapse and fresh toolbar selections
 through a planned-to-native rendering transition.
 
-The [v5 typography controls](/Users/andrewluo/react-docx/tmp/word-parity-native/typography/v5-whole-paragraph-paint.md)
+The v5 typography controls (local investigation artifact)
 record 45 functional assertions. Their read-only copy cases installed DOM ranges;
 actual dragging is qualified separately by the v6 matrix below. Neither synthetic
 composition nor these bounded editing controls establish OS-native IME or general
@@ -955,8 +955,8 @@ standalone/direct thumbnail painting remain separate paths.
 
 ## Controlled Word references and observed agreement
 
-The [v6 report](/Users/andrewluo/react-docx/tmp/word-parity-native/oracle/integration-v6-comparison.md)
-and [summary](/Users/andrewluo/react-docx/tmp/word-parity-native/oracle/integration-v6-summary.json)
+The v6 report (local investigation artifact)
+and summary (local investigation artifact)
 bind three frozen Mac Word print PDF references/four pages to the recorded v6 source
 epoch. Page count, dimensions, input integrity and measured renderer metadata pass;
 exact pixels fail on all four pages. All 39 controlled ordinary/mixed line texts
@@ -989,10 +989,10 @@ passes **81 geometry assertions across 15 labeled tables**, **99 boundary
 assertions across 17 read-only and six editable cell scenarios**, and **seven
 native selection/caret cases**. Body/cell drags retain offsets and copied text
 without model mutation. These checks have no additional Word reference and do
-not qualify toolbar commands. Evidence: [v6 geometry](/Users/andrewluo/react-docx/tmp/word-fidelity-fleet/fractional/v6/browser-geometry-qualification.json),
-[boundaries](/Users/andrewluo/react-docx/tmp/word-fidelity-fleet/fractional/v6/browser-boundary-qualification.json),
-[native selection](/Users/andrewluo/react-docx/tmp/word-fidelity-fleet/fractional/v6/browser-selection-qualification.json),
-and [preserved v4 diagnosis](/Users/andrewluo/react-docx/tmp/word-fidelity-fleet/fractional/cell-boundary-diagnostic.json).
+not qualify toolbar commands. Evidence: v6 geometry (local investigation artifact),
+boundaries (local investigation artifact),
+native selection (local investigation artifact),
+and preserved v4 diagnosis (local investigation artifact).
 
 The capture profile is macOS print-to-PDF with Chrome 154.0.8037.98 and physical
 startup/context DPR 1.5. Fonts remain provider-managed: embedded subsets are
@@ -1003,11 +1003,11 @@ The results remain research evidence rather than a qualified pinned-CI gate.
 Same-URL WASM asset readback is recorded separately from the original streamed
 response. Three further Word captures await manual Mac unlock.
 
-Evidence: [frozen reference manifest](/Users/andrewluo/react-docx/tmp/word-parity-native/oracle/word-oracle.json),
-[geometry/provenance](/Users/andrewluo/react-docx/tmp/word-parity-native/oracle/README.md),
-[v6 comparison](/Users/andrewluo/react-docx/tmp/word-parity-native/oracle/integration-v6-comparison.md),
-[table renderer scope](/Users/andrewluo/react-docx/tmp/word-parity-native/tables/WIDTH-ALIGNMENT-REPORT.md),
-and [strut/zoom qualification](/Users/andrewluo/react-docx/tmp/word-parity-native/typography/exact-baseline-qualification.md).
+Evidence: frozen reference manifest (local investigation artifact),
+geometry/provenance (local investigation artifact),
+v6 comparison (local investigation artifact),
+table renderer scope (local investigation artifact),
+and strut/zoom qualification (local investigation artifact).
 
 ## Integration validation chronology
 
@@ -1016,7 +1016,7 @@ cases against the pinned framework. The separate 3,003-case geometry branch is
 another native function domain. Overlapping experiments must not be summed as
 document coverage; none is a whole-document parity result.
 
-The [prior v3 validation snapshot](/Users/andrewluo/react-docx/tmp/word-fidelity-implementation/validation-summary-before-line-grid-v4.json)
+The prior v3 validation snapshot (local investigation artifact)
 fingerprints 31 modified/new source files, its ESM/CJS/WASM and validation
 logs. It passes **556 unit checks with one skipped, 97 Rust checks, 46 oracle
 contracts, five existing Chrome checks, nine typecheck projects, eight package
@@ -1024,14 +1024,14 @@ builds plus WASM, and 49 public packaged ESM checks**. The ESM total consists of
 33 table checks plus 16 settings/mark checks. Public CJS import/clone/export/byte
 reimport also passes. Previous validation snapshots are archived separately.
 
-The [v3 packaged table record](/Users/andrewluo/react-docx/tmp/word-fidelity-implementation/table-width-public-verification.json)
+The v3 packaged table record (local investigation artifact)
 binds its recorded bundle/WASM hashes and verifies tagged/legacy edits, inherited
-clears, property-owner isolation and byte round trips. The [settings/mark record](/Users/andrewluo/react-docx/tmp/word-fidelity-implementation/packaged-settings-marks-verification.json)
+clears, property-owner isolation and byte round trips. The settings/mark record (local investigation artifact)
 covers current/history distinction, clone/edit/regeneration, clearing and fallback.
-The [CJS record](/Users/andrewluo/react-docx/tmp/word-fidelity-implementation/packaged-cjs-table-metrics-verification.json)
+The CJS record (local investigation artifact)
 qualifies the separate package entry.
 
-The [v4 validation snapshot](/Users/andrewluo/react-docx/tmp/word-fidelity-implementation/validation-summary-v4.json)
+The v4 validation snapshot (local investigation artifact)
 records 556 passing unit checks with one skipped, 97 Rust checks, 46 oracle
 contracts, five existing Chrome checks, nine typecheck projects and eight rebuilt
 packages plus WASM. Its 93 packaged ESM checks comprise 33 table, 16 settings/mark
@@ -1040,20 +1040,20 @@ assertions now retain fractions, the tab-wrapping unit check holds its body regi
 fixed, and the legacy-parser comparison excludes new internal mark provenance.
 No new tracked unit tests were added.
 
-The [controller record](/Users/andrewluo/react-docx/tmp/word-fidelity-implementation/controller-ownership-final-summary.json)
+The controller record (local investigation artifact)
 covers 18 command cases and 15 public export/reimport loops, including named table
-style ownership and read-only controls. The [empty-style record](/Users/andrewluo/react-docx/tmp/word-parity-native/typography/empty-style-transition-regression.md)
+style ownership and read-only controls. The empty-style record (local investigation artifact)
 covers seven body/table controller cases plus header/footer, dirty-mark,
 direct-equals-inherited and undo controls. The former fractional boundary failures
 remain visible in that historical snapshot despite its passing package checks.
 
-The [v5 candidate snapshot](/Users/andrewluo/react-docx/tmp/word-fidelity-implementation/validation-summary-v5.json)
+The v5 candidate snapshot (local investigation artifact)
 preserves the whole-paragraph rollout and its failed body drag checks. The
-[v6 candidate snapshot](/Users/andrewluo/react-docx/tmp/word-fidelity-implementation/validation-summary-v6.json)
+v6 candidate snapshot (local investigation artifact)
 qualifies the read-only fix and preserves the subsequently found toolbar range
 failure. Neither candidate is presented as a completed interaction integration.
 
-The [v7 interaction snapshot](/Users/andrewluo/react-docx/tmp/word-fidelity-implementation/validation-summary-v7.json) passes **556 unit checks with one skipped, five existing
+The v7 interaction snapshot (local investigation artifact) passes **556 unit checks with one skipped, five existing
 Chrome checks, all nine typecheck projects, 93 rebuilt-package ESM checks and the
 public CJS roundtrip**. Existing smoke interactions now target the active editing
 surface while retaining their selected-text and formatting assertions. No new
@@ -1061,7 +1061,7 @@ tracked unit tests were added. The viewer package was rebuilt; unchanged Rust,
 WASM and other workspace packages retain their earlier source-bound validation.
 The 50 direct-cell split assertions and four public export/reimports are recorded
 against the unchanged controller implementation in the v5 source epoch.
-Eleven [context-menu and primary-selection controls](/Users/andrewluo/react-docx/tmp/word-fidelity-implementation/v7/context-qualification.json)
+Eleven context-menu and primary-selection controls (local investigation artifact)
 pass against the final v7 source, covering body/cell Copy, Cut, undo and outside
 caret placement, plus table padding, primary dragging and Shift selection.
 
@@ -1070,7 +1070,7 @@ corrects selection-event ownership; it changes no layout calculation or resting
 paint code. The current interaction checks do not relabel earlier Word
 images as a fresh v7 capture.
 
-The [v8 thumbnail cache correction](/Users/andrewluo/react-docx/tmp/word-fidelity-implementation/validation-summary-v8.json) changes only the revision included in
+The v8 thumbnail cache correction (local investigation artifact) changes only the revision included in
 page content keys and the corresponding memo dependency. Its controlled browser
 font-load probe verifies automatic attached redraw and same-target/fresh-target
 default renders against forced redraw. The integration passes 33 existing
@@ -1078,12 +1078,12 @@ thumbnail/font checks, the existing Chrome thumbnail check, viewer and playgroun
 typechecks, and a fresh viewer build. Earlier broad checks remain bound to v7;
 that stage retains the v6 Word comparison rather than claiming a v8 recapture.
 
-The bounded [live zoom-selection matrix](/Users/andrewluo/react-docx/tmp/word-fidelity-fleet/zoom-caret-browser-qualification.json)
+The bounded live zoom-selection matrix (local investigation artifact)
 has 24 scenarios and zero failures on the three-word/tab source: viewer
 50/100/200% with external CSS zoom 1/1.25, caret placement and active/fresh
 double-click selection. Literal source/tabs remain intact. It uses installed
 headless Chrome/DPR 1; multiline zoom and OS-native IME are unqualified.
-The earlier [edit/undo/redo/synthetic-composition record](/Users/andrewluo/react-docx/tmp/word-fidelity-implementation/wrapped-editor-loop-qualification.json)
+The earlier edit/undo/redo/synthetic-composition record (local investigation artifact)
 remains distinct evidence for the selection-cycle correction.
 
 The v3 and v4 source/WASM guards each remained unchanged across their captures;
@@ -1152,16 +1152,16 @@ line slices, including terminal empty rows. A further 258 browser geometry
 assertions cover explicit visual affinity and point/caret round trips.
 These close the observed formatting
 replacement failures within that scope; they do not establish complete editing
-or Word geometry parity. See the [mixed-text report](/Users/andrewluo/react-docx/tmp/word-fidelity-fleet/mixed-v9/READY-4E-QUALIFICATION.md)
-and [soft-wrap boundary trace](/Users/andrewluo/react-docx/tmp/word-fidelity-fleet/manual-v9/ready-4e-soft.json).
+or Word geometry parity. See the mixed-text report (local investigation artifact)
+and soft-wrap boundary trace (local investigation artifact).
 
-The [v9 validation snapshot](/Users/andrewluo/react-docx/tmp/word-fidelity-implementation/validation-summary-v9.json)
+The v9 validation snapshot (local investigation artifact)
 records the rebuilt viewer, 556 existing unit checks with one skipped, two
 typechecks, five existing Chrome checks, 93 packaged ESM checks and the CJS
 round trip. The separate page-boundary/read-only matrix passes 31 controls.
 No new tracked unit tests were added in this stage.
 
-The fresh [v9 Word comparison](/Users/andrewluo/react-docx/tmp/word-parity-native/oracle/integration-v9-comparison.md)
+The fresh v9 Word comparison (local investigation artifact)
 uses the same three frozen references and four pages. Page counts, dimensions,
 39 ordinary line texts and 20 table paragraph texts pass. All four rendered PNGs
 are byte-identical to v6. Literal baseline and pixel equality still fail: the
@@ -1184,7 +1184,7 @@ their original source XML continue to preserve that XML, including unknown
 attributes. Margin edits on a model retaining original table XML still require
 regeneration; this change does not introduce a new surgical margin-edit contract.
 
-The [v10 validation snapshot](/Users/andrewluo/react-docx/tmp/word-fidelity-implementation/validation-summary-v10.json)
+The v10 validation snapshot (local investigation artifact)
 records a fresh WASM build and all eight package builds, 97 existing Rust checks,
 34 focused existing unit checks, and the serializer typecheck. The rebuilt public
 ESM and CJS exports pass 26 scenarios across 78 XML/package/DOCX export and
@@ -1201,7 +1201,7 @@ source twip fractions. Ordinary unmeasured pagination capacities, per-node
 geometry and virtual page spacers preserve those values. The general paragraph,
 table and document-grid converters retain their existing policies, as do measured
 height normalization, import page-count reconciliation and multi-column sizing.
-The [section qualification](/Users/andrewluo/react-docx/tmp/word-fidelity-fleet/fractional-section-v10/REPORT.md)
+The section qualification (local investigation artifact)
 records the resulting boundary changes separately from unchanged page counts.
 
 Explicit mixed page/local drawing anchors now resolve their page or margin axis
@@ -1211,7 +1211,7 @@ and the effective viewer zoom. Numeric origin fallbacks preserve unmeasured
 rendering. A separate textbox correction stops the body paragraph's first-line
 indent from leaking into live textbox text.
 
-The [anchor qualification](/Users/andrewluo/react-docx/tmp/word-fidelity-fleet/mixed-anchors-v10/REPORT.md)
+The anchor qualification (local investigation artifact)
 includes anchor-mode transitions, dragging, undo/redo, export/reimport and
 fractional-border controls. The correction refreshes at React ref commits;
 imperative inner-container scrolling without a render remains unqualified.

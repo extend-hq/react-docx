@@ -311,12 +311,16 @@ export function paragraphStartsWithLastRenderedPageBreak(paragraph: ParagraphNod
   return leadingXml.length === 0;
 }
 
+function paragraphSpacingPixels(twips?: number): number {
+  return Number.isFinite(twips) ? Math.max(0, (twips as number) / TWIPS_PER_PIXEL) : 0;
+}
+
 export function paragraphBeforeSpacingPx(paragraph: ParagraphNode): number {
-  return twipsToPixels(paragraph.style?.spacing?.beforeTwips) ?? 0;
+  return paragraphSpacingPixels(paragraph.style?.spacing?.beforeTwips);
 }
 
 export function paragraphAfterSpacingPx(paragraph: ParagraphNode): number {
-  return twipsToPixels(paragraph.style?.spacing?.afterTwips) ?? 0;
+  return paragraphSpacingPixels(paragraph.style?.spacing?.afterTwips);
 }
 
 export function resolveParagraphBeforeSpacingPx(

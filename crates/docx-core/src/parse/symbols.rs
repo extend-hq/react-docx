@@ -1,5 +1,28 @@
+/*
+This notice applies to the added dingbat mapping data.
+
+Copyright (c) 1991-2011 Unicode, Inc. All Rights reserved.
+
+This file is provided as-is by Unicode, Inc. (The Unicode Consortium). No
+claims are made as to fitness for any particular purpose. No warranties of
+any kind are expressed or implied. The recipient agrees to determine
+applicability of information provided. If this file has been provided on
+magnetic media by Unicode, Inc., the sole remedy for any claim will be
+exchange of defective media within 90 days of receipt.
+
+Unicode, Inc. hereby grants the right to freely use the information
+supplied in this file in the creation of products supporting the
+Unicode Standard, and to make copies of this file in any form for
+internal or external distribution as long as this notice remains
+attached.
+*/
+
 pub fn symbol_character(font: &str, code: u32) -> Option<char> {
-    let code = if (0xf000..=0xf0ff).contains(&code) { code - 0xf000 } else { code };
+    let code = if (0xf000..=0xf0ff).contains(&code) {
+        code - 0xf000
+    } else {
+        code
+    };
     let unicode = match (font.to_ascii_uppercase().as_str(), code) {
         ("SYMBOL", 32) => 32,
         ("SYMBOL", 33) => 33,
@@ -1062,6 +1085,109 @@ pub fn symbol_character(font: &str, code: u32) -> Option<char> {
         ("WINGDINGS 3", 238) => 129174,
         ("WINGDINGS 3", 239) => 129173,
         ("WINGDINGS 3", 240) => 129175,
+        ("MONOTYPE SORTS", 32) => 32,
+        ("MONOTYPE SORTS", 33) => 9985,
+        ("MONOTYPE SORTS", 35) => 9987,
+        ("MONOTYPE SORTS", 36) => 9988,
+        ("MONOTYPE SORTS", 38) => 9990,
+        ("MONOTYPE SORTS", 44) => 9996,
+        ("MONOTYPE SORTS", 48) => 10000,
+        ("MONOTYPE SORTS", 49) => 10001,
+        ("MONOTYPE SORTS", 50) => 10002,
+        ("MONOTYPE SORTS", 53) => 10005,
+        ("MONOTYPE SORTS", 54) => 10006,
+        ("MONOTYPE SORTS", 61) => 10013,
+        ("MONOTYPE SORTS", 62) => 10014,
+        ("MONOTYPE SORTS", 63) => 10015,
+        ("MONOTYPE SORTS", 64) => 10016,
+        ("MONOTYPE SORTS", 70) => 10022,
+        ("MONOTYPE SORTS", 71) => 10023,
+        ("MONOTYPE SORTS", 72) => 9733,
+        ("MONOTYPE SORTS", 73) => 10025,
+        ("MONOTYPE SORTS", 74) => 10026,
+        ("MONOTYPE SORTS", 82) => 10034,
+        ("MONOTYPE SORTS", 90) => 10042,
+        ("MONOTYPE SORTS", 91) => 10043,
+        ("MONOTYPE SORTS", 92) => 10044,
+        ("MONOTYPE SORTS", 93) => 10045,
+        ("MONOTYPE SORTS", 94) => 10046,
+        ("MONOTYPE SORTS", 96) => 10048,
+        ("MONOTYPE SORTS", 97) => 10049,
+        ("MONOTYPE SORTS", 98) => 10050,
+        ("MONOTYPE SORTS", 99) => 10051,
+        ("MONOTYPE SORTS", 101) => 10053,
+        ("MONOTYPE SORTS", 102) => 10054,
+        ("MONOTYPE SORTS", 103) => 10055,
+        ("MONOTYPE SORTS", 104) => 10056,
+        ("MONOTYPE SORTS", 105) => 10057,
+        ("MONOTYPE SORTS", 106) => 10058,
+        ("MONOTYPE SORTS", 107) => 10059,
+        ("MONOTYPE SORTS", 115) => 9650,
+        ("MONOTYPE SORTS", 116) => 9660,
+        ("MONOTYPE SORTS", 120) => 10072,
+        ("MONOTYPE SORTS", 122) => 10074,
+        ("MONOTYPE SORTS", 123) => 10075,
+        ("MONOTYPE SORTS", 124) => 10076,
+        ("MONOTYPE SORTS", 125) => 10077,
+        ("MONOTYPE SORTS", 126) => 10078,
+        ("MONOTYPE SORTS", 163) => 10083,
+        ("MONOTYPE SORTS", 164) => 10084,
+        ("MONOTYPE SORTS", 165) => 10085,
+        ("MONOTYPE SORTS", 166) => 10086,
+        ("MONOTYPE SORTS", 167) => 10087,
+        ("MONOTYPE SORTS", 172) => 9312,
+        ("MONOTYPE SORTS", 173) => 9313,
+        ("MONOTYPE SORTS", 174) => 9314,
+        ("MONOTYPE SORTS", 175) => 9315,
+        ("MONOTYPE SORTS", 176) => 9316,
+        ("MONOTYPE SORTS", 177) => 9317,
+        ("MONOTYPE SORTS", 178) => 9318,
+        ("MONOTYPE SORTS", 179) => 9319,
+        ("MONOTYPE SORTS", 180) => 9320,
+        ("MONOTYPE SORTS", 181) => 9321,
+        ("MONOTYPE SORTS", 182) => 10102,
+        ("MONOTYPE SORTS", 183) => 10103,
+        ("MONOTYPE SORTS", 184) => 10104,
+        ("MONOTYPE SORTS", 185) => 10105,
+        ("MONOTYPE SORTS", 186) => 10106,
+        ("MONOTYPE SORTS", 187) => 10107,
+        ("MONOTYPE SORTS", 188) => 10108,
+        ("MONOTYPE SORTS", 189) => 10109,
+        ("MONOTYPE SORTS", 190) => 10110,
+        ("MONOTYPE SORTS", 191) => 10111,
+        ("MONOTYPE SORTS", 217) => 10137,
+        ("MONOTYPE SORTS", 219) => 10139,
+        ("MONOTYPE SORTS", 220) => 10140,
+        ("MONOTYPE SORTS", 221) => 10141,
+        ("MONOTYPE SORTS", 222) => 10142,
+        ("MONOTYPE SORTS", 223) => 10143,
+        ("MONOTYPE SORTS", 224) => 10144,
+        ("MONOTYPE SORTS", 225) => 10145,
+        ("MONOTYPE SORTS", 227) => 10147,
+        ("MONOTYPE SORTS", 228) => 10148,
+        ("MONOTYPE SORTS", 229) => 10149,
+        ("MONOTYPE SORTS", 230) => 10150,
+        ("MONOTYPE SORTS", 231) => 10151,
+        ("MONOTYPE SORTS", 232) => 10152,
+        ("MONOTYPE SORTS", 233) => 10153,
+        ("MONOTYPE SORTS", 234) => 10154,
+        ("MONOTYPE SORTS", 235) => 10155,
+        ("MONOTYPE SORTS", 236) => 10156,
+        ("MONOTYPE SORTS", 237) => 10157,
+        ("MONOTYPE SORTS", 238) => 10158,
+        ("MONOTYPE SORTS", 239) => 10159,
+        ("MONOTYPE SORTS", 241) => 10161,
+        ("MONOTYPE SORTS", 243) => 10163,
+        ("MONOTYPE SORTS", 244) => 10164,
+        ("MONOTYPE SORTS", 245) => 10165,
+        ("MONOTYPE SORTS", 246) => 10166,
+        ("MONOTYPE SORTS", 247) => 10167,
+        ("MONOTYPE SORTS", 249) => 10169,
+        ("MONOTYPE SORTS", 250) => 10170,
+        ("MONOTYPE SORTS", 251) => 10171,
+        ("MONOTYPE SORTS", 252) => 10172,
+        ("MONOTYPE SORTS", 253) => 10173,
+        ("MONOTYPE SORTS", 254) => 10174,
         _ => return None,
     };
     char::from_u32(unicode)

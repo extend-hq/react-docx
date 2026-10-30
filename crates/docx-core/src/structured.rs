@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -59,6 +60,90 @@ pub struct DocumentWord {
     pub source_refs: Vec<SourceRef>,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ParagraphInline {
+    Text {
+        start: usize,
+        end: usize,
+        text: String,
+        style: Option<SharedTextStyle>,
+        link: Option<String>,
+        #[serde(rename = "noteReference")]
+        note_reference: Option<NoteReference>,
+    },
+    FormField {
+        #[serde(rename = "blockId")]
+        block_id: String,
+        start: usize,
+        end: usize,
+        text: String,
+    },
+    Block {
+        #[serde(rename = "blockId")]
+        block_id: String,
+        offset: usize,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ParagraphDetails {
+    pub r#type: String,
+    pub kind: String,
+    pub style: Option<ParagraphStyle>,
+    pub style_id: String,
+    pub heading_level: Option<HeadingLevel>,
+    pub numbering: Option<ParagraphNumbering>,
+    pub field_instructions: Vec<String>,
+    pub inlines: Vec<ParagraphInline>,
+}
+
+/// Eager semantic details with an unrestricted JSON representation for imported data.
+#[derive(Clone, Debug, Serialize)]
+#[serde(untagged)]
+pub enum BlockDetails {
+    Paragraph(Box<ParagraphDetails>),
+    Raw(Value),
+}
+
+impl BlockDetails {
+    pub fn to_json_value(&self) -> Value {
+        match self {
+            Self::Paragraph(details) => serde_json::to_value(details)
+                .expect("paragraph details contain JSON-compatible values"),
+            Self::Raw(value) => value.clone(),
+        }
+    }
+}
+
+impl PartialEq for BlockDetails {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Raw(left), Self::Raw(right)) => left == right,
+            _ => self.to_json_value() == other.to_json_value(),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for BlockDetails {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Value::deserialize(deserializer).map(Self::Raw)
+    }
+}
+
+impl From<Value> for BlockDetails {
+    fn from(value: Value) -> Self {
+        Self::Raw(value)
+    }
+}
+
+impl From<ParagraphDetails> for BlockDetails {
+    fn from(details: ParagraphDetails) -> Self {
+        Self::Paragraph(Box::new(details))
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DocumentBlock {
@@ -66,7 +151,7 @@ pub struct DocumentBlock {
     pub id: String,
     pub r#type: BlockType,
     pub content: String,
-    pub details: Value,
+    pub details: BlockDetails,
     pub source_refs: Vec<SourceRef>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_block_id: Option<String>,
@@ -105,6 +190,27 @@ pub fn package_identity(package: &OoxmlPackage) -> String {
         hash.update(bytes);
     }
     format!("{:x}", hash.finalize())
+}
+
+fn image_url(image: &ImageRunNode) -> Option<String> {
+    if let Some(src) = image.src.as_ref().filter(|src| !src.trim().is_empty()) {
+        return Some(src.clone());
+    }
+    let data = image.data.as_deref().filter(|data| !data.is_empty())?;
+    let content_type = image
+        .content_type
+        .as_deref()
+        .filter(|content_type| !content_type.trim().is_empty())
+        .unwrap_or("application/octet-stream");
+    let capacity = 13usize
+        .checked_add(content_type.len())?
+        .checked_add(base64::encoded_len(data.len(), true)?)?;
+    let mut url = String::with_capacity(capacity);
+    url.push_str("data:");
+    url.push_str(content_type);
+    url.push_str(";base64,");
+    base64::engine::general_purpose::STANDARD.encode_string(data, &mut url);
+    Some(url)
 }
 
 fn source_part(model: &DocModel, kind: &str) -> String {
@@ -207,7 +313,7 @@ impl Extractor {
         id: String,
         kind: BlockType,
         content: String,
-        details: Value,
+        details: impl Into<BlockDetails>,
         children: Vec<DocumentBlock>,
         parent: Option<&str>,
     ) -> DocumentBlock {
@@ -216,7 +322,7 @@ impl Extractor {
             id: id.clone(),
             r#type: kind,
             content,
-            details,
+            details: details.into(),
             source_refs: vec![SourceRef {
                 document_id: self.document_id.clone(),
                 node_id: id,
@@ -342,7 +448,14 @@ impl Extractor {
                     let start = text_offset;
                     text_offset += run.text.encode_utf16().count();
                     content.push_str(&run.text);
-                    inline.push(json!({"type":"text", "start":start, "end":text_offset, "text":run.text, "style":run.style, "link":run.link, "noteReference":run.note_reference}));
+                    inline.push(ParagraphInline::Text {
+                        start,
+                        end: text_offset,
+                        text: run.text.clone(),
+                        style: run.style.clone(),
+                        link: run.link.clone(),
+                        note_reference: run.note_reference.clone(),
+                    });
                 }
                 ParagraphChildNode::FormField(field) => {
                     let child_id = format!("{id}/child/{index}");
@@ -355,7 +468,12 @@ impl Extractor {
                     let start = text_offset;
                     text_offset += value.encode_utf16().count();
                     content.push_str(&value);
-                    inline.push(json!({"type":"form_field", "blockId":child_id, "start":start, "end":text_offset, "text":value}));
+                    inline.push(ParagraphInline::FormField {
+                        block_id: child_id.clone(),
+                        start,
+                        end: text_offset,
+                        text: value.clone(),
+                    });
                     children.push(self.block(
                         child_id,
                         BlockType::KeyValue,
@@ -374,7 +492,10 @@ impl Extractor {
                         _ => BlockType::Figure,
                     };
                     let image_id = image.block_id.as_deref().unwrap_or(&child_id);
-                    inline.push(json!({"type":"block", "blockId":image_id, "offset":text_offset}));
+                    inline.push(ParagraphInline::Block {
+                        block_id: image_id.to_owned(),
+                        offset: text_offset,
+                    });
                     let nested = image
                         .content_nodes
                         .as_ref()
@@ -393,12 +514,34 @@ impl Extractor {
                             .collect::<Vec<_>>()
                             .join("\n")
                     };
-                    children.push(self.block(image_id.to_string(), kind, text, json!({"kind":image.semantic_kind.as_deref().unwrap_or(if image.synthetic_text_box == Some(true) {"text_box"} else {"image"}), "mathMl":image.math_ml, "asset":image.part_name, "alt":image.alt, "contentType":image.content_type, "width":image.width_px, "height":image.height_px, "floating":image.floating}), nested, Some(id)));
+                    let mut details = json!({"kind":image.semantic_kind.as_deref().unwrap_or(if image.synthetic_text_box == Some(true) {"text_box"} else {"image"}), "mathMl":image.math_ml, "asset":image.part_name, "alt":image.alt, "contentType":image.content_type, "width":image.width_px, "height":image.height_px, "floating":image.floating});
+                    if let Some(url) = image_url(image) {
+                        details
+                            .as_object_mut()
+                            .unwrap()
+                            .insert("imageUrl".into(), Value::String(url));
+                    }
+                    children.push(self.block(
+                        image_id.to_string(),
+                        kind,
+                        text,
+                        details,
+                        nested,
+                        Some(id),
+                    ));
                 }
             }
         }
-        let mut details = json!({"type":"text_details", "kind":"paragraph", "style":p.style, "styleId":style_id, "headingLevel":style.and_then(|s|s.heading_level), "numbering":style.and_then(|s|s.numbering.as_ref()), "fieldInstructions":field_instructions});
-        details.as_object_mut().unwrap().insert("inlines".into(), Value::Array(inline));
+        let details = ParagraphDetails {
+            r#type: "text_details".into(),
+            kind: "paragraph".into(),
+            style: p.style.clone(),
+            style_id: style_id.into(),
+            heading_level: style.and_then(|s| s.heading_level),
+            numbering: style.and_then(|s| s.numbering.clone()),
+            field_instructions,
+            inlines: inline,
+        };
         let mut block = self.block(id.to_string(), kind, content, details, children, parent);
         if self.include_words {
             block.words = Some(self.words(id, &block.content));

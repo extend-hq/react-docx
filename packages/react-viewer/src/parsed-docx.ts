@@ -2,6 +2,7 @@ import type { DocModel } from "@extend-ai/react-docx-doc-model";
 import type { OoxmlPackage } from "@extend-ai/react-docx-ooxml-core";
 import { invalidateFontMetrics } from "./font-metrics";
 import { fontTableEntries } from "./font-table";
+import { awaitDocumentFonts } from "./document-fonts";
 import {
   importDocxBuffer,
   type DocxImportOptions,
@@ -223,8 +224,7 @@ export async function parseDocxForViewer(
     fontLoadPromise = (async () => {
       if (
         typeof document === "undefined" ||
-        !("fonts" in document) ||
-        typeof FontFace === "undefined"
+        !("fonts" in document)
       ) {
         fontLoadingComplete = true;
         return;
@@ -232,7 +232,9 @@ export async function parseDocxForViewer(
       const fontStartedAt = now();
       const loaded = (
         await Promise.all(
-          embeddedFontDescriptors(importResult.package).map(
+          (typeof FontFace === "undefined"
+            ? []
+            : embeddedFontDescriptors(importResult.package)).map(
             async (descriptor): Promise<FontFace | undefined> => {
               try {
                 const face = new FontFace(
@@ -257,11 +259,7 @@ export async function parseDocxForViewer(
         invalidateFontMetrics();
       }
       faces = loaded;
-      try {
-        await document.fonts.ready;
-      } catch {
-        // Font readiness is best-effort.
-      }
+      await awaitDocumentFonts(importResult.model);
       fontLoadingMs += now() - fontStartedAt;
       fontLoadingComplete = true;
     })();

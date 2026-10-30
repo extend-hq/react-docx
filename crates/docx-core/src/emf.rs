@@ -1,7 +1,7 @@
 //! EMF (Enhanced Metafile) to SVG conversion for the vector path-drawing
-//! record subset that Office logos and shapes are typically built from:
-//! window/viewport mapping, bracketed paths (move/line/bezier), solid
-//! brushes/pens, fill modes, and path clipping. Records outside the
+//! record subset: window/viewport mapping, paths, solid brushes/pens,
+//! positioned Unicode text, solid raster-operation fills, saved device
+//! contexts, fill modes, and clipping. Records outside the
 //! supported set abort the conversion so the caller can fall back to the
 //! unsupported-image placeholder instead of rendering something wrong.
 
@@ -19,6 +19,14 @@ fn read_i16(data: &[u8], offset: usize) -> Option<i16> {
         .map(|bytes| i16::from_le_bytes([bytes[0], bytes[1]]))
 }
 
+fn escape_svg(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
 fn colorref_to_css(color: u32) -> String {
     let red = color & 0xff;
     let green = (color >> 8) & 0xff;
@@ -26,12 +34,38 @@ fn colorref_to_css(color: u32) -> String {
     format!("#{red:02x}{green:02x}{blue:02x}")
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 enum DeviceObject {
     SolidBrush(u32),
     NullBrush,
     SolidPen { color: u32, width_logical: f64 },
     NullPen,
+    Font(LogicalFont),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct LogicalFont {
+    family: String,
+    height: f64,
+    weight: u32,
+    italic: bool,
+    underline: bool,
+    strikeout: bool,
+}
+
+#[derive(Clone)]
+struct SavedState {
+    mapping: Mapping,
+    brush: Option<u32>,
+    pen: Option<(u32, f64)>,
+    font: Option<LogicalFont>,
+    text_color: u32,
+    background_color: u32,
+    background_mode: u32,
+    text_align: u32,
+    fill_rule: &'static str,
+    current_point: (f64, f64),
+    clip: Option<usize>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -123,6 +157,12 @@ const EMR_STROKEANDFILLPATH: u32 = 63;
 const EMR_STROKEPATH: u32 = 64;
 const EMR_SELECTCLIPPATH: u32 = 67;
 const EMR_COMMENT: u32 = 70;
+const EMR_SAVEDC: u32 = 33;
+const EMR_RESTOREDC: u32 = 34;
+const EMR_INTERSECTCLIPRECT: u32 = 30;
+const EMR_BITBLT: u32 = 76;
+const EMR_EXTCREATEFONTINDIRECTW: u32 = 82;
+const EMR_EXTTEXTOUTW: u32 = 84;
 const EMR_EXTSELECTCLIPRGN: u32 = 75;
 const EMR_EXTCREATEPEN: u32 = 95;
 const EMR_SETICMMODE: u32 = 98;
@@ -135,6 +175,12 @@ struct Converter<'a> {
     objects: std::collections::HashMap<u32, DeviceObject>,
     current_brush: Option<u32>,
     current_pen: Option<(u32, f64)>,
+    current_font: Option<LogicalFont>,
+    text_color: u32,
+    background_color: u32,
+    background_mode: u32,
+    text_align: u32,
+    saved_states: Vec<SavedState>,
     fill_rule: &'static str,
     in_path: bool,
     path_data: String,
@@ -147,6 +193,185 @@ struct Converter<'a> {
 }
 
 impl<'a> Converter<'a> {
+    fn save_state(&self) -> SavedState {
+        SavedState {
+            mapping: self.mapping,
+            brush: self.current_brush,
+            pen: self.current_pen,
+            font: self.current_font.clone(),
+            text_color: self.text_color,
+            background_color: self.background_color,
+            background_mode: self.background_mode,
+            text_align: self.text_align,
+            fill_rule: self.fill_rule,
+            current_point: self.current_point,
+            clip: self.active_clip_id,
+        }
+    }
+
+    fn restore_state(&mut self, state: SavedState) {
+        self.mapping = state.mapping;
+        self.current_brush = state.brush;
+        self.current_pen = state.pen;
+        self.current_font = state.font;
+        self.text_color = state.text_color;
+        self.background_color = state.background_color;
+        self.background_mode = state.background_mode;
+        self.text_align = state.text_align;
+        self.fill_rule = state.fill_rule;
+        self.current_point = state.current_point;
+        self.active_clip_id = state.clip;
+    }
+
+    fn mapped_rect(&self, x: f64, y: f64, width: f64, height: f64) -> String {
+        let first = self.map_point(x, y);
+        let last = self.map_point(x + width, y + height);
+        format!(
+            "x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\"",
+            fmt(first.0.min(last.0)),
+            fmt(first.1.min(last.1)),
+            fmt((last.0 - first.0).abs()),
+            fmt((last.1 - first.1).abs())
+        )
+    }
+
+    fn intersect_clip_rect(&mut self, rect: String) {
+        let id = self.clip_defs.len();
+        let previous = self
+            .active_clip_id
+            .map(|id| format!(" clip-path=\"url(#c{id})\""))
+            .unwrap_or_default();
+        self.clip_defs.push(format!(
+            "<clipPath id=\"c{id}\"><rect {rect}{previous}/></clipPath>"
+        ));
+        self.active_clip_id = Some(id);
+    }
+
+    fn emit_text(&mut self, record: &[u8]) -> Option<()> {
+        if record.len() < 76 || self.in_path {
+            return None;
+        }
+        let font = self.current_font.clone()?;
+        let count = read_u32(record, 44)? as usize;
+        let string_offset = read_u32(record, 48)? as usize;
+        let options = read_u32(record, 52)?;
+        let dx_offset = read_u32(record, 72)? as usize;
+        if count > 0 && string_offset < 76 {
+            return None;
+        }
+        if options & !(2 | 4 | 0x1000 | 0x2000) != 0 || self.text_align & 1 != 0 {
+            return None;
+        }
+        let encoded =
+            record.get(string_offset..string_offset.checked_add(count.checked_mul(2)?)?)?;
+        let units: Vec<u16> = encoded
+            .chunks_exact(2)
+            .map(|v| u16::from_le_bytes([v[0], v[1]]))
+            .collect();
+        let text = String::from_utf16(&units).ok()?;
+        if text.is_empty() {
+            return Some(());
+        }
+        let x = read_i32(record, 36)? as f64;
+        let y = read_i32(record, 40)? as f64;
+        let mut advances = Vec::new();
+        if dx_offset != 0 {
+            let stride = if options & 0x2000 != 0 { 8 } else { 4 };
+            if dx_offset < 76 || dx_offset.checked_add(count.checked_mul(stride)?)? > record.len() {
+                return None;
+            }
+            for index in 0..count {
+                let offset = dx_offset + index * stride;
+                advances.push((
+                    read_i32(record, offset)? as f64,
+                    if stride == 8 {
+                        read_i32(record, offset + 4)? as f64
+                    } else {
+                        0.0
+                    },
+                ));
+            }
+        }
+        let old_clip = self.active_clip_id;
+        let rectangle = self.mapped_rect(
+            read_i32(record, 56)? as f64,
+            read_i32(record, 60)? as f64,
+            (read_i32(record, 64)? as f64) - (read_i32(record, 56)? as f64),
+            (read_i32(record, 68)? as f64) - (read_i32(record, 60)? as f64),
+        );
+        if options & 4 != 0 {
+            self.intersect_clip_rect(rectangle.clone());
+        }
+        if options & 2 != 0 {
+            self.push_element(format!(
+                "<rect {rectangle} fill=\"{}\"/>",
+                colorref_to_css(self.background_color)
+            ));
+        } else if self.background_mode == 2 {
+            let rect = self.mapped_rect(
+                read_i32(record, 8)? as f64,
+                read_i32(record, 12)? as f64,
+                (read_i32(record, 16)? as f64) - (read_i32(record, 8)? as f64) + 1.0,
+                (read_i32(record, 20)? as f64) - (read_i32(record, 12)? as f64) + 1.0,
+            );
+            self.push_element(format!(
+                "<rect {rect} fill=\"{}\"/>",
+                colorref_to_css(self.background_color)
+            ));
+        }
+        let horizontal = self.text_align & 6;
+        let width: f64 = advances.iter().map(|v| v.0).sum();
+        let shift = if horizontal == 6 {
+            width / 2.0
+        } else if horizontal == 2 {
+            width
+        } else {
+            0.0
+        };
+        let mut xs = Vec::new();
+        let mut ys = Vec::new();
+        let mut position = (x - shift, y);
+        let mut unit_index = 0;
+        if advances.is_empty() {
+            let point = self.map_point(x, y);
+            xs.push(fmt(point.0));
+            ys.push(fmt(point.1));
+        } else {
+            for character in text.chars() {
+                let point = self.map_point(position.0, position.1);
+                xs.push(fmt(point.0));
+                ys.push(fmt(point.1));
+                for _ in 0..character.len_utf16() {
+                    position.0 += advances[unit_index].0;
+                    position.1 += advances[unit_index].1;
+                    unit_index += 1;
+                }
+            }
+        }
+        let anchor = if advances.is_empty() && horizontal == 6 {
+            "middle"
+        } else if advances.is_empty() && horizontal == 2 {
+            "end"
+        } else {
+            "start"
+        };
+        let baseline = match self.text_align & 24 {
+            24 => "alphabetic",
+            8 => "text-after-edge",
+            _ => "text-before-edge",
+        };
+        let decoration = [
+            if font.underline { "underline" } else { "" },
+            if font.strikeout { "line-through" } else { "" },
+        ]
+        .join(" ");
+        self.push_element(format!(
+            "<text xml:space=\"preserve\" x=\"{}\" y=\"{}\" font-family=\"{}\" font-size=\"{}\" font-weight=\"{}\" font-style=\"{}\" text-decoration=\"{}\" text-anchor=\"{anchor}\" dominant-baseline=\"{baseline}\" fill=\"{}\">{}</text>",
+            xs.join(" "),ys.join(" "),escape_svg(&font.family),fmt(font.height*self.mapping.scale_y().abs()),font.weight,
+            if font.italic { "italic" } else { "normal" },decoration.trim(),colorref_to_css(self.text_color),escape_svg(&text)));
+        self.active_clip_id = old_clip;
+        Some(())
+    }
     fn map_point(&self, x: f64, y: f64) -> (f64, f64) {
         self.mapping.map(x, y)
     }
@@ -281,6 +506,12 @@ pub fn emf_to_svg(data: &[u8]) -> Option<String> {
         objects: std::collections::HashMap::new(),
         current_brush: Some(0x00ff_ffff),
         current_pen: Some((0, 1.0)),
+        current_font: None,
+        text_color: 0,
+        background_color: 0x00ff_ffff,
+        background_mode: 2,
+        text_align: 0,
+        saved_states: Vec::new(),
         fill_rule: "evenodd",
         in_path: false,
         path_data: String::new(),
@@ -307,32 +538,124 @@ pub fn emf_to_svg(data: &[u8]) -> Option<String> {
             EMR_EOF => break,
             EMR_HEADER => return None,
             EMR_SETMAPMODE
-            | EMR_SETBKMODE
-            | EMR_SETROP2
             | EMR_SETSTRETCHBLTMODE
-            | EMR_SETTEXTALIGN
-            | EMR_SETTEXTCOLOR
-            | EMR_SETBKCOLOR
             | EMR_SETBRUSHORGEX
             | EMR_SETMETARGN
             | EMR_SETMITERLIMIT
             | EMR_SETICMMODE
             | EMR_COMMENT => {}
+            EMR_SAVEDC => converter.saved_states.push(converter.save_state()),
+            EMR_RESTOREDC => {
+                let level = read_i32(data, body)?;
+                let index = if level < 0 {
+                    converter
+                        .saved_states
+                        .len()
+                        .checked_sub(level.unsigned_abs() as usize)?
+                } else {
+                    (level as usize).checked_sub(1)?
+                };
+                let state = converter.saved_states.get(index)?.clone();
+                converter.saved_states.truncate(index);
+                converter.restore_state(state);
+            }
+            EMR_SETROP2 => {
+                if read_u32(data, body)? != 13 {
+                    return None;
+                }
+            }
+            EMR_SETBKMODE => converter.background_mode = read_u32(data, body)?,
+            EMR_SETTEXTALIGN => converter.text_align = read_u32(data, body)?,
+            EMR_SETTEXTCOLOR => converter.text_color = read_u32(data, body)?,
+            EMR_SETBKCOLOR => converter.background_color = read_u32(data, body)?,
+            EMR_INTERSECTCLIPRECT => {
+                if record_size < 24 {
+                    return None;
+                }
+                let left = read_i32(data, body)? as f64;
+                let top = read_i32(data, body + 4)? as f64;
+                let rect = converter.mapped_rect(
+                    left,
+                    top,
+                    read_i32(data, body + 8)? as f64 - left,
+                    read_i32(data, body + 12)? as f64 - top,
+                );
+                converter.intersect_clip_rect(rect);
+            }
+            EMR_BITBLT => {
+                if record_size < 100 {
+                    return None;
+                }
+                let color = match read_u32(data, offset + 40)? {
+                    0x00f00021 => converter.current_brush?,
+                    0x00000042 => 0,
+                    0x00ff0062 => 0x00ffffff,
+                    _ => return None,
+                };
+                let rect = converter.mapped_rect(
+                    read_i32(data, offset + 24)? as f64,
+                    read_i32(data, offset + 28)? as f64,
+                    read_i32(data, offset + 32)? as f64,
+                    read_i32(data, offset + 36)? as f64,
+                );
+                converter.push_element(format!(
+                    "<rect {rect} fill=\"{}\"/>",
+                    colorref_to_css(color)
+                ));
+            }
+            EMR_EXTCREATEFONTINDIRECTW => {
+                if record_size < 104 {
+                    return None;
+                }
+                let height = read_i32(data, offset + 12)?;
+                if height >= 0
+                    || read_i32(data, offset + 16)? != 0
+                    || read_i32(data, offset + 20)? != 0
+                    || read_i32(data, offset + 24)? != 0
+                {
+                    return None;
+                }
+                let units: Vec<u16> = data[offset + 40..offset + 104]
+                    .chunks_exact(2)
+                    .map(|v| u16::from_le_bytes([v[0], v[1]]))
+                    .take_while(|v| *v != 0)
+                    .collect();
+                let font = LogicalFont {
+                    family: String::from_utf16(&units).ok()?,
+                    height: -(height as f64),
+                    weight: read_u32(data, offset + 28)?.clamp(1, 1000),
+                    italic: data[offset + 32] != 0,
+                    underline: data[offset + 33] != 0,
+                    strikeout: data[offset + 34] != 0,
+                };
+                converter
+                    .objects
+                    .insert(read_u32(data, body)?, DeviceObject::Font(font));
+            }
+            EMR_EXTTEXTOUTW => converter.emit_text(&data[offset..record_end])?,
             EMR_SETWINDOWEXTEX => {
-                converter.mapping.window_ext =
-                    (read_i32(data, body)? as f64, read_i32(data, body + 4)? as f64);
+                converter.mapping.window_ext = (
+                    read_i32(data, body)? as f64,
+                    read_i32(data, body + 4)? as f64,
+                );
             }
             EMR_SETWINDOWORGEX => {
-                converter.mapping.window_org =
-                    (read_i32(data, body)? as f64, read_i32(data, body + 4)? as f64);
+                converter.mapping.window_org = (
+                    read_i32(data, body)? as f64,
+                    read_i32(data, body + 4)? as f64,
+                );
             }
             EMR_SETVIEWPORTEXTEX => {
-                converter.mapping.viewport_ext =
-                    (read_i32(data, body)? as f64, read_i32(data, body + 4)? as f64);
+                converter.mapping.viewport_ext = (
+                    read_i32(data, body)? as f64,
+                    read_i32(data, body + 4)? as f64,
+                );
             }
             EMR_SETVIEWPORTORGEX => {
-                converter.mapping.viewport_org =
-                    (read_i32(data, body)? as f64, read_i32(data, body + 4)? as f64);
+                converter.mapping.viewport_org = (
+                    read_i32(data, body)? as f64,
+                    read_i32(data, body + 4)? as f64,
+                );
             }
             EMR_SETPOLYFILLMODE => {
                 converter.fill_rule = if read_u32(data, body)? == 2 {
@@ -408,6 +731,9 @@ pub fn emf_to_svg(data: &[u8]) -> Option<String> {
                             width_logical,
                         }) => converter.current_pen = Some((*color, *width_logical)),
                         Some(DeviceObject::NullPen) => converter.current_pen = None,
+                        Some(DeviceObject::Font(font)) => {
+                            converter.current_font = Some(font.clone())
+                        }
                         None => {}
                     }
                 }
@@ -442,6 +768,7 @@ pub fn emf_to_svg(data: &[u8]) -> Option<String> {
                 }
             }
             EMR_LINETO => {
+                let start = converter.current_point;
                 let point = converter.map_point(
                     read_i32(data, body)? as f64,
                     read_i32(data, body + 4)? as f64,
@@ -452,7 +779,17 @@ pub fn emf_to_svg(data: &[u8]) -> Option<String> {
                         .path_data
                         .push_str(&format!("L{} {}", fmt(point.0), fmt(point.1)));
                 } else {
-                    return None;
+                    converter.emit_path(
+                        format!(
+                            "M{} {}L{} {}",
+                            fmt(start.0),
+                            fmt(start.1),
+                            fmt(point.0),
+                            fmt(point.1)
+                        ),
+                        false,
+                        true,
+                    );
                 }
             }
             EMR_POLYLINETO16 | EMR_POLYBEZIERTO16 => {

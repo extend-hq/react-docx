@@ -13,12 +13,12 @@ from normalize import normalize, core_block_paragraphs
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--out', type=Path, default=Path('output/parser-hillclimb-20261028'))
+    parser.add_argument('--out', type=Path, default=Path('output/parser-hillclimb'))
     parser.add_argument('--label', required=True)
     parser.add_argument('--binary', type=Path, required=True)
     parser.add_argument('--split', default='tuning')
     args = parser.parse_args()
-    baseline = Path('output/parser-benchmark-20261028')
+    baseline = Path('output/parser-benchmark')
     entries = json.loads((baseline / 'manifest.json').read_text())['entries']
     if args.split != 'full':
         ids = set(json.loads((args.out / 'split.json').read_text())[args.split])

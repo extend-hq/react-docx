@@ -20,11 +20,7 @@ export default defineConfig({
     environment: "node",
     include: ["tests/unit/**/*.test.ts"],
     pool: "forks",
-    poolOptions: {
-      forks: {
-        isolate: true
-      }
-    },
+    isolate: true,
     coverage: {
       reporter: ["text", "html"],
       include: ["packages/**/src/**/*.ts", "packages/**/src/**/*.tsx"]

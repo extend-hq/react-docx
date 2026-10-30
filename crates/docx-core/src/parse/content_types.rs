@@ -9,7 +9,11 @@ pub fn parse_content_types(pkg: &OoxmlPackage) -> ContentTypeLookup {
     let mut default_by_extension = HashMap::new();
     let mut override_by_part_name = HashMap::new();
 
-    let Some(xml) = pkg.parts.get("[Content_Types].xml").map(|part| part.content.as_str()) else {
+    let Some(xml) = pkg
+        .parts
+        .get("[Content_Types].xml")
+        .map(|part| part.content.as_str())
+    else {
         return ContentTypeLookup {
             default_by_extension,
             override_by_part_name,
@@ -17,8 +21,7 @@ pub fn parse_content_types(pkg: &OoxmlPackage) -> ContentTypeLookup {
     };
 
     for tag in find_opening_tags(xml, "Default") {
-        let extension = get_attribute(&tag, "Extension")
-            .map(|value| value.to_ascii_lowercase());
+        let extension = get_attribute(&tag, "Extension").map(|value| value.to_ascii_lowercase());
         let content_type = get_attribute(&tag, "ContentType");
         if let (Some(extension), Some(content_type)) = (extension, content_type) {
             default_by_extension.insert(extension, content_type);
@@ -76,23 +79,5 @@ fn has_word_boundary_after(xml: &str, index: usize) -> bool {
 }
 
 fn find_case_insensitive_at(haystack: &str, start: usize, needle: &str) -> Option<usize> {
-    if needle.is_empty() || start >= haystack.len() || needle.len() > haystack.len() {
-        return None;
-    }
-
-    let haystack_bytes = haystack.as_bytes();
-    let needle_bytes = needle.as_bytes();
-    let max_start = haystack.len() - needle.len();
-
-    for index in start..=max_start {
-        if haystack_bytes[index..index + needle.len()]
-            .iter()
-            .zip(needle_bytes.iter())
-            .all(|(left, right)| left.eq_ignore_ascii_case(right))
-        {
-            return Some(index);
-        }
-    }
-
-    None
+    crate::xml::find_ignore_ascii_case(haystack, start, needle)
 }

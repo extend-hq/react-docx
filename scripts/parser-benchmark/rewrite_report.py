@@ -19,16 +19,16 @@ def quantile(values, fraction):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--out', type=Path, default=Path('output/parser-rewrite-20261028'))
+    parser.add_argument('--out', type=Path, default=Path('output/parser-rewrite'))
     args = parser.parse_args()
     root = args.out
     read = lambda name: json.loads((root / name).read_text())
     parity = read('final-strict-parity.json')
     edge = read('xml-cases-final-strict-parity.json')
-    manifest = json.loads(Path('output/parser-benchmark-20261028/manifest.json').read_text())['entries']
+    manifest = json.loads(Path('output/parser-benchmark/manifest.json').read_text())['entries']
     assert len(parity['records']) == len(manifest) and all(row['equal'] for row in parity['records']), 'Full output parity is incomplete or differs'
     assert len(edge['records']) == 51 and all(row['equal'] for row in edge['records']), 'XML differential validation is incomplete or differs'
-    baseline = json.loads(Path('output/parser-hillclimb-20261028/summary.json').read_text())
+    baseline = json.loads(Path('output/parser-hillclimb/summary.json').read_text())
     assert parity['binary_sha256']['baseline'] == baseline['candidate_binary_sha256']
     binary_hash = hashlib.sha256((root / 'final-parser-benchmark').read_bytes()).hexdigest()
     assert parity['binary_sha256']['candidate'] == binary_hash
@@ -60,8 +60,8 @@ def main():
                 'statuses': dict(collections.Counter(by_id[key][engine].get('status') for key in ids)),
             }
         performance[name] = group
-    original_scores = json.loads(Path('output/parser-benchmark-20261028/scores.json').read_text())
-    core_scores = json.loads(Path('output/parser-hillclimb-20261028/final-accuracy/scores.json').read_text())
+    original_scores = json.loads(Path('output/parser-benchmark/scores.json').read_text())
+    core_scores = json.loads(Path('output/parser-hillclimb/final-accuracy/scores.json').read_text())
     feature_scores = {}
     for engine in engines:
         scored = [row for row in (core_scores if engine == 'docx-core' else original_scores) if row['engine'] == engine and row['id'] in common]

@@ -11,7 +11,7 @@ use crate::parse::context::{ContentTypeLookup, ThemeColorMap, ThemeFontMap};
 use crate::parse::re;
 use crate::xml::{
     decode_xml_entities, extract_balanced_tag_blocks, get_attribute, normalize_alignment,
-    parse_integer_attribute, parse_on_off_attribute,
+    parse_integer_attribute,
 };
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 
@@ -65,10 +65,6 @@ pub fn emu_to_pixels(value: Option<&str>) -> Option<f64> {
     Some(((parsed / 9525.0) * 1000.0).round() / 1000.0)
 }
 
-pub fn emu_to_pixels_i64(value: Option<i64>) -> Option<f64> {
-    value.and_then(|v| emu_to_pixels(Some(&v.to_string())))
-}
-
 pub fn to_model_alignment(raw: Option<&str>) -> Option<ParagraphAlignment> {
     match normalize_alignment(raw)? {
         "left" => Some(ParagraphAlignment::Left),
@@ -99,8 +95,25 @@ pub fn prefer_alternate_content_choice(xml: &str) -> String {
 }
 
 pub(crate) fn active_xml(xml: &str) -> std::borrow::Cow<'_, str> {
-    if !xml.contains("<mc:AlternateContent") {
+    static ALTERNATE_CONTENT: std::sync::LazyLock<memchr::memmem::Finder<'static>> =
+        std::sync::LazyLock::new(|| memchr::memmem::Finder::new(b"<mc:AlternateContent"));
+    if ALTERNATE_CONTENT.find(xml.as_bytes()).is_none() {
         return std::borrow::Cow::Borrowed(xml);
+    }
+
+    if let Some(choices) = crate::xml_index::alternate_choices(xml) {
+        if choices.is_empty() {
+            return std::borrow::Cow::Borrowed(xml);
+        }
+        let mut output = String::with_capacity(xml.len());
+        let mut cursor = 0;
+        for (alternate, content) in choices {
+            output.push_str(&xml[cursor..alternate.start]);
+            output.push_str(&xml[content.start..content.end]);
+            cursor = alternate.end;
+        }
+        output.push_str(&xml[cursor..]);
+        return std::borrow::Cow::Owned(output);
     }
 
     let re = re::get_unchecked(r"(?is)<mc:AlternateContent\b[\s\S]*?</mc:AlternateContent>");
@@ -118,17 +131,6 @@ pub(crate) fn active_xml(xml: &str) -> std::borrow::Cow<'_, str> {
             .replace(&without_open, "")
             .to_string()
     })
-}
-
-pub fn resolve_style_properties_block(style_xml: &str, tag_name: &str) -> String {
-    let balanced = extract_balanced_tag_blocks(style_xml, tag_name)
-        .into_iter()
-        .next();
-    if let Some(balanced) = balanced {
-        return balanced;
-    }
-
-    regex_capture_tag(style_xml, &format!(r"(?i)<{tag_name}\b[^>]*/?>")).unwrap_or_default()
 }
 
 pub fn merge_text_styles(styles: &[Option<TextStyle>]) -> Option<TextStyle> {
@@ -746,7 +748,7 @@ pub fn rasterize_windows_metafile_to_png_data_uri(
 }
 
 /// Converts vector EMF assets to an SVG data URI. WMF and EMFs containing
-/// unsupported records (text, raster blits, ...) return `None` so the caller
+/// unsupported drawing records return `None` so the caller
 /// keeps the unsupported-image placeholder.
 pub fn windows_metafile_to_svg_data_uri(bytes: &[u8]) -> Option<String> {
     crate::emf::emf_to_svg(bytes).map(|svg| svg_data_uri(&svg))
@@ -788,61 +790,12 @@ pub fn resolve_theme_font(theme_token: Option<&str>, theme_fonts: &ThemeFontMap)
     None
 }
 
-pub fn default_drawing_scheme_colors() -> ThemeColorMap {
-    [
-        ("bg1", "#ffffff"),
-        ("bg2", "#f3f4f6"),
-        ("tx1", "#000000"),
-        ("tx2", "#1f2937"),
-        ("dk1", "#000000"),
-        ("dk2", "#1f2937"),
-        ("lt1", "#ffffff"),
-        ("lt2", "#f3f4f6"),
-        ("accent1", "#4472c4"),
-        ("accent2", "#ed7d31"),
-        ("accent3", "#70ad47"),
-        ("accent4", "#5b9bd5"),
-        ("accent5", "#7030a0"),
-        ("accent6", "#ffc000"),
-        ("hlink", "#0563c1"),
-        ("folhlink", "#954f72"),
-        ("followedhyperlink", "#954f72"),
-    ]
-    .into_iter()
-    .map(|(k, v)| (k.to_string(), v.to_string()))
-    .collect()
-}
-
 pub fn resolve_drawing_color_from_xml(
     color_xml: Option<&str>,
     theme_colors: &ThemeColorMap,
 ) -> Option<(String, Option<f64>)> {
-    let color_xml = color_xml?;
-    let srgb = normalize_hex_color(
-        regex_capture(color_xml, r#"(?i)<a:srgbClr\b[^>]*val="([^"]+)""#).as_deref(),
-    );
-    let sys = normalize_hex_color(
-        regex_capture(color_xml, r#"(?i)<a:sysClr\b[^>]*lastClr="([^"]+)""#).as_deref(),
-    );
-    let scheme_token = regex_capture(color_xml, r#"(?i)<a:schemeClr\b[^>]*val="([^"]+)""#)
-        .map(|t| t.trim().to_ascii_lowercase());
-    let scheme = scheme_token.as_ref().and_then(|token| {
-        theme_colors
-            .get(token)
-            .cloned()
-            .or_else(|| default_drawing_scheme_colors().get(token).cloned())
-    });
-    let color = srgb.or(sys).or(scheme)?;
-    let alpha_raw = regex_capture(color_xml, r#"(?i)<a:alpha\b[^>]*val="(\d+)""#);
-    let opacity = alpha_raw.and_then(|raw| {
-        let alpha: f64 = raw.parse().ok()?;
-        if alpha >= 0.0 {
-            Some((alpha / 100_000.0).clamp(0.0, 1.0))
-        } else {
-            None
-        }
-    });
-    Some((color, opacity))
+    super::colors::resolve_drawing_color_from_xml(color_xml, theme_colors)
+        .map(|resolved| (resolved.color, resolved.opacity))
 }
 
 pub fn parse_paragraph_spacing_from_xml(xml: &str) -> Option<ParagraphSpacing> {

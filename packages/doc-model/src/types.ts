@@ -455,6 +455,8 @@ export interface TableStyle {
   cellSpacingTwips?: number;
   cellMarginTwips?: TableBoxSpacing;
   columnWidthsTwips?: number[];
+  /** @internal Validated zero-width logical columns excluded from physical layout. */
+  collapsedGridColumns?: number[];
   borders?: TableBorderSet;
   floating?: {
     xTwips?: number;

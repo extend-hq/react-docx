@@ -2,8 +2,8 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 
 use crate::model::{
-    ParagraphSpacing, ParagraphStyle, ParagraphStyleDefinition, TableBoxSpacing, TableBorderSet,
-    TableFloating, TableLayout, TableAlignment, TablePreferredWidth, TextStyle,
+    ParagraphSpacing, ParagraphStyle, ParagraphStyleDefinition, TableAlignment, TableBorderSet,
+    TableBoxSpacing, TableFloating, TableLayout, TablePreferredWidth, TextStyle,
 };
 use crate::package::OoxmlPart;
 
@@ -116,6 +116,7 @@ pub struct ParsedTableStyleDefinition {
     pub conditions: HashMap<TableConditionalStyleType, ParsedTableStyleCondition>,
     pub floating: Option<TableFloating>,
     pub properties: Option<ParsedTableProperties>,
+    pub has_row_cell_spacing: bool,
 }
 
 /// Mirrors TypeScript `ParsedStyleSheet`.

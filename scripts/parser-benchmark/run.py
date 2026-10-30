@@ -2,6 +2,7 @@ import argparse
 import hashlib
 import json
 import os
+import platform
 from pathlib import Path
 import random
 import statistics
@@ -28,7 +29,7 @@ def main():
     rng.shuffle(entries)
     if args.limit:
         entries=entries[:args.limit]
-    receipt={'binary_sha256':binary_hash,'git_revision':subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip(),'rustc':subprocess.check_output(['rustc','--version'],text=True).strip(),'cpu':subprocess.check_output(['sysctl','-n','machdep.cpu.brand_string'],text=True).strip(),'os':subprocess.check_output(['sw_vers'],text=True),'start_time':time.time(),'versions':{'docx-core':'workspace','docx-rs':'0.4.22','office_oxide':'0.1.15','undoc':'0.27.1'},'repeats':args.repeats,'profile':'opt-level=3, thin LTO, codegen-units=1','seed':20261028,'input_bytes':sum(e['bytes'] for e in entries),'unique_inputs':len(entries),'load_at_start':os.getloadavg()}
+    receipt={'binary_sha256':binary_hash,'git_revision':subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip(),'rustc':subprocess.check_output(['rustc','--version'],text=True).strip(),'cpu':platform.processor() or platform.machine(),'os':platform.platform(),'start_time':time.time(),'versions':{'docx-core':'workspace','docx-rs':'0.4.22','office_oxide':'0.1.15','undoc':'0.27.1'},'repeats':args.repeats,'profile':'opt-level=3, thin LTO, codegen-units=1','seed':20261028,'input_bytes':sum(e['bytes'] for e in entries),'unique_inputs':len(entries),'load_at_start':os.getloadavg()}
     (out/'environment.json').write_text(json.dumps(receipt,indent=2))
     for i,e in enumerate(entries):
         engines=ENGINES.copy()

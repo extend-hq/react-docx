@@ -1,4 +1,7 @@
 import { mathContent } from "./math-content";
+import { documentWithPhysicalTableGrids, physicalTableView } from "./table-grid-view";
+import { prepareModelForTableStructuralEdit, type NestedTablePathStep } from "./table-grid-edit";
+import { commitTableGridResize, type TableGridResizeGeometry, type TableGridResizeTarget } from "./table-grid-resize";
 import { createClippedBodyRectReader } from "./body-measurement";
 import { tableRowHasWholeMergeGeometry } from "./table-row-measurement";
 import { TableRowHandles } from "./table-row-handles";
@@ -112,6 +115,7 @@ import {
   registerFontMetricCache,
   subscribeFontMetrics,
 } from "./font-metrics";
+import { awaitDocumentFonts } from "./document-fonts";
 import { measureCanvasGlyphAdvance } from "./font-advances";
 import { measuredFontSizePt, resolveDocxFontKerning, type FontKerningMode } from "./font-kerning";
 import {
@@ -434,7 +438,6 @@ const INITIAL_PAGINATION_PAGE_COUNT_OSCILLATION_DISTINCT_THRESHOLD = 2;
 const INITIAL_PAGINATION_PAGE_COUNT_OSCILLATION_CHANGE_THRESHOLD = 4;
 const INITIAL_PAGINATION_MEASUREMENT_CYCLE_MAX_PERIOD = 4;
 const INITIAL_PAGINATION_MEASUREMENT_CYCLE_REPETITIONS = 3;
-const INITIAL_PAGINATION_BACKGROUND_REFINEMENT_DELAY_MS = 96;
 const DEFAULT_PAGE_VIRTUALIZATION_OVERSCAN = 2;
 const LARGE_TABLE_PAGE_VIRTUALIZATION_OVERSCAN = 0;
 const LARGE_TABLE_PAGE_ADJACENT_RENDER_COUNT = 1;
@@ -492,6 +495,13 @@ let tableEstimatedRowHeightsByNode = new WeakMap<
   TableNode,
   Map<string, number[]>
 >();
+let wholeTextLayoutEligibilityByParagraph = new WeakMap<ParagraphNode, Map<boolean, boolean>>();
+interface WholeTextPretextPlan {
+  source: ParagraphPretextLayoutSource;
+  layout: PretextVariableWidthLayout;
+}
+let wholeTextPlansByParagraph = new WeakMap<ParagraphNode, Map<string, WholeTextPretextPlan | undefined>>();
+let paragraphLineCountsByParagraph = new WeakMap<ParagraphNode, Map<string, number>>();
 const paragraphExplicitIndentBySourceXml = new Map<
   string,
   ParagraphIndent | null
@@ -557,6 +567,9 @@ registerFontMetricCache(() => {
   textWidthByFontAndValue.clear();
   estimatedTextAdvanceWidthByFontAndValue.clear();
   tableEstimatedRowHeightsByNode = new WeakMap();
+  wholeTextLayoutEligibilityByParagraph = new WeakMap();
+  wholeTextPlansByParagraph = new WeakMap();
+  paragraphLineCountsByParagraph = new WeakMap();
   wrappedLineCountByParagraph = new WeakMap();
   paragraphPretextLayoutSourceCache = new WeakMap();
 });
@@ -1109,7 +1122,6 @@ const TRACKED_CHANGE_GUTTER_CARD_MIN_HEIGHT_PX = 30;
 const TRACKED_CHANGE_GUTTER_BEND_OFFSET_PX = 8;
 const TRACKED_CHANGE_GUTTER_CONNECTOR_LANE_GAP_PX = 7;
 const TRACKED_CHANGE_GUTTER_CONNECTOR_LANE_COUNT = 5;
-const INITIAL_PAGINATION_STABILITY_IDLE_MS = 240;
 
 function scheduleDomWrite(callback: () => void): void {
   if (
@@ -1799,11 +1811,8 @@ export function resolveFloatingZIndex(floating: {
     : floating.behindDocument
     ? WORD_IMAGE_Z_INDEX_MIN
     : 0;
-  const normalized = rawZIndex / WORD_IMAGE_Z_INDEX_STEP;
-  if (floating.behindDocument) {
-    return normalized;
-  }
-  return WORD_IMAGE_Z_INDEX_STEP + normalized;
+  const normalized = Math.max(0, Math.min(0x3ffffffe, Math.round(rawZIndex)));
+  return floating.behindDocument ? normalized : 0x40000000 + normalized;
 }
 
 export function resolveUiActiveTextRange(
@@ -2309,6 +2318,36 @@ function resolveDocumentSectionsFromMetadata(
       footerSections: metadata.footerSections ?? [],
     },
   ];
+}
+
+const explicitColumnWidthsCache = new WeakMap<DocModel, Map<number, number>>();
+
+function explicitColumnWidthsByNodeIndex(model: DocModel): Map<number, number> {
+  const cached = explicitColumnWidthsCache.get(model);
+  if (cached) return cached;
+  const widths = new Map<number, number>();
+  const sections = resolveDocumentSectionsFromMetadata(model.metadata);
+  sections.forEach((section, sectionIndex) => {
+    const columns = parseSectionColumns(section.sectionPropertiesXml);
+    if (!columns?.widthsPx || new Set(columns.widthsPx).size <= 1) return;
+    const end = Math.min(model.nodes.length, sections[sectionIndex + 1]?.startNodeIndex ?? model.nodes.length);
+    const breaks: number[] = [];
+    for (let index = section.startNodeIndex; index < end; index += 1) {
+      const node = model.nodes[index];
+      if (node.type !== "paragraph" || !paragraphHasExplicitColumnBreak(node)) continue;
+      if (paragraphHasVisibleText(node) ||
+          (node.sourceXml?.match(/<w:br\b[^>]*w:type="column"/gi)?.length ?? 0) !== 1) return;
+      breaks.push(index);
+    }
+    if (breaks.length !== columns.count - 1) return;
+    let columnIndex = 0;
+    for (let index = section.startNodeIndex; index < end; index += 1) {
+      widths.set(index, columns.widthsPx[columnIndex]);
+      if (index === breaks[columnIndex]) columnIndex += 1;
+    }
+  });
+  explicitColumnWidthsCache.set(model, widths);
+  return widths;
 }
 
 interface PaginationSectionMetrics {
@@ -3012,7 +3051,7 @@ function resolveMeasuredPageContentHeightDiagnostics(params: {
       )
     : undefined;
   const measuredFooterClearanceBufferPx =
-    Number.isFinite(footerTopPx) && Number.isFinite(measuredBodyToFooterGapPx)
+    footerOverlapPx > 0 && Number.isFinite(measuredBodyToFooterGapPx)
       ? Math.max(
           0,
           MEASURED_PAGE_FOOTER_CLEARANCE_BUFFER_PX -
@@ -4599,6 +4638,14 @@ export interface DocxEditorController {
   ) => void;
 }
 
+type TableGridResizeCommit = (
+  target: TableGridResizeTarget,
+  expectedTarget: TableNode,
+  geometry: TableGridResizeGeometry
+) => "committed" | "unchanged" | "rejected";
+
+const tableGridResizeCommitByController = new WeakMap<object, TableGridResizeCommit>();
+
 const viewerZoomBridgeByController = new WeakMap<object, ViewerZoomBridge>();
 
 function viewerZoomControllerKey(
@@ -4877,10 +4924,9 @@ export interface DocxEditorViewerProps {
   /**
    * Hides the document behind `loadingState` until initial pagination settles.
    *
-   * Enable only when you prefer stable first paint over immediate approximate
-   * layout.
+   * Disable to show approximate layout before pagination settles.
    *
-   * @defaultValue `false`
+   * @defaultValue `true`
    */
   deferInitialPaginationPaint?: boolean;
   /**
@@ -6372,6 +6418,10 @@ function likelyFullPageCoverImageRelativeToContentBox(
   }
 
   const floating = image.floating;
+  const sourceExtent = image.sourceXml?.match(/<wp:extent\b[^>]*\bcx=["']([^"']+)["']/i);
+  if (sourceExtent && Number(sourceExtent[1]) > 0) {
+    return false;
+  }
   if (
     floating.behindDocument !== true ||
     (floating.wrapType ?? "none") !== "none"
@@ -8604,6 +8654,21 @@ function paragraphUsesWholeTextPretextLayout(
   paragraph: ParagraphNode,
   typography?: DocxTypographyOptions
 ): boolean {
+  const featuresEnabled = typography?.enableOpenTypeFeatures !== false;
+  const entries = wholeTextLayoutEligibilityByParagraph.get(paragraph);
+  const cached = entries?.get(featuresEnabled);
+  if (cached !== undefined) return cached;
+  const eligible = resolveWholeTextLayoutEligibility(paragraph, typography);
+  const nextEntries = entries ?? new Map<boolean, boolean>();
+  nextEntries.set(featuresEnabled, eligible);
+  wholeTextLayoutEligibilityByParagraph.set(paragraph, nextEntries);
+  return eligible;
+}
+
+function resolveWholeTextLayoutEligibility(
+  paragraph: ParagraphNode,
+  typography?: DocxTypographyOptions
+): boolean {
   const style = paragraph.style;
   if (
     (style?.align !== undefined && style.align !== "left" &&
@@ -8924,8 +8989,11 @@ function resolveWholeTextPretextPlan(
   lineHeightPx: number,
   options?: ParagraphPretextLineOptions,
   typography?: DocxTypographyOptions
-): { source: ParagraphPretextLayoutSource; layout: PretextVariableWidthLayout } | undefined {
+): WholeTextPretextPlan | undefined {
   if (!paragraphUsesWholeTextPretextLayout(paragraph, typography)) return undefined;
+  const key = `${textWidthPx}|${lineHeightPx}|${options?.minimumLineHeightPx ?? 0}|${options?.gridLinePitchPx ?? 0}|${typography?.enableOpenTypeFeatures !== false}`;
+  const entries = wholeTextPlansByParagraph.get(paragraph);
+  if (entries?.has(key)) return entries.get(key);
   const source = buildParagraphPretextLayoutSource(paragraph, {
     allowExplicitLineBreakText: true,
   }, typography);
@@ -8933,7 +9001,12 @@ function resolveWholeTextPretextPlan(
   const layout = layoutParagraphPretextSource(
     paragraph, source, textWidthPx, lineHeightPx, [], options, typography
   );
-  return layout && layout.lineCount > 0 ? { source, layout } : undefined;
+  const plan = layout && layout.lineCount > 0 ? { source, layout } : undefined;
+  const nextEntries = entries ?? new Map<string, WholeTextPretextPlan | undefined>();
+  if (nextEntries.size >= 16) nextEntries.clear();
+  nextEntries.set(key, plan);
+  wholeTextPlansByParagraph.set(paragraph, nextEntries);
+  return plan;
 }
 
 function wrappedParagraphSessionText(paragraph: ParagraphNode,
@@ -10779,6 +10852,9 @@ function shouldKeepTrailingSectionTailOnCurrentPage(
       rawNodeHeightPx - collapsedMarginPx
     );
     tailConsumedHeightPx += effectiveNodeHeightPx;
+    if (tailConsumedHeightPx - remainingHeightPx > MAX_TRAILING_SECTION_TAIL_OVERFLOW_PX) {
+      return false;
+    }
     tailPreviousParagraphAfterPx = nodeAfterSpacingPx;
   }
 
@@ -12027,6 +12103,33 @@ export function paragraphLineCountWithinWidth(
   defaultTabStopTwips?: number,
   typography?: DocxTypographyOptions
 ): number {
+  if (paragraph.children.some((child) => child.type !== "text" || child.noteReference)) {
+    return computeParagraphLineCountWithinWidth(
+      paragraph, availableWidthPx, numberingDefinitions, numberingLabel, defaultTabStopTwips, typography
+    );
+  }
+  const key = `${availableWidthPx ?? "auto"}|tab-twips:${defaultTabStopTwips ?? "inherited"}|tab-px:${defaultTabStopPxForNode(paragraph)}|${docNodeContentSignature(numberingDefinitions)}|${docNodeContentSignature(numberingLabel)}|${typography?.enableOpenTypeFeatures !== false}`;
+  const entries = paragraphLineCountsByParagraph.get(paragraph);
+  const cached = entries?.get(key);
+  if (cached !== undefined) return cached;
+  const count = computeParagraphLineCountWithinWidth(
+    paragraph, availableWidthPx, numberingDefinitions, numberingLabel, defaultTabStopTwips, typography
+  );
+  const nextEntries = entries ?? new Map<string, number>();
+  if (nextEntries.size >= 16) nextEntries.clear();
+  nextEntries.set(key, count);
+  paragraphLineCountsByParagraph.set(paragraph, nextEntries);
+  return count;
+}
+
+function computeParagraphLineCountWithinWidth(
+  paragraph: ParagraphNode,
+  availableWidthPx?: number,
+  numberingDefinitions?: NumberingDefinitionSet,
+  numberingLabel?: ParagraphNumberingLabel,
+  defaultTabStopTwips?: number,
+  typography?: DocxTypographyOptions
+): number {
   if (defaultTabStopTwips !== undefined) {
     paragraph = paragraphWithDefaultTabStop(paragraph, defaultTabStopTwips);
   }
@@ -12475,8 +12578,8 @@ function estimateParagraphHeightPx(
   }
 
   const beforeSpacing =
-    twipsToPixels(paragraph.style?.spacing?.beforeTwips) ?? 0;
-  const afterSpacing = twipsToPixels(paragraph.style?.spacing?.afterTwips) ?? 0;
+    paragraphSpacingPixels(paragraph.style?.spacing?.beforeTwips);
+  const afterSpacing = paragraphSpacingPixels(paragraph.style?.spacing?.afterTwips);
   const lineHeightPx = estimateParagraphLineHeightPx(
     paragraph,
     docGridLinePitchPx,
@@ -12763,9 +12866,9 @@ function estimateTableCellContentHeightPx(
     paragraphIndex += 1;
     const beforeSpacing = suppressTopSpacing
       ? 0
-      : twipsToPixels(paragraphForLayout.style?.spacing?.beforeTwips) ?? 0;
+      : paragraphSpacingPixels(paragraphForLayout.style?.spacing?.beforeTwips);
     const afterSpacing =
-      twipsToPixels(paragraphForLayout.style?.spacing?.afterTwips) ?? 0;
+      paragraphSpacingPixels(paragraphForLayout.style?.spacing?.afterTwips);
     const topBorderInsetPx = paragraphBorderInsetPx(
       paragraphForLayout.style?.borders?.top
     );
@@ -13059,6 +13162,7 @@ export function tableCellFragmentRowSpan(
   fragmentStart: number,
   fragmentEnd: number
 ): number {
+  table = physicalTableView(table);
   const cell = table.rows[rowIndex]?.cells[cellIndex];
   if (!cell || rowIndex < fragmentStart || rowIndex >= fragmentEnd) return 0;
   if (!cell.style?.vMergeContinuation) {
@@ -13174,6 +13278,7 @@ export function estimateTableRowHeightsPx(
   percentageReferenceWidthPx = maxAvailableWidthPx,
   typography?: DocxTypographyOptions
 ): number[] {
+  table = physicalTableView(table);
   const baseCacheKey = `${heightEstimateCacheKeyPx(
     maxAvailableWidthPx,
     docGridLinePitchPx
@@ -13322,6 +13427,82 @@ function computeTableCellDerivedRowHeightsPx(
   return heights;
 }
 
+interface PrecomputedPaginationMetrics {
+  tableRowHeightsByNodeIndex: Record<number, number[]>;
+}
+
+function resolvePrecomputedPaginationMetrics(
+  model: DocModel,
+  sections: ResolvedDocumentSection[],
+  metrics: PaginationSectionMetrics[],
+  typography?: DocxTypographyOptions
+): PrecomputedPaginationMetrics | undefined {
+  if (
+    model.nodes.length === 0 || sections.length > 1 || metrics.length !== 1 ||
+    (metrics[0].pageContentHeightMultiplier ?? 1) !== 1 ||
+    sections.some((section) =>
+      [...section.headerSections, ...section.footerSections].some((part) => part.nodes.length > 0)) ||
+    [...model.metadata.headerSections, ...model.metadata.footerSections].some((part) => part.nodes.length > 0) ||
+    (model.metadata.footnotes?.length ?? 0) > 0 ||
+    (model.metadata.endnotes?.length ?? 0) > 0 ||
+    typeof document === "undefined" || document.fonts?.status === "loading" ||
+    measureFontNaturalLineHeightPx("16px serif") === undefined
+  ) return undefined;
+
+  const section = metrics[0];
+  const canPlanParagraph = (paragraph: ParagraphNode, widthPx: number, inTable = false): boolean =>
+    Boolean(resolveWholeTextPretextPlan(
+      paragraph,
+      paragraphAvailableTextWidthPx(paragraph, widthPx, model.metadata.numberingDefinitions),
+      inTable
+        ? tableCellParagraphLineHeightPx(paragraph, section.docGridLinePitchPx, typography?.adjustLineHeightInTable !== true)
+        : estimateParagraphLineHeightPx(paragraph, section.docGridLinePitchPx),
+      paragraphPretextLineOptions(paragraph, section.docGridLinePitchPx,
+        inTable && typography?.adjustLineHeightInTable !== true),
+      typography
+    ));
+  const tableRowHeightsByNodeIndex: Record<number, number[]> = {};
+  for (const [nodeIndex, node] of model.nodes.entries()) {
+    if (node.type === "paragraph") {
+      if (!canPlanParagraph(node, section.pageContentWidthPx)) return undefined;
+      continue;
+    }
+    if (
+      node.style?.layout !== "fixed" || node.style.floating || node.style.bidiVisual ||
+      tableUsesSeparateBorderModel(node) || node.rows.length === 0 ||
+      (tableHasVisibleBorders(node) && tableAutomaticCollapsedBorderWidthPx(node) <= 0) ||
+      node.rows.some((row) => row.style?.heightRule === "exact" || row.style?.isHeader ||
+        tableRowSkippedGridCount(row, "before", node) > 0 ||
+        tableRowSkippedGridCount(row, "after", node) > 0 || row.cells.length === 0 ||
+        row.cells.some((cell) => (cell.style?.rowSpan ?? 1) > 1 ||
+          (cell.style?.gridSpan ?? 1) > 1 || cell.style?.vMergeContinuation ||
+          cell.style?.borders || cell.style?.noWrap || tableCellHasVerticalText(cell) ||
+          cell.nodes.length !== 1 || cell.nodes[0].type !== "paragraph"))
+    ) return undefined;
+
+    const geometry = resolveTableWidthGeometryPx(node, section.pageContentWidthPx,
+      section.pageTextWidthPx ?? section.pageContentWidthPx, undefined, false, typography);
+    const widths = fitColumnWidthsToWidth(geometry.rawColumnWidthsPx, geometry.resolvedTableWidthPx, true);
+    const applyDefaults = tableUsesWordLikeParagraphDefaults(node);
+    for (const row of node.rows) {
+      if (row.cells.length !== widths.length) return undefined;
+      for (const [cellIndex, cell] of row.cells.entries()) {
+        const padding = resolveTableSpacingPaddingPx(
+          mergeTableSpacing(node.style?.cellMarginTwips, cell.style?.marginTwips));
+        const paragraph = wordLikeTableCellParagraph(cell.nodes[0] as ParagraphNode,
+          applyDefaults, { first: true, last: true });
+        if (!canPlanParagraph(paragraph,
+          Math.max(1, widths[cellIndex] - padding.left - padding.right), true)) return undefined;
+      }
+    }
+    tableRowHeightsByNodeIndex[nodeIndex] = estimateTableRowHeightsPx(
+      node, section.pageContentWidthPx, model.metadata.numberingDefinitions,
+      section.docGridLinePitchPx, section.pageContentHeightPx,
+      section.pageTextWidthPx ?? section.pageContentWidthPx, typography);
+  }
+  return { tableRowHeightsByNodeIndex };
+}
+
 function resolveTableRowHeightCss(
   row: TableNode["rows"][number],
   rowHeightPx?: number
@@ -13408,9 +13589,9 @@ function estimateParagraphBoundaryOffsetsPx(
     suppressFirstTableCellParagraphTopSpacing(paragraph);
   const beforeSpacingPx = suppressTopSpacing
     ? 0
-    : twipsToPixels(paragraphForLayout.style?.spacing?.beforeTwips) ?? 0;
+    : paragraphSpacingPixels(paragraphForLayout.style?.spacing?.beforeTwips);
   const afterSpacingPx =
-    twipsToPixels(paragraphForLayout.style?.spacing?.afterTwips) ?? 0;
+    paragraphSpacingPixels(paragraphForLayout.style?.spacing?.afterTwips);
   const topBorderInsetPx = paragraphBorderInsetPx(
     paragraphForLayout.style?.borders?.top
   );
@@ -13886,12 +14067,16 @@ function estimateDocNodeHeightPx(
       );
 }
 
+function paragraphSpacingPixels(twips?: number): number {
+  return Number.isFinite(twips) ? Math.max(0, (twips as number) / TWIPS_PER_PIXEL) : 0;
+}
+
 function paragraphBeforeSpacingPx(paragraph: ParagraphNode): number {
-  return twipsToPixels(paragraph.style?.spacing?.beforeTwips) ?? 0;
+  return paragraphSpacingPixels(paragraph.style?.spacing?.beforeTwips);
 }
 
 function paragraphAfterSpacingPx(paragraph: ParagraphNode): number {
-  return twipsToPixels(paragraph.style?.spacing?.afterTwips) ?? 0;
+  return paragraphSpacingPixels(paragraph.style?.spacing?.afterTwips);
 }
 
 function paragraphWidowControlEnabled(paragraph: ParagraphNode): boolean {
@@ -14086,6 +14271,7 @@ function collectDocxEstimatedOverflowBreakStartNodeIndexes(
     const approximateVisualDepthPx = safeConsumedHeightPx / fromMultiplier;
     return Math.max(0, Math.round(approximateVisualDepthPx * toMultiplier));
   };
+  const authoredColumnWidths = explicitColumnWidthsByNodeIndex(model);
   for (let nodeIndex = 0; nodeIndex < model.nodes.length; nodeIndex += 1) {
     const previousMetricsIndex = currentMetricsIndex;
     currentMetricsIndex = resolvePaginationSectionMetricsIndexForNodeIndex(
@@ -14093,8 +14279,11 @@ function collectDocxEstimatedOverflowBreakStartNodeIndexes(
       nodeIndex,
       currentMetricsIndex
     );
-    const nodeMetrics =
-      metricsBySection[currentMetricsIndex] ?? fallbackMetrics;
+    const sectionMetrics = metricsBySection[currentMetricsIndex] ?? fallbackMetrics;
+    const authoredColumnWidth = authoredColumnWidths.get(nodeIndex);
+    const nodeMetrics = authoredColumnWidth === undefined ? sectionMetrics : {
+      ...sectionMetrics, pageContentWidthPx: authoredColumnWidth,
+    };
     if (nodeIndex > 0 && currentMetricsIndex !== previousMetricsIndex) {
       pageConsumedHeightPx = projectConsumedHeightAcrossSectionMultipliers(
         pageConsumedHeightPx,
@@ -14388,7 +14577,7 @@ export function createTextEditPaginationMemo(): typeof buildDocumentPageNodeSegm
   };
   return (model, height, width, numberingDefinitions, metrics, options) => {
     const typography = model.metadata?.compatibility;
-    model = documentWithDefaultTabLayout(model);
+    model = documentWithDefaultTabLayout(documentWithPhysicalTableGrids(model));
     if (model.nodes.some(hasFloatingObjects) || metrics?.some((metric) => metric.headerWrapObstacles?.length)) {
       return buildDocumentPageNodeSegments(
         model,
@@ -15193,7 +15382,7 @@ export function buildRenderColumnSegmentsForPageSection(
   balanceColumns = false,
   forceColumnBreakNodeIndexes?: Set<number>
 ): DocumentPageNodeSegment[][] {
-  model = documentWithDefaultTabLayout(model);
+  model = documentWithDefaultTabLayout(documentWithPhysicalTableGrids(model));
   const columnCount = Math.max(1, columnWidthsPx.length);
   const columns = Array.from(
     { length: columnCount },
@@ -15492,6 +15681,8 @@ export function buildDocumentPageNodeSegments(
   options?: {
     allowParagraphLineSplitting?: boolean;
     suppressSpacingBeforeAfterPageBreak?: boolean;
+    pageOverflowTolerancePx?: number;
+    precomputedTableRowHeightsByNodeIndex?: Record<number, number[]>;
     measuredTableRowHeightsByNodeIndex?: Record<number, number[]>;
     measuredPageContentHeightsPxByPageIndex?: number[];
     measuredParagraphOuterHeightsPxByNodeIndex?: Map<number, number>;
@@ -15501,7 +15692,10 @@ export function buildDocumentPageNodeSegments(
   }
 ): DocumentPageNodeSegment[][] {
   const typography = model.metadata?.compatibility;
-  model = documentWithDefaultTabLayout(model);
+  const pageOverflowTolerancePx = Number.isFinite(options?.pageOverflowTolerancePx)
+    ? Math.max(0, options!.pageOverflowTolerancePx!)
+    : PAGE_OVERFLOW_TOLERANCE_PX;
+  model = documentWithDefaultTabLayout(documentWithPhysicalTableGrids(model));
   if (model.nodes.length === 0) {
     return [];
   }
@@ -15636,6 +15830,7 @@ export function buildDocumentPageNodeSegments(
     return Math.max(0, Math.round(approximateVisualDepthPx * toMultiplier));
   };
 
+  const authoredColumnWidths = explicitColumnWidthsByNodeIndex(model);
   for (let nodeIndex = 0; nodeIndex < model.nodes.length; nodeIndex += 1) {
     const previousMetricsIndex = currentMetricsIndex;
     currentMetricsIndex = resolvePaginationSectionMetricsIndexForNodeIndex(
@@ -15643,8 +15838,11 @@ export function buildDocumentPageNodeSegments(
       nodeIndex,
       currentMetricsIndex
     );
-    const nodeMetrics =
-      metricsBySection[currentMetricsIndex] ?? fallbackMetrics;
+    const sectionMetrics = metricsBySection[currentMetricsIndex] ?? fallbackMetrics;
+    const authoredColumnWidth = authoredColumnWidths.get(nodeIndex);
+    const nodeMetrics = authoredColumnWidth === undefined ? sectionMetrics : {
+      ...sectionMetrics, pageContentWidthPx: authoredColumnWidth,
+    };
     if (nodeIndex > 0 && currentMetricsIndex !== previousMetricsIndex) {
       pageConsumedHeightPx = projectConsumedHeightAcrossSectionMultipliers(
         pageConsumedHeightPx,
@@ -15864,7 +16062,7 @@ export function buildDocumentPageNodeSegments(
         rawNodeHeightPx >
         (nodeMetrics.pageContentHeightsPxByPageType
           ? currentPageContentHeightPx
-          : nodeMetrics.pageContentHeightPx) + PAGE_OVERFLOW_TOLERANCE_PX;
+          : nodeMetrics.pageContentHeightPx) + pageOverflowTolerancePx;
       let keepLinesOverflowSplit =
         node.style?.keepLines === true && paragraphTooTallForSinglePage;
       let keepNextOverflowSplit =
@@ -15896,7 +16094,7 @@ export function buildDocumentPageNodeSegments(
         paragraphTooTallForSinglePage = rawNodeHeightPx >
           (nodeMetrics.pageContentHeightsPxByPageType
             ? currentPageContentHeightPx
-            : nodeMetrics.pageContentHeightPx) + PAGE_OVERFLOW_TOLERANCE_PX;
+            : nodeMetrics.pageContentHeightPx) + pageOverflowTolerancePx;
         keepLinesOverflowSplit = node.style?.keepLines === true && paragraphTooTallForSinglePage;
         keepNextOverflowSplit = node.style?.keepNext === true && paragraphTooTallForSinglePage;
       }
@@ -15935,7 +16133,7 @@ export function buildDocumentPageNodeSegments(
         remainingHeightBeforeParagraphPx <=
           collapsedNodeHeightPx +
             paragraphLineHeightPx +
-            PAGE_OVERFLOW_TOLERANCE_PX
+            pageOverflowTolerancePx
       ) {
         const pretextLayout =
           resolveParagraphPretextLayoutForSegmentRendering();
@@ -16093,7 +16291,7 @@ export function buildDocumentPageNodeSegments(
             forcedEndLineIndex
           );
           let segmentEndLineIndex = forcedEndLineIndex;
-          if (remainingTextHeightPx > remainingHeightPx + PAGE_OVERFLOW_TOLERANCE_PX) {
+          if (remainingTextHeightPx > remainingHeightPx + pageOverflowTolerancePx) {
             const widowControlEnabled = paragraphWidowControlEnabled(node);
             const canNaturallySplit = allowParagraphLineSplitting &&
               paragraphCanSplitAcrossPages(node, linesRemaining, {
@@ -16518,7 +16716,7 @@ export function buildDocumentPageNodeSegments(
         );
       if (
         pageConsumedHeightPx > 0 &&
-        requiredFitHeightPx > remainingHeightPx + PAGE_OVERFLOW_TOLERANCE_PX &&
+        requiredFitHeightPx > remainingHeightPx + pageOverflowTolerancePx &&
         !canKeepTrailingSectionTailOnCurrentPage
       ) {
         startNextPage();
@@ -16555,7 +16753,9 @@ export function buildDocumentPageNodeSegments(
             normalizeMeasuredTableRowHeightForDefinitionPx(heightPx, node, rowIndex)
           )
         : undefined;
+    const precomputedRowHeights = options?.precomputedTableRowHeightsByNodeIndex?.[nodeIndex];
     const estimatedRowHeightsPx =
+      (precomputedRowHeights?.length === node.rows.length ? precomputedRowHeights : undefined) ??
       measuredRowHeightsPx ??
       estimatedRowHeightsByTableNodeIndex.get(nodeIndex) ??
       estimateTableRowHeightsPx(
@@ -16588,7 +16788,7 @@ export function buildDocumentPageNodeSegments(
           estimatedRowHeightsPx,
           0,
           estimatedRowHeightsPx.length
-        ) <= currentPageContentHeightPx + PAGE_OVERFLOW_TOLERANCE_PX)
+        ) <= currentPageContentHeightPx + pageOverflowTolerancePx)
     ) {
       currentPageSegments.push({ nodeIndex });
       previousParagraphAfterPx = 0;
@@ -16700,7 +16900,7 @@ export function buildDocumentPageNodeSegments(
       );
       const rowExceedsFreshPageHeightPx =
         currentRowTotalHeightPx >
-        freshPageAvailableHeightPx + PAGE_OVERFLOW_TOLERANCE_PX;
+        freshPageAvailableHeightPx + pageOverflowTolerancePx;
       const hasUsableCurrentPageSliceSpace =
         pageConsumedHeightPx > 0 &&
         remainingHeightPx >= MIN_TABLE_ROW_SLICE_REMAINING_HEIGHT_PX;
@@ -16710,8 +16910,8 @@ export function buildDocumentPageNodeSegments(
         floatingTableFlowSpacing &&
         rowSliceOffsetPx === 0 &&
         !rowExceedsFreshPageHeightPx &&
-        currentRowMinimumHeightPx > remainingHeightPx + PAGE_OVERFLOW_TOLERANCE_PX &&
-        currentRowTotalHeightPx <= currentRowMinimumHeightPx + PAGE_OVERFLOW_TOLERANCE_PX
+        currentRowMinimumHeightPx > remainingHeightPx + pageOverflowTolerancePx &&
+        currentRowTotalHeightPx <= currentRowMinimumHeightPx + pageOverflowTolerancePx
       );
       // Keep a minimum-height float row together when only its empty height
       // would continue. Rows taller than a fresh page still allow slicing.
@@ -16726,7 +16926,7 @@ export function buildDocumentPageNodeSegments(
         ENABLE_TABLE_ROW_SLICING &&
         canSplitCurrentRow &&
         currentRowRemainingHeightPx >
-          remainingHeightPx + PAGE_OVERFLOW_TOLERANCE_PX &&
+          remainingHeightPx + pageOverflowTolerancePx &&
         (shouldContinueExistingRowSlice ||
           rowExceedsFreshPageHeightPx ||
           hasUsableCurrentPageSliceSpace);
@@ -16734,7 +16934,7 @@ export function buildDocumentPageNodeSegments(
       if (
         canSplitCurrentRow &&
         currentRowRemainingHeightPx >
-          remainingHeightPx + PAGE_OVERFLOW_TOLERANCE_PX &&
+          remainingHeightPx + pageOverflowTolerancePx &&
         !rowNeedsSliceOnThisPage &&
         currentPageSegments.length > 0
       ) {
@@ -16854,12 +17054,12 @@ export function buildDocumentPageNodeSegments(
           },
         }, sliceHeightPx,
           rowStartIndex + 1 >= estimatedRowHeightsPx.length &&
-          rowSliceOffsetPx + sliceHeightPx >= currentRowTotalHeightPx - PAGE_OVERFLOW_TOLERANCE_PX
+          rowSliceOffsetPx + sliceHeightPx >= currentRowTotalHeightPx - pageOverflowTolerancePx
         );
         rowSliceOffsetPx += sliceHeightPx;
         if (
           rowSliceOffsetPx >=
-          currentRowTotalHeightPx - PAGE_OVERFLOW_TOLERANCE_PX
+          currentRowTotalHeightPx - pageOverflowTolerancePx
         ) {
           rowStartIndex += 1;
           rowSliceOffsetPx = 0;
@@ -17000,7 +17200,7 @@ export function buildDocumentPageNodeSegments(
           remainingHeightAfterSegmentPx >=
             MIN_TABLE_ROW_SLICE_REMAINING_HEIGHT_PX &&
           nextRowHeightPx >
-            remainingHeightAfterSegmentPx + PAGE_OVERFLOW_TOLERANCE_PX;
+            remainingHeightAfterSegmentPx + pageOverflowTolerancePx;
         if (canSliceNextRowOnCurrentPage) {
           continue;
         }
@@ -17571,15 +17771,9 @@ export function absoluteFloatingImageStyle(
   const deltaY = Number.isFinite(options?.deltaY)
     ? Math.round(options?.deltaY as number)
     : 0;
-  const normalizedZIndex = Number.isFinite(floating.zIndex)
-    ? Math.max(
-        1,
-        Math.min(65535, Math.round((floating.zIndex as number) / 65536))
-      )
-    : undefined;
   const resolvedZIndex = floating.behindDocument
-    ? -100000 + (normalizedZIndex ?? 1)
-    : normalizedZIndex ?? 4;
+    ? resolveFloatingZIndex(floating) - 0x40000000
+    : resolveFloatingZIndex(floating);
 
   const resolvedLeft =
     floating.xPx !== undefined
@@ -18791,8 +18985,8 @@ function paragraphBlockStyle(
   typography?: DocxTypographyOptions
 ): React.CSSProperties {
   const beforeSpacing =
-    twipsToPixels(paragraph.style?.spacing?.beforeTwips) ?? 0;
-  const afterSpacing = twipsToPixels(paragraph.style?.spacing?.afterTwips) ?? 0;
+    paragraphSpacingPixels(paragraph.style?.spacing?.beforeTwips);
+  const afterSpacing = paragraphSpacingPixels(paragraph.style?.spacing?.afterTwips);
   const resolvedIndent = resolveListParagraphIndent(
     paragraph,
     numberingDefinitions
@@ -20575,7 +20769,15 @@ function resolveImageRenderTransformStyle(
     baseTransform?: string;
   }
 ): React.CSSProperties {
-  const transform = parseDrawingImageTransformFromSourceXml(image.sourceXml);
+  const hasRenderedShapeTransform =
+    image.contentType === "image/svg+xml" &&
+    !image.partName &&
+    /<wps:wsp\b/i.test(image.sourceXml ?? "") &&
+    !/<wpg:wgp\b/i.test(image.sourceXml ?? "") &&
+    !image.syntheticTextBox;
+  const transform = hasRenderedShapeTransform
+    ? undefined
+    : parseDrawingImageTransformFromSourceXml(image.sourceXml);
   const rotationDegrees = transform?.rotationDegrees;
   const frameWidthPx = Number.isFinite(options?.frameWidthPx)
     ? Math.max(1, Math.round(options?.frameWidthPx as number))
@@ -24781,6 +24983,7 @@ export function estimateFloatingTableWidthPx(
   containerWidthPx: number,
   percentageReferenceWidthPx = containerWidthPx
 ): number {
+  table = physicalTableView(table);
   return resolveTableWidthGeometryPx(table, containerWidthPx, percentageReferenceWidthPx).resolvedTableWidthPx;
 }
 
@@ -24814,6 +25017,7 @@ export function resolveFloatingTableGeometry(
     deltaY?: number;
   }
 ): FloatingTableGeometry | undefined {
+  table = physicalTableView(table);
   const floating = table.style?.floating;
   if (!floating) {
     return undefined;
@@ -24893,6 +25097,7 @@ export function resolveColumnBlockingFloatingTableFlowSpacing(
   containerWidthPx: number,
   percentageReferenceWidthPx = containerWidthPx
 ): { beforePx: number; afterPx: number } | undefined {
+  table = physicalTableView(table);
   const floating = table.style?.floating;
   if (
     floating?.verticalAnchor !== "text" ||
@@ -29894,7 +30099,9 @@ export function useDocxEditor(
         : "Ready")
   );
   const [importError, setImportError] = React.useState<Error | undefined>();
-  const [isImporting, setIsImporting] = React.useState(false);
+  const [isImporting, setIsImporting] = React.useState(Boolean(
+    options.document && options.loadEmbeddedFonts !== false && !options.document.embeddedFontsLoaded
+  ));
   const [documentTheme, setDocumentThemeState] =
     React.useState<DocxDocumentTheme>(options.initialDocumentTheme ?? "light");
   const [showTrackedChanges, setShowTrackedChangesState] =
@@ -30462,9 +30669,24 @@ export function useDocxEditor(
       options.loadEmbeddedFonts === false ||
       options.document.embeddedFontsLoaded
     ) {
+      if (!activeImportAbortControllerRef.current) setIsImporting(false);
       return;
     }
-    void loadEmbeddedFontsFromPackage(options.document.package);
+    let cancelled = false;
+    const documentModel = options.document.model;
+    setIsImporting(true);
+    const fontsLoaded = loadEmbeddedFontsFromPackage(options.document.package);
+    const requestNonce = embeddedFontLoadNonceRef.current;
+    void fontsLoaded.then(() => awaitDocumentFonts(documentModel)).catch(() => {
+      // Font preparation can continue with the available fallback faces.
+    }).finally(() => {
+      if (!cancelled && requestNonce === embeddedFontLoadNonceRef.current &&
+        !activeImportAbortControllerRef.current) setIsImporting(false);
+    });
+    return () => {
+      cancelled = true;
+      if (requestNonce === embeddedFontLoadNonceRef.current) embeddedFontLoadNonceRef.current += 1;
+    };
   }, [
     loadEmbeddedFontsFromPackage,
     options.document,
@@ -30867,6 +31089,8 @@ export function useDocxEditor(
 
   const replaceDocumentWithImportError = React.useCallback(
     (fileName: string, error: Error): void => {
+      embeddedFontLoadNonceRef.current += 1;
+      setIsImporting(false);
       unloadEmbeddedFonts();
       setModel(createBlankDocumentModel());
       advanceDocumentLoadNonce();
@@ -30888,6 +31112,7 @@ export function useDocxEditor(
     async (file: File): Promise<void> => {
       activeImportAbortControllerRef.current?.abort();
       activeImportAbortControllerRef.current = undefined;
+      embeddedFontLoadNonceRef.current += 1;
 
       if (!/\.docx?$/i.test(file.name)) {
         replaceDocumentWithImportError(
@@ -30940,6 +31165,7 @@ export function useDocxEditor(
 
         markDocxImportPerformance(fontsStartMark);
         await loadEmbeddedFontsFromPackage(pkg);
+        await awaitDocumentFonts(nextModel);
         if (importAbortController.signal.aborted) return;
         markDocxImportPerformance(fontsEndMark);
         measureDocxImportPerformance(
@@ -30974,8 +31200,7 @@ export function useDocxEditor(
         );
       } catch (error) {
         if (
-          error instanceof Error &&
-          error.name === "AbortError" &&
+          importAbortController.signal.aborted ||
           activeImportAbortControllerRef.current !== importAbortController
         ) {
           return;
@@ -31000,6 +31225,8 @@ export function useDocxEditor(
   const newDocument = React.useCallback((): void => {
     activeImportAbortControllerRef.current?.abort();
     activeImportAbortControllerRef.current = undefined;
+    embeddedFontLoadNonceRef.current += 1;
+    setIsImporting(false);
     unloadEmbeddedFonts();
     setModel(cloneDocModelWithBlockIds(starterTemplateRef.current));
     advanceDocumentLoadNonce();
@@ -32350,7 +32577,8 @@ export function useDocxEditor(
 
       applyModelChange((current) => {
         if (targetLocation.kind === "table-cell") {
-          const next = cloneDocModel(current);
+          const next = prepareModelForTableStructuralEdit(current, targetLocation.tableIndex);
+          if (!next) return current;
           const tableNode = next.nodes[targetLocation.tableIndex];
           if (!tableNode || tableNode.type !== "table") {
             return current;
@@ -34376,7 +34604,8 @@ export function useDocxEditor(
             return current;
           }
 
-          const next = cloneDocModel(current);
+          const next = prepareModelForTableStructuralEdit(current, tableIndex);
+        if (!next) return current;
           const table = next.nodes[tableIndex];
           if (!table || table.type !== "table") {
             return current;
@@ -34449,7 +34678,8 @@ export function useDocxEditor(
             return current;
           }
 
-          const next = cloneDocModel(current);
+          const next = prepareModelForTableStructuralEdit(current, tableIndex);
+        if (!next) return current;
           const table = next.nodes[tableIndex];
           if (!table || table.type !== "table") {
             return current;
@@ -34551,7 +34781,8 @@ export function useDocxEditor(
           return current;
         }
 
-        const next = cloneDocModel(current);
+        const next = prepareModelForTableStructuralEdit(current, tableIndex);
+        if (!next) return current;
         const table = next.nodes[tableIndex];
         if (!table || table.type !== "table") {
           return current;
@@ -34607,10 +34838,11 @@ export function useDocxEditor(
 
   const deleteTableColumn = React.useCallback(
     (tableIndex: number, cellIndex: number, rowIndex?: number): void => {
-      const tableNode = modelRef.current.nodes[tableIndex];
-      if (!tableNode || tableNode.type !== "table") {
+      const sourceTable = modelRef.current.nodes[tableIndex];
+      if (!sourceTable || sourceTable.type !== "table") {
         return;
       }
+      const tableNode = physicalTableView(sourceTable);
 
       const anchorRowIndex = clampNumber(
         rowIndex ?? 0,
@@ -34639,7 +34871,8 @@ export function useDocxEditor(
           return current;
         }
 
-        const next = cloneDocModel(current);
+        const next = prepareModelForTableStructuralEdit(current, tableIndex);
+        if (!next) return current;
         const table = next.nodes[tableIndex];
         if (!table || table.type !== "table") {
           return current;
@@ -35068,6 +35301,20 @@ export function useDocxEditor(
         ?.getResolvedZoom() ?? fallbackZoomRef.current.resolvedZoom
     );
   }, [syncPaginationInfo]);
+
+  const commitTableGridGeometry = React.useCallback<TableGridResizeCommit>(
+    (target, expectedTarget, geometry) => {
+      let outcome: ReturnType<TableGridResizeCommit> = "unchanged";
+      applyModelChange((current) => {
+        const result = commitTableGridResize(current, target, expectedTarget, geometry);
+        outcome = result.kind;
+        return result.model;
+      }, "Resized table");
+      return outcome;
+    },
+    [applyModelChange]
+  );
+  tableGridResizeCommitByController.set(syncPaginationInfo as object, commitTableGridGeometry);
 
   const controller: DocxEditorController = {
     model,
@@ -35988,6 +36235,7 @@ function DocxDetachedThumbnailPageSurface({
       editor={editor}
       mode="read-only"
       pageIndexes={[pageIndex]}
+      deferInitialPaginationPaint={false}
       pageVirtualization={{ enabled: false }}
       showTrackedChanges={editor.showTrackedChanges}
       showComments={editor.showComments}
@@ -38364,7 +38612,7 @@ function renderHeaderNode(
               const isHot = isResizing || isHovered;
 
               return (
-                <span
+                <span data-docx-table-resize-handle="column" data-docx-embedded-table-key={tableRuntimeKey}
                   key={`${keyPrefix}-column-border-${boundaryColumnIndex}`}
                   contentEditable={false}
                   style={{
@@ -38469,7 +38717,7 @@ function renderHeaderNode(
               const isHot = isResizing || isHovered;
 
               return (
-                <span
+                <span data-docx-table-resize-handle="row" data-docx-embedded-table-key={tableRuntimeKey}
                   key={`${keyPrefix}-row-border-${boundaryRowIndex}`}
                   contentEditable={false}
                   style={{
@@ -38568,7 +38816,7 @@ function renderHeaderNode(
             })
         : null}
       {showNestedTableHandles && embeddedTableResize ? (
-        <span
+        <span data-docx-table-resize-handle="corner" data-docx-embedded-table-key={tableRuntimeKey}
           contentEditable={false}
           style={{
             position: "absolute",
@@ -38643,7 +38891,7 @@ export function DocxEditorViewer({
   onZoomChange,
   pageBackgroundColor,
   pageGapBackgroundColor,
-  deferInitialPaginationPaint = false,
+  deferInitialPaginationPaint = true,
   loadingState,
   pageVirtualization,
   visiblePageRange,
@@ -38662,8 +38910,18 @@ export function DocxEditorViewer({
 }: DocxEditorViewerProps): React.JSX.Element {
   const typography = editor.model.metadata?.compatibility;
   const sourceEditor = editor;
+  const featureCanonicalTableIdsRef = React.useRef(new Set<string>());
+  const featureResizeSnapshotsRef = React.useRef(new Map<string, { address: number | string; signature: string; blockId?: string }>());
+  React.useEffect(() => {
+    featureCanonicalTableIdsRef.current.clear();
+    featureResizeSnapshotsRef.current.clear();
+  }, [sourceEditor.documentLoadNonce]);
+  const tableResizeCleanupRef = React.useRef<(() => void) | undefined>(undefined);
+  React.useEffect(() => () => tableResizeCleanupRef.current?.(), []);
+  const sourceModelRef = React.useRef(sourceEditor.model);
+  sourceModelRef.current = sourceEditor.model;
   const tabLayoutModel = React.useMemo(
-    () => documentWithDefaultTabLayout(sourceEditor.model),
+    () => documentWithDefaultTabLayout(documentWithPhysicalTableGrids(sourceEditor.model)),
     [sourceEditor.model, sourceEditor.model.metadata.defaultTabStopTwips]
   );
   editor = React.useMemo(
@@ -38807,6 +39065,7 @@ export function DocxEditorViewer({
     undefined
   );
   const initialPaginationRevealFrameRef = React.useRef<number | null>(null);
+  const paginationMeasurementFrameRef = React.useRef<number | null>(null);
   const pendingHeaderFooterDeactivateFrameRef = React.useRef<number | null>(
     null
   );
@@ -39085,12 +39344,10 @@ export function DocxEditorViewer({
   const wrappedParagraphSurfacesByElementRef = React.useRef<
     WeakMap<HTMLElement, WrappedParagraphSurfaceRegistration>
   >(new WeakMap());
-  const [isInitialPaginationSettled, setIsInitialPaginationSettled] =
-    React.useState(!deferInitialPaginationPaint);
-  const [
-    initialPaginationBackgroundRefinementUnlocked,
-    setInitialPaginationBackgroundRefinementUnlocked,
-  ] = React.useState(!deferInitialPaginationPaint);
+  const [settledPaginationDocumentNonce, setSettledPaginationDocumentNonce] =
+    React.useState<number>();
+  const isInitialPaginationSettled = !deferInitialPaginationPaint ||
+    settledPaginationDocumentNonce === editor.documentLoadNonce;
   const [postImportPaginationUnlocked, setPostImportPaginationUnlocked] =
     React.useState(false);
   const [
@@ -39200,10 +39457,7 @@ export function DocxEditorViewer({
       window.cancelAnimationFrame(initialPaginationRevealFrameRef.current);
     }
     initialPaginationRevealFrameRef.current = null;
-    setIsInitialPaginationSettled(!deferInitialPaginationPaint);
-    setInitialPaginationBackgroundRefinementUnlocked(
-      !deferInitialPaginationPaint
-    );
+    setSettledPaginationDocumentNonce(undefined);
   }, [deferInitialPaginationPaint, editor.documentLoadNonce]);
   const [activeRowResize, setActiveRowResize] = React.useState<
     { tableIndex: number; boundaryRowIndex: number } | undefined
@@ -39655,6 +39909,16 @@ export function DocxEditorViewer({
     ),
     [documentLayout, documentSections, editor.model, fontMetricsRevision, editor.model.metadata.compatibility?.evenAndOddHeaders, typography?.enableOpenTypeFeatures, typography?.adjustLineHeightInTable]
   );
+  const precomputedPaginationMetrics = React.useMemo(() => {
+    if (editor.isImporting || trackedChangesEnabled || headingStyles ||
+      Object.keys(tableColumnWidths).length > 0 || Object.keys(tableRowHeights).length > 0 ||
+      activeColumnResize || activeRowResize || activeTableResize) return undefined;
+    return resolvePrecomputedPaginationMetrics(editor.model, documentSections,
+      paginationSectionMetrics, typography);
+  }, [editor.model, editor.isImporting, documentSections, paginationSectionMetrics, typography,
+    trackedChangesEnabled, headingStyles, tableColumnWidths, tableRowHeights,
+    activeColumnResize, activeRowResize, activeTableResize, fontMetricsRevision]);
+  const usesPrecomputedPagination = precomputedPaginationMetrics !== undefined;
   // Content signatures cover content only; measurement validity also depends
   // on the geometry the measurement was taken under (page size, margins,
   // section content widths, docGrid pitch) and on tracked-change visibility.
@@ -39768,7 +40032,7 @@ export function DocxEditorViewer({
           docGridLinePitchPx as number
         );
       }
-      const pageContentWidthPx = nodeMetrics?.pageContentWidthPx;
+      const pageContentWidthPx = explicitColumnWidthsByNodeIndex(editor.model).get(nodeIndex) ?? nodeMetrics?.pageContentWidthPx;
       if (
         Number.isFinite(pageContentWidthPx) &&
         (pageContentWidthPx as number) > 0
@@ -39800,7 +40064,7 @@ export function DocxEditorViewer({
         pageTextWidthPxByNodeIndex: textWidthByNodeIndex,
       pageContentHeightPxByNodeIndex: heightByNodeIndex,
     };
-  }, [editor.model.nodes.length, paginationSectionMetrics]);
+  }, [editor.model, paginationSectionMetrics]);
   const sectionColumnsBySectionIndex = React.useMemo(
     () =>
       documentSections.map((section) =>
@@ -39903,6 +40167,9 @@ export function DocxEditorViewer({
     renderMeasuredPageContentHeightsPxByPageIndex?: number[];
     renderPageContentHeightScale?: number;
   }>(() => {
+    if (editor.isImporting) {
+      return { pages: [], useMeasuredPageContentHeightsForRender: false };
+    }
     const pageContentHeightPx = Math.max(
       120,
       documentLayout.pageHeightPx -
@@ -39918,6 +40185,22 @@ export function DocxEditorViewer({
     const suppressSpacingBeforeAfterPageBreak =
       editor.model.metadata.compatibility
         ?.suppressSpacingBeforeAfterPageBreak === true;
+    if (precomputedPaginationMetrics) {
+      return {
+        pages: textEditPaginationMemo.current!(
+          editor.model, pageContentHeightPx, pageContentWidthPx,
+          editor.model.metadata.numberingDefinitions, paginationSectionMetrics,
+          {
+            allowParagraphLineSplitting: true,
+            suppressSpacingBeforeAfterPageBreak,
+            pageOverflowTolerancePx: 0,
+            precomputedTableRowHeightsByNodeIndex: precomputedPaginationMetrics.tableRowHeightsByNodeIndex,
+            precomputedNumberingLabels: paragraphNumberingLabels,
+          }
+        ),
+        useMeasuredPageContentHeightsForRender: false,
+      };
+    }
     const preferLastRenderedParagraphStartBreaks =
       !editor.canUndo && !editor.canRedo;
     // Pristine documents keep the import-calibrated heights wholesale; after
@@ -40076,17 +40359,11 @@ export function DocxEditorViewer({
         ? measuredPageContentHeightsPxForPagination
         : undefined;
     let estimatedRenderPageContentHeightScale: number | undefined = undefined;
-    const deferExpensiveInitialPaginationReconciliation =
-      deferInitialPaginationPaint &&
-      !initialPaginationBackgroundRefinementUnlocked;
-    if (deferExpensiveInitialPaginationReconciliation) {
+    if (deferInitialPaginationPaint && !isInitialPaginationSettled &&
+      !canUseMeasuredPageContentHeights && !disableMeasuredImportPagination) {
       return {
         pages: estimatedPages,
-        useMeasuredPageContentHeightsForRender:
-          estimatedPagesUseMeasuredPageContentHeightsForRender,
-        renderMeasuredPageContentHeightsPxByPageIndex:
-          estimatedRenderMeasuredPageContentHeightsPxByPageIndex,
-        renderPageContentHeightScale: estimatedRenderPageContentHeightScale,
+        useMeasuredPageContentHeightsForRender: false,
       };
     }
     const splitParagraphComparison =
@@ -40304,6 +40581,8 @@ export function DocxEditorViewer({
     const allowStoredPageCountReconciliation =
       !editor.canUndo &&
       !editor.canRedo &&
+      !(canUseMeasuredPageContentHeights && documentSections.some((section) =>
+        [...section.headerSections, ...section.footerSections].some((part) => part.nodes.length > 0))) &&
       storedPageCountIsPlausible &&
       !hasPageAnchoredFloatingFooterContent &&
       !hasMultiColumnRenderedPageBreakHints &&
@@ -40393,7 +40672,7 @@ export function DocxEditorViewer({
         maxDifference: hasTableInternalPageBreaks ? 2 : 3,
         scales: reconciliationScales,
         buildPagesAtScale: (heightScale) =>
-          buildDocumentPageNodeSegments(
+          textEditPaginationMemo.current!(
             editor.model,
             Math.max(120, Math.round(pageContentHeightPx * heightScale)),
             pageContentWidthPx,
@@ -40493,6 +40772,7 @@ export function DocxEditorViewer({
   }, [
     editor.canRedo,
     editor.canUndo,
+    editor.isImporting,
     editor.model,
     editor.model.metadata.documentPageCount,
     editor.model.metadata.endnotes,
@@ -40504,13 +40784,14 @@ export function DocxEditorViewer({
     documentLayout.marginsPx.top,
     editor.model.metadata.numberingDefinitions,
     paginationSectionMetrics,
+    precomputedPaginationMetrics,
     isReadOnly,
+    deferInitialPaginationPaint,
+    isInitialPaginationSettled,
     floatingMovePreview,
     dropCapMovePreview,
-    deferInitialPaginationPaint,
     disableMeasuredImportPagination,
     hasMeasuredBodyFooterOverlap,
-    initialPaginationBackgroundRefinementUnlocked,
     measuredPageContentHeightByIndex,
     measuredPageContentValidationByIndex,
     measuredParagraphOuterHeightsPxByNodeIndex,
@@ -41014,7 +41295,7 @@ export function DocxEditorViewer({
     );
   }, [editor.model.nodes]);
   const hideDocumentUntilPaginationSettled =
-    deferInitialPaginationPaint && !isInitialPaginationSettled;
+    editor.isImporting || (!usesPrecomputedPagination && deferInitialPaginationPaint && !isInitialPaginationSettled);
   const estimateDocumentStackHeightPx = React.useCallback(
     (count: number): number => {
       const safeCount = Math.max(0, Math.round(count));
@@ -41140,8 +41421,8 @@ export function DocxEditorViewer({
     pageVirtualization?.enabled !== false &&
     !hasExternalVisiblePageRange &&
     !hideDocumentUntilPaginationSettled &&
-    isInitialPaginationSettled &&
-    !deferInternalPageVirtualization &&
+    (usesPrecomputedPagination || isInitialPaginationSettled) &&
+    (usesPrecomputedPagination || deferInitialPaginationPaint || !deferInternalPageVirtualization) &&
     !webdriverActive &&
     pageCount > 1;
   const explicitPageVirtualizationScrollElement =
@@ -41169,6 +41450,7 @@ export function DocxEditorViewer({
   // render -> measure -> correct loop a damped fixed point.
   React.useEffect(() => {
     if (
+      editor.isImporting || usesPrecomputedPagination ||
       floatingMovePreview ||
       objectWrapDragPreview ||
       resizePreview ||
@@ -41922,7 +42204,19 @@ export function DocxEditorViewer({
     : 0;
   const initialPremeasurePageLimit = hasLargeTableLayoutSurface
     ? Math.min(2, INITIAL_PAGINATION_PREMEASURE_PAGE_LIMIT)
-    : INITIAL_PAGINATION_PREMEASURE_PAGE_LIMIT;
+    : pageVirtualization?.enabled === false || webdriverActive
+    ? INITIAL_PAGINATION_PREMEASURE_PAGE_LIMIT
+    : Math.min(
+        INITIAL_PAGINATION_PREMEASURE_PAGE_LIMIT,
+        Math.max(1, Math.ceil(
+          (internalVirtualScrollElement?.clientHeight ??
+            (typeof window === "undefined" ? Infinity : window.innerHeight)) /
+          Math.max(1, (pageSectionInfoByIndex.reduce(
+            (height, page) => Math.min(height, page.layout.pageHeightPx),
+            documentLayout.pageHeightPx
+          ) + DOC_PAGE_BREAK_GAP) * fragmentPaintZoomScale)
+        ) + pageVirtualizationOverscan)
+      );
   const initialPremeasureEndPageIndex = hasExternalVisiblePageRange
     ? normalizedVisiblePageRange.endPageIndex
     : Math.min(pageCount - 1, initialPremeasurePageLimit - 1);
@@ -42019,7 +42313,7 @@ export function DocxEditorViewer({
     visiblePageStartIndex,
   ]);
   React.useLayoutEffect(() => {
-    if (typeof window === "undefined") {
+    if (editor.isImporting || usesPrecomputedPagination || typeof window === "undefined") {
       return;
     }
 
@@ -42092,6 +42386,8 @@ export function DocxEditorViewer({
       return changed ? next : current;
     });
   }, [
+    usesPrecomputedPagination,
+    editor.isImporting,
     editor.documentLoadNonce,
     editor.model.nodes,
     pageNodeSegmentIdentityKeysByPage,
@@ -42158,9 +42454,9 @@ export function DocxEditorViewer({
     return rowsByNodeIndex;
   }, [editor.model.nodes, pageNodeSegmentsByPage, visiblePageIndexes]);
   const paginationMeasurementEnabled =
-    hideDocumentUntilPaginationSettled || postImportPaginationUnlocked;
+    !editor.isImporting && !usesPrecomputedPagination && (hideDocumentUntilPaginationSettled || postImportPaginationUnlocked);
   const visiblePagesHavePendingPaginationMeasurements = React.useMemo(() => {
-    if (pageCount === 0) {
+    if (editor.isImporting || usesPrecomputedPagination || pageCount === 0) {
       return false;
     }
 
@@ -42200,6 +42496,8 @@ export function DocxEditorViewer({
 
     return false;
   }, [
+    usesPrecomputedPagination,
+    editor.isImporting,
     editor.model.nodes,
     hasLargeTableLayoutSurface,
     measuredPageContentHeightByIndex,
@@ -42776,6 +43074,18 @@ export function DocxEditorViewer({
 
       const pageLayout =
         pageSectionInfoByIndex[pageIndex]?.layout ?? documentLayout;
+      if (headerNodes.every((node) => node.type === "paragraph" &&
+        !paragraphHasLegacyFrame(node) && node.children.every((child) => child.type === "text"))) {
+        const widthPx = pageLayout.pageWidthPx - pageLayout.marginsPx.left - pageLayout.marginsPx.right;
+        const flowHeightPx = headerNodes.reduce((height, node) => height + estimateDocNodeHeightPx(
+          node.type === "paragraph" ? sectionParagraphForFlowMeasurement(node) : node,
+          widthPx, undefined, pageLayout.docGridLinePitchPx, typography
+        ), 0);
+        next[pageIndex] = Math.max(0, Math.round(
+          pageLayout.marginsPx.top - pageLayout.headerDistancePx - flowHeightPx
+        ));
+        continue;
+      }
       const headerPartName =
         pageHeaderAndFooterNodes[pageIndex]?.headerPartName ??
         `page-${pageIndex}-header`;
@@ -42887,12 +43197,11 @@ export function DocxEditorViewer({
         0,
         maxOverflowCapPx
       );
-      // Record every measured header page (including a 0 clearance) so the
-      // renderer can tell "measured to need no extra clearance" apart from
-      // "not measured yet". An in-flow header already provides its own body
-      // offset, so once measured the estimated floor must not be re-added on
-      // top of it (that double-counts and pushes the body far down the page).
-      next[pageIndex] = boundedClearancePx;
+      // Only store corrections to the initial flow estimate. Matching geometry
+      // does not require another render before the document can be revealed.
+      if (boundedClearancePx !== (headerBodyClearanceFloorByPage[pageIndex] ?? 0)) {
+        next[pageIndex] = boundedClearancePx;
+      }
     }
 
     setHeaderBodyClearanceByPage((current) => {
@@ -42903,7 +43212,7 @@ export function DocxEditorViewer({
       if (currentKeys.length === nextKeys.length) {
         let equal = true;
         for (const key of nextKeys) {
-          if ((current[key] ?? 0) !== (next[key] ?? 0)) {
+          if (current[key] !== next[key]) {
             equal = false;
             break;
           }
@@ -42920,6 +43229,7 @@ export function DocxEditorViewer({
     paginationMeasurementEnabled,
     pageCount,
     pageHeaderAndFooterNodes,
+    headerBodyClearanceFloorByPage,
     pageSectionInfoByIndex,
     resolveViewerMeasurementZoomScale,
     visiblePageEndIndex,
@@ -43192,6 +43502,7 @@ export function DocxEditorViewer({
         nextMeasuredBodyFooterOverlapLatchState.consecutivePasses,
     };
     const frameId = window.requestAnimationFrame(() => {
+      paginationMeasurementFrameRef.current = null;
       if (nextMeasuredBodyFooterOverlapLatchState.shouldLatch) {
         setHasMeasuredBodyFooterOverlap(true);
       }
@@ -43271,9 +43582,13 @@ export function DocxEditorViewer({
         return merged;
       });
     });
+    paginationMeasurementFrameRef.current = frameId;
 
     return () => {
       window.cancelAnimationFrame(frameId);
+      if (paginationMeasurementFrameRef.current === frameId) {
+        paginationMeasurementFrameRef.current = null;
+      }
     };
   }, [
     disableMeasuredImportPagination,
@@ -43326,7 +43641,7 @@ export function DocxEditorViewer({
     renderableImageSourceRevision,
   ]);
   React.useEffect(() => {
-    if (editor.canUndo || editor.canRedo || disableMeasuredImportPagination) {
+    if (usesPrecomputedPagination || editor.canUndo || editor.canRedo || disableMeasuredImportPagination) {
       return;
     }
 
@@ -43419,6 +43734,7 @@ export function DocxEditorViewer({
     setMeasuredPageContentHeightByIndex([]);
     setMeasuredPageContentValidationByIndex([]);
   }, [
+    usesPrecomputedPagination,
     editor.canUndo,
     editor.canRedo,
     disableMeasuredImportPagination,
@@ -43431,40 +43747,12 @@ export function DocxEditorViewer({
     renderableImageSourceRevision,
   ]);
   React.useEffect(() => {
-    if (
-      !deferInitialPaginationPaint ||
-      !isInitialPaginationSettled ||
-      initialPaginationBackgroundRefinementUnlocked
-    ) {
+    if (editor.isImporting || !deferInitialPaginationPaint || isInitialPaginationSettled) {
       return;
     }
 
-    if (typeof window === "undefined") {
-      setInitialPaginationBackgroundRefinementUnlocked(true);
-      return;
-    }
-
-    const timeoutId = window.setTimeout(() => {
-      React.startTransition(() => {
-        setInitialPaginationBackgroundRefinementUnlocked(true);
-      });
-    }, INITIAL_PAGINATION_BACKGROUND_REFINEMENT_DELAY_MS);
-
-    return () => {
-      window.clearTimeout(timeoutId);
-    };
-  }, [
-    deferInitialPaginationPaint,
-    initialPaginationBackgroundRefinementUnlocked,
-    isInitialPaginationSettled,
-  ]);
-  React.useEffect(() => {
-    if (!deferInitialPaginationPaint || isInitialPaginationSettled) {
-      return;
-    }
-
-    if (pageCount === 0) {
-      setIsInitialPaginationSettled(true);
+    if (usesPrecomputedPagination || pageCount === 0) {
+      setSettledPaginationDocumentNonce(editor.documentLoadNonce);
       return;
     }
 
@@ -43574,43 +43862,47 @@ export function DocxEditorViewer({
     }
 
     let revealCancelled = false;
-    let revealTimeoutId: number | null = null;
+    let stableFrameCount = 0;
     const settleAndReveal = (): void => {
       if (
         typeof window === "undefined" ||
         typeof window.requestAnimationFrame !== "function"
       ) {
-        setIsInitialPaginationSettled(true);
+        setSettledPaginationDocumentNonce(editor.documentLoadNonce);
         return;
       }
 
-      revealTimeoutId = window.setTimeout(() => {
-        revealTimeoutId = null;
-        initialPaginationRevealFrameRef.current = window.requestAnimationFrame(
-          () => {
-            if (revealCancelled) {
-              return;
-            }
-            if (Date.now() < paginationMeasurementSuspendUntilRef.current) {
-              return;
-            }
-            if (initialPaginationStableSignatureRef.current !== nextSignature) {
-              return;
-            }
-            initialPaginationRevealFrameRef.current = null;
-            setIsInitialPaginationSettled(true);
+      initialPaginationRevealFrameRef.current = window.requestAnimationFrame(
+        () => {
+          if (revealCancelled) {
+            return;
           }
-        );
-      }, INITIAL_PAGINATION_STABILITY_IDLE_MS);
+          if (Date.now() < paginationMeasurementSuspendUntilRef.current) {
+            return;
+          }
+          if (initialPaginationStableSignatureRef.current !== nextSignature) {
+            return;
+          }
+          initialPaginationRevealFrameRef.current = null;
+          if (paginationMeasurementFrameRef.current !== null ||
+            (!disableMeasuredImportPagination && visiblePagesHavePendingPaginationMeasurements)) {
+            stableFrameCount = 0;
+          } else {
+            stableFrameCount += 1;
+          }
+          if (stableFrameCount >= 2) {
+            setSettledPaginationDocumentNonce(editor.documentLoadNonce);
+          } else {
+            settleAndReveal();
+          }
+        }
+      );
     };
 
     settleAndReveal();
 
     return () => {
       revealCancelled = true;
-      if (revealTimeoutId !== null && typeof window !== "undefined") {
-        window.clearTimeout(revealTimeoutId);
-      }
       if (
         initialPaginationRevealFrameRef.current !== null &&
         typeof window !== "undefined" &&
@@ -43621,8 +43913,12 @@ export function DocxEditorViewer({
       initialPaginationRevealFrameRef.current = null;
     };
   }, [
+    usesPrecomputedPagination,
+    editor.isImporting,
     deferInitialPaginationPaint,
+    editor.documentLoadNonce,
     editor.model.nodes,
+    disableMeasuredImportPagination,
     headerBodyClearanceByPage,
     isInitialPaginationSettled,
     measuredPageContentHeightByIndex,
@@ -43633,6 +43929,7 @@ export function DocxEditorViewer({
     tableMeasuredRowHeights,
     visiblePageEndIndex,
     visiblePageStartIndex,
+    visiblePagesHavePendingPaginationMeasurements,
   ]);
   const setSingleTableCellSelection = React.useCallback(
     (tableIndex: number, rowIndex: number, cellIndex: number): void => {
@@ -50738,6 +51035,8 @@ export function DocxEditorViewer({
 
   const resolveTableRowHeights = React.useCallback(
     (tableIndex: number, table: TableNode): Array<number | undefined> => {
+      const plannedHeights = precomputedPaginationMetrics?.tableRowHeightsByNodeIndex[tableIndex];
+      if (plannedHeights) return plannedHeights;
       const storedHeights = tableRowHeights[tableIndex];
       return table.rows.map((row, rowIndex) => {
         const stored = storedHeights?.[rowIndex];
@@ -50759,7 +51058,7 @@ export function DocxEditorViewer({
         return undefined;
       });
     },
-    [tableRowHeights]
+    [tableRowHeights, precomputedPaginationMetrics]
   );
 
   const resolveEmbeddedTableColumnWidths = React.useCallback(
@@ -51143,6 +51442,64 @@ export function DocxEditorViewer({
     []
   );
 
+  const captureTableGridResize = React.useCallback((address: number | string): {
+    target: TableGridResizeTarget;
+    expectedTarget: TableNode;
+    resolvedBorderSpacingPx: number;
+    address: number | string;
+    marked: boolean;
+    signature: string;
+  } | undefined => {
+    let tableIndex: number;
+    let path: NestedTablePathStep[] = [];
+    if (typeof address === "number") {
+      tableIndex = address;
+    } else {
+      const location = parseEmbeddedTableRuntimeKey(address);
+      if (!location) return undefined;
+      tableIndex = location.hostTableIndex;
+      path = [
+        { rowIndex: location.hostRowIndex, cellIndex: location.hostCellIndex, nodeIndex: location.rootContentIndex },
+        ...location.descendants.map((item) => ({ rowIndex: item.rowIndex, cellIndex: item.cellIndex, nodeIndex: item.contentIndex })),
+      ];
+    }
+    const root = sourceModelRef.current.nodes[tableIndex];
+    if (!root || root.type !== "table") return undefined;
+    let target: TableNode = root;
+    for (const step of path) {
+      const child: TableCellContentNode | undefined = target.rows[step.rowIndex]?.cells[step.cellIndex]?.nodes[step.nodeIndex];
+      if (!child || child.type !== "table") return undefined;
+      target = child;
+    }
+    return { target: { tableIndex, path }, expectedTarget: target, address,
+      marked: Boolean(target.style?.collapsedGridColumns?.length) ||
+        Boolean(target.blockId && featureCanonicalTableIdsRef.current.has(target.blockId)),
+      signature: JSON.stringify([target.style?.columnWidthsTwips, target.style?.collapsedGridColumns,
+        target.rows.map((row) => [row.style?.heightTwips, row.style?.heightRule])]),
+      resolvedBorderSpacingPx: resolveTableSeparateBorderSpacingPx(target) };
+  }, []);
+
+  React.useEffect(() => {
+    for (const [key, previous] of featureResizeSnapshotsRef.current) {
+      const current = captureTableGridResize(previous.address);
+      if (current?.signature === previous.signature && current.expectedTarget.blockId === previous.blockId) continue;
+      if (typeof previous.address === "number") {
+        const tableIndex = previous.address;
+        setTableColumnWidths((values) => { if (!(tableIndex in values)) return values; const next = { ...values }; delete next[tableIndex]; return next; });
+        setTableRowHeights((values) => { if (!(tableIndex in values)) return values; const next = { ...values }; delete next[tableIndex]; return next; });
+      } else {
+        const tableKey = previous.address;
+        setEmbeddedTableColumnWidths((values) => { if (!(tableKey in values)) return values; const next = { ...values }; delete next[tableKey]; return next; });
+        setEmbeddedTableRowHeights((values) => { if (!(tableKey in values)) return values; const next = { ...values }; delete next[tableKey]; return next; });
+      }
+      if (current && current.expectedTarget.blockId === previous.blockId) {
+        featureResizeSnapshotsRef.current.set(key, { ...previous, signature: current.signature });
+      } else {
+        featureResizeSnapshotsRef.current.delete(key);
+      }
+    }
+  }, [sourceEditor.model, captureTableGridResize]);
+
   const beginTableColumnResize = React.useCallback(
     (
       event: React.PointerEvent<HTMLSpanElement>,
@@ -51160,6 +51517,13 @@ export function DocxEditorViewer({
       if (!Number.isFinite(tableWidthPx) || tableWidthPx <= 0) {
         return;
       }
+
+      const resizeCapture = captureTableGridResize(tableIndex);
+      const previousWidths = tableColumnWidths[tableIndex];
+
+      if (resizeCapture?.marked) tableResizeCleanupRef.current?.();
+      const resizeScale = resizeCapture?.marked ? resolveViewerMeasurementZoomScale(event.currentTarget, 1) : 1;
+      if (resizeCapture?.marked) tableWidthPx /= resizeScale;
 
       const resizeHandle = event.currentTarget;
       const pointerId = event.pointerId;
@@ -51189,7 +51553,8 @@ export function DocxEditorViewer({
         return;
       }
 
-      const minimumWidthPx = 8;
+      const minimumLeftWidthPx = resizeCapture?.marked ? Math.min(8, leftStart) : 8;
+      const minimumRightWidthPx = resizeCapture?.marked ? Math.min(8, rightStart) : 8;
       const startX = event.clientX;
       let latestWidths = startingWidths;
       let frameId: number | undefined;
@@ -51204,10 +51569,11 @@ export function DocxEditorViewer({
       };
 
       const onPointerMove = (pointerEvent: PointerEvent): void => {
-        const deltaPx = pointerEvent.clientX - startX;
+        if (resizeCapture?.marked && pointerEvent.pointerId !== pointerId) return;
+        const deltaPx = (pointerEvent.clientX - startX) / resizeScale;
         const nextLeft = Math.max(
-          minimumWidthPx,
-          Math.min(leftStart + deltaPx, combined - minimumWidthPx)
+          minimumLeftWidthPx,
+          Math.min(leftStart + deltaPx, combined - minimumRightWidthPx)
         );
         const nextRight = combined - nextLeft;
 
@@ -51228,16 +51594,56 @@ export function DocxEditorViewer({
         frameId = window.requestAnimationFrame(commitWidths);
       };
 
+      const restorePreview = (restorePrevious: boolean): void => {
+        setTableColumnWidths((current) => {
+          const next = { ...current };
+          if (restorePrevious && previousWidths) next[tableIndex] = previousWidths;
+          else delete next[tableIndex];
+          return next;
+        });
+      };
+      const finishResize = (cancelled: boolean): void => {
+        if (!resizeCapture?.marked) {
+          commitWidths();
+          return;
+        }
+        const changed = latestWidths.some((value, index) => Math.round(value * TWIPS_PER_PIXEL) !== Math.round(startingWidths[index] * TWIPS_PER_PIXEL));
+        if (cancelled || !changed) {
+          const latestCapture = captureTableGridResize(tableIndex);
+          restorePreview(!resizeCapture || latestCapture?.expectedTarget === resizeCapture.expectedTarget);
+          return;
+        }
+        const bridge = tableGridResizeCommitByController.get(sourceEditor.syncPaginationInfo as object);
+        if (bridge) {
+          if (resizeCapture) {
+            const outcome = bridge(resizeCapture.target, resizeCapture.expectedTarget, {
+            widthsPx: latestWidths, initialWidthsPx: startingWidths, resolvedBorderSpacingPx: resizeCapture.resolvedBorderSpacingPx,
+            });
+            if (outcome === "committed" && resizeCapture.expectedTarget.blockId) {
+              featureCanonicalTableIdsRef.current.add(resizeCapture.expectedTarget.blockId);
+            }
+            if (outcome === "committed") featureResizeSnapshotsRef.current.set(`${typeof resizeCapture.address}:${resizeCapture.address}`, {
+              address: resizeCapture.address, signature: resizeCapture.signature, blockId: resizeCapture.expectedTarget.blockId,
+            });
+          }
+          restorePreview(false);
+        } else {
+          commitWidths();
+        }
+      };
+
       const onPointerUp = (pointerUpEvent: PointerEvent): void => {
+        if (resizeCapture?.marked && pointerUpEvent.pointerId !== pointerId) return;
+        if (resizeCapture?.marked) tableResizeCleanupRef.current = undefined;
         window.removeEventListener("pointermove", onPointerMove);
         window.removeEventListener("pointerup", onPointerUp);
-        window.removeEventListener("pointercancel", onPointerUp);
+        window.removeEventListener("pointercancel", onPointerCancel);
 
         if (frameId !== undefined) {
           window.cancelAnimationFrame(frameId);
         }
 
-        commitWidths();
+        finishResize(pointerUpEvent.type === "pointercancel");
         if (resizeHandle.releasePointerCapture) {
           try {
             resizeHandle.releasePointerCapture(
@@ -51250,11 +51656,14 @@ export function DocxEditorViewer({
         setActiveColumnResize(undefined);
       };
 
+      const onPointerCancel = (pointerEvent: PointerEvent): void => onPointerUp(pointerEvent);
+
       window.addEventListener("pointermove", onPointerMove);
-      window.addEventListener("pointerup", onPointerUp, { once: true });
-      window.addEventListener("pointercancel", onPointerUp, { once: true });
+      window.addEventListener("pointerup", onPointerUp, resizeCapture?.marked ? undefined : { once: true });
+      window.addEventListener("pointercancel", onPointerCancel, resizeCapture?.marked ? undefined : { once: true });
+      if (resizeCapture?.marked) tableResizeCleanupRef.current = () => onPointerUp(new PointerEvent("pointercancel", { pointerId }));
     },
-    [isReadOnly]
+    [isReadOnly, captureTableGridResize, sourceEditor.syncPaginationInfo, tableColumnWidths, resolveViewerMeasurementZoomScale]
   );
 
   const beginTableRowResize = React.useCallback(
@@ -51272,6 +51681,16 @@ export function DocxEditorViewer({
       event.stopPropagation();
       if (rowHeights.length < 2) {
         return;
+      }
+
+      const resizeCapture = captureTableGridResize(tableIndex);
+      const previousHeights = tableRowHeights[tableIndex];
+
+      if (resizeCapture?.marked) tableResizeCleanupRef.current?.();
+      const resizeScale = resizeCapture?.marked ? resolveViewerMeasurementZoomScale(event.currentTarget, 1) : 1;
+      if (resizeCapture?.marked) {
+        const measuredTable = event.currentTarget.parentElement?.querySelector<HTMLTableElement>("table");
+        if (measuredTable) rowHeights = Array.from(measuredTable.rows).map((row) => row.getBoundingClientRect().height / resizeScale);
       }
 
       const resizeHandle = event.currentTarget;
@@ -51317,6 +51736,7 @@ export function DocxEditorViewer({
       };
 
       const onPointerMove = (pointerEvent: PointerEvent): void => {
+        if (resizeCapture?.marked && pointerEvent.pointerId !== pointerId) return;
         const deltaPx = (pointerEvent.clientY - startY) / scale;
         const nextTop = Math.max(
           minimumHeightPx,
@@ -51337,19 +51757,56 @@ export function DocxEditorViewer({
         frameId = window.requestAnimationFrame(commitHeights);
       };
 
+      const restorePreview = (restorePrevious: boolean): void => {
+        setTableRowHeights((current) => {
+          const next = { ...current };
+          if (restorePrevious && previousHeights) next[tableIndex] = previousHeights;
+          else delete next[tableIndex];
+          return next;
+        });
+      };
+      const finishResize = (cancelled: boolean): void => {
+        if (!resizeCapture?.marked) {
+          if (latestHeights !== startingHeights) commitHeights();
+          return;
+        }
+        const changed = latestHeights.some((value, index) => Math.round(value * TWIPS_PER_PIXEL) !== Math.round(startingHeights[index] * TWIPS_PER_PIXEL));
+        if (cancelled || !changed) {
+          const latestCapture = captureTableGridResize(tableIndex);
+          restorePreview(!resizeCapture || latestCapture?.expectedTarget === resizeCapture.expectedTarget);
+          return;
+        }
+        const bridge = tableGridResizeCommitByController.get(sourceEditor.syncPaginationInfo as object);
+        if (bridge) {
+          if (resizeCapture) {
+            const outcome = bridge(resizeCapture.target, resizeCapture.expectedTarget, {
+            heightsPx: latestHeights, initialHeightsPx: startingHeights, resolvedBorderSpacingPx: resizeCapture.resolvedBorderSpacingPx,
+            });
+            if (outcome === "committed" && resizeCapture.expectedTarget.blockId) {
+              featureCanonicalTableIdsRef.current.add(resizeCapture.expectedTarget.blockId);
+            }
+            if (outcome === "committed") featureResizeSnapshotsRef.current.set(`${typeof resizeCapture.address}:${resizeCapture.address}`, {
+              address: resizeCapture.address, signature: resizeCapture.signature, blockId: resizeCapture.expectedTarget.blockId,
+            });
+          }
+          restorePreview(false);
+        } else {
+          commitHeights();
+        }
+      };
+
       const onPointerUp = (pointerUpEvent: PointerEvent): void => {
+        if (resizeCapture?.marked && pointerUpEvent.pointerId !== pointerId) return;
+        if (resizeCapture?.marked) tableResizeCleanupRef.current = undefined;
         window.removeEventListener("pointermove", onPointerMove);
         window.removeEventListener("pointerup", onPointerUp);
-        window.removeEventListener("pointercancel", onPointerUp);
+        window.removeEventListener("pointercancel", onPointerCancel);
 
         if (frameId !== undefined) {
           window.cancelAnimationFrame(frameId);
         }
 
-        // A click without a drag leaves the rows as they are.
-        if (latestHeights !== startingHeights) {
-          commitHeights();
-        }
+        finishResize(pointerUpEvent.type === "pointercancel");
         if (resizeHandle.releasePointerCapture) {
           try {
             resizeHandle.releasePointerCapture(
@@ -51362,11 +51819,14 @@ export function DocxEditorViewer({
         setActiveRowResize(undefined);
       };
 
+      const onPointerCancel = (pointerEvent: PointerEvent): void => onPointerUp(pointerEvent);
+
       window.addEventListener("pointermove", onPointerMove);
-      window.addEventListener("pointerup", onPointerUp, { once: true });
-      window.addEventListener("pointercancel", onPointerUp, { once: true });
+      window.addEventListener("pointerup", onPointerUp, resizeCapture?.marked ? undefined : { once: true });
+      window.addEventListener("pointercancel", onPointerCancel, resizeCapture?.marked ? undefined : { once: true });
+      if (resizeCapture?.marked) tableResizeCleanupRef.current = () => onPointerUp(new PointerEvent("pointercancel", { pointerId }));
     },
-    [isReadOnly, resolveViewerMeasurementZoomScale]
+    [isReadOnly, resolveViewerMeasurementZoomScale, captureTableGridResize, sourceEditor.syncPaginationInfo, tableRowHeights]
   );
 
   const beginEmbeddedTableColumnResize = React.useCallback(
@@ -51386,6 +51846,13 @@ export function DocxEditorViewer({
       if (!Number.isFinite(tableWidthPx) || tableWidthPx <= 0) {
         return;
       }
+
+      const resizeCapture = captureTableGridResize(tableKey);
+      const previousWidths = embeddedTableColumnWidths[tableKey];
+
+      if (resizeCapture?.marked) tableResizeCleanupRef.current?.();
+      const resizeScale = resizeCapture?.marked ? resolveViewerMeasurementZoomScale(event.currentTarget, 1) : 1;
+      if (resizeCapture?.marked) tableWidthPx /= resizeScale;
 
       const resizeHandle = event.currentTarget;
       const pointerId = event.pointerId;
@@ -51415,7 +51882,8 @@ export function DocxEditorViewer({
         return;
       }
 
-      const minimumWidthPx = 8;
+      const minimumLeftWidthPx = resizeCapture?.marked ? Math.min(8, leftStart) : 8;
+      const minimumRightWidthPx = resizeCapture?.marked ? Math.min(8, rightStart) : 8;
       const startX = event.clientX;
       let latestWidths = startingWidths;
       let frameId: number | undefined;
@@ -51433,10 +51901,11 @@ export function DocxEditorViewer({
       };
 
       const onPointerMove = (pointerEvent: PointerEvent): void => {
-        const deltaPx = pointerEvent.clientX - startX;
+        if (resizeCapture?.marked && pointerEvent.pointerId !== pointerId) return;
+        const deltaPx = (pointerEvent.clientX - startX) / resizeScale;
         const nextLeft = Math.max(
-          minimumWidthPx,
-          Math.min(leftStart + deltaPx, combined - minimumWidthPx)
+          minimumLeftWidthPx,
+          Math.min(leftStart + deltaPx, combined - minimumRightWidthPx)
         );
         const nextRight = combined - nextLeft;
 
@@ -51457,16 +51926,56 @@ export function DocxEditorViewer({
         frameId = window.requestAnimationFrame(commitWidths);
       };
 
+      const restorePreview = (restorePrevious: boolean): void => {
+        setEmbeddedTableColumnWidths((current) => {
+          const next = { ...current };
+          if (restorePrevious && previousWidths) next[tableKey] = previousWidths;
+          else delete next[tableKey];
+          return next;
+        });
+      };
+      const finishResize = (cancelled: boolean): void => {
+        if (!resizeCapture?.marked) {
+          commitWidths();
+          return;
+        }
+        const changed = latestWidths.some((value, index) => Math.round(value * TWIPS_PER_PIXEL) !== Math.round(startingWidths[index] * TWIPS_PER_PIXEL));
+        if (cancelled || !changed) {
+          const latestCapture = captureTableGridResize(tableKey);
+          restorePreview(!resizeCapture || latestCapture?.expectedTarget === resizeCapture.expectedTarget);
+          return;
+        }
+        const bridge = tableGridResizeCommitByController.get(sourceEditor.syncPaginationInfo as object);
+        if (bridge) {
+          if (resizeCapture) {
+            const outcome = bridge(resizeCapture.target, resizeCapture.expectedTarget, {
+            widthsPx: latestWidths, initialWidthsPx: startingWidths, resolvedBorderSpacingPx: resizeCapture.resolvedBorderSpacingPx,
+            });
+            if (outcome === "committed" && resizeCapture.expectedTarget.blockId) {
+              featureCanonicalTableIdsRef.current.add(resizeCapture.expectedTarget.blockId);
+            }
+            if (outcome === "committed") featureResizeSnapshotsRef.current.set(`${typeof resizeCapture.address}:${resizeCapture.address}`, {
+              address: resizeCapture.address, signature: resizeCapture.signature, blockId: resizeCapture.expectedTarget.blockId,
+            });
+          }
+          restorePreview(false);
+        } else {
+          commitWidths();
+        }
+      };
+
       const onPointerUp = (pointerUpEvent: PointerEvent): void => {
+        if (resizeCapture?.marked && pointerUpEvent.pointerId !== pointerId) return;
+        if (resizeCapture?.marked) tableResizeCleanupRef.current = undefined;
         window.removeEventListener("pointermove", onPointerMove);
         window.removeEventListener("pointerup", onPointerUp);
-        window.removeEventListener("pointercancel", onPointerUp);
+        window.removeEventListener("pointercancel", onPointerCancel);
 
         if (frameId !== undefined) {
           window.cancelAnimationFrame(frameId);
         }
 
-        commitWidths();
+        finishResize(pointerUpEvent.type === "pointercancel");
         if (resizeHandle.releasePointerCapture) {
           try {
             resizeHandle.releasePointerCapture(
@@ -51479,11 +51988,14 @@ export function DocxEditorViewer({
         setActiveEmbeddedColumnResize(undefined);
       };
 
+      const onPointerCancel = (pointerEvent: PointerEvent): void => onPointerUp(pointerEvent);
+
       window.addEventListener("pointermove", onPointerMove);
-      window.addEventListener("pointerup", onPointerUp, { once: true });
-      window.addEventListener("pointercancel", onPointerUp, { once: true });
+      window.addEventListener("pointerup", onPointerUp, resizeCapture?.marked ? undefined : { once: true });
+      window.addEventListener("pointercancel", onPointerCancel, resizeCapture?.marked ? undefined : { once: true });
+      if (resizeCapture?.marked) tableResizeCleanupRef.current = () => onPointerUp(new PointerEvent("pointercancel", { pointerId }));
     },
-    [isReadOnly]
+    [isReadOnly, captureTableGridResize, sourceEditor.syncPaginationInfo, embeddedTableColumnWidths, resolveViewerMeasurementZoomScale]
   );
 
   const beginEmbeddedTableRowResize = React.useCallback(
@@ -51501,6 +52013,16 @@ export function DocxEditorViewer({
       event.stopPropagation();
       if (rowHeights.length < 2) {
         return;
+      }
+
+      const resizeCapture = captureTableGridResize(tableKey);
+      const previousHeights = embeddedTableRowHeights[tableKey];
+
+      if (resizeCapture?.marked) tableResizeCleanupRef.current?.();
+      const resizeScale = resizeCapture?.marked ? resolveViewerMeasurementZoomScale(event.currentTarget, 1) : 1;
+      if (resizeCapture?.marked) {
+        const measuredTable = event.currentTarget.parentElement?.querySelector<HTMLTableElement>("table");
+        if (measuredTable) rowHeights = Array.from(measuredTable.rows).map((row) => row.getBoundingClientRect().height / resizeScale);
       }
 
       const resizeHandle = event.currentTarget;
@@ -51543,7 +52065,8 @@ export function DocxEditorViewer({
       };
 
       const onPointerMove = (pointerEvent: PointerEvent): void => {
-        const deltaPx = pointerEvent.clientY - startY;
+        if (resizeCapture?.marked && pointerEvent.pointerId !== pointerId) return;
+        const deltaPx = (pointerEvent.clientY - startY) / resizeScale;
         const nextTop = Math.max(
           minimumHeightPx,
           Math.round(topStart + deltaPx)
@@ -51563,16 +52086,56 @@ export function DocxEditorViewer({
         frameId = window.requestAnimationFrame(commitHeights);
       };
 
+      const restorePreview = (restorePrevious: boolean): void => {
+        setEmbeddedTableRowHeights((current) => {
+          const next = { ...current };
+          if (restorePrevious && previousHeights) next[tableKey] = previousHeights;
+          else delete next[tableKey];
+          return next;
+        });
+      };
+      const finishResize = (cancelled: boolean): void => {
+        if (!resizeCapture?.marked) {
+          commitHeights();
+          return;
+        }
+        const changed = latestHeights.some((value, index) => Math.round(value * TWIPS_PER_PIXEL) !== Math.round(startingHeights[index] * TWIPS_PER_PIXEL));
+        if (cancelled || !changed) {
+          const latestCapture = captureTableGridResize(tableKey);
+          restorePreview(!resizeCapture || latestCapture?.expectedTarget === resizeCapture.expectedTarget);
+          return;
+        }
+        const bridge = tableGridResizeCommitByController.get(sourceEditor.syncPaginationInfo as object);
+        if (bridge) {
+          if (resizeCapture) {
+            const outcome = bridge(resizeCapture.target, resizeCapture.expectedTarget, {
+            heightsPx: latestHeights, initialHeightsPx: startingHeights, resolvedBorderSpacingPx: resizeCapture.resolvedBorderSpacingPx,
+            });
+            if (outcome === "committed" && resizeCapture.expectedTarget.blockId) {
+              featureCanonicalTableIdsRef.current.add(resizeCapture.expectedTarget.blockId);
+            }
+            if (outcome === "committed") featureResizeSnapshotsRef.current.set(`${typeof resizeCapture.address}:${resizeCapture.address}`, {
+              address: resizeCapture.address, signature: resizeCapture.signature, blockId: resizeCapture.expectedTarget.blockId,
+            });
+          }
+          restorePreview(false);
+        } else {
+          commitHeights();
+        }
+      };
+
       const onPointerUp = (pointerUpEvent: PointerEvent): void => {
+        if (resizeCapture?.marked && pointerUpEvent.pointerId !== pointerId) return;
+        if (resizeCapture?.marked) tableResizeCleanupRef.current = undefined;
         window.removeEventListener("pointermove", onPointerMove);
         window.removeEventListener("pointerup", onPointerUp);
-        window.removeEventListener("pointercancel", onPointerUp);
+        window.removeEventListener("pointercancel", onPointerCancel);
 
         if (frameId !== undefined) {
           window.cancelAnimationFrame(frameId);
         }
 
-        commitHeights();
+        finishResize(pointerUpEvent.type === "pointercancel");
         if (resizeHandle.releasePointerCapture) {
           try {
             resizeHandle.releasePointerCapture(
@@ -51585,11 +52148,14 @@ export function DocxEditorViewer({
         setActiveEmbeddedRowResize(undefined);
       };
 
+      const onPointerCancel = (pointerEvent: PointerEvent): void => onPointerUp(pointerEvent);
+
       window.addEventListener("pointermove", onPointerMove);
-      window.addEventListener("pointerup", onPointerUp, { once: true });
-      window.addEventListener("pointercancel", onPointerUp, { once: true });
+      window.addEventListener("pointerup", onPointerUp, resizeCapture?.marked ? undefined : { once: true });
+      window.addEventListener("pointercancel", onPointerCancel, resizeCapture?.marked ? undefined : { once: true });
+      if (resizeCapture?.marked) tableResizeCleanupRef.current = () => onPointerUp(new PointerEvent("pointercancel", { pointerId }));
     },
-    [isReadOnly]
+    [isReadOnly, captureTableGridResize, sourceEditor.syncPaginationInfo, embeddedTableRowHeights, resolveViewerMeasurementZoomScale]
   );
 
   const beginImageResize = React.useCallback(
@@ -52379,6 +52945,18 @@ export function DocxEditorViewer({
         return;
       }
 
+      const resizeCapture = captureTableGridResize(tableIndex);
+      const previousWidths = tableColumnWidths[tableIndex];
+      const previousHeights = tableRowHeights[tableIndex];
+
+      if (resizeCapture?.marked) tableResizeCleanupRef.current?.();
+      const resizeScale = resizeCapture?.marked ? resolveViewerMeasurementZoomScale(event.currentTarget, 1) : 1;
+      if (resizeCapture?.marked) tableWidthPx /= resizeScale;
+      if (resizeCapture?.marked) {
+        const measuredTable = event.currentTarget.parentElement?.querySelector<HTMLTableElement>("table");
+        if (measuredTable) rowHeights = Array.from(measuredTable.rows).map((row) => row.getBoundingClientRect().height / resizeScale);
+      }
+
       const resizeHandle = event.currentTarget;
       const pointerId = event.pointerId;
 
@@ -52435,8 +53013,9 @@ export function DocxEditorViewer({
       };
 
       const onPointerMove = (pointerEvent: PointerEvent): void => {
-        const deltaX = pointerEvent.clientX - startX;
-        const deltaY = pointerEvent.clientY - startY;
+        if (resizeCapture?.marked && pointerEvent.pointerId !== pointerId) return;
+        const deltaX = (pointerEvent.clientX - startX) / resizeScale;
+        const deltaY = (pointerEvent.clientY - startY) / resizeScale;
         const nextWidth = Math.max(
           minimumTableWidth,
           clampNumber(
@@ -52462,16 +53041,62 @@ export function DocxEditorViewer({
         frameId = window.requestAnimationFrame(commitWidths);
       };
 
+      const restorePreview = (restorePrevious: boolean): void => {
+        setTableColumnWidths((current) => {
+          const next = { ...current };
+          if (restorePrevious && previousWidths) next[tableIndex] = previousWidths;
+          else delete next[tableIndex];
+          return next;
+        });
+        setTableRowHeights((current) => {
+          const next = { ...current };
+          if (restorePrevious && previousHeights) next[tableIndex] = previousHeights;
+          else delete next[tableIndex];
+          return next;
+        });
+      };
+      const finishResize = (cancelled: boolean): void => {
+        if (!resizeCapture?.marked) {
+          commitWidths();
+          return;
+        }
+        const changed = latestWidths.some((value, index) => Math.round(value * TWIPS_PER_PIXEL) !== Math.round(safeStartingColumnWidths[index] * TWIPS_PER_PIXEL)) || latestHeights.some((value, index) => Math.round(value * TWIPS_PER_PIXEL) !== Math.round(startingHeights[index] * TWIPS_PER_PIXEL));
+        if (cancelled || !changed) {
+          const latestCapture = captureTableGridResize(tableIndex);
+          restorePreview(!resizeCapture || latestCapture?.expectedTarget === resizeCapture.expectedTarget);
+          return;
+        }
+        const bridge = tableGridResizeCommitByController.get(sourceEditor.syncPaginationInfo as object);
+        if (bridge) {
+          if (resizeCapture) {
+            const outcome = bridge(resizeCapture.target, resizeCapture.expectedTarget, {
+            widthsPx: latestWidths, initialWidthsPx: safeStartingColumnWidths, heightsPx: latestHeights, initialHeightsPx: startingHeights, resolvedBorderSpacingPx: resizeCapture.resolvedBorderSpacingPx,
+            });
+            if (outcome === "committed" && resizeCapture.expectedTarget.blockId) {
+              featureCanonicalTableIdsRef.current.add(resizeCapture.expectedTarget.blockId);
+            }
+            if (outcome === "committed") featureResizeSnapshotsRef.current.set(`${typeof resizeCapture.address}:${resizeCapture.address}`, {
+              address: resizeCapture.address, signature: resizeCapture.signature, blockId: resizeCapture.expectedTarget.blockId,
+            });
+          }
+          restorePreview(false);
+        } else {
+          commitWidths();
+        }
+      };
+
       const onPointerUp = (pointerUpEvent: PointerEvent): void => {
+        if (resizeCapture?.marked && pointerUpEvent.pointerId !== pointerId) return;
+        if (resizeCapture?.marked) tableResizeCleanupRef.current = undefined;
         window.removeEventListener("pointermove", onPointerMove);
         window.removeEventListener("pointerup", onPointerUp);
-        window.removeEventListener("pointercancel", onPointerUp);
+        window.removeEventListener("pointercancel", onPointerCancel);
 
         if (frameId !== undefined) {
           window.cancelAnimationFrame(frameId);
         }
 
-        commitWidths();
+        finishResize(pointerUpEvent.type === "pointercancel");
         if (resizeHandle.releasePointerCapture) {
           try {
             resizeHandle.releasePointerCapture(
@@ -52484,11 +53109,14 @@ export function DocxEditorViewer({
         setActiveTableResize(undefined);
       };
 
+      const onPointerCancel = (pointerEvent: PointerEvent): void => onPointerUp(pointerEvent);
+
       window.addEventListener("pointermove", onPointerMove);
-      window.addEventListener("pointerup", onPointerUp, { once: true });
-      window.addEventListener("pointercancel", onPointerUp, { once: true });
+      window.addEventListener("pointerup", onPointerUp, resizeCapture?.marked ? undefined : { once: true });
+      window.addEventListener("pointercancel", onPointerCancel, resizeCapture?.marked ? undefined : { once: true });
+      if (resizeCapture?.marked) tableResizeCleanupRef.current = () => onPointerUp(new PointerEvent("pointercancel", { pointerId }));
     },
-    [isReadOnly]
+    [isReadOnly, captureTableGridResize, sourceEditor.syncPaginationInfo, tableColumnWidths, tableRowHeights, resolveViewerMeasurementZoomScale]
   );
 
   const beginEmbeddedTableCornerResize = React.useCallback(
@@ -52508,6 +53136,18 @@ export function DocxEditorViewer({
       event.stopPropagation();
       if (!Number.isFinite(tableWidthPx) || tableWidthPx <= 0) {
         return;
+      }
+
+      const resizeCapture = captureTableGridResize(tableKey);
+      const previousWidths = embeddedTableColumnWidths[tableKey];
+      const previousHeights = embeddedTableRowHeights[tableKey];
+
+      if (resizeCapture?.marked) tableResizeCleanupRef.current?.();
+      const resizeScale = resizeCapture?.marked ? resolveViewerMeasurementZoomScale(event.currentTarget, 1) : 1;
+      if (resizeCapture?.marked) tableWidthPx /= resizeScale;
+      if (resizeCapture?.marked) {
+        const measuredTable = event.currentTarget.parentElement?.querySelector<HTMLTableElement>("table");
+        if (measuredTable) rowHeights = Array.from(measuredTable.rows).map((row) => row.getBoundingClientRect().height / resizeScale);
       }
 
       const resizeHandle = event.currentTarget;
@@ -52566,8 +53206,9 @@ export function DocxEditorViewer({
       };
 
       const onPointerMove = (pointerEvent: PointerEvent): void => {
-        const deltaX = pointerEvent.clientX - startX;
-        const deltaY = pointerEvent.clientY - startY;
+        if (resizeCapture?.marked && pointerEvent.pointerId !== pointerId) return;
+        const deltaX = (pointerEvent.clientX - startX) / resizeScale;
+        const deltaY = (pointerEvent.clientY - startY) / resizeScale;
         const nextWidth = Math.max(
           minimumTableWidth,
           clampNumber(
@@ -52593,16 +53234,62 @@ export function DocxEditorViewer({
         frameId = window.requestAnimationFrame(commitWidths);
       };
 
+      const restorePreview = (restorePrevious: boolean): void => {
+        setEmbeddedTableColumnWidths((current) => {
+          const next = { ...current };
+          if (restorePrevious && previousWidths) next[tableKey] = previousWidths;
+          else delete next[tableKey];
+          return next;
+        });
+        setEmbeddedTableRowHeights((current) => {
+          const next = { ...current };
+          if (restorePrevious && previousHeights) next[tableKey] = previousHeights;
+          else delete next[tableKey];
+          return next;
+        });
+      };
+      const finishResize = (cancelled: boolean): void => {
+        if (!resizeCapture?.marked) {
+          commitWidths();
+          return;
+        }
+        const changed = latestWidths.some((value, index) => Math.round(value * TWIPS_PER_PIXEL) !== Math.round(safeStartingColumnWidths[index] * TWIPS_PER_PIXEL)) || latestHeights.some((value, index) => Math.round(value * TWIPS_PER_PIXEL) !== Math.round(startingHeights[index] * TWIPS_PER_PIXEL));
+        if (cancelled || !changed) {
+          const latestCapture = captureTableGridResize(tableKey);
+          restorePreview(!resizeCapture || latestCapture?.expectedTarget === resizeCapture.expectedTarget);
+          return;
+        }
+        const bridge = tableGridResizeCommitByController.get(sourceEditor.syncPaginationInfo as object);
+        if (bridge) {
+          if (resizeCapture) {
+            const outcome = bridge(resizeCapture.target, resizeCapture.expectedTarget, {
+            widthsPx: latestWidths, initialWidthsPx: safeStartingColumnWidths, heightsPx: latestHeights, initialHeightsPx: startingHeights, resolvedBorderSpacingPx: resizeCapture.resolvedBorderSpacingPx,
+            });
+            if (outcome === "committed" && resizeCapture.expectedTarget.blockId) {
+              featureCanonicalTableIdsRef.current.add(resizeCapture.expectedTarget.blockId);
+            }
+            if (outcome === "committed") featureResizeSnapshotsRef.current.set(`${typeof resizeCapture.address}:${resizeCapture.address}`, {
+              address: resizeCapture.address, signature: resizeCapture.signature, blockId: resizeCapture.expectedTarget.blockId,
+            });
+          }
+          restorePreview(false);
+        } else {
+          commitWidths();
+        }
+      };
+
       const onPointerUp = (pointerUpEvent: PointerEvent): void => {
+        if (resizeCapture?.marked && pointerUpEvent.pointerId !== pointerId) return;
+        if (resizeCapture?.marked) tableResizeCleanupRef.current = undefined;
         window.removeEventListener("pointermove", onPointerMove);
         window.removeEventListener("pointerup", onPointerUp);
-        window.removeEventListener("pointercancel", onPointerUp);
+        window.removeEventListener("pointercancel", onPointerCancel);
 
         if (frameId !== undefined) {
           window.cancelAnimationFrame(frameId);
         }
 
-        commitWidths();
+        finishResize(pointerUpEvent.type === "pointercancel");
         if (resizeHandle.releasePointerCapture) {
           try {
             resizeHandle.releasePointerCapture(
@@ -52615,11 +53302,14 @@ export function DocxEditorViewer({
         setActiveEmbeddedTableResize(undefined);
       };
 
+      const onPointerCancel = (pointerEvent: PointerEvent): void => onPointerUp(pointerEvent);
+
       window.addEventListener("pointermove", onPointerMove);
-      window.addEventListener("pointerup", onPointerUp, { once: true });
-      window.addEventListener("pointercancel", onPointerUp, { once: true });
+      window.addEventListener("pointerup", onPointerUp, resizeCapture?.marked ? undefined : { once: true });
+      window.addEventListener("pointercancel", onPointerCancel, resizeCapture?.marked ? undefined : { once: true });
+      if (resizeCapture?.marked) tableResizeCleanupRef.current = () => onPointerUp(new PointerEvent("pointercancel", { pointerId }));
     },
-    [distributeHeightByTotal, isReadOnly, normalizeResizableHeights]
+    [distributeHeightByTotal, isReadOnly, normalizeResizableHeights, captureTableGridResize, sourceEditor.syncPaginationInfo, embeddedTableColumnWidths, embeddedTableRowHeights, resolveViewerMeasurementZoomScale]
   );
 
   const beginEmbeddedTableMove = React.useCallback(
@@ -52943,6 +53633,10 @@ export function DocxEditorViewer({
     [activeDropTarget, isDraggingImage, isReadOnly, onDropImageAtTarget]
   );
 
+  const wrappedTextPiecesBySource = React.useMemo(
+    () => new WeakMap<ParagraphPretextLayoutSource, Map<string, React.ReactNode[]>>(),
+    [documentContentTheme, typography, fontMetricsRevision, editor.documentLoadNonce]
+  );
   const renderWrappedPretextParagraph = (params: {
     location: ParagraphLocation;
     keyPrefix: string;
@@ -53175,6 +53869,8 @@ export function DocxEditorViewer({
       }
     };
 
+    const canReuseTextPieces = !activeSession &&
+      source.runs.every((run) => run.kind === "text" && !run.link);
     const renderFragment = (
       fragment: PretextLineFragment,
       lineIndex: number
@@ -53184,7 +53880,13 @@ export function DocxEditorViewer({
         /(\d+(?:\.\d+)?)px(?=\s)/,
         `$1px/${fragmentLineHeightPx}px`
       );
-      const pieces = source.runs
+      const textPiecesKey = `${fragment.startOffset}|${fragment.endOffset}|${fragment.horizontalScale ?? 1}|${fragment.strutFont ?? fragment.font ?? layout.font}|${baseTextStyle?.fontSizePt ?? ""}`;
+      const cachedPieces = canReuseTextPieces
+        ? wrappedTextPiecesBySource.get(source)
+        : undefined;
+      let pieces = cachedPieces?.get(textPiecesKey);
+      if (!pieces) {
+        pieces = source.runs
         .map((run) => {
           const overlapStart = Math.max(fragment.startOffset, run.startOffset);
           const overlapEnd = Math.min(fragment.endOffset, run.endOffset);
@@ -53365,6 +54067,13 @@ export function DocxEditorViewer({
           );
         })
         .filter(Boolean);
+        if (canReuseTextPieces) {
+          const entries = cachedPieces ?? new Map<string, React.ReactNode[]>();
+          if (entries.size >= 1024) entries.clear();
+          entries.set(textPiecesKey, pieces);
+          wrappedTextPiecesBySource.set(source, entries);
+        }
+      }
 
       return (
         <span
@@ -57747,8 +58456,7 @@ export function DocxEditorViewer({
             suppressFirstTableCellParagraphTopSpacing(paragraph);
           const beforeSpacingPx = suppressTopSpacing
             ? 0
-            : twipsToPixels(paragraphForLayout.style?.spacing?.beforeTwips) ??
-              0;
+            : paragraphSpacingPixels(paragraphForLayout.style?.spacing?.beforeTwips);
           const topBorderInsetPx = paragraphBorderInsetPx(
             paragraphForLayout.style?.borders?.top
           );
@@ -57798,7 +58506,7 @@ export function DocxEditorViewer({
             paragraphHeightPx: wholeTextPlan
               ? beforeSpacingPx + topBorderInsetPx + wholeTextPlan.layout.height +
                 paragraphBorderInsetPx(paragraphForLayout.style?.borders?.bottom) +
-                (twipsToPixels(paragraphForLayout.style?.spacing?.afterTwips) ?? 0)
+                paragraphSpacingPixels(paragraphForLayout.style?.spacing?.afterTwips)
               : paragraphHeightPx,
             textTopOffsetPx: beforeSpacingPx + topBorderInsetPx,
             lineHeightPx,
@@ -58643,16 +59351,12 @@ export function DocxEditorViewer({
       const resolvedBeforeSpacingPx = Number.isFinite(
         options?.overrideBeforeSpacingPx
       )
-        ? Math.max(0, bodyAutomaticParagraphSpacingPx(editor.model, nodeIndex, node, "before") !== undefined
-          ? options?.overrideBeforeSpacingPx as number
-          : Math.round(options?.overrideBeforeSpacingPx as number))
+        ? Math.max(0, options?.overrideBeforeSpacingPx as number)
         : undefined;
       const resolvedAfterSpacingPx = Number.isFinite(
         options?.overrideAfterSpacingPx
       )
-        ? Math.max(0, bodyAutomaticParagraphSpacingPx(editor.model, nodeIndex, node, "after") !== undefined
-          ? options?.overrideAfterSpacingPx as number
-          : Math.round(options?.overrideAfterSpacingPx as number))
+        ? Math.max(0, options?.overrideAfterSpacingPx as number)
         : undefined;
       const hasOnlyAbsoluteImages = hasImage && node.children.every(
         (child) => child.type !== "image" || shouldRenderAbsoluteFloatingImage(child)
@@ -62141,6 +62845,7 @@ export function DocxEditorViewer({
                                           docGridLinePitchPx:
                                             nodeDocGridLinePitchPx,
                                           layoutEntry: plan.layoutEntry,
+                                          useWholeTextLayout: usesPrecomputedPagination,
                                           paragraphLineRange:
                                             plan.paragraphLineRange,
                                         })}
@@ -62222,7 +62927,7 @@ export function DocxEditorViewer({
                       const isHot = isResizing || isHovered;
 
                       return (
-                        <span
+                        <span data-docx-table-resize-handle="column" data-docx-table-index={nodeIndex}
                           key={`column-border-${nodeIndex}-${boundaryColumnIndex}`}
                           contentEditable={false}
                           style={{
@@ -62375,7 +63080,7 @@ export function DocxEditorViewer({
                       );
 
                       return (
-                        <span
+                        <span data-docx-table-resize-handle="row" data-docx-table-index={nodeIndex}
                           key={`row-border-${nodeIndex}-${boundaryRowIndex}`}
                           contentEditable={false}
                           data-docx-row-resize-handle={boundaryRowIndex}
@@ -62506,7 +63211,7 @@ export function DocxEditorViewer({
                 </TableRowHandles>
               ) : null}
               {showTableHandles && !isSplitTableSegment ? (
-                <span
+                <span data-docx-table-resize-handle="corner" data-docx-table-index={nodeIndex}
                   contentEditable={false}
                   style={{
                     position: "absolute",
@@ -63771,6 +64476,7 @@ export function DocxEditorViewer({
     <div
       data-testid="docx-editor-viewer"
       data-docx-editor-root="true"
+      data-docx-layout-mode={usesPrecomputedPagination ? "precomputed" : "measured"}
       data-docx-document-id={editor.model.metadata.documentId}
       data-docx-zoom-level={viewerZoom.level}
       data-docx-resolved-zoom={viewerZoom.resolvedZoom}

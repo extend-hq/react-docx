@@ -7,18 +7,18 @@
 
 pub mod build;
 pub mod cfb;
-pub mod fonts;
-pub mod images;
-pub mod lists;
-pub mod stsh;
 pub mod chp;
 pub mod fib;
 pub mod fkp;
 pub mod fmt;
+pub mod fonts;
+pub mod images;
+pub mod lists;
 pub mod pap;
 pub mod pieces;
 pub mod sep;
 pub mod sprm;
+pub mod stsh;
 pub mod tap;
 mod textboxes;
 
@@ -50,11 +50,16 @@ impl DocFile {
             .stream(fib.table_stream_name())
             .or_else(|| {
                 // Tolerate files where only the other table stream exists.
-                compound.stream("1Table").or_else(|| compound.stream("0Table"))
+                compound
+                    .stream("1Table")
+                    .or_else(|| compound.stream("0Table"))
             })
             .ok_or_else(|| "Invalid .doc: missing Table stream".to_string())?
             .to_vec();
-        let data = compound.stream("Data").map(|s| s.to_vec()).unwrap_or_default();
+        let data = compound
+            .stream("Data")
+            .map(|s| s.to_vec())
+            .unwrap_or_default();
 
         let clx = fib
             .table_slice(&table, fib::fcidx::CLX)
@@ -83,5 +88,82 @@ impl DocFile {
     /// UTF-16 code units for `[cp_start, cp_end)`, one unit per CP.
     pub fn text(&self, cp_start: u32, cp_end: u32) -> Vec<u16> {
         self.pieces.text(&self.word, cp_start, cp_end)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{build_doc_model, DocNode, ParagraphChildNode};
+
+    fn document_bytes(text: &str, compressed: bool) -> Vec<u8> {
+        let units: Vec<u16> = text.encode_utf16().collect();
+        let mut word = vec![0u8; 512];
+        word[0..2].copy_from_slice(&0xa5ecu16.to_le_bytes());
+        word[2..4].copy_from_slice(&0x00c1u16.to_le_bytes());
+        word[10..12].copy_from_slice(&0x0204u16.to_le_bytes());
+        word[32..34].copy_from_slice(&14u16.to_le_bytes());
+        word[62..64].copy_from_slice(&22u16.to_le_bytes());
+        word[76..80].copy_from_slice(&(units.len() as u32).to_le_bytes());
+        word[152..154].copy_from_slice(&34u16.to_le_bytes());
+        word[422..426].copy_from_slice(&21u32.to_le_bytes());
+        for unit in &units {
+            if compressed {
+                assert!(*unit <= 0x7f);
+                word.push(*unit as u8);
+            } else {
+                word.extend(unit.to_le_bytes());
+            }
+        }
+        let mut table = vec![0u8; 21];
+        table[0] = 2;
+        table[1..5].copy_from_slice(&16u32.to_le_bytes());
+        table[9..13].copy_from_slice(&(units.len() as u32).to_le_bytes());
+        let offset = if compressed { 0x40000400u32 } else { 512u32 };
+        table[15..19].copy_from_slice(&offset.to_le_bytes());
+        cfb::tests::build_cfb(&[("WordDocument", &word), ("1Table", &table)])
+    }
+
+    #[test]
+    fn parses_generated_binary_text_through_model_pipeline() {
+        for (text, compressed) in [
+            ("Plain text\rSecond line\r", true),
+            ("Caf\u{e9} \u{201c}text\u{201d}\rSecond line\r", false),
+        ] {
+            let bytes = document_bytes(text, compressed);
+            let doc = DocFile::open(&bytes).expect("open generated document");
+            assert_eq!(
+                String::from_utf16_lossy(&doc.text(0, doc.fib.ccp.text)),
+                text
+            );
+            let package = parse_doc(&bytes).expect("parse generated document");
+            let model = build_doc_model(&package);
+            let paragraphs: Vec<String> = model
+                .nodes
+                .iter()
+                .filter_map(|node| {
+                    let DocNode::Paragraph(paragraph) = node else {
+                        return None;
+                    };
+                    Some(
+                        paragraph
+                            .children
+                            .iter()
+                            .filter_map(|child| {
+                                if let ParagraphChildNode::Text(run) = child {
+                                    Some(run.text.as_str())
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect(),
+                    )
+                })
+                .collect();
+            assert_eq!(
+                paragraphs,
+                text.trim_end_matches('\r').split('\r').collect::<Vec<_>>()
+            );
+        }
     }
 }

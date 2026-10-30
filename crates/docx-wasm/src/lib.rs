@@ -32,10 +32,13 @@ pub fn extract_document_blocks_with_options_wasm(
     options_json: &str,
 ) -> Result<String, JsValue> {
     let model = doc_model_from_json(model_json)?;
-    let options = serde_json::from_str(options_json)
-        .map_err(|error| JsValue::from_str(&format!("Invalid block extraction options JSON: {error}")))?;
-    serde_json::to_string(&docx_core::extract_document_blocks_with_options(&model, options))
-        .map_err(|error| JsValue::from_str(&error.to_string()))
+    let options = serde_json::from_str(options_json).map_err(|error| {
+        JsValue::from_str(&format!("Invalid block extraction options JSON: {error}"))
+    })?;
+    serde_json::to_string(&docx_core::extract_document_blocks_with_options(
+        &model, options,
+    ))
+    .map_err(|error| JsValue::from_str(&error.to_string()))
 }
 
 #[wasm_bindgen]
@@ -84,7 +87,9 @@ fn value_to_ooxml_package(value: &JsValue) -> Result<OoxmlPackage, JsValue> {
     let parts_value = Reflect::get(value, &JsValue::from_str("parts"))
         .map_err(|error| JsValue::from_str(&format!("Failed to read package parts: {error:?}")))?;
     if parts_value.is_undefined() || parts_value.is_null() {
-        return Err(JsValue::from_str("Invalid OoxmlPackage: missing field `parts`"));
+        return Err(JsValue::from_str(
+            "Invalid OoxmlPackage: missing field `parts`",
+        ));
     }
     let parts_json = js_sys::JSON::stringify(&parts_value)
         .map_err(|error| JsValue::from_str(&format!("Failed to stringify parts: {error:?}")))?;
@@ -208,8 +213,12 @@ pub fn build_doc_model_from_bytes(bytes: &[u8]) -> Result<JsValue, JsValue> {
     let built_at = performance_now();
 
     let result = Object::new();
-    Reflect::set(&result, &JsValue::from_str("package"), &package_to_js(&pkg)?)
-        .map_err(|error| JsValue::from_str(&format!("Failed to set package: {error:?}")))?;
+    Reflect::set(
+        &result,
+        &JsValue::from_str("package"),
+        &package_to_js(&pkg)?,
+    )
+    .map_err(|error| JsValue::from_str(&format!("Failed to set package: {error:?}")))?;
     Reflect::set(&result, &JsValue::from_str("model"), &model_js)
         .map_err(|error| JsValue::from_str(&format!("Failed to set model: {error:?}")))?;
     let timings = Object::new();
@@ -228,8 +237,13 @@ pub fn build_doc_model_from_bytes(bytes: &[u8]) -> Result<JsValue, JsValue> {
 }
 
 #[wasm_bindgen]
-pub fn serialize_docx_wasm(model: &JsValue, base_package: Option<JsValue>) -> Result<Vec<u8>, JsValue> {
+pub fn serialize_docx_wasm(
+    model: &JsValue,
+    base_package: Option<JsValue>,
+) -> Result<Vec<u8>, JsValue> {
     let doc_model = value_to_doc_model(model)?;
+    docx_core::table_grid::validate_collapsed_table_grids(&doc_model)
+        .map_err(|error| JsValue::from_str(&error))?;
     let base = match base_package {
         Some(value) => Some(value_to_ooxml_package(&value)?),
         None => None,
@@ -244,6 +258,8 @@ pub fn serialize_docx_from_json_wasm(
     base_package: Option<JsValue>,
 ) -> Result<Vec<u8>, JsValue> {
     let doc_model = doc_model_from_json(model_json)?;
+    docx_core::table_grid::validate_collapsed_table_grids(&doc_model)
+        .map_err(|error| JsValue::from_str(&error))?;
     let base = match base_package {
         Some(value) => Some(value_to_ooxml_package(&value)?),
         None => None,
@@ -258,6 +274,8 @@ pub fn model_to_document_xml_wasm(
     base_package: Option<JsValue>,
 ) -> Result<String, JsValue> {
     let doc_model = value_to_doc_model(model)?;
+    docx_core::table_grid::validate_collapsed_table_grids(&doc_model)
+        .map_err(|error| JsValue::from_str(&error))?;
     let base = match base_package {
         Some(value) => Some(value_to_ooxml_package(&value)?),
         None => None,
@@ -271,6 +289,8 @@ pub fn model_to_document_xml_from_json_wasm(
     base_package: Option<JsValue>,
 ) -> Result<String, JsValue> {
     let doc_model = doc_model_from_json(model_json)?;
+    docx_core::table_grid::validate_collapsed_table_grids(&doc_model)
+        .map_err(|error| JsValue::from_str(&error))?;
     let base = match base_package {
         Some(value) => Some(value_to_ooxml_package(&value)?),
         None => None,

@@ -1,5 +1,3 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   buildDocModel,
@@ -7,6 +5,7 @@ import {
 } from "@extend-ai/react-docx-doc-model";
 import { parseDocx } from "@extend-ai/react-docx-ooxml-core";
 import { createZip } from "./helpers/zip";
+import { createLegacyDoc } from "./helpers/legacy-doc";
 
 async function expectEquivalentImport(bytes: Uint8Array): Promise<void> {
   const buffer = Uint8Array.from(bytes).buffer;
@@ -48,12 +47,7 @@ describe("combined document import", () => {
 
   it("preserves the converted legacy document and its diagnostics", async () => {
     await expectEquivalentImport(
-      readFileSync(
-        join(
-          __dirname,
-          "../../crates/docx-core/tests/fixtures-doc/word-authored-sample.doc"
-        )
-      )
+      new Uint8Array(createLegacyDoc())
     );
   });
 });

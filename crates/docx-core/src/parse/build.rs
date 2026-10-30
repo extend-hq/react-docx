@@ -17,9 +17,7 @@ use super::sections::{
     parse_document_comments, parse_document_notes_from_part, parse_document_sections,
     parse_footer_sections, parse_header_sections,
 };
-use super::styles::{
-    parse_document_style_sheet,
-};
+use super::styles::parse_document_style_sheet;
 
 pub fn build_doc_model(pkg: &OoxmlPackage) -> DocModel {
     let _style_cache = super::style::run_style_cache_scope();
@@ -27,7 +25,13 @@ pub fn build_doc_model(pkg: &OoxmlPackage) -> DocModel {
     let document_id = crate::structured::package_identity(pkg);
     let (normalized, indexes) = super::namespaces::normalized_package(pkg);
     let pkg = &normalized;
-    let _xml_index = crate::xml_index::scope(pkg.parts.values().map(|part| (part.name.as_str(), part.content.as_str())), indexes);
+    let _relationship_cache = crate::package::relationship_cache_scope(pkg);
+    let _xml_index = crate::xml_index::scope(
+        pkg.parts
+            .values()
+            .map(|part| (part.name.as_str(), part.content.as_str())),
+        indexes,
+    );
     let mut warnings = pkg.warnings.clone();
     warnings.extend(
         crate::source_graph::preserved_features(pkg)
@@ -67,8 +71,8 @@ pub fn build_doc_model(pkg: &OoxmlPackage) -> DocModel {
     let numbering_definitions = parse_numbering_with_assets(pkg, &content_types, binary_assets);
     let document_relationships = parse_part_relationships(pkg, &main_part);
 
-
-    let mut part_cache = super::sections::PartNodeCache::new(pkg, &content_types, &style_sheet, binary_assets);
+    let mut part_cache =
+        super::sections::PartNodeCache::new(pkg, &content_types, &style_sheet, binary_assets);
     let header_sections = parse_header_sections(
         pkg,
         resolved_document_xml,

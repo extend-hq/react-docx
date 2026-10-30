@@ -1,5 +1,3 @@
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
 import * as React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
@@ -10,23 +8,13 @@ import {
   type DocxViewerThumbnails,
 } from "@extend-ai/react-docx";
 
-const FIXTURES = join(__dirname, "../../crates/docx-core/tests/fixtures-doc");
-const THUMBNAIL_TWIN = "patient_original (3)";
-const HAS_THUMBNAIL_TWIN = existsSync(join(FIXTURES, `${THUMBNAIL_TWIN}.docx`));
+import { createLegacyDoc, createDocxTwin } from "./helpers/legacy-doc";
 
-function fixtureBuffer(name: string): ArrayBuffer {
-  const bytes = readFileSync(join(FIXTURES, name));
-  return bytes.buffer.slice(
-    bytes.byteOffset,
-    bytes.byteOffset + bytes.byteLength
-  );
-}
-
-async function thumbnailsFor(name: string): Promise<{
+async function thumbnailsFor(bytes: ArrayBuffer): Promise<{
   thumbnails: DocxViewerThumbnails;
   setupMs: number;
 }> {
-  const { model } = await buildDocModelFromBytes(fixtureBuffer(name));
+  const { model } = await buildDocModelFromBytes(bytes);
   let result: DocxViewerThumbnails | undefined;
 
   function Probe(): React.JSX.Element {
@@ -45,11 +33,11 @@ async function thumbnailsFor(name: string): Promise<{
 }
 
 describe("legacy .doc thumbnails", () => {
-  it.skipIf(!HAS_THUMBNAIL_TWIN)(
+  it(
     "produces per-page thumbnails for a .doc identical in shape to its .docx twin",
     async () => {
-      const doc = await thumbnailsFor(`${THUMBNAIL_TWIN}.doc`);
-      const docx = await thumbnailsFor(`${THUMBNAIL_TWIN}.docx`);
+      const doc = await thumbnailsFor(createLegacyDoc());
+      const docx = await thumbnailsFor(await createDocxTwin());
 
       expect(doc.thumbnails.thumbnails.length).toBeGreaterThan(0);
       expect(doc.thumbnails.thumbnails.length).toBe(
@@ -65,9 +53,6 @@ describe("legacy .doc thumbnails", () => {
         );
       }
 
-      // Same pipeline, comparable cost: .doc setup must stay within 3x of the
-      // .docx twin (both are typically a few ms; guard against a format-specific
-      // slow path sneaking in).
       expect(doc.setupMs).toBeLessThan(Math.max(250, docx.setupMs * 3));
     }
   );

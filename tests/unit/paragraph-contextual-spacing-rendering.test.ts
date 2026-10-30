@@ -59,18 +59,18 @@ describe("whole-paragraph contextual spacing", () => {
     ]);
     expect(result.get("first")).toEqual([8, 0]);
     expect(result.get("empty")).toEqual([0, 0]);
-    expect(result.get("last")).toEqual([0, 11]);
+    expect(result.get("last")).toEqual([0, 160 / 15]);
   });
 
   it.each([false, undefined])("retains numeric margins when contextual spacing is %s", (enabled) => {
     const result = margins([paragraph("first", enabled), paragraph("last", enabled)]);
-    expect(result.get("first")).toEqual([8, 11]);
-    expect(result.get("last")).toEqual([8, 11]);
+    expect(result.get("first")).toEqual([8, 160 / 15]);
+    expect(result.get("last")).toEqual([8, 160 / 15]);
   });
 
   it("retains numeric margins across different paragraph styles", () => {
     const result = margins([paragraph("first", true), paragraph("last", true, "Other")]);
-    expect(result.get("first")).toEqual([8, 11]);
-    expect(result.get("last")).toEqual([8, 11]);
+    expect(result.get("first")).toEqual([8, 160 / 15]);
+    expect(result.get("last")).toEqual([8, 160 / 15]);
   });
 });

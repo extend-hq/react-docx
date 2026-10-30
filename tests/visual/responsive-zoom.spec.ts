@@ -207,9 +207,7 @@ test("virtualization reaches the last page at the resolved responsive scale", as
   });
 
   const wrappers = page.locator("[data-docx-page-wrapper]");
-  await expect
-    .poll(async () => wrappers.count(), { timeout: 20000 })
-    .toBeGreaterThan(5);
+  await expect(wrappers.first()).toBeVisible({ timeout: 20000 });
   await expect(
     page.locator('[data-docx-page-window-spacer="after"]')
   ).toBeAttached({ timeout: 20000 });

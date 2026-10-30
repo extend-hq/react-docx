@@ -1,6 +1,6 @@
 use crate::model::ParagraphAlignment;
-use crate::parse::re;
 use crate::parse::context::ParseContext;
+use crate::parse::re;
 use crate::parse::style::parse_text_style_from_xml;
 use crate::parse::util::{
     bytes_to_base64, clamp, clamp_i64, content_type_for_part, emu_to_pixels, escape_xml_text,
@@ -37,7 +37,10 @@ struct ShapeFillMarkup {
     defs: Vec<String>,
 }
 
-pub fn parse_text_box_paragraphs(run_xml: &str, context: &ParseContext<'_>) -> Vec<ParsedTextBoxParagraph> {
+pub fn parse_text_box_paragraphs(
+    run_xml: &str,
+    context: &ParseContext<'_>,
+) -> Vec<ParsedTextBoxParagraph> {
     let normalized_run_xml = prefer_alternate_content_choice(run_xml);
     let text_box_xml = extract_balanced_tag_blocks(&normalized_run_xml, "w:txbxContent")
         .into_iter()
@@ -75,7 +78,9 @@ pub fn parse_text_box_paragraphs(run_xml: &str, context: &ParseContext<'_>) -> V
         let paragraph_style = paragraph_style_id
             .as_deref()
             .and_then(|id| context.style_sheet.paragraph_style_by_id.get(id));
-        let first_run_xml = extract_balanced_tag_blocks(&paragraph_xml, "w:r").into_iter().next();
+        let first_run_xml = extract_balanced_tag_blocks(&paragraph_xml, "w:r")
+            .into_iter()
+            .next();
         let run_properties_xml = first_run_xml
             .as_ref()
             .and_then(|run| {
@@ -85,15 +90,19 @@ pub fn parse_text_box_paragraphs(run_xml: &str, context: &ParseContext<'_>) -> V
                     .or_else(|| regex_tag(run, r"(?i)<w:rPr\b[^>]*/?>"))
             })
             .unwrap_or_default();
-        let paragraph_run_properties_xml = extract_balanced_tag_blocks(&paragraph_properties_xml, "w:rPr")
-            .into_iter()
-            .next()
-            .or_else(|| regex_tag(&paragraph_properties_xml, r"(?i)<w:rPr\b[^>]*/?>"))
-            .unwrap_or_default();
+        let paragraph_run_properties_xml =
+            extract_balanced_tag_blocks(&paragraph_properties_xml, "w:rPr")
+                .into_iter()
+                .next()
+                .or_else(|| regex_tag(&paragraph_properties_xml, r"(?i)<w:rPr\b[^>]*/?>"))
+                .unwrap_or_default();
         let style = super::util::merge_text_styles(&[
             context.style_sheet.default_run_style.clone(),
             paragraph_style.and_then(|s| s.run_style.clone()),
-            parse_text_style_from_xml(&paragraph_run_properties_xml, &context.style_sheet.theme_fonts),
+            parse_text_style_from_xml(
+                &paragraph_run_properties_xml,
+                &context.style_sheet.theme_fonts,
+            ),
             parse_text_style_from_xml(&run_properties_xml, &context.style_sheet.theme_fonts),
         ]);
         let align = super::style::parse_paragraph_align_from_xml(&paragraph_properties_xml)
@@ -105,7 +114,11 @@ pub fn parse_text_box_paragraphs(run_xml: &str, context: &ParseContext<'_>) -> V
             images,
         });
     }
-    if has_visible_text { resolved } else { Vec::new() }
+    if has_visible_text {
+        resolved
+    } else {
+        Vec::new()
+    }
 }
 
 pub fn parse_text_box_layout(run_xml: &str) -> Option<ParsedTextBoxLayout> {
@@ -115,8 +128,8 @@ pub fn parse_text_box_layout(run_xml: &str) -> Option<ParsedTextBoxLayout> {
         .next()
         .or_else(|| regex_tag(&normalized_run_xml, r"(?i)<wps:bodyPr\b[^>]*/?>"));
     if let Some(body_pr_xml) = body_pr_xml {
-        let anchor_raw = get_attribute(&body_pr_xml, "anchor")
-            .map(|v| v.trim().to_ascii_lowercase());
+        let anchor_raw =
+            get_attribute(&body_pr_xml, "anchor").map(|v| v.trim().to_ascii_lowercase());
         let vertical_anchor = match anchor_raw.as_deref() {
             Some("ctr") => Some("center".to_string()),
             Some("b") => Some("bottom".to_string()),
@@ -154,7 +167,11 @@ pub fn render_text_box_svg(
     let line_heights: Vec<i64> = paragraphs
         .iter()
         .map(|paragraph| {
-            let font_size_pt = paragraph.style.as_ref().and_then(|s| s.font_size_pt).unwrap_or(12.0);
+            let font_size_pt = paragraph
+                .style
+                .as_ref()
+                .and_then(|s| s.font_size_pt)
+                .unwrap_or(12.0);
             let font_size_px = ((font_size_pt * 96.0) / 72.0).round().max(10.0) as i64;
             let text_height = (font_size_px as f64 * 1.24).round().max(14.0) as i64;
             let image_height = paragraph
@@ -167,9 +184,21 @@ pub fn render_text_box_svg(
         })
         .collect();
     let estimated_height: i64 = line_heights.iter().sum::<i64>() + 24;
-    let safe_height = clamp_i64(height_px.unwrap_or(estimated_height as f64).round() as i64, 48, 2400) as f64;
-    let horizontal_inset = ((layout.and_then(|l| l.padding_left_px).unwrap_or(safe_width * 0.03)).round() as i64).max(8) as f64;
-    let top_inset = ((layout.and_then(|l| l.padding_top_px).unwrap_or(safe_height * 0.04)).round() as i64).max(8) as f64;
+    let safe_height = clamp_i64(
+        height_px.unwrap_or(estimated_height as f64).round() as i64,
+        48,
+        2400,
+    ) as f64;
+    let horizontal_inset = ((layout
+        .and_then(|l| l.padding_left_px)
+        .unwrap_or(safe_width * 0.03))
+    .round() as i64)
+        .max(8) as f64;
+    let top_inset = ((layout
+        .and_then(|l| l.padding_top_px)
+        .unwrap_or(safe_height * 0.04))
+    .round() as i64)
+        .max(8) as f64;
     let right_inset = ((layout
         .and_then(|l| l.padding_right_px)
         .unwrap_or(horizontal_inset))
@@ -190,14 +219,25 @@ pub fn render_text_box_svg(
     };
     let scaled_text_height = total_text_height * vertical_scale;
     let start_offset_y = match layout.and_then(|l| l.vertical_anchor.as_deref()) {
-        Some("center") => top_inset + ((available_height - scaled_text_height) / 2.0).max(0.0).round(),
-        Some("bottom") => (safe_height - bottom_inset - scaled_text_height).max(top_inset).round(),
+        Some("center") => {
+            top_inset
+                + ((available_height - scaled_text_height) / 2.0)
+                    .max(0.0)
+                    .round()
+        }
+        Some("bottom") => (safe_height - bottom_inset - scaled_text_height)
+            .max(top_inset)
+            .round(),
         _ => top_inset.round(),
     };
     let mut cursor_y = start_offset_y;
     let mut lines = Vec::new();
     for (paragraph_index, paragraph) in paragraphs.iter().enumerate() {
-        let font_size_pt = paragraph.style.as_ref().and_then(|s| s.font_size_pt).unwrap_or(12.0);
+        let font_size_pt = paragraph
+            .style
+            .as_ref()
+            .and_then(|s| s.font_size_pt)
+            .unwrap_or(12.0);
         let font_size_px = ((font_size_pt * 96.0) / 72.0).round().max(10.0);
         let estimated_text_width = estimate_text_width_px(&paragraph.text, font_size_px);
         let overflow_ratio = if estimated_text_width > 0.0 {
@@ -223,7 +263,8 @@ pub fn render_text_box_svg(
         let line_height = line_heights
             .get(paragraph_index)
             .copied()
-            .unwrap_or(((fitted_font_size_px * 1.24).round().max(8.0)) as i64) as f64
+            .unwrap_or(((fitted_font_size_px * 1.24).round().max(8.0)) as i64)
+            as f64
             * vertical_scale;
         cursor_y += line_height;
         if cursor_y > safe_height - 4.0 {
@@ -236,8 +277,18 @@ pub fn render_text_box_svg(
             _ => ("start", horizontal_inset),
         };
         let text_decoration = [
-            paragraph.style.as_ref().and_then(|s| s.underline).filter(|&u| u).map(|_| "underline"),
-            paragraph.style.as_ref().and_then(|s| s.strike).filter(|&s| s).map(|_| "line-through"),
+            paragraph
+                .style
+                .as_ref()
+                .and_then(|s| s.underline)
+                .filter(|&u| u)
+                .map(|_| "underline"),
+            paragraph
+                .style
+                .as_ref()
+                .and_then(|s| s.strike)
+                .filter(|&s| s)
+                .map(|_| "line-through"),
         ]
         .into_iter()
         .flatten()
@@ -293,13 +344,202 @@ pub fn render_text_box_svg(
     )
 }
 
+#[derive(Clone, Copy)]
+struct DrawingGroupTransform {
+    scale_x: f64,
+    scale_y: f64,
+    origin_x: f64,
+    origin_y: f64,
+    integer_origin: Option<(i64, i64)>,
+}
+
+impl DrawingGroupTransform {
+    fn position(&self, x: i64, y: i64) -> (f64, f64) {
+        let delta_x = self
+            .integer_origin
+            .map(|origin| x.wrapping_sub(origin.0) as f64)
+            .unwrap_or_else(|| x as f64 - self.origin_x);
+        let delta_y = self
+            .integer_origin
+            .map(|origin| y.wrapping_sub(origin.1) as f64)
+            .unwrap_or_else(|| y as f64 - self.origin_y);
+        (delta_x * self.scale_x, delta_y * self.scale_y)
+    }
+}
+
+fn drawing_coordinates_are_exact(xml: &str) -> bool {
+    crate::xml::extract_balanced_tag_blocks_in_order(xml, &["a:off", "a:ext", "a:chOff", "a:chExt"])
+        .into_iter()
+        .all(|range| {
+            let tag = &xml[range.start..range.end];
+            ["x", "y", "cx", "cy"].iter().all(|name| {
+                get_attribute(tag, name).is_none_or(|raw| {
+                    raw.parse::<i64>()
+                        .is_ok_and(|value| value.unsigned_abs() <= (1_u64 << 53))
+                })
+            })
+        })
+}
+
+struct GroupedDrawing<'a> {
+    xml: &'a str,
+    picture: bool,
+    transform: DrawingGroupTransform,
+    bitmap_fill_supported: bool,
+}
+
+fn collect_grouped_drawings<'a>(
+    group_xml: &'a str,
+    transform: DrawingGroupTransform,
+    depth: usize,
+    output: &mut Vec<GroupedDrawing<'a>>,
+) -> Option<()> {
+    if depth > 64 {
+        return None;
+    }
+    let start = crate::xml::tag_token_end(group_xml, 0)?;
+    let end = group_xml.rfind("</")?;
+    let content = group_xml.get(start..end)?;
+    for range in crate::xml::extract_balanced_tag_blocks_in_order(
+        content,
+        &["pic:pic", "wps:wsp", "wpg:grpSp"],
+    ) {
+        let xml = &content[range.start..range.end];
+        if range.tag_name != "wpg:grpSp" {
+            let picture = range.tag_name == "pic:pic";
+            if depth > 0 && (picture || transform.scale_x != transform.scale_y) {
+                let properties = crate::xml::direct_child_tag(
+                    xml,
+                    if picture { "pic:spPr" } else { "wps:spPr" },
+                );
+                let local_transform =
+                    properties.and_then(|value| crate::xml::direct_child_tag(value, "a:xfrm"));
+                if let Some(local_transform) = local_transform {
+                    let opening =
+                        &local_transform[..crate::xml::tag_token_end(local_transform, 0)?];
+                    if get_attribute(opening, "rot").is_some_and(|raw| {
+                        raw.trim().parse::<i64>().map_or(true, |angle| angle != 0)
+                    }) {
+                        return None;
+                    }
+                    if picture
+                        && ["flipH", "flipV"].iter().any(|name| {
+                            get_attribute(opening, name)
+                                .is_some_and(|raw| !matches!(raw.trim(), "0" | "false"))
+                        })
+                    {
+                        return None;
+                    }
+                }
+            }
+            output.push(GroupedDrawing {
+                xml,
+                picture,
+                transform,
+                bitmap_fill_supported: true,
+            });
+            continue;
+        }
+        let properties = extract_balanced_tag_blocks(xml, "wpg:grpSpPr")
+            .into_iter()
+            .next()?;
+        let child_transform = extract_balanced_tag_blocks(&properties, "a:xfrm")
+            .into_iter()
+            .next()?;
+        let opening = &child_transform[..crate::xml::tag_token_end(&child_transform, 0)?];
+        for name in ["rot", "flipH", "flipV"] {
+            if get_attribute(opening, name)
+                .is_some_and(|value| !matches!(value.as_str(), "0" | "false"))
+            {
+                return None;
+            }
+        }
+        let off = regex_tag(&child_transform, r"(?i)<a:off\b[^>]*/?>")?;
+        let ext = regex_tag(&child_transform, r"(?i)<a:ext\b[^>]*/?>")?;
+        let child_off = regex_tag(&child_transform, r"(?i)<a:chOff\b[^>]*/?>")?;
+        let child_ext = regex_tag(&child_transform, r"(?i)<a:chExt\b[^>]*/?>")?;
+        let width = parse_integer_attribute(&ext, "cx")? as f64;
+        let height = parse_integer_attribute(&ext, "cy")? as f64;
+        let child_width = parse_integer_attribute(&child_ext, "cx")? as f64;
+        let child_height = parse_integer_attribute(&child_ext, "cy")? as f64;
+        if width <= 0.0 || height <= 0.0 || child_width <= 0.0 || child_height <= 0.0 {
+            return None;
+        }
+        let scale_x = width / child_width;
+        let scale_y = height / child_height;
+        let origin_x = parse_integer_attribute(&child_off, "x")? as f64
+            - (parse_integer_attribute(&off, "x")? as f64 - transform.origin_x) / scale_x;
+        let origin_y = parse_integer_attribute(&child_off, "y")? as f64
+            - (parse_integer_attribute(&off, "y")? as f64 - transform.origin_y) / scale_y;
+        let composed = DrawingGroupTransform {
+            scale_x: transform.scale_x * scale_x,
+            scale_y: transform.scale_y * scale_y,
+            origin_x,
+            origin_y,
+            integer_origin: None,
+        };
+        if ![
+            composed.scale_x,
+            composed.scale_y,
+            composed.origin_x,
+            composed.origin_y,
+        ]
+        .into_iter()
+        .all(f64::is_finite)
+        {
+            return None;
+        }
+        collect_grouped_drawings(xml, composed, depth + 1, output)?;
+    }
+    Some(())
+}
+
+fn grouped_drawings<'a>(
+    group_xml: &'a str,
+    transform: DrawingGroupTransform,
+) -> Vec<GroupedDrawing<'a>> {
+    let root_properties = crate::xml::direct_child_tag(group_xml, "wpg:grpSpPr");
+    let root_transform =
+        root_properties.and_then(|xml| crate::xml::direct_child_tag(xml, "a:xfrm"));
+    let root_axis_aligned = drawing_coordinates_are_exact(group_xml)
+        && root_transform.is_some_and(|xml| {
+            let Some(end) = crate::xml::tag_token_end(xml, 0) else {
+                return false;
+            };
+            ["rot", "flipH", "flipV"].iter().all(|name| {
+                get_attribute(&xml[..end], name)
+                    .is_none_or(|value| matches!(value.as_str(), "0" | "false"))
+            })
+        });
+    let has_nested_groups = re::get_unchecked(r"<wpg:grpSp\b").is_match(group_xml);
+    let mut result = Vec::new();
+    if root_axis_aligned
+        && has_nested_groups
+        && collect_grouped_drawings(group_xml, transform, 0, &mut result).is_some()
+    {
+        return result;
+    }
+    crate::xml::extract_balanced_tag_blocks_in_order(group_xml, &["pic:pic", "wps:wsp"])
+        .into_iter()
+        .map(|range| GroupedDrawing {
+            xml: &group_xml[range.start..range.end],
+            picture: range.tag_name == "pic:pic",
+            transform,
+            bitmap_fill_supported: root_axis_aligned && !has_nested_groups,
+        })
+        .collect()
+}
+
 pub fn render_standalone_word_shape_svg(
     run_xml: &str,
     width_px: Option<f64>,
     height_px: Option<f64>,
     context: &ParseContext<'_>,
 ) -> Option<String> {
-    if let Some(group_xml) = extract_balanced_tag_blocks(run_xml, "wpg:wgp").into_iter().next() {
+    if let Some(group_xml) = extract_balanced_tag_blocks(run_xml, "wpg:wgp")
+        .into_iter()
+        .next()
+    {
         let group_transform_xml = extract_balanced_tag_blocks(&group_xml, "a:xfrm")
             .into_iter()
             .next()
@@ -310,29 +550,38 @@ pub fn render_standalone_word_shape_svg(
             regex_tag(&group_transform_xml, r"(?i)<a:chExt\b[^>]*/?>").unwrap_or_default();
         let child_offset_x = parse_integer_attribute(&child_offset_tag, "x").unwrap_or(0);
         let child_offset_y = parse_integer_attribute(&child_offset_tag, "y").unwrap_or(0);
-        let child_extent_x = parse_integer_attribute(&child_extent_tag, "cx").unwrap_or(1).max(1);
-        let child_extent_y = parse_integer_attribute(&child_extent_tag, "cy").unwrap_or(1).max(1);
-        let safe_width = clamp_i64(js_round(width_px.unwrap_or(320.0)), 8, 2400);
-        let safe_height = clamp_i64(js_round(height_px.unwrap_or(120.0)), 8, 2400);
+        let child_extent_x = parse_integer_attribute(&child_extent_tag, "cx")
+            .unwrap_or(1)
+            .max(1);
+        let child_extent_y = parse_integer_attribute(&child_extent_tag, "cy")
+            .unwrap_or(1)
+            .max(1);
+        let safe_width = clamp_i64(js_round(width_px.unwrap_or(320.0)), 1, 2400);
+        let safe_height = clamp_i64(js_round(height_px.unwrap_or(120.0)), 1, 2400);
         let scale_x = safe_width as f64 / child_extent_x as f64;
         let scale_y = safe_height as f64 / child_extent_y as f64;
         let mut elements = Vec::new();
-        for picture_xml in extract_balanced_tag_blocks(&group_xml, "pic:pic") {
-            if let Some(element) = render_grouped_picture_svg_element(
-                &picture_xml,
-                child_offset_x,
-                child_offset_y,
-                scale_x,
-                scale_y,
-                context,
-            ) {
-                elements.push(element);
+        let root_transform = DrawingGroupTransform {
+            scale_x,
+            scale_y,
+            origin_x: child_offset_x as f64,
+            origin_y: child_offset_y as f64,
+            integer_origin: Some((child_offset_x, child_offset_y)),
+        };
+        let grouped = grouped_drawings(&group_xml, root_transform);
+        for (shape_index, drawing) in grouped.iter().enumerate() {
+            let shape_xml = drawing.xml;
+            let transform = drawing.transform;
+            let scale_x = transform.scale_x;
+            let scale_y = transform.scale_y;
+            if drawing.picture {
+                if let Some(element) =
+                    render_grouped_picture_svg_element(shape_xml, transform, context)
+                {
+                    elements.push(element);
+                }
+                continue;
             }
-        }
-        for (shape_index, shape_xml) in extract_balanced_tag_blocks(&group_xml, "wps:wsp")
-            .into_iter()
-            .enumerate()
-        {
             let shape_properties_xml = extract_balanced_tag_blocks(&shape_xml, "wps:spPr")
                 .into_iter()
                 .next()
@@ -343,16 +592,23 @@ pub fn render_standalone_word_shape_svg(
                 .unwrap_or_default();
             let off_tag = regex_tag(&transform_xml, r"(?i)<a:off\b[^>]*/?>").unwrap_or_default();
             let ext_tag = regex_tag(&transform_xml, r"(?i)<a:ext\b[^>]*/?>").unwrap_or_default();
-            let off_x_px = parse_integer_attribute(&off_tag, "x").unwrap_or(0) - child_offset_x;
-            let off_y_px = parse_integer_attribute(&off_tag, "y").unwrap_or(0) - child_offset_y;
+            let (off_x_px, off_y_px) = transform.position(
+                parse_integer_attribute(&off_tag, "x").unwrap_or(0),
+                parse_integer_attribute(&off_tag, "y").unwrap_or(0),
+            );
             let ext_x_px = parse_integer_attribute(&ext_tag, "cx").unwrap_or(0);
             let ext_y_px = parse_integer_attribute(&ext_tag, "cy").unwrap_or(0);
             let shape_width = js_round(ext_x_px as f64 * scale_x).max(1);
             let shape_height = js_round(ext_y_px as f64 * scale_y).max(1);
-            let x = js_round(off_x_px as f64 * scale_x);
-            let y = js_round(off_y_px as f64 * scale_y);
-            let shape_transform =
-                svg_grouped_shape_transform(x, y, shape_width, shape_height, &transform_xml);
+            let x = js_round(off_x_px);
+            let y = js_round(off_y_px);
+            let shape_transform = svg_grouped_shape_transform(
+                x as f64,
+                y as f64,
+                shape_width as f64,
+                shape_height as f64,
+                &transform_xml,
+            );
             let preset = get_attribute(
                 &regex_tag(&shape_properties_xml, r"(?i)<a:prstGeom\b[^>]*>").unwrap_or_default(),
                 "prst",
@@ -383,16 +639,45 @@ pub fn render_standalone_word_shape_svg(
                 None
             };
             let local_text_box_svg = text_box_svg
-                .map(|svg| re::get_unchecked(r"(?i)^<svg\b").replace(&svg, "<svg x=\"0\" y=\"0\"").to_string())
+                .map(|svg| {
+                    re::get_unchecked(r"(?i)^<svg\b")
+                        .replace(&svg, "<svg x=\"0\" y=\"0\"")
+                        .to_string()
+                })
                 .unwrap_or_default();
             let preset_path_data =
                 drawing_preset_path_data(preset.as_deref(), shape_width, shape_height);
 
-            if preset.as_deref() == Some("line") {
+            let bitmap_fill = drawing
+                .bitmap_fill_supported
+                .then(|| {
+                    render_rect_shape_bitmap_fill_svg(
+                        &shape_properties_xml,
+                        shape_width,
+                        shape_height,
+                        context,
+                    )
+                })
+                .flatten();
+            if let Some(bitmap) = bitmap_fill {
                 elements.push(format!(
-                    r#"<g{shape_transform}><line x1="0" y1="{}" x2="{shape_width}" y2="{}" {stroke} fill="none"/>{local_text_box_svg}</g>"#,
-                    js_round(shape_height as f64 / 2.0),
-                    js_round(shape_height as f64 / 2.0)
+                    r#"<g{shape_transform}>{bitmap}<rect x="0" y="0" width="{shape_width}" height="{shape_height}" fill="none" {stroke}/>{local_text_box_svg}</g>"#,
+                ));
+                continue;
+            }
+
+            if preset.as_deref() == Some("line") {
+                let line_width = ext_x_px as f64 * scale_x;
+                let line_height = ext_y_px as f64 * scale_y;
+                let line_transform = svg_grouped_shape_transform(
+                    off_x_px,
+                    off_y_px,
+                    line_width,
+                    line_height,
+                    &transform_xml,
+                );
+                elements.push(format!(
+                    r#"<g{line_transform}><line x1="0" y1="0" x2="{line_width}" y2="{line_height}" {stroke} fill="none" vector-effect="non-scaling-stroke"/>{local_text_box_svg}</g>"#,
                 ));
                 continue;
             }
@@ -421,19 +706,23 @@ pub fn render_standalone_word_shape_svg(
         }
         if !elements.is_empty() {
             return Some(format!(
-                r#"<svg xmlns="http://www.w3.org/2000/svg" width="{safe_width}" height="{safe_height}" viewBox="0 0 {safe_width} {safe_height}">{}</svg>"#,
+                r#"<svg xmlns="http://www.w3.org/2000/svg" width="{safe_width}" height="{safe_height}" viewBox="0 0 {safe_width} {safe_height}" preserveAspectRatio="none">{}</svg>"#,
                 elements.join("")
             ));
         }
     }
 
-    let shape_xml = extract_balanced_tag_blocks(run_xml, "wps:wsp").into_iter().next()?;
+    let shape_xml = extract_balanced_tag_blocks(run_xml, "wps:wsp")
+        .into_iter()
+        .next()?;
     if re::get(r"(?i)<w:txbxContent\b").is_some_and(|re| re.is_match(&shape_xml)) {
         return None;
     }
-    let shape_properties_xml = extract_balanced_tag_blocks(&shape_xml, "wps:spPr").into_iter().next()?;
-    let safe_width = clamp_i64(js_round(width_px.unwrap_or(320.0)), 8, 2400);
-    let safe_height = clamp_i64(js_round(height_px.unwrap_or(240.0)), 8, 2400);
+    let shape_properties_xml = extract_balanced_tag_blocks(&shape_xml, "wps:spPr")
+        .into_iter()
+        .next()?;
+    let safe_width = clamp_i64(js_round(width_px.unwrap_or(320.0)), 1, 2400);
+    let safe_height = clamp_i64(js_round(height_px.unwrap_or(240.0)), 1, 2400);
     let rotation_degrees = get_attribute(
         &extract_balanced_tag_blocks(&shape_properties_xml, "a:xfrm")
             .into_iter()
@@ -444,7 +733,31 @@ pub fn render_standalone_word_shape_svg(
     .and_then(|raw| raw.trim().parse::<f64>().ok())
     .filter(|value| value.is_finite())
     .map(|value| value / 60000.0);
-    let rotation_layout = svg_rotation_layout(rotation_degrees, safe_width as f64, safe_height as f64);
+    let mut rotation_layout =
+        svg_rotation_layout(rotation_degrees, safe_width as f64, safe_height as f64);
+    let transform_xml = extract_balanced_tag_blocks(&shape_properties_xml, "a:xfrm")
+        .into_iter()
+        .next()
+        .unwrap_or_default();
+    let flip_h = get_attribute(&transform_xml, "flipH").is_some_and(|v| v == "1" || v == "true");
+    let flip_v = get_attribute(&transform_xml, "flipV").is_some_and(|v| v == "1" || v == "true");
+    if flip_h || flip_v {
+        let flip = format!(
+            "translate({} {}) scale({} {})",
+            if flip_h { safe_width } else { 0 },
+            if flip_v { safe_height } else { 0 },
+            if flip_h { -1 } else { 1 },
+            if flip_v { -1 } else { 1 }
+        );
+        if rotation_layout.transform_attribute.is_empty() {
+            rotation_layout.transform_attribute = format!(r#" transform="{flip}""#);
+        } else {
+            rotation_layout.transform_attribute.pop();
+            rotation_layout
+                .transform_attribute
+                .push_str(&format!(r#" {flip}""#));
+        }
+    }
     let preset = get_attribute(
         &regex_tag(&shape_properties_xml, r"(?i)<a:prstGeom\b[^>]*>").unwrap_or_default(),
         "prst",
@@ -463,13 +776,24 @@ pub fn render_standalone_word_shape_svg(
         &format!("{shape_properties_xml}{style_xml}"),
         &context.style_sheet.theme_colors,
     );
-    let path_data = drawing_shape_resolved_path_data(&shape_properties_xml, safe_width, safe_height);
+    let path_data =
+        drawing_shape_resolved_path_data(&shape_properties_xml, safe_width, safe_height);
     let preset_path_data = drawing_preset_path_data(preset.as_deref(), safe_width, safe_height);
     let body = if preset.as_deref() == Some("line") {
+        let x1 = if width_px == Some(0.0) { 0.5 } else { 0.0 };
+        let y1 = if height_px == Some(0.0) { 0.5 } else { 0.0 };
+        let x2 = if width_px == Some(0.0) {
+            0.5
+        } else {
+            safe_width as f64
+        };
+        let y2 = if height_px == Some(0.0) {
+            0.5
+        } else {
+            safe_height as f64
+        };
         format!(
-            r#"<line x1="0" y1="{}" x2="{safe_width}" y2="{}" {stroke} fill="none"{}/>"#,
-            js_round(safe_height as f64 / 2.0),
-            js_round(safe_height as f64 / 2.0),
+            r#"<line x1="{x1}" y1="{y1}" x2="{x2}" y2="{y2}" {stroke} fill="none" vector-effect="non-scaling-stroke"{}/>"#,
             rotation_layout.transform_attribute
         )
     } else if let Some(path_data) = path_data {
@@ -489,7 +813,9 @@ pub fn render_standalone_word_shape_svg(
         )
     };
     Some(format!(
-        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{safe_width}" height="{safe_height}" viewBox="0 0 {} {}"{}><defs>{}</defs>{body}</svg>"#,
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{}" height="{}" viewBox="0 0 {} {}"{}><defs>{}</defs>{body}</svg>"#,
+        rotation_layout.view_box_width_px,
+        rotation_layout.view_box_height_px,
         rotation_layout.view_box_width_px,
         rotation_layout.view_box_height_px,
         if rotation_layout.preserve_aspect_ratio_none {
@@ -503,10 +829,7 @@ pub fn render_standalone_word_shape_svg(
 
 fn render_grouped_picture_svg_element(
     picture_xml: &str,
-    child_offset_x: i64,
-    child_offset_y: i64,
-    scale_x: f64,
-    scale_y: f64,
+    transform: DrawingGroupTransform,
     context: &ParseContext<'_>,
 ) -> Option<String> {
     let picture_properties_xml = extract_balanced_tag_blocks(picture_xml, "pic:spPr")
@@ -519,12 +842,16 @@ fn render_grouped_picture_svg_element(
         .unwrap_or_default();
     let off_tag = regex_tag(&transform_xml, r"(?i)<a:off\b[^>]*/>").unwrap_or_default();
     let ext_tag = regex_tag(&transform_xml, r"(?i)<a:ext\b[^>]*/>").unwrap_or_default();
-    let off_x_px = parse_integer_attribute(&off_tag, "x").unwrap_or(0) - child_offset_x;
-    let off_y_px = parse_integer_attribute(&off_tag, "y").unwrap_or(0) - child_offset_y;
+    let scale_x = transform.scale_x;
+    let scale_y = transform.scale_y;
+    let (off_x_px, off_y_px) = transform.position(
+        parse_integer_attribute(&off_tag, "x").unwrap_or(0),
+        parse_integer_attribute(&off_tag, "y").unwrap_or(0),
+    );
     let ext_x_px = parse_integer_attribute(&ext_tag, "cx").unwrap_or(0);
     let ext_y_px = parse_integer_attribute(&ext_tag, "cy").unwrap_or(0);
-    let x = js_round(off_x_px as f64 * scale_x);
-    let y = js_round(off_y_px as f64 * scale_y);
+    let x = js_round(off_x_px);
+    let y = js_round(off_y_px);
     let width_px = js_round(ext_x_px as f64 * scale_x).max(1);
     let height_px = js_round(ext_y_px as f64 * scale_y).max(1);
     let relationship_id = regex_capture(picture_xml, r#"(?i)<a:blip\b[^>]*r:embed="([^"]+)""#)
@@ -548,6 +875,108 @@ fn render_grouped_picture_svg_element(
     ))
 }
 
+fn simple_rect_bitmap_fill_relationship(shape_properties_xml: &str) -> Option<String> {
+    if !shape_properties_xml.contains("a:blipFill") {
+        return None;
+    }
+    let geometry = crate::xml::direct_child_tag(shape_properties_xml, "a:prstGeom")?;
+    if get_attribute(geometry, "prst").as_deref() != Some("rect") {
+        return None;
+    }
+    let properties = crate::xml::extract_direct_child_tag_ranges(shape_properties_xml);
+    if properties.iter().any(|child| {
+        matches!(
+            child.tag_name.as_str(),
+            "a:custGeom" | "a:effectLst" | "a:effectDag"
+        )
+    }) {
+        return None;
+    }
+    let fills = properties
+        .iter()
+        .filter(|child| {
+            matches!(
+                child.tag_name.as_str(),
+                "a:blipFill"
+                    | "a:solidFill"
+                    | "a:gradFill"
+                    | "a:pattFill"
+                    | "a:grpFill"
+                    | "a:noFill"
+            )
+        })
+        .collect::<Vec<_>>();
+    if fills.len() != 1 || fills[0].tag_name != "a:blipFill" {
+        return None;
+    }
+    let fill_xml = &shape_properties_xml[fills[0].start..fills[0].end];
+    let fill_children = crate::xml::extract_direct_child_tag_ranges(fill_xml);
+    if fill_children.len() != 2
+        || fill_children[0].tag_name != "a:blip"
+        || fill_children[1].tag_name != "a:stretch"
+    {
+        return None;
+    }
+    if get_attribute(fill_xml, "rotWithShape").is_some_and(|value| value != "1" && value != "true")
+    {
+        return None;
+    }
+    let blip = &fill_xml[fill_children[0].start..fill_children[0].end];
+    if !crate::xml::extract_direct_child_tag_ranges(blip).is_empty()
+        || get_attribute(blip, "r:link").is_some()
+    {
+        return None;
+    }
+    let stretch = &fill_xml[fill_children[1].start..fill_children[1].end];
+    let stretch_children = crate::xml::extract_direct_child_tag_ranges(stretch);
+    if stretch_children.len() != 1 || stretch_children[0].tag_name != "a:fillRect" {
+        return None;
+    }
+    let fill_rect = &stretch[stretch_children[0].start..stretch_children[0].end];
+    if !crate::xml::extract_direct_child_tag_ranges(fill_rect).is_empty()
+        || ["l", "t", "r", "b"].iter().any(|name| {
+            get_attribute(fill_rect, name).is_some_and(|value| value.trim().parse::<i64>() != Ok(0))
+        })
+    {
+        return None;
+    }
+    get_attribute(blip, "r:embed").filter(|id| !id.is_empty())
+}
+
+fn render_rect_shape_bitmap_fill_svg(
+    shape_properties_xml: &str,
+    width_px: i64,
+    height_px: i64,
+    context: &ParseContext<'_>,
+) -> Option<String> {
+    if width_px <= 0 || height_px <= 0 {
+        return None;
+    }
+    let relationship_id = simple_rect_bitmap_fill_relationship(shape_properties_xml)?;
+    let Some(part_name) = context.relationships.get(&relationship_id) else {
+        context.push_warning(format!("Missing relationship target for {relationship_id}"));
+        return None;
+    };
+    let Some(binary) = context.binary_assets.get(part_name) else {
+        context.push_warning(format!("Missing image asset {part_name}"));
+        return None;
+    };
+    if binary.is_empty() {
+        return None;
+    }
+    let mime_type = content_type_for_part(part_name, &context.content_types)?;
+    if !matches!(
+        mime_type.as_str(),
+        "image/png" | "image/jpeg" | "image/gif" | "image/webp" | "image/bmp"
+    ) {
+        return None;
+    }
+    let src = format!("data:{mime_type};base64,{}", bytes_to_base64(binary));
+    Some(format!(
+        r#"<image href="{src}" x="0" y="0" width="{width_px}" height="{height_px}" preserveAspectRatio="none"/>"#
+    ))
+}
+
 fn drawing_shape_fill_markup(
     shape_properties_xml: &str,
     theme_colors: &crate::parse::context::ThemeColorMap,
@@ -565,20 +994,27 @@ fn drawing_shape_fill_markup(
     let fill_scope_xml = re::get_unchecked(r"(?i)<a:extLst\b[^>]*/>")
         .replace_all(&fill_scope_xml, "")
         .to_string();
-    if let Some(solid_fill_xml) = extract_balanced_tag_blocks(&fill_scope_xml, "a:solidFill").into_iter().next() {
-        if let Some((color, opacity)) = resolve_drawing_color_from_xml(Some(&solid_fill_xml), theme_colors) {
+    if let Some(solid_fill_xml) = extract_balanced_tag_blocks(&fill_scope_xml, "a:solidFill")
+        .into_iter()
+        .next()
+    {
+        if let Some((color, opacity)) =
+            resolve_drawing_color_from_xml(Some(&solid_fill_xml), theme_colors)
+        {
             return ShapeFillMarkup {
-                fill_attribute: format!(
-                    r#"fill="{color}""#,
-                ) + &opacity
-                    .map(|o| format!(r#" fill-opacity="{o}""#))
-                    .unwrap_or_default(),
+                fill_attribute: format!(r#"fill="{color}""#,)
+                    + &opacity
+                        .map(|o| format!(r#" fill-opacity="{o}""#))
+                        .unwrap_or_default(),
                 defs: Vec::new(),
             };
         }
     }
 
-    if let Some(gradient_fill_xml) = extract_balanced_tag_blocks(&fill_scope_xml, "a:gradFill").into_iter().next() {
+    if let Some(gradient_fill_xml) = extract_balanced_tag_blocks(&fill_scope_xml, "a:gradFill")
+        .into_iter()
+        .next()
+    {
         let gradient_stops: Vec<String> = extract_balanced_tag_blocks(&gradient_fill_xml, "a:gs")
             .into_iter()
             .filter_map(|stop_xml| {
@@ -629,14 +1065,18 @@ fn drawing_shape_fill_markup(
         };
     }
 
-    if let Some(style_fill_ref_xml) = extract_balanced_tag_blocks(shape_properties_xml, "a:fillRef").into_iter().next() {
-        if let Some((color, opacity)) = resolve_drawing_color_from_xml(Some(&style_fill_ref_xml), theme_colors) {
+    if let Some(style_fill_ref_xml) = extract_balanced_tag_blocks(shape_properties_xml, "a:fillRef")
+        .into_iter()
+        .next()
+    {
+        if let Some((color, opacity)) =
+            resolve_drawing_color_from_xml(Some(&style_fill_ref_xml), theme_colors)
+        {
             return ShapeFillMarkup {
-                fill_attribute: format!(
-                    r#"fill="{color}""#,
-                ) + &opacity
-                    .map(|o| format!(r#" fill-opacity="{o}""#))
-                    .unwrap_or_default(),
+                fill_attribute: format!(r#"fill="{color}""#,)
+                    + &opacity
+                        .map(|o| format!(r#" fill-opacity="{o}""#))
+                        .unwrap_or_default(),
                 defs: Vec::new(),
             };
         }
@@ -691,19 +1131,26 @@ fn drawing_shape_stroke_markup(
     let width_px = emu_to_pixels(line_width_emu.map(|v| v.to_string()).as_deref());
     format!(
         r#"stroke="{}"{} stroke-width="{}""#,
-        resolved.as_ref().map(|(c, _)| c.as_str()).unwrap_or("#000000"),
+        resolved
+            .as_ref()
+            .map(|(c, _)| c.as_str())
+            .unwrap_or("#000000"),
         resolved
             .as_ref()
             .and_then(|(_, o)| o.map(|opacity| format!(r#" stroke-opacity="{opacity}""#)))
             .unwrap_or_default(),
-        format_js_number(width_px.unwrap_or(1.0).max(1.0))
+        format_js_number(width_px.unwrap_or(1.0).max(0.0))
     )
 }
 
 fn drawing_shape_path_data(path_xml: &str, width_px: i64, height_px: i64) -> Option<String> {
     let path_tag = regex_tag(path_xml, r"(?i)<a:path\b[^>]*>").unwrap_or_default();
-    let base_width = parse_integer_attribute(&path_tag, "w").unwrap_or(21600).max(1) as f64;
-    let base_height = parse_integer_attribute(&path_tag, "h").unwrap_or(21600).max(1) as f64;
+    let base_width = parse_integer_attribute(&path_tag, "w")
+        .unwrap_or(21600)
+        .max(1) as f64;
+    let base_height = parse_integer_attribute(&path_tag, "h")
+        .unwrap_or(21600)
+        .max(1) as f64;
     let command_re = re::get_unchecked(
         r"(?is)<a:moveTo\b[\s\S]*?(?:</a:moveTo>|/>)|<a:lnTo\b[\s\S]*?(?:</a:lnTo>|/>)|<a:cubicBezTo\b[\s\S]*?(?:</a:cubicBezTo>|/>)|<a:close\b[\s\S]*?(?:</a:close>|/>)",
     );
@@ -739,8 +1186,12 @@ fn drawing_shape_path_data(path_xml: &str, width_px: i64, height_px: i64) -> Opt
             .captures_iter(command_xml)
             .map(|caps| {
                 (
-                    caps.get(1).map(|m| m.as_str().to_string()).unwrap_or_default(),
-                    caps.get(2).map(|m| m.as_str().to_string()).unwrap_or_default(),
+                    caps.get(1)
+                        .map(|m| m.as_str().to_string())
+                        .unwrap_or_default(),
+                    caps.get(2)
+                        .map(|m| m.as_str().to_string())
+                        .unwrap_or_default(),
                 )
             })
             .collect();
@@ -753,7 +1204,11 @@ fn drawing_shape_path_data(path_xml: &str, width_px: i64, height_px: i64) -> Opt
             };
             commands.push(format!(
                 "{}{scaled_point}",
-                if command_type.contains("moveto") { "M" } else { "L" }
+                if command_type.contains("moveto") {
+                    "M"
+                } else {
+                    "L"
+                }
             ));
             continue;
         }
@@ -881,8 +1336,12 @@ fn drawing_shape_heuristic_path_data(
     width_px: i64,
     height_px: i64,
 ) -> Option<String> {
-    let cubic_count = re::get_unchecked(r"(?i)<a:cubicBezTo\b").find_iter(path_xml).count();
-    let line_count = re::get_unchecked(r"(?i)<a:lnTo\b").find_iter(path_xml).count();
+    let cubic_count = re::get_unchecked(r"(?i)<a:cubicBezTo\b")
+        .find_iter(path_xml)
+        .count();
+    let line_count = re::get_unchecked(r"(?i)<a:lnTo\b")
+        .find_iter(path_xml)
+        .count();
     if cubic_count == 0 {
         return None;
     }
@@ -924,40 +1383,46 @@ fn drawing_preset_path_data(preset: Option<&str>, width_px: i64, height_px: i64)
         "flowChartDelay" => {
             let safe_width = width_px.max(1);
             let safe_height = height_px.max(1);
-            let radius = js_round(safe_height as f64 / 2.0).min(safe_width - 1).max(1);
+            let radius = js_round(safe_height as f64 / 2.0)
+                .min(safe_width - 1)
+                .max(1);
             let arc_x = safe_width - radius;
-            Some(format!("M0 0 H{arc_x} A{radius} {radius} 0 0 1 {arc_x} {safe_height} H0 Z"))
+            Some(format!(
+                "M0 0 H{arc_x} A{radius} {radius} 0 0 1 {arc_x} {safe_height} H0 Z"
+            ))
         }
         "rtTriangle" => {
             let safe_width = width_px.max(1);
             let safe_height = height_px.max(1);
-            Some(format!("M0 {safe_height} L{safe_width} {safe_height} L0 0 Z"))
+            Some(format!(
+                "M0 {safe_height} L{safe_width} {safe_height} L0 0 Z"
+            ))
         }
         _ => None,
     }
 }
 
 fn svg_grouped_shape_transform(
-    x: i64,
-    y: i64,
-    width_px: i64,
-    height_px: i64,
+    x: f64,
+    y: f64,
+    width_px: f64,
+    height_px: f64,
     transform_xml: &str,
 ) -> String {
     let mut transforms = vec![format!("translate({x} {y})")];
     let flip_re = re::get_unchecked(r"(?i)^(?:1|true)$");
-    let flip_h = get_attribute(transform_xml, "flipH")
-        .is_some_and(|value| flip_re.is_match(&value));
-    let flip_v = get_attribute(transform_xml, "flipV")
-        .is_some_and(|value| flip_re.is_match(&value));
+    let flip_h =
+        get_attribute(transform_xml, "flipH").is_some_and(|value| flip_re.is_match(&value));
+    let flip_v =
+        get_attribute(transform_xml, "flipV").is_some_and(|value| flip_re.is_match(&value));
     let rotation_degrees = get_attribute(transform_xml, "rot")
         .and_then(|raw| raw.trim().parse::<f64>().ok())
         .filter(|value| value.is_finite() && value.abs() > 0.0)
         .map(|value| value / 60000.0);
 
     if flip_h || flip_v || rotation_degrees.is_some() {
-        let center_x = js_round(width_px as f64 / 2.0);
-        let center_y = js_round(height_px as f64 / 2.0);
+        let center_x = width_px / 2.0;
+        let center_y = height_px / 2.0;
         transforms.push(format!("translate({center_x} {center_y})"));
         if let Some(rotation_degrees) = rotation_degrees {
             transforms.push(format!("rotate({rotation_degrees:.3})"));
@@ -1019,12 +1484,24 @@ fn svg_rotation_layout(
         )
     })
     .collect();
-    let min_x = corners.iter().map(|(x, _)| *x).fold(f64::INFINITY, f64::min);
-    let max_x = corners.iter().map(|(x, _)| *x).fold(f64::NEG_INFINITY, f64::max);
-    let min_y = corners.iter().map(|(_, y)| *y).fold(f64::INFINITY, f64::min);
-    let max_y = corners.iter().map(|(_, y)| *y).fold(f64::NEG_INFINITY, f64::max);
-    let view_box_width_px = ((max_x - min_x).ceil() as i64).max(1);
-    let view_box_height_px = ((max_y - min_y).ceil() as i64).max(1);
+    let min_x = corners
+        .iter()
+        .map(|(x, _)| *x)
+        .fold(f64::INFINITY, f64::min);
+    let max_x = corners
+        .iter()
+        .map(|(x, _)| *x)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let min_y = corners
+        .iter()
+        .map(|(_, y)| *y)
+        .fold(f64::INFINITY, f64::min);
+    let max_y = corners
+        .iter()
+        .map(|(_, y)| *y)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let view_box_width_px = ((max_x - min_x - 1e-9).ceil() as i64).max(1);
+    let view_box_height_px = ((max_y - min_y - 1e-9).ceil() as i64).max(1);
 
     SvgRotationLayout {
         transform_attribute: format!(
@@ -1073,7 +1550,8 @@ fn estimate_text_width_px(text: &str, font_size_px: f64) -> f64 {
             0.55
         } else if ch.is_ascii_digit() {
             0.57
-        } else if re::get(r"[\u{2e80}-\u{9fff}\u{3040}-\u{30ff}\u{ac00}-\u{d7af}]").is_some_and(|re| re.is_match(&ch.to_string()))
+        } else if re::get(r"[\u{2e80}-\u{9fff}\u{3040}-\u{30ff}\u{ac00}-\u{d7af}]")
+            .is_some_and(|re| re.is_match(&ch.to_string()))
         {
             1.0
         } else {
@@ -1091,8 +1569,7 @@ fn resolve_svg_font_family(font_family: Option<&str>) -> String {
     if trimmed.contains(',') {
         return trimmed.to_string();
     }
-    if re::get_unchecked(r"(?i)times|georgia|garamond|serif").is_match(trimmed)
-    {
+    if re::get_unchecked(r"(?i)times|georgia|garamond|serif").is_match(trimmed) {
         format!("{trimmed}, serif")
     } else {
         format!("{trimmed}, Arial, sans-serif")
@@ -1106,7 +1583,5 @@ fn regex_capture(xml: &str, pattern: &str) -> Option<String> {
 }
 
 fn regex_tag(xml: &str, pattern: &str) -> Option<String> {
-    re::get(pattern)?
-        .find(xml)
-        .map(|m| m.as_str().to_string())
+    re::get(pattern)?.find(xml).map(|m| m.as_str().to_string())
 }

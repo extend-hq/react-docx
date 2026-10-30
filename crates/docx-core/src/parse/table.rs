@@ -1,17 +1,17 @@
 use std::collections::HashMap;
 
 use crate::model::{
-    ParagraphAlignment, TableCellContentNode, TableCellNode, TableCellNodeType, TableCellStyle,
-    TableCellVerticalAlign, TableNode, TableNodeType, TableRowHeightRule, TableRowNode,
-    TableRowNodeType, TableRowStyle, TableRowGeometrySource, TableStyle, TableWidthSource, TextStyle,
+    ParagraphAlignment, TableBorderSet, TableBoxSpacing, TableCellContentNode, TableCellNode,
+    TableCellNodeType, TableCellStyle, TableCellVerticalAlign, TableLayout, TableNode,
+    TableNodeType, TableRowGeometrySource, TableRowHeightRule, TableRowNode, TableRowNodeType,
+    TableRowStyle, TableStyle, TableWidthSource, TextStyle,
 };
-use crate::parse::re;
 use crate::parse::context::{
-    default_table_look, ParsedTableLook, ParsedTableStyleCondition,
-    ParsedTableStyleDefinition, TableConditionalStyleType,
+    default_table_look, ParsedTableLook, ParsedTableStyleCondition, ParsedTableStyleDefinition,
+    TableConditionalStyleType,
 };
 use crate::parse::paragraph::parse_paragraph_with_table_run_style;
-use crate::parse::style::parse_paragraph_align_from_xml;
+use crate::parse::re;
 use crate::parse::styles::{
     direct_table_property, merge_table_style_properties, parse_table_box_spacing,
     parse_table_preferred_width, parse_table_style_properties_from_xml, preferred_width_twips,
@@ -44,15 +44,19 @@ fn parse_table_cell_content_with_run_style(
         .filter_map(|block| {
             let block_xml = &cell_xml[block.start..block.end];
             if block_xml.starts_with("<w:p") || block_xml.starts_with("<W:p") {
-                return Some(TableCellContentNode::Paragraph(parse_paragraph_with_table_run_style(
-                    block_xml,
-                    context,
-                    table_paragraph_spacing,
-                    table_run_style,
-                )));
+                return Some(TableCellContentNode::Paragraph(
+                    parse_paragraph_with_table_run_style(
+                        block_xml,
+                        context,
+                        table_paragraph_spacing,
+                        table_run_style,
+                    ),
+                ));
             }
             if block_xml.starts_with("<w:tbl") || block_xml.starts_with("<W:tbl") {
-                return Some(TableCellContentNode::Table(Box::new(parse_table(block_xml, context))));
+                return Some(TableCellContentNode::Table(Box::new(parse_table(
+                    block_xml, context,
+                ))));
             }
             None
         })
@@ -60,12 +64,14 @@ fn parse_table_cell_content_with_run_style(
     if !parsed.is_empty() {
         return parsed;
     }
-    vec![TableCellContentNode::Paragraph(parse_paragraph_with_table_run_style(
-        "<w:p><w:r><w:t/></w:r></w:p>",
-        context,
-        table_paragraph_spacing,
-        table_run_style,
-    ))]
+    vec![TableCellContentNode::Paragraph(
+        parse_paragraph_with_table_run_style(
+            "<w:p><w:r><w:t/></w:r></w:p>",
+            context,
+            table_paragraph_spacing,
+            table_run_style,
+        ),
+    )]
 }
 
 #[derive(Clone, Debug)]
@@ -84,65 +90,208 @@ pub fn parse_table_cell(
     result
 }
 
+#[derive(Default)]
+struct CellPropertyTokens<'a> {
+    values: [Option<&'a str>; 9],
+    margins: [Option<&'a str>; 6],
+    borders: [Option<&'a str>; 8],
+}
+
+fn indexed_cell_property_tokens(xml: &str) -> Option<CellPropertyTokens<'_>> {
+    let mut tokens = CellPropertyTokens::default();
+    let mut container = None;
+    let complete = crate::xml_index::for_each_element(xml, |element| {
+        if element.source_start == 0 {
+            return element.name == "w:tcPr";
+        }
+        let leaf = element.content().is_none_or(|text| text.trim().is_empty());
+        if let Some((kind, end)) = container {
+            if element.source_start < end {
+                if !leaf {
+                    return false;
+                }
+                let edge = match element.name {
+                    "w:top" => 0,
+                    "w:right" => 1,
+                    "w:bottom" => 2,
+                    "w:left" => 3,
+                    "w:start" if kind == 3 => 4,
+                    "w:end" if kind == 3 => 5,
+                    "w:insideH" if kind == 4 => 4,
+                    "w:insideV" if kind == 4 => 5,
+                    "w:tl2br" if kind == 4 => 6,
+                    "w:tr2bl" if kind == 4 => 7,
+                    _ => return false,
+                };
+                let slots = if kind == 3 {
+                    tokens.margins.as_mut_slice()
+                } else {
+                    tokens.borders.as_mut_slice()
+                };
+                slots[edge].get_or_insert(element.xml);
+                return true;
+            }
+            container = None;
+        }
+        let property = match element.name {
+            "w:shd" => 0,
+            "w:gridSpan" => 1,
+            "w:tcW" => 2,
+            "w:tcMar" => 3,
+            "w:tcBorders" => 4,
+            "w:vAlign" => 5,
+            "w:vMerge" => 6,
+            "w:textDirection" => 7,
+            "w:noWrap" => 8,
+            "w:cnfStyle" | "w:tcFitText" | "w:hideMark" | "w:hMerge" | "w:cellIns"
+            | "w:cellDel" | "w:cellMerge" => return leaf,
+            _ => return false,
+        };
+        if tokens.values[property].is_some() {
+            return false;
+        }
+        if matches!(property, 3 | 4) {
+            container = Some((property, element.source_start + element.xml.len()));
+        } else if !leaf {
+            return false;
+        }
+        tokens.values[property] = Some(element.xml);
+        true
+    })?;
+    complete.then_some(tokens)
+}
+
+impl CellPropertyTokens<'_> {
+    fn margin_spacing(&self) -> Option<TableBoxSpacing> {
+        let spacing = TableBoxSpacing {
+            top_twips: self.margins[0].and_then(|tag| parse_integer_attribute(tag, "w:w")),
+            right_twips: self.margins[1]
+                .or(self.margins[5])
+                .and_then(|tag| parse_integer_attribute(tag, "w:w")),
+            bottom_twips: self.margins[2].and_then(|tag| parse_integer_attribute(tag, "w:w")),
+            left_twips: self.margins[3]
+                .or(self.margins[4])
+                .and_then(|tag| parse_integer_attribute(tag, "w:w")),
+        };
+        (spacing.top_twips.is_some()
+            || spacing.right_twips.is_some()
+            || spacing.bottom_twips.is_some()
+            || spacing.left_twips.is_some())
+        .then_some(spacing)
+    }
+
+    fn border_set(&self) -> Option<TableBorderSet> {
+        let [top, right, bottom, left, inside_h, inside_v, tl2br, tr2bl] =
+            self.borders.map(super::util::parse_table_border_style);
+        let present = top.is_some()
+            || right.is_some()
+            || bottom.is_some()
+            || left.is_some()
+            || inside_h.is_some()
+            || inside_v.is_some()
+            || tl2br.is_some()
+            || tr2bl.is_some();
+        present.then_some(TableBorderSet {
+            top,
+            right,
+            bottom,
+            left,
+            inside_h,
+            inside_v,
+            tl2br,
+            tr2bl,
+        })
+    }
+}
+
 fn parse_table_cell_geometry(cell_xml: &str) -> ParsedTableCellResult {
-    let cell_properties_xml = direct_table_property(cell_xml, "w:tcPr").map(str::to_string);
-    let background_color = cell_properties_xml
-        .as_deref()
-        .and_then(|xml| regex_capture(xml, r#"(?i)<w:shd\b[^>]*w:fill="([^"]+)""#))
-        .as_deref()
+    let source = direct_table_property(cell_xml, "w:tcPr");
+    let tokens = source.and_then(indexed_cell_property_tokens);
+    let owned_fallback = if tokens.is_none() {
+        source.map(str::to_owned)
+    } else {
+        None
+    };
+    let cell_properties_xml = owned_fallback.as_deref();
+    let property = |index, name| {
+        if let Some(tokens) = &tokens {
+            tokens.values[index]
+        } else {
+            cell_properties_xml.and_then(|xml| direct_table_property(xml, name))
+        }
+    };
+    let shading_xml = if let Some(tokens) = &tokens {
+        tokens.values[0]
+    } else {
+        cell_properties_xml
+    };
+    let background_color = shading_xml
+        .and_then(|xml| {
+            re::get_unchecked(r#"(?i)<w:shd\b[^>]*w:fill="([^"]+)""#)
+                .captures(xml)
+                .and_then(|caps| caps.get(1).map(|value| value.as_str()))
+        })
         .and_then(|value| normalize_hex_color(Some(value)));
-    let grid_span = cell_properties_xml.as_deref()
-        .and_then(|xml| direct_table_property(xml, "w:gridSpan"))
-        .and_then(|tag| parse_integer_attribute(tag, "w:val"));
-    let preferred_width = cell_properties_xml
-        .as_deref()
-        .and_then(|xml| direct_table_property(xml, "w:tcW"))
-        .and_then(parse_table_preferred_width);
+    let grid_span = property(1, "w:gridSpan").and_then(|tag| parse_integer_attribute(tag, "w:val"));
+    let preferred_width = property(2, "w:tcW").and_then(parse_table_preferred_width);
     let width_twips = preferred_width.as_ref().and_then(preferred_width_twips);
-    let cell_margin_xml = cell_properties_xml
-        .as_deref()
-        .and_then(|xml| regex_find(xml, r"(?is)<w:tcMar\b[\s\S]*?</w:tcMar>|<w:tcMar\b[^>]*/?>"));
-    let margin_twips = cell_margin_xml.and_then(parse_table_box_spacing);
-    let cell_borders_xml = cell_properties_xml.as_deref().and_then(|xml| {
-        regex_find(
-            xml,
-            r"(?is)<w:tcBorders\b[\s\S]*?</w:tcBorders>|<w:tcBorders\b[^>]*/?>",
-        )
-    });
-    let borders = cell_borders_xml.and_then(parse_table_border_set);
-    let vertical_align_tag = cell_properties_xml
-        .as_deref()
-        .and_then(|xml| regex_tag(xml, r"(?i)<w:vAlign\b[^>]*>"));
-    let vertical_align_raw = vertical_align_tag
-        .as_deref()
-        .and_then(|tag| get_attribute(tag, "w:val"))
-        .map(|v| v.to_ascii_lowercase());
-    let vertical_align = match vertical_align_raw.as_deref() {
-        Some("top") => Some(TableCellVerticalAlign::Top),
-        Some("center") => Some(TableCellVerticalAlign::Center),
-        Some("bottom") => Some(TableCellVerticalAlign::Bottom),
+    let margin_twips = if let Some(tokens) = &tokens {
+        tokens.margin_spacing()
+    } else {
+        cell_properties_xml
+            .and_then(|xml| {
+                regex_find(xml, r"(?is)<w:tcMar\b[\s\S]*?</w:tcMar>|<w:tcMar\b[^>]*/?>")
+            })
+            .and_then(parse_table_box_spacing)
+    };
+    let borders = if let Some(tokens) = &tokens {
+        tokens.border_set()
+    } else {
+        cell_properties_xml
+            .and_then(|xml| {
+                regex_find(
+                    xml,
+                    r"(?is)<w:tcBorders\b[\s\S]*?</w:tcBorders>|<w:tcBorders\b[^>]*/?>",
+                )
+            })
+            .and_then(parse_table_border_set)
+    };
+    let vertical_align_tag = if let Some(tokens) = &tokens {
+        tokens.values[5]
+    } else {
+        cell_properties_xml.and_then(|xml| regex_find(xml, r"(?i)<w:vAlign\b[^>]*>"))
+    };
+    let vertical_align_raw =
+        vertical_align_tag.and_then(|tag| crate::xml::get_attribute_ref(tag, "w:val"));
+    let vertical_align = match vertical_align_raw {
+        Some(value) if value.eq_ignore_ascii_case("top") => Some(TableCellVerticalAlign::Top),
+        Some(value) if value.eq_ignore_ascii_case("center") => Some(TableCellVerticalAlign::Center),
+        Some(value) if value.eq_ignore_ascii_case("bottom") => Some(TableCellVerticalAlign::Bottom),
         _ => None,
     };
-    let v_merge_tag = cell_properties_xml
-        .as_deref()
-        .and_then(|xml| regex_tag(xml, r"(?i)<w:vMerge\b[^>]*/?>"));
-    let text_direction = cell_properties_xml.as_deref()
-        .and_then(|xml| direct_table_property(xml, "w:textDirection"))
+    let v_merge_tag = if let Some(tokens) = &tokens {
+        tokens.values[6]
+    } else {
+        cell_properties_xml.and_then(|xml| regex_find(xml, r"(?i)<w:vMerge\b[^>]*/?>"))
+    };
+    let text_direction = property(7, "w:textDirection")
         .and_then(|tag| get_attribute(tag, "w:val"))
-        .filter(|value| matches!(value.as_str(), "lrTb" | "tbRl" | "btLr" | "lrTbV" | "tbRlV" | "tbLrV"));
-    let no_wrap = cell_properties_xml.as_deref()
-        .and_then(|xml| direct_table_property(xml, "w:noWrap"))
-        .and_then(|tag| parse_on_off_attribute(tag, "noWrap"));
-    let v_merge_raw = v_merge_tag
-        .as_deref()
-        .and_then(|tag| get_attribute(tag, "w:val"))
-        .map(|v| v.to_ascii_lowercase());
+        .filter(|value| {
+            matches!(
+                value.as_str(),
+                "lrTb" | "tbRl" | "btLr" | "lrTbV" | "tbRlV" | "tbLrV"
+            )
+        });
+    let no_wrap = property(8, "w:noWrap").and_then(|tag| parse_on_off_attribute(tag, "noWrap"));
+    let v_merge_raw = v_merge_tag.and_then(|tag| crate::xml::get_attribute_ref(tag, "w:val"));
     let v_merge = if v_merge_tag.is_some() {
-        Some(if v_merge_raw.as_deref() == Some("restart") {
-            "restart".to_string()
-        } else {
-            "continue".to_string()
-        })
+        Some(
+            if v_merge_raw.is_some_and(|value| value.eq_ignore_ascii_case("restart")) {
+                "restart".to_string()
+            } else {
+                "continue".to_string()
+            },
+        )
     } else {
         None
     };
@@ -200,27 +349,41 @@ pub fn parse_table(
     let resolved_table_style_id = table_style_id
         .as_deref()
         .or(context.style_sheet.default_table_style_id.as_deref());
-    let table_style = resolved_table_style_id
-        .and_then(|id| context.style_sheet.table_style_by_id.get(id));
-    let table_paragraph_spacing = resolved_table_style_id
-        .and_then(|id| context.style_sheet.table_paragraph_spacing_by_style_id.get(id));
+    let table_style =
+        resolved_table_style_id.and_then(|id| context.style_sheet.table_style_by_id.get(id));
+    let table_paragraph_spacing = resolved_table_style_id.and_then(|id| {
+        context
+            .style_sheet
+            .table_paragraph_spacing_by_style_id
+            .get(id)
+    });
     let style_table_properties = table_style
         .and_then(|style| style.conditions.get(&TableConditionalStyleType::WholeTable))
         .and_then(|condition| condition.table_properties.clone());
     let style_table_look = table_style
         .and_then(|style| style.conditions.get(&TableConditionalStyleType::WholeTable))
         .and_then(|condition| condition.table_look.clone());
-    let explicit_properties = parse_table_style_properties_from_xml(table_properties_xml.as_deref());
-    let merged_properties = merge_table_style_properties(style_table_properties.as_ref(), explicit_properties.as_ref());
+    let explicit_properties =
+        parse_table_style_properties_from_xml(table_properties_xml.as_deref());
+    let merged_properties = merge_table_style_properties(
+        style_table_properties.as_ref(),
+        explicit_properties.as_ref(),
+    );
     let width_twips = merged_properties.as_ref().and_then(|p| p.width_twips);
-    let preferred_width = merged_properties.as_ref().and_then(|p| p.preferred_width.clone());
+    let preferred_width = merged_properties
+        .as_ref()
+        .and_then(|p| p.preferred_width.clone());
     let alignment = merged_properties.as_ref().and_then(|p| p.alignment);
     let bidi_visual = merged_properties.as_ref().and_then(|p| p.bidi_visual);
     let indent_twips = merged_properties.as_ref().and_then(|p| p.indent_twips);
     let layout = merged_properties.as_ref().and_then(|p| p.layout);
-    let cell_spacing_twips = merged_properties.as_ref().and_then(|p| p.cell_spacing_twips);
+    let cell_spacing_twips = merged_properties
+        .as_ref()
+        .and_then(|p| p.cell_spacing_twips);
     let floating = merged_properties.as_ref().and_then(|p| p.floating.clone());
-    let cell_margin_twips = merged_properties.as_ref().and_then(|p| p.cell_margin_twips.clone());
+    let cell_margin_twips = merged_properties
+        .as_ref()
+        .and_then(|p| p.cell_margin_twips.clone());
     let table_borders_xml = table_properties_xml.as_deref().and_then(|xml| {
         regex_find(
             xml,
@@ -243,21 +406,44 @@ pub fn parse_table(
         parse_table_look(table_properties_xml.as_deref()),
         style_table_look.as_ref(),
     );
+    let preserve_collapsed_base = layout == Some(TableLayout::Fixed)
+        && cell_spacing_twips.unwrap_or(0) == 0
+        && explicit_borders.is_none()
+        && table_style.is_none_or(|style| {
+            !style.has_row_cell_spacing
+                && style.conditions.iter().all(|(kind, condition)| {
+                    *kind == TableConditionalStyleType::WholeTable
+                        && condition.table_borders.is_none()
+                })
+        });
     let row_blocks: Vec<_> = crate::xml::extract_balanced_tag_slices(table_xml, "w:tr")
         .into_iter()
-        .filter(|row| direct_table_property(row, "w:trPr")
-            .and_then(|properties| direct_table_property(properties, "w:del"))
-            .is_none())
+        .filter(|row| {
+            direct_table_property(row, "w:trPr")
+                .and_then(|properties| direct_table_property(properties, "w:del"))
+                .is_none()
+        })
         .collect();
-    let source_grid_bound = table_grid_xml.map(|_| column_widths_twips.len() as i64)
-        .unwrap_or_else(|| row_blocks.iter().map(|row| {
-            crate::xml::extract_balanced_tag_slices(row, "w:tc").iter().fold(0i64, |total, cell| {
-                let span = direct_table_property(cell, "w:tcPr")
-                    .and_then(|xml| direct_table_property(xml, "w:gridSpan"))
-                    .and_then(|tag| parse_integer_attribute(tag, "w:val")).unwrap_or(1).max(1);
-                total.saturating_add(span)
-            })
-        }).max().unwrap_or(0));
+    let source_grid_bound = table_grid_xml
+        .map(|_| column_widths_twips.len() as i64)
+        .unwrap_or_else(|| {
+            row_blocks
+                .iter()
+                .map(|row| {
+                    crate::xml::extract_balanced_tag_slices(row, "w:tc")
+                        .iter()
+                        .fold(0i64, |total, cell| {
+                            let span = direct_table_property(cell, "w:tcPr")
+                                .and_then(|xml| direct_table_property(xml, "w:gridSpan"))
+                                .and_then(|tag| parse_integer_attribute(tag, "w:val"))
+                                .unwrap_or(1)
+                                .max(1);
+                            total.saturating_add(span)
+                        })
+                })
+                .max()
+                .unwrap_or(0)
+        });
     let mut rows: Vec<TableRowNode> = Vec::new();
     let mut cell_sources_by_row: Vec<Vec<&str>> = Vec::new();
     #[derive(Clone, Copy)]
@@ -266,18 +452,37 @@ pub fn parse_table(
         cell_index: usize,
     }
     let mut active_vertical_merge_by_column: HashMap<i64, VerticalMergeAnchor> = HashMap::new();
+    let mut has_row_spacing_override = false;
+    let mut has_row_table_exception = false;
     for row_xml in row_blocks {
         let row_properties_xml = direct_table_property(row_xml, "w:trPr");
-        let grid_before = row_properties_xml.as_deref()
+        has_row_table_exception |= direct_table_property(row_xml, "w:tblPrEx").is_some();
+        if preserve_collapsed_base && !has_row_spacing_override {
+            has_row_spacing_override = row_properties_xml
+                .and_then(|properties| direct_table_property(properties, "w:tblCellSpacing"))
+                .is_some()
+                || direct_table_property(row_xml, "w:tblPrEx")
+                    .and_then(|properties| direct_table_property(properties, "w:tblCellSpacing"))
+                    .is_some();
+        }
+        let grid_before = row_properties_xml
+            .as_deref()
             .and_then(|xml| direct_table_property(xml, "w:gridBefore"))
-            .and_then(|tag| parse_integer_attribute(tag, "w:val")).filter(|value| *value >= 0);
-        let grid_after = row_properties_xml.as_deref()
+            .and_then(|tag| parse_integer_attribute(tag, "w:val"))
+            .filter(|value| *value >= 0);
+        let grid_after = row_properties_xml
+            .as_deref()
             .and_then(|xml| direct_table_property(xml, "w:gridAfter"))
-            .and_then(|tag| parse_integer_attribute(tag, "w:val")).filter(|value| *value >= 0);
-        let width_before = row_properties_xml.as_deref()
-            .and_then(|xml| direct_table_property(xml, "w:wBefore")).and_then(parse_table_preferred_width);
-        let width_after = row_properties_xml.as_deref()
-            .and_then(|xml| direct_table_property(xml, "w:wAfter")).and_then(parse_table_preferred_width);
+            .and_then(|tag| parse_integer_attribute(tag, "w:val"))
+            .filter(|value| *value >= 0);
+        let width_before = row_properties_xml
+            .as_deref()
+            .and_then(|xml| direct_table_property(xml, "w:wBefore"))
+            .and_then(parse_table_preferred_width);
+        let width_after = row_properties_xml
+            .as_deref()
+            .and_then(|xml| direct_table_property(xml, "w:wAfter"))
+            .and_then(parse_table_preferred_width);
         let row_background_color = row_properties_xml
             .as_deref()
             .and_then(|xml| regex_capture(xml, r#"(?i)<w:shd\b[^>]*w:fill="([^"]+)""#))
@@ -319,7 +524,12 @@ pub fn parse_table(
         let mut column_cursor = resolve_table_grid_skip_count(grid_before, source_grid_bound);
         for parsed_cell in parsed_cells {
             let mut cell = parsed_cell.cell;
-            let column_span = cell.style.as_ref().and_then(|s| s.grid_span).unwrap_or(1).max(1);
+            let column_span = cell
+                .style
+                .as_ref()
+                .and_then(|s| s.grid_span)
+                .unwrap_or(1)
+                .max(1);
             let start_column = column_cursor;
             let end_column = start_column + column_span - 1;
             column_cursor += column_span;
@@ -330,7 +540,8 @@ pub fn parse_table(
                         continuation_anchors.push(*anchor);
                     }
                 }
-                continuation_anchors.sort_unstable_by_key(|anchor| (anchor.row_index, anchor.cell_index));
+                continuation_anchors
+                    .sort_unstable_by_key(|anchor| (anchor.row_index, anchor.cell_index));
                 continuation_anchors.dedup_by_key(|anchor| (anchor.row_index, anchor.cell_index));
                 for anchor in continuation_anchors {
                     if let Some(row) = rows.get_mut(anchor.row_index) {
@@ -351,8 +562,7 @@ pub fn parse_table(
                                 source_no_wrap: None,
                                 borders: None,
                             });
-                            anchor_style.row_span =
-                                Some(anchor_style.row_span.unwrap_or(1) + 1);
+                            anchor_style.row_span = Some(anchor_style.row_span.unwrap_or(1) + 1);
                         }
                     }
                     for column_index in start_column..=end_column {
@@ -416,7 +626,10 @@ pub fn parse_table(
         rows.push(TableRowNode {
             r#type: TableRowNodeType::TableRow,
             cells,
-            style: if grid_before.is_some() || grid_after.is_some() || width_before.is_some() || width_after.is_some()
+            style: if grid_before.is_some()
+                || grid_after.is_some()
+                || width_before.is_some()
+                || width_after.is_some()
                 || row_background_color.is_some()
                 || row_height_twips.is_some()
                 || row_height_rule.is_some()
@@ -445,12 +658,32 @@ pub fn parse_table(
             },
         });
     }
-    let column_widths_twips = if rows.iter().any(|row| row.style.as_ref().is_some_and(|style| {
-        style.grid_before.unwrap_or(0) > 0 || style.grid_after.unwrap_or(0) > 0
-    })) {
-        column_widths_twips
+    let (column_widths_twips, collapsed_grid_columns) = if rows.iter().any(|row| {
+        row.style.as_ref().is_some_and(|style| {
+            style.grid_before.unwrap_or(0) > 0 || style.grid_after.unwrap_or(0) > 0
+        })
+    }) {
+        (column_widths_twips, None)
     } else {
-        normalize_conflicting_table_grid(column_widths_twips, &mut rows)
+        let preserve_collapsed = preserve_collapsed_base
+            && !has_row_spacing_override
+            && rows.iter().all(|row| {
+                row.style.as_ref().is_none_or(|style| {
+                    style.grid_before.unwrap_or(0) == 0 && style.grid_after.unwrap_or(0) == 0
+                })
+            });
+        normalize_conflicting_table_grid(
+            column_widths_twips,
+            &mut rows,
+            preserve_collapsed,
+            preserve_collapsed
+                && floating.is_none()
+                && !has_row_table_exception
+                && matches!(
+                    preferred_width.as_ref(),
+                    Some(crate::model::TablePreferredWidth::Auto)
+                ),
+        )
     };
     let column_count = column_widths_twips
         .len()
@@ -458,9 +691,20 @@ pub fn parse_table(
             rows.iter()
                 .map(|row| {
                     row.cells.iter().fold(0i64, |total, cell| {
-                        total + cell.style.as_ref().and_then(|s| s.grid_span).filter(|&v| v > 1).unwrap_or(1)
-                    }) + resolve_table_grid_skip_count(row.style.as_ref().and_then(|style| style.grid_before), source_grid_bound)
-                        + resolve_table_grid_skip_count(row.style.as_ref().and_then(|style| style.grid_after), source_grid_bound)
+                        total
+                            + cell
+                                .style
+                                .as_ref()
+                                .and_then(|s| s.grid_span)
+                                .filter(|&v| v > 1)
+                                .unwrap_or(1)
+                    }) + resolve_table_grid_skip_count(
+                        row.style.as_ref().and_then(|style| style.grid_before),
+                        source_grid_bound,
+                    ) + resolve_table_grid_skip_count(
+                        row.style.as_ref().and_then(|style| style.grid_after),
+                        source_grid_bound,
+                    )
                 })
                 .max()
                 .unwrap_or(0) as usize,
@@ -471,29 +715,46 @@ pub fn parse_table(
     {
         let row_count = rows.len() as i64;
         for (row_index, row) in rows.iter_mut().enumerate() {
-            let mut column_cursor = resolve_table_grid_skip_count(row.style.as_ref().and_then(|style| style.grid_before), source_grid_bound);
+            let mut column_cursor = resolve_table_grid_skip_count(
+                row.style.as_ref().and_then(|style| style.grid_before),
+                source_grid_bound,
+            );
             for (cell_index, cell) in row.cells.iter_mut().enumerate() {
-                let column_span = cell.style.as_ref().and_then(|s| s.grid_span).unwrap_or(1).max(1);
+                let column_span = cell
+                    .style
+                    .as_ref()
+                    .and_then(|s| s.grid_span)
+                    .unwrap_or(1)
+                    .max(1);
                 let start_column_index = column_cursor;
                 let end_column_index = start_column_index + column_span - 1;
                 column_cursor += column_span;
-                let condition = table_style.and_then(|table_style| resolve_table_condition_for_cell(
-                    table_style,
-                    &table_look,
-                    row_index as i64,
-                    row_count,
-                    start_column_index,
-                    end_column_index,
-                    column_count,
-                ));
+                let condition = table_style.and_then(|table_style| {
+                    resolve_table_condition_for_cell(
+                        table_style,
+                        &table_look,
+                        row_index as i64,
+                        row_count,
+                        start_column_index,
+                        end_column_index,
+                        column_count,
+                    )
+                });
                 cell.nodes = parse_table_cell_content_with_run_style(
                     &cell_sources_by_row[row_index][cell_index],
                     context,
                     table_paragraph_spacing,
-                    condition.as_ref().and_then(|value| value.run_style.as_ref()),
+                    condition
+                        .as_ref()
+                        .and_then(|value| value.run_style.as_ref()),
                 );
                 let Some(condition) = condition else { continue };
-                if cell.style.as_ref().and_then(|style| style.preferred_width.as_ref()).is_none() {
+                if cell
+                    .style
+                    .as_ref()
+                    .and_then(|style| style.preferred_width.as_ref())
+                    .is_none()
+                {
                     if let Some(preferred_width) = condition.cell_preferred_width.as_ref() {
                         let cell_style = cell.style.get_or_insert(TableCellStyle {
                             background_color: None,
@@ -522,7 +783,12 @@ pub fn parse_table(
                         inherited_preferred_width: condition.cell_preferred_width.clone(),
                     });
                 }
-                if cell.style.as_ref().and_then(|s| s.v_merge_continuation).unwrap_or(false) {
+                if cell
+                    .style
+                    .as_ref()
+                    .and_then(|s| s.v_merge_continuation)
+                    .unwrap_or(false)
+                {
                     continue;
                 }
                 if condition.row_background_color.is_some()
@@ -593,19 +859,28 @@ pub fn parse_table(
                         source_no_wrap: None,
                         borders: None,
                     });
-                    cell_style.borders = merge_table_border_sets(
-                        Some(cell_borders),
-                        cell_style.borders.as_ref(),
-                    );
+                    cell_style.borders =
+                        merge_table_border_sets(Some(cell_borders), cell_style.borders.as_ref());
                 }
                 if let Some(text_alignment) = condition.paragraph_text_alignment {
-                    apply_text_alignment_to_table_cell_content(&mut cell.nodes, text_alignment, context);
+                    apply_text_alignment_to_table_cell_content(
+                        &mut cell.nodes,
+                        text_alignment,
+                        context,
+                    );
                 }
                 if let Some(snap_to_grid) = condition.paragraph_snap_to_grid {
-                    apply_snap_to_grid_to_table_cell_content(&mut cell.nodes, snap_to_grid, context);
+                    apply_snap_to_grid_to_table_cell_content(
+                        &mut cell.nodes,
+                        snap_to_grid,
+                        context,
+                    );
                 }
                 if let Some(paragraph_align) = condition.paragraph_align {
-                    apply_paragraph_alignment_to_table_cell_content(&mut cell.nodes, paragraph_align);
+                    apply_paragraph_alignment_to_table_cell_content(
+                        &mut cell.nodes,
+                        paragraph_align,
+                    );
                 }
             }
         }
@@ -622,13 +897,16 @@ pub fn parse_table(
                 style.source_width = Some(TableWidthSource {
                     preferred_width: style.preferred_width.clone(),
                     width_twips: style.width_twips,
-                    inherited_preferred_width: style.source_width.as_ref()
+                    inherited_preferred_width: style
+                        .source_width
+                        .as_ref()
                         .and_then(|source| source.inherited_preferred_width.clone()),
                 });
             }
         }
     }
-    let has_table_style = table_style_id.is_some() || table_grid_xml.is_some()
+    let has_table_style = table_style_id.is_some()
+        || table_grid_xml.is_some()
         || preferred_width.is_some()
         || alignment.is_some()
         || bidi_visual.is_some()
@@ -642,7 +920,7 @@ pub fn parse_table(
         || resolved_table_borders.is_some();
     TableNode {
         r#type: TableNodeType::Table,
-                block_id: None,
+        block_id: None,
         rows,
         style: if has_table_style {
             Some(TableStyle {
@@ -652,17 +930,20 @@ pub fn parse_table(
                 source_width: Some(TableWidthSource {
                     preferred_width: preferred_width.clone(),
                     width_twips,
-                    inherited_preferred_width: style_table_properties.as_ref()
+                    inherited_preferred_width: style_table_properties
+                        .as_ref()
                         .and_then(|properties| properties.preferred_width.clone()),
                 }),
                 preferred_width,
                 alignment,
                 source_alignment: alignment,
-                source_inherited_alignment: style_table_properties.as_ref()
+                source_inherited_alignment: style_table_properties
+                    .as_ref()
                     .and_then(|properties| properties.alignment),
                 bidi_visual,
                 source_bidi_visual: bidi_visual,
-                source_inherited_bidi_visual: style_table_properties.as_ref()
+                source_inherited_bidi_visual: style_table_properties
+                    .as_ref()
                     .and_then(|properties| properties.bidi_visual),
                 indent_twips,
                 layout,
@@ -673,6 +954,7 @@ pub fn parse_table(
                 } else {
                     Some(column_widths_twips)
                 },
+                collapsed_grid_columns,
                 borders: resolved_table_borders,
                 floating,
             })
@@ -686,18 +968,17 @@ pub fn parse_table(
 
 /// Some generators emit a placeholder tblGrid while each row's real geometry
 /// lives in per-cell tcW values (rows may even have differing boundaries).
-/// Word's fixed-layout algorithm trusts cell widths over the grid, so when the
-/// two disagree on most measured cells, rebuild the grid as the union of all
-/// row boundaries and remap every cell's gridSpan onto it.
+/// Preserve the existing physical reconstruction when preferred widths differ
+/// from the declared grid, while retaining compatible logical boundaries.
 fn normalize_conflicting_table_grid(
     grid: Vec<i64>,
     rows: &mut [TableRowNode],
-) -> Vec<i64> {
+    preserve_collapsed_columns: bool,
+    resolve_shared_constraints: bool,
+) -> (Vec<i64>, Option<Vec<usize>>) {
     const BOUNDARY_TOLERANCE_TWIPS: i64 = 80;
-    // Temporary A/B toggle for corpus verification; remove before commit.
-    const LEGACY_GATE: bool = false;
     if grid.is_empty() || rows.is_empty() {
-        return grid;
+        return (grid, None);
     }
 
     let span_of = |cell: &TableCellNode| -> usize {
@@ -730,7 +1011,7 @@ fn normalize_conflicting_table_grid(
         .max()
         .unwrap_or(0);
     if max_span_sum != grid.len() {
-        return grid;
+        return (grid, None);
     }
 
     // Generators that slice page layouts into (nested) tables emit uniform
@@ -739,8 +1020,7 @@ fn normalize_conflicting_table_grid(
     // under the conflict ratio below yet still misplace the text fragments the
     // cells position, so when the declared grid is uniform and every cell
     // carries an explicit width, trust the cell widths outright.
-    let grid_is_uniform =
-        grid.len() > 1 && grid.iter().all(|&width| (width - grid[0]).abs() <= 1);
+    let grid_is_uniform = grid.len() > 1 && grid.iter().all(|&width| (width - grid[0]).abs() <= 1);
     let cells_fully_measured = rows.iter().all(|row| {
         row.cells
             .iter()
@@ -751,6 +1031,7 @@ fn normalize_conflicting_table_grid(
     // Conflict detection: do explicit cell widths disagree with the grid?
     let mut measured_rows = 0usize;
     let mut conflict_rows = 0usize;
+    let mut has_width_difference = false;
     for row in rows.iter() {
         let mut cursor = 0usize;
         let mut measured = 0usize;
@@ -768,6 +1049,7 @@ fn normalize_conflicting_table_grid(
             let Some(actual) = width_of(cell) else {
                 continue;
             };
+            has_width_difference |= actual != expected;
             if expected <= 0 {
                 continue;
             }
@@ -783,10 +1065,13 @@ fn normalize_conflicting_table_grid(
             }
         }
     }
-    if measured_rows == 0
+    // Retain shared columns when the preferred widths already agree. A union
+    // of cell boundaries can otherwise erase columns inside spanning cells.
+    if !has_width_difference
+        || measured_rows == 0
         || (!uniform_placeholder_grid && conflict_rows * 2 <= measured_rows)
     {
-        return grid;
+        return (grid, None);
     }
 
     // Union of every row's cumulative cell boundaries; cells without an
@@ -828,7 +1113,7 @@ fn normalize_conflicting_table_grid(
         }
     }
     if merged.len() < 2 {
-        return grid;
+        return (grid, None);
     }
 
     let snap = |value: i64| -> usize {
@@ -848,13 +1133,17 @@ fn normalize_conflicting_table_grid(
         }
     };
 
-    // Remap each cell's span onto the union grid.
+    let mut source_boundaries = vec![None; grid.len() + 1];
+    let mut source_topology_consistent = true;
+    let mut resolved_spans = Vec::new();
     anchor_width_by_bucket.clear();
-    for row in rows.iter_mut() {
+    for row in rows.iter() {
         let mut cursor = 0usize;
         let mut position = 0i64;
-        for cell in &mut row.cells {
+        let mut resolved_cursor = 0usize;
+        for cell in &row.cells {
             let span = span_of(cell);
+            let source_start = cursor;
             let fallback: i64 = grid.iter().skip(cursor).take(span).sum();
             cursor += span;
             let own_width = width_of(cell).unwrap_or(fallback.max(1));
@@ -869,6 +1158,57 @@ fn normalize_conflicting_table_grid(
             position += width;
             let end_index = snap(position).max(start_index + 1);
             let new_span = (end_index - start_index) as i64;
+            resolved_spans.push(new_span);
+            if start_index != resolved_cursor || end_index >= merged.len() {
+                source_topology_consistent = false;
+            } else {
+                for (column, boundary) in [
+                    (source_start, merged[start_index]),
+                    (cursor, merged[end_index]),
+                ] {
+                    match source_boundaries.get_mut(column) {
+                        Some(value @ None) => *value = Some(boundary),
+                        Some(Some(value)) if *value == boundary => {}
+                        _ => source_topology_consistent = false,
+                    }
+                }
+            }
+            resolved_cursor += new_span as usize;
+        }
+    }
+    // Keep logical columns when all rows agree on their resolved boundaries.
+    // Interior columns may be unobserved because every row spans over them.
+    if source_topology_consistent {
+        if let Some(resolved_grid) =
+            preserve_shared_grid_topology(&grid, &source_boundaries, preserve_collapsed_columns)
+        {
+            let collapsed: Vec<_> = resolved_grid
+                .iter()
+                .enumerate()
+                .filter_map(|(column, &width)| (width == 0).then_some(column))
+                .collect();
+            if collapsed.is_empty()
+                || resolved_grid
+                    .iter()
+                    .copied()
+                    .filter(|&width| width > 0)
+                    .eq(merged.windows(2).map(|pair| pair[1] - pair[0]))
+            {
+                return (resolved_grid, (!collapsed.is_empty()).then_some(collapsed));
+            }
+        }
+    }
+
+    if !source_topology_consistent && resolve_shared_constraints {
+        if let Some(widths) = resolve_shared_column_preferences(grid.len(), rows) {
+            return (widths, None);
+        }
+    }
+
+    let mut resolved_spans = resolved_spans.into_iter();
+    for row in rows.iter_mut() {
+        for cell in &mut row.cells {
+            let new_span = resolved_spans.next().unwrap_or(1);
             if new_span > 1 {
                 let style = cell.style.get_or_insert(TableCellStyle {
                     background_color: None,
@@ -893,21 +1233,133 @@ fn normalize_conflicting_table_grid(
         }
     }
 
-    merged.windows(2).map(|pair| pair[1] - pair[0]).collect()
+    (
+        merged.windows(2).map(|pair| pair[1] - pair[0]).collect(),
+        None,
+    )
+}
+
+/// Resolve fully anchored cell preferences on the shared logical columns.
+fn resolve_shared_column_preferences(columns: usize, rows: &[TableRowNode]) -> Option<Vec<i64>> {
+    let mut constraints: Vec<Vec<(usize, i64)>> = vec![Vec::new(); columns + 1];
+    let mut anchored = vec![false; columns];
+    for row in rows {
+        let mut start = 0usize;
+        for cell in &row.cells {
+            let style = cell.style.as_ref()?;
+            let span = usize::try_from(style.grid_span.unwrap_or(1)).ok()?;
+            if span == 0 {
+                return None;
+            }
+            let end = start.checked_add(span)?;
+            if end > columns {
+                return None;
+            }
+            if !style.v_merge_continuation.unwrap_or(false) {
+                if !matches!(
+                    style.preferred_width.as_ref(),
+                    Some(crate::model::TablePreferredWidth::Dxa { .. })
+                ) {
+                    return None;
+                }
+                let width = style.width_twips.filter(|&value| value > 0)?;
+                constraints[end].push((start, width));
+                if span == 1 {
+                    anchored[start] = true;
+                }
+            }
+            start = end;
+        }
+        if start != columns {
+            return None;
+        }
+    }
+    if anchored.iter().any(|&value| !value) {
+        return None;
+    }
+    let mut boundaries = vec![0i64; columns + 1];
+    for end in 1..=columns {
+        let mut position = boundaries[end - 1];
+        for &(start, width) in &constraints[end] {
+            position = position.max(boundaries[start].checked_add(width)?);
+        }
+        boundaries[end] = position;
+    }
+    Some(
+        boundaries
+            .windows(2)
+            .map(|pair| pair[1] - pair[0])
+            .collect(),
+    )
+}
+
+fn preserve_shared_grid_topology(
+    grid: &[i64],
+    boundaries: &[Option<i64>],
+    allow_collapsed: bool,
+) -> Option<Vec<i64>> {
+    if boundaries.first().copied().flatten() != Some(0)
+        || boundaries.last().copied().flatten().is_none()
+        || grid.iter().any(|&width| width <= 0)
+    {
+        return None;
+    }
+    let minimum_column_width = if allow_collapsed { 0 } else { 1 };
+    let mut result = Vec::with_capacity(grid.len());
+    let mut start = 0usize;
+    let mut position = 0i64;
+    for (end, boundary) in boundaries.iter().enumerate().skip(1) {
+        let Some(boundary) = *boundary else { continue };
+        let width = boundary.checked_sub(position)?;
+        if width < minimum_column_width * (end - start) as i64 {
+            return None;
+        }
+        let source_width: i128 = grid[start..end].iter().map(|&value| value as i128).sum();
+        let mut source_position = 0i128;
+        let mut resolved_position = 0i64;
+        for &column_width in &grid[start..end] {
+            source_position += column_width as i128;
+            let next_position = (source_position * width as i128 / source_width) as i64;
+            let resolved_width = next_position - resolved_position;
+            if resolved_width < minimum_column_width {
+                return None;
+            }
+            result.push(resolved_width);
+            resolved_position = next_position;
+        }
+        start = end;
+        position = boundary;
+    }
+    Some(result)
 }
 
 fn parse_table_look(table_properties_xml: Option<&str>) -> Option<ParsedTableLook> {
     let table_properties_xml = table_properties_xml?;
-    let table_look_tag = regex_tag(table_properties_xml, r"(?i)<w:tblLook\b[^>]*/?>").unwrap_or_default();
+    let table_look_tag =
+        regex_tag(table_properties_xml, r"(?i)<w:tblLook\b[^>]*/?>").unwrap_or_default();
     if table_look_tag.is_empty() {
         return None;
     }
     let look_mask_raw = get_attribute(&table_look_tag, "w:val");
     let look_mask = look_mask_raw.and_then(|v| i64::from_str_radix(&v, 16).ok());
-    let row_band_size_tag = regex_tag(table_properties_xml, r"(?i)<w:tblStyleRowBandSize\b[^>]*/?>")
-        .or_else(|| extract_balanced_tag_blocks(table_properties_xml, "w:tblStyleRowBandSize").into_iter().next());
-    let col_band_size_tag = regex_tag(table_properties_xml, r"(?i)<w:tblStyleColBandSize\b[^>]*/?>")
-        .or_else(|| extract_balanced_tag_blocks(table_properties_xml, "w:tblStyleColBandSize").into_iter().next());
+    let row_band_size_tag = regex_tag(
+        table_properties_xml,
+        r"(?i)<w:tblStyleRowBandSize\b[^>]*/?>",
+    )
+    .or_else(|| {
+        extract_balanced_tag_blocks(table_properties_xml, "w:tblStyleRowBandSize")
+            .into_iter()
+            .next()
+    });
+    let col_band_size_tag = regex_tag(
+        table_properties_xml,
+        r"(?i)<w:tblStyleColBandSize\b[^>]*/?>",
+    )
+    .or_else(|| {
+        extract_balanced_tag_blocks(table_properties_xml, "w:tblStyleColBandSize")
+            .into_iter()
+            .next()
+    });
     let row_band_size_raw = row_band_size_tag
         .as_deref()
         .and_then(|tag| parse_integer_attribute(tag, "w:val"))
@@ -939,7 +1391,10 @@ fn parse_table_look(table_properties_xml: Option<&str>) -> Option<ParsedTableLoo
     })
 }
 
-fn merge_table_look(direct: Option<ParsedTableLook>, inherited: Option<&ParsedTableLook>) -> ParsedTableLook {
+fn merge_table_look(
+    direct: Option<ParsedTableLook>,
+    inherited: Option<&ParsedTableLook>,
+) -> ParsedTableLook {
     let mut merged = default_table_look();
     if let Some(inherited) = inherited {
         merged = inherited.clone();
@@ -1075,9 +1530,11 @@ fn merge_table_conditional_style(
         paragraph_align: direct
             .and_then(|d| d.paragraph_align)
             .or(inherited.and_then(|i| i.paragraph_align)),
-        paragraph_text_alignment: direct.and_then(|value| value.paragraph_text_alignment)
+        paragraph_text_alignment: direct
+            .and_then(|value| value.paragraph_text_alignment)
             .or_else(|| inherited.and_then(|value| value.paragraph_text_alignment)),
-        paragraph_snap_to_grid: direct.and_then(|value| value.paragraph_snap_to_grid)
+        paragraph_snap_to_grid: direct
+            .and_then(|value| value.paragraph_snap_to_grid)
             .or_else(|| inherited.and_then(|value| value.paragraph_snap_to_grid)),
         run_style: merge_text_styles(&[
             inherited.and_then(|i| i.run_style.clone()),
@@ -1118,11 +1575,14 @@ fn apply_snap_to_grid_to_table_cell_content(
         let TableCellContentNode::Paragraph(paragraph) = node else {
             continue;
         };
-        let properties = paragraph.source_xml.as_deref()
+        let properties = paragraph
+            .source_xml
+            .as_deref()
             .and_then(|xml| direct_table_property(xml, "w:pPr"))
             .unwrap_or_default();
         let direct_property = direct_table_property(properties, "w:snapToGrid");
-        let direct = direct_property.and_then(|tag| crate::xml::parse_on_off_attribute(tag, "snapToGrid"));
+        let direct =
+            direct_property.and_then(|tag| crate::xml::parse_on_off_attribute(tag, "snapToGrid"));
         let explicit_style = direct_table_property(properties, "w:pStyle")
             .and_then(|tag| get_attribute(tag, "w:val"))
             .and_then(|id| context.style_sheet.paragraph_style_by_id.get(&id))
@@ -1255,7 +1715,10 @@ fn apply_paragraph_alignment_to_table_cell_content(
             TableCellContentNode::Table(nested_table) => {
                 for row in &mut nested_table.rows {
                     for cell in &mut row.cells {
-                        apply_paragraph_alignment_to_table_cell_content(&mut cell.nodes, paragraph_align);
+                        apply_paragraph_alignment_to_table_cell_content(
+                            &mut cell.nodes,
+                            paragraph_align,
+                        );
                     }
                 }
             }
@@ -1270,9 +1733,7 @@ fn regex_capture(xml: &str, pattern: &str) -> Option<String> {
 }
 
 fn regex_tag(xml: &str, pattern: &str) -> Option<String> {
-    re::get(pattern)?
-        .find(xml)
-        .map(|m| m.as_str().to_string())
+    re::get(pattern)?.find(xml).map(|m| m.as_str().to_string())
 }
 
 fn regex_find<'a>(xml: &'a str, pattern: &str) -> Option<&'a str> {

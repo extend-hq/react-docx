@@ -12,8 +12,7 @@ import xml.etree.ElementTree as ET
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_ROOTS = [Path.home() / 'Documents' / 'DOCX testing', Path.home() / 'Documents' / 'DOC testing']
-OUT = ROOT / 'output' / 'parser-benchmark-20261028'
+OUT = ROOT / 'output' / 'parser-benchmark'
 W = {'http://schemas.openxmlformats.org/wordprocessingml/2006/main', 'http://purl.oclc.org/ooxml/wordprocessingml/main'}
 MC = 'http://schemas.openxmlformats.org/markup-compatibility/2006'
 
@@ -212,7 +211,7 @@ def oracle(path):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--roots', nargs='+', type=Path, default=DEFAULT_ROOTS)
+    ap.add_argument('--roots', nargs='+', type=Path, required=True)
     ap.add_argument('--out', type=Path, default=OUT)
     args = ap.parse_args()
     out = args.out

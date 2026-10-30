@@ -2169,8 +2169,12 @@ describe("doc-model import", () => {
         expect(image.crop?.topFraction).toBeCloseTo(0.03196, 5);
         expect(image.crop?.bottomFraction).toBeCloseTo(0.12653, 5);
         expect(image.cssOpacity).toBeCloseTo(0.57, 5);
-        expect(image.cssFilter).toContain("saturate(0.76)");
-        expect(image.cssFilter).toContain("grayscale(1)");
+        expect(image.cssFilter).toBeUndefined();
+        const decodedSvg = decodeURIComponent(
+          (image.src ?? "").replace(/^data:image\/svg\+xml;charset=utf-8,/, "")
+        );
+        expect(decodedSvg).toContain('id="duotone"');
+        expect(decodedSvg).toContain("feComponentTransfer");
       }
     }
   });
