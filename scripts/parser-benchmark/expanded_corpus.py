@@ -87,6 +87,7 @@ def main():
     parser.add_argument('--max-compressed-bytes', type=int, default=128 * 1024 * 1024)
     parser.add_argument('--max-expanded-bytes', type=int, default=512 * 1024 * 1024)
     parser.add_argument('--exclude-manifest', type=Path)
+    parser.add_argument('--continue-from', type=Path)
     args = parser.parse_args()
     if args.oracle_only:
         create_oracles(args.out)
@@ -101,11 +102,25 @@ def main():
     connection.close()
     population = len(rows)
     random.Random(args.seed).shuffle(rows)
+    prior = None
+    offset = 0
+    if args.continue_from:
+        prior = json.loads(args.continue_from.read_text())
+        if (prior['dataset_revision'] != args.revision
+                or prior['metadata_sha256'] != digest(args.metadata)
+                or prior['seed'] != args.seed):
+            raise ValueError('Continuation must use the same metadata snapshot and seed')
+        offset = len(prior['attempts'])
+        if [row['source_id'] for row in rows[:offset]] != [row['source_id'] for row in prior['attempts']]:
+            raise ValueError('Prior sampling order does not match the pinned population')
+        rows = rows[offset:]
     directory = args.out.resolve() / 'documents'
     directory.mkdir(parents=True, exist_ok=True)
     excluded = set()
     if args.exclude_manifest:
         excluded = {entry['id'] for entry in json.loads(args.exclude_manifest.read_text())['entries']}
+    if prior:
+        excluded.update(row['sha256'] for row in prior['attempts'] if row['status'] == 'accepted')
     receipt_path = args.out / 'sampling.json'
     receipt = {
         'dataset': 'superdoc-dev/docx-corpus', 'dataset_revision': args.revision,
@@ -113,13 +128,17 @@ def main():
         'metadata_sha256': digest(args.metadata), 'population_documents': population,
         'seed': args.seed, 'target_documents': args.count,
         'algorithm': 'Python random.Random(seed).shuffle on metadata rows ordered by source ID; take first eligible distinct downloaded byte hashes, retaining every attempted row and rejection.',
-        'eligibility': 'ZIP readable, contains [Content_Types].xml and word/document.xml, bounded compressed and uncompressed bytes, unique actual SHA-256, not in excluded legacy benchmark manifest. No language, document type, feature, parser-success, or oracle-success filtering.',
+        'eligibility': 'ZIP readable, contains [Content_Types].xml and word/document.xml, bounded compressed and uncompressed bytes, unique actual SHA-256, not in excluded or prior samples. No language, document type, feature, parser-success, or oracle-success filtering.',
         'max_compressed_bytes': args.max_compressed_bytes, 'max_expanded_bytes': args.max_expanded_bytes,
         'excluded_manifest_sha256': digest(args.exclude_manifest) if args.exclude_manifest else None,
         'started_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
         'input_bytes_unchanged': True, 'downloaded_byte_hash_is_authoritative': True,
         'attempts': [],
     }
+    if prior:
+        receipt.update(continuation_receipt=str(args.continue_from.resolve()),
+                       continuation_receipt_sha256=digest(args.continue_from),
+                       population_offset=offset, prior_documents=prior['accepted_documents'])
     accepted = []
     hashes = set()
     with ThreadPoolExecutor(max_workers=args.workers) as executor:
@@ -132,6 +151,7 @@ def main():
             cursor += len(batch)
             for record in executor.map(lambda row: download(row, directory, args.max_compressed_bytes, args.max_expanded_bytes), batch):
                 record['sample_rank'] = len(receipt['attempts']) + 1
+                record['population_rank'] = offset + record['sample_rank']
                 if record['status'] == 'downloaded_docx':
                     value = record['sha256']
                     if value in excluded:

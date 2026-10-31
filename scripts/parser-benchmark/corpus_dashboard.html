@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DOCX parser benchmarks</title>
+<style>
+:root{color-scheme:light;font:14px/1.4 system-ui,-apple-system,sans-serif;color:#202b36;background:#f5f6f8}
+*{box-sizing:border-box}body{margin:0;height:100dvh;display:flex;flex-direction:column}header{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;padding:12px 28px;background:white;border-bottom:1px solid #dfe4ea}strong{font-size:14px;font-weight:650}small{display:block;color:#667487;font-size:12px;margin-top:2px}nav{display:flex;gap:6px}a{display:block;padding:8px 13px;border:1px solid #dfe4ea;border-radius:7px;color:#40576f;text-decoration:none;font-size:13px}a[aria-current=page]{background:#174f88;color:white;border-color:#174f88}a:focus-visible{outline:3px solid #3c77c8;outline-offset:3px}iframe{flex:1;min-height:0;width:100%;border:0}@media(max-width:600px){header{padding:10px 16px;gap:8px}nav{width:100%}nav a{flex:1;text-align:center}}
+</style>
+</head>
+<body>
+<header>
+<div><strong>DOCX parser benchmarks</strong><small id="scope">4,000 new inputs · 5,000 total · live measurements</small></div>
+<nav aria-label="Benchmark corpus">
+<a href="?cohort=5000" data-cohort="5000" aria-current="page">Expanded · 5,000</a>
+<a href="?cohort=1000" data-cohort="1000">Original · 1,000</a>
+</nav>
+</header>
+<iframe id="report" title="Latency and feature recall benchmark report" src="corpus-5000/report.html"></iframe>
+<script>
+const links=[...document.querySelectorAll('[data-cohort]')];
+function select(cohort,push=false){
+ const original=cohort==='1000';
+ document.getElementById('report').src=original?'report-1000.html':'corpus-5000/report.html';
+ document.getElementById('scope').textContent=original?'Original random cohort · latest validated results and candidate measurements':'4,000 new inputs · 5,000 total · live measurements';
+ for(const link of links){if(link.dataset.cohort===cohort)link.setAttribute('aria-current','page');else link.removeAttribute('aria-current');}
+ if(push){const url=new URL(location.href);url.searchParams.set('cohort',cohort);history.pushState({},'',url);}
+}
+for(const link of links)link.addEventListener('click',event=>{event.preventDefault();select(link.dataset.cohort,true);});
+window.addEventListener('popstate',()=>select(new URLSearchParams(location.search).get('cohort')==='1000'?'1000':'5000'));
+select(new URLSearchParams(location.search).get('cohort')==='1000'?'1000':'5000');
+</script>
+</body>
+</html>

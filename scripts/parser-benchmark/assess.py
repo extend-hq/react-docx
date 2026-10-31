@@ -15,7 +15,7 @@ from normalize import normalize, core_block_paragraphs
 from run import ENGINES
 
 
-def load_native(engine,path):
+def load_native(engine,path,preserve_image_payloads=False):
     if engine!='docx-core':
         with gzip.open(path) as f:
             return json.load(f)
@@ -37,7 +37,7 @@ def load_native(engine,path):
                 continue
             if shrink and event=='string':
                 value='[present]' if value else ''
-            shrink=event=='map_key' and value in ['data','src']
+            shrink=not preserve_image_payloads and event=='map_key' and value in ['data','src']
             builder.event(event,value)
     return builder.value
 

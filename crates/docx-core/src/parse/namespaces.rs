@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::package::OoxmlPackage;
 
@@ -368,41 +368,208 @@ fn is_canonical_xml(xml: &str) -> bool {
     }
 }
 
+fn contains_disallowed_xml_controls(bytes: &[u8]) -> bool {
+    let scalar = |bytes: &[u8]| {
+        bytes
+            .iter()
+            .any(|&byte| byte < 0x20 && !matches!(byte, b'\n' | b'\t'))
+    };
+    let mut chunks = bytes.chunks_exact(8);
+    for chunk in &mut chunks {
+        let word = u64::from_ne_bytes(chunk.try_into().unwrap());
+        if word.wrapping_sub(0x2020_2020_2020_2020) & !word & 0x8080_8080_8080_8080 != 0
+            && scalar(chunk)
+        {
+            return true;
+        }
+    }
+    scalar(chunks.remainder())
+}
+
+struct RootPlan {
+    prefix: String,
+    attributes: String,
+    default_rebound: bool,
+}
+
+type RootPlanEntry = (String, String, std::sync::Arc<RootPlan>);
+
+fn cached_root_plan(
+    key: (&str, &str),
+    build: impl FnOnce() -> Option<RootPlan>,
+) -> Option<std::sync::Arc<RootPlan>> {
+    use std::collections::VecDeque;
+    use std::sync::{Arc, LazyLock, Mutex};
+    static PLANS: LazyLock<Mutex<VecDeque<RootPlanEntry>>> =
+        LazyLock::new(|| Mutex::new(VecDeque::new()));
+    if key.0.len() > 64 || key.1.len() > 8192 {
+        return build().map(Arc::new);
+    }
+    {
+        let mut plans = PLANS.lock().unwrap_or_else(|error| error.into_inner());
+        if let Some(at) = plans
+            .iter()
+            .position(|(prefix, attributes, _)| prefix == key.0 && attributes == key.1)
+        {
+            let entry = plans.remove(at).unwrap();
+            let plan = Arc::clone(&entry.2);
+            plans.push_front(entry);
+            return Some(plan);
+        }
+    }
+    let plan = Arc::new(build()?);
+    let mut plans = PLANS.lock().unwrap_or_else(|error| error.into_inner());
+    if let Some(at) = plans
+        .iter()
+        .position(|(prefix, attributes, _)| prefix == key.0 && attributes == key.1)
+    {
+        let entry = plans.remove(at).unwrap();
+        let plan = Arc::clone(&entry.2);
+        plans.push_front(entry);
+        return Some(plan);
+    }
+    if plans.len() == 32 {
+        plans.pop_back();
+    }
+    plans.push_front((key.0.to_owned(), key.1.to_owned(), Arc::clone(&plan)));
+    Some(plan)
+}
+
+#[derive(Default)]
+struct PrologCache<'a> {
+    declarations: HashSet<&'a str>,
+    roots: HashMap<(&'a str, &'a str), std::sync::Arc<RootPlan>>,
+}
+
+fn permits_default_rebinding(before: &str, after: &str) -> bool {
+    let Ok(before) = roxmltree::Document::parse(before) else {
+        return false;
+    };
+    let before = before.root_element();
+    let Some(default) = before.lookup_namespace_uri(None) else {
+        return false;
+    };
+    if prefix(default).is_some() {
+        return false;
+    }
+    let Ok(after) = roxmltree::Document::parse(after) else {
+        return false;
+    };
+    let after = after.root_element();
+    after.lookup_namespace_uri(None).is_none()
+        && before.namespaces().len() == after.namespaces().len()
+        && before
+            .namespaces()
+            .filter(|ns| ns.name().is_some())
+            .all(|ns| after.lookup_namespace_uri(ns.name()) == Some(ns.uri()))
+        && after
+            .namespaces()
+            .any(|ns| ns.name().is_some() && ns.uri() == default)
+}
+
+#[cfg(test)]
 fn normalize_prolog_xml(xml: &str) -> Option<(String, crate::xml_index::Index)> {
+    normalize_prolog_cached(xml, &mut PrologCache::default())
+}
+
+fn normalize_prolog_cached<'a>(
+    xml: &'a str,
+    cache: &mut PrologCache<'a>,
+) -> Option<(String, crate::xml_index::Index)> {
     if memchr::memchr(b'\r', xml.as_bytes()).is_none() {
         return None;
     }
     let declaration_end = xml.strip_prefix("<?xml ").and_then(|_| xml.find("?>"))? + 2;
     let body = xml[declaration_end..].trim_matches([' ', '\t', '\r', '\n']);
     if !body.starts_with('<')
-        || body.contains("<?")
-        || body.contains("]]>")
-        || body
-            .bytes()
-            .any(|byte| byte < 0x20 && !matches!(byte, b'\n' | b'\t'))
+        || memchr::memmem::find(body.as_bytes(), b"<?").is_some()
+        || memchr::memmem::find(body.as_bytes(), b"]]>").is_some()
+        || contains_disallowed_xml_controls(body.as_bytes())
         || contains_bmp_noncharacter(body)
     {
         return None;
     }
-    roxmltree::Document::parse(&format!("{}<root/>", &xml[..declaration_end])).ok()?;
+    let declaration = &xml[..declaration_end];
+    if !cache.declarations.contains(declaration) {
+        roxmltree::Document::parse(&format!("{declaration}<root/>")).ok()?;
+        cache.declarations.insert(declaration);
+    }
     let root_end = crate::xml::tag_token_end(body, 0)?;
     let empty_root = body[..root_end].ends_with("/>");
-    let mut root = body[..root_end].to_owned();
-    if !empty_root {
-        root.pop();
-        root.push_str("/>");
-    }
-    let mut normalized = normalize_xml(&root).ok()?;
-    if !empty_root {
-        normalized.truncate(normalized.len() - 2);
-        normalized.push('>');
-    }
     let root_name_end =
         body[1..root_end].find(|ch: char| ch.is_ascii_whitespace() || matches!(ch, '/' | '>'))? + 1;
-    if normalized.len() != root_end
-        || normalized.as_bytes().get(..=root_name_end) != body.as_bytes().get(..=root_name_end)
-    {
+    let root_name = &body[1..root_name_end];
+    let mut name_parts = 0;
+    if !root_name.split(':').all(|part| {
+        name_parts += 1;
+        name_parts <= 2
+            && part
+                .as_bytes()
+                .first()
+                .is_some_and(|b| b.is_ascii_alphabetic() || *b == b'_')
+            && part
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'))
+    }) {
         return None;
+    }
+    let prefix_end = root_name.find(':').map_or(0, |position| position + 1);
+    let raw_prefix = &root_name[..prefix_end];
+    let raw_attributes = &body[root_name_end..root_end - if empty_root { 2 } else { 1 }];
+    let key = (raw_prefix, raw_attributes);
+    if !cache.roots.contains_key(&key) {
+        let plan = cached_root_plan(key, || {
+            let mut root = body[..root_end].to_owned();
+            if !empty_root {
+                root.pop();
+                root.push_str("/>");
+            }
+            let normalized = normalize_xml(&root).ok()?;
+            let name_end = normalized[1..]
+                .find(|ch: char| ch.is_ascii_whitespace() || matches!(ch, '/' | '>'))?
+                + 1;
+            let normalized_prefix_end = normalized[1..name_end]
+                .find(':')
+                .map_or(1, |position| position + 2);
+            Some(RootPlan {
+                prefix: normalized[1..normalized_prefix_end].to_owned(),
+                attributes: normalized[name_end..normalized.len() - 2].to_owned(),
+                default_rebound: normalized.len() != root.len()
+                    && permits_default_rebinding(&root, &normalized),
+            })
+        })?;
+        cache.roots.insert(key, plan);
+    }
+    let plan = cache.roots.get(&key)?;
+    let mut normalized = String::with_capacity(
+        root_end - raw_prefix.len() - raw_attributes.len()
+            + plan.prefix.len()
+            + plan.attributes.len(),
+    );
+    normalized.push('<');
+    normalized.push_str(&plan.prefix);
+    normalized.push_str(&root_name[prefix_end..]);
+    normalized.push_str(&plan.attributes);
+    normalized.push_str(if empty_root { "/>" } else { ">" });
+    if normalized.as_bytes().get(..=root_name_end) != body.as_bytes().get(..=root_name_end) {
+        return None;
+    }
+    if memchr::memmem::find(body[root_end..].as_bytes(), b"&#").is_some() {
+        return None;
+    }
+    if normalized.len() != root_end {
+        if !plan.default_rebound
+            || memchr::memmem::find(body[root_end..].as_bytes(), b"xmlns").is_some()
+        {
+            return None;
+        }
+        normalized.reserve(body.len() - root_end);
+        normalized.push_str(&body[root_end..]);
+        let index = crate::xml_index::Index::canonical_serialized(&normalized)?;
+        if !index.serialization_equivalent() || !index.all_elements_qualified() {
+            return None;
+        }
+        return Some((normalized, index));
     }
     let index = crate::xml_index::Index::canonical_serialized(body)?;
     if !index.serialization_equivalent() {
@@ -414,6 +581,93 @@ fn normalize_prolog_xml(xml: &str) -> Option<(String, crate::xml_index::Index)> 
     Some((normalized, index))
 }
 
+#[cfg(test)]
+mod default_namespace_tests {
+    use super::{normalize_prolog_cached, normalize_prolog_xml, normalize_xml, PrologCache};
+
+    fn xml(body: &str, declarations: &str) -> String {
+        format!(
+            "<?xml version=\"1.0\"?>\r\n<w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\" xmlns=\"urn:unused\" {declarations}>{body}</w:document>"
+        )
+    }
+
+    #[test]
+    fn unused_default_preserves_complete_normalization() {
+        for (body, declarations) in [
+            ("<w:p><w:r><w:t>Text &amp; text</w:t></w:r></w:p>", ""),
+            ("<w:p w:val=\"value\"/>", "xmlns:q=\"urn:fixed\""),
+            ("<q:item><w:p/></q:item>", "xmlns:q=\"urn:fixed\" xmlns:ns2=\"urn:other\""),
+            ("<w:p mc:Ignorable=\"q\"><q:item/></w:p>", "xmlns:q=\"urn:fixed\" xmlns:mc=\"http://schemas.openxmlformats.org/markup-compatibility/2006\""),
+        ] {
+            let input = xml(body, declarations);
+            let (normalized, index) = normalize_prolog_xml(&input).unwrap();
+            assert_eq!(normalized, normalize_xml(&input).unwrap());
+            assert!(index.serialization_equivalent());
+            assert!(index.all_elements_qualified());
+        }
+    }
+
+    #[test]
+    fn namespace_or_serialization_changes_fall_back() {
+        for (body, declarations) in [
+            ("<child/>", ""),
+            ("<w:p><child/></w:p>", ""),
+            ("<w:p xmlns:q=\"urn:other\"><q:item/></w:p>", ""),
+            (
+                "<w:p/>",
+                "xmlns:q=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"",
+            ),
+            ("<w:p></w:p>", ""),
+            ("<w:p><w:t>&#65;</w:t></w:p>", ""),
+            ("<w:p w:val='value'/>", ""),
+        ] {
+            assert!(normalize_prolog_xml(&xml(body, declarations)).is_none());
+        }
+    }
+
+    #[test]
+    fn shared_root_attributes_keep_each_element_name_and_binding() {
+        let mut inputs = Vec::new();
+        for default in ["urn:unused", "urn:changed"] {
+            for name in ["document", "styles", "numbering"] {
+                for empty in [false, true] {
+                    let opening = format!("<?xml version=\"1.0\"?>\r\n<w:{name} xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\" xmlns=\"{default}\"");
+                    inputs.push(if empty {
+                        format!("{opening}/>")
+                    } else {
+                        format!("{opening}><w:p w:val=\"value\"/></w:{name}>")
+                    });
+                }
+            }
+        }
+        let mut cache = PrologCache::default();
+        for input in &inputs {
+            let (normalized, _) = normalize_prolog_cached(input, &mut cache).unwrap();
+            assert_eq!(normalized, normalize_xml(input).unwrap());
+        }
+    }
+
+    #[test]
+    fn cached_bindings_do_not_validate_new_names_or_default_usage() {
+        let inputs = [
+            xml("<w:p/>", ""),
+            xml("<child/>", ""),
+            xml("<w:p/>", "").replace("w:document", "w:bad?name"),
+            xml("<w:p/>", "").replace("w:document", "w:bad:name"),
+            xml("<w:p/>", "").replace("w:document", "w:node.name"),
+            xml("<w:p/>", ""),
+        ];
+        let mut cache = PrologCache::default();
+        for (input, accepted) in inputs.iter().zip([true, false, false, false, false, true]) {
+            let result = normalize_prolog_cached(input, &mut cache);
+            assert_eq!(result.is_some(), accepted);
+            if let Some((normalized, _)) = result {
+                assert_eq!(normalized, normalize_xml(input).unwrap());
+            }
+        }
+    }
+}
+
 fn normalize_hoisted_xml(xml: &str) -> Option<(String, crate::xml_index::Index)> {
     let body = if xml.starts_with("<?xml ") {
         let end = xml.find("?>")? + 2;
@@ -423,15 +677,126 @@ fn normalize_hoisted_xml(xml: &str) -> Option<(String, crate::xml_index::Index)>
         xml
     };
     let body = body.trim_matches([' ', '\t', '\r', '\n']);
-    if body.contains("]]>")
-        || body
-            .bytes()
-            .any(|b| b < 0x20 && !matches!(b, b'\n' | b'\t'))
+    if memchr::memmem::find(body.as_bytes(), b"]]>").is_some()
+        || contains_disallowed_xml_controls(body.as_bytes())
         || contains_bmp_noncharacter(body)
     {
         return None;
     }
     crate::xml_index::Index::canonical_hoisted(body)
+}
+
+type PreparedPart = (
+    Option<crate::xml_index::Index>,
+    Option<Result<String, String>>,
+);
+
+fn prepare_part<'a>(
+    part: &'a crate::package::OoxmlPart,
+    names_match: bool,
+    prologs: &mut PrologCache<'a>,
+) -> PreparedPart {
+    #[cfg(not(target_arch = "wasm32"))]
+    if names_match
+        && part.content.len() <= 512 * 1024
+        && matches!(part.name.rsplit('/').next(), Some("styles.xml" | "stylesWithEffects.xml" | "numbering.xml" | "theme1.xml" | "fontTable.xml" | "settings.xml"))
+    {
+        return definition_indexes::prepare(part, prologs);
+    }
+    prepare_uncached_part(part, names_match, prologs)
+}
+
+fn prepare_uncached_part<'a>(
+    part: &'a crate::package::OoxmlPart,
+    names_match: bool,
+    prologs: &mut PrologCache<'a>,
+) -> PreparedPart {
+    if let Some(index) = crate::xml_index::Index::canonical(&part.content) {
+        (Some(index), None)
+    } else if let Some((xml, index)) = normalize_prolog_cached(&part.content, prologs) {
+        (Some(index), Some(Ok(xml)))
+    } else if let Some((xml, index)) = names_match
+        .then(|| normalize_hoisted_xml(&part.content))
+        .flatten()
+    {
+        (Some(index), Some(Ok(xml)))
+    } else if !is_canonical_xml(&part.content) {
+        let replacement = normalize_xml(&part.content);
+        let index = if names_match {
+            replacement
+                .as_ref()
+                .ok()
+                .and_then(|xml| crate::xml_index::Index::canonical_normalized(xml))
+        } else {
+            None
+        };
+        (index, Some(replacement))
+    } else {
+        (None, None)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn prepare_parallel_parts(
+    pkg: &OoxmlPackage,
+    names_match: bool,
+) -> Option<Vec<(&crate::package::OoxmlPart, PreparedPart)>> {
+    let eligible = |part: &&crate::package::OoxmlPart| {
+        part.name.ends_with(".xml") || part.name.ends_with(".rels")
+    };
+    let (count, bytes, largest) = pkg.parts.values().filter(eligible).fold(
+        (0usize, 0usize, 0usize),
+        |(count, bytes, largest), part| {
+            (
+                count + 1,
+                bytes.saturating_add(part.content.len()),
+                largest.max(part.content.len()),
+            )
+        },
+    );
+    if count < 4 || bytes < 64 * 1024 || largest > bytes - bytes / 4 {
+        return None;
+    }
+    let pool = worker_pool()?;
+    let workers = pool.current_num_threads() + 1;
+    let parts: Vec<_> = pkg.parts.values().filter(eligible).collect();
+    let mut order: Vec<_> = (0..parts.len()).collect();
+    order.sort_unstable_by_key(|index| std::cmp::Reverse(parts[*index].content.len()));
+    let mut weights = vec![0usize; workers];
+    let mut assignments = vec![0usize; parts.len()];
+    for index in order {
+        let worker = (0..workers).min_by_key(|worker| weights[*worker])?;
+        assignments[index] = worker;
+        weights[worker] = weights[worker].saturating_add(parts[index].content.len().max(1));
+    }
+    let mut results: Vec<Option<PreparedPart>> = (0..parts.len()).map(|_| None).collect();
+    let mut groups: Vec<Vec<_>> = (0..workers).map(|_| Vec::new()).collect();
+    for ((part, result), worker) in parts.iter().zip(results.iter_mut()).zip(assignments) {
+        groups[worker].push((*part, result));
+    }
+    let mut groups = groups.into_iter();
+    let caller = groups.next()?;
+    pool.in_place_scope(|scope| {
+        for group in groups {
+            scope.spawn(move |_| {
+                let mut prologs = PrologCache::default();
+                for (part, slot) in group {
+                    *slot = Some(prepare_part(part, names_match, &mut prologs));
+                }
+            });
+        }
+        let mut prologs = PrologCache::default();
+        for (part, slot) in caller {
+            *slot = Some(prepare_part(part, names_match, &mut prologs));
+        }
+    });
+    Some(
+        parts
+            .into_iter()
+            .zip(results)
+            .map(|(part, result)| (part, result.expect("joined normalization task")))
+            .collect(),
+    )
 }
 
 /// Normalizes an XML-only view while the caller retains the original binary assets.
@@ -443,34 +808,32 @@ pub(crate) fn normalized_package(
 ) {
     let mut indexes = HashMap::new();
     let mut replacements = Vec::new();
-    let normalized_index_names_match = pkg.parts.iter().all(|(name, part)| name == &part.name);
-    for part in pkg.parts.values() {
-        if !part.name.ends_with(".xml") && !part.name.ends_with(".rels") {
-            continue;
+    let names_match = pkg.parts.iter().all(|(name, part)| name == &part.name);
+    #[cfg(not(target_arch = "wasm32"))]
+    let parallel = prepare_parallel_parts(pkg, names_match);
+    #[cfg(target_arch = "wasm32")]
+    let parallel: Option<Vec<(&crate::package::OoxmlPart, PreparedPart)>> = None;
+    let mut accept = |part: &crate::package::OoxmlPart, (index, replacement): PreparedPart| {
+        if let Some(index) = index {
+            indexes.insert(part.name.clone(), index);
         }
-        if let Some(index) = crate::xml_index::Index::canonical(&part.content) {
-            indexes.insert(part.name.clone(), index);
-        } else if let Some((xml, index)) = normalize_prolog_xml(&part.content) {
-            indexes.insert(part.name.clone(), index);
-            replacements.push((part.name.clone(), Ok(xml)));
-        } else if let Some((xml, index)) = normalized_index_names_match
-            .then(|| normalize_hoisted_xml(&part.content))
-            .flatten()
-        {
-            indexes.insert(part.name.clone(), index);
-            replacements.push((part.name.clone(), Ok(xml)));
-        } else if !is_canonical_xml(&part.content) {
-            let replacement = normalize_xml(&part.content);
-            if normalized_index_names_match {
-                if let Ok(xml) = &replacement {
-                    if let Some(index) = crate::xml_index::Index::canonical_normalized(xml) {
-                        indexes.insert(part.name.clone(), index);
-                    }
-                }
-            }
+        if let Some(replacement) = replacement {
             replacements.push((part.name.clone(), replacement));
         }
+    };
+    if let Some(parts) = parallel {
+        for (part, prepared) in parts {
+            accept(part, prepared);
+        }
+    } else {
+        let mut prologs = PrologCache::default();
+        for part in pkg.parts.values() {
+            if part.name.ends_with(".xml") || part.name.ends_with(".rels") {
+                accept(part, prepare_part(part, names_match, &mut prologs));
+            }
+        }
     }
+    let normalized_index_names_match = names_match;
     if replacements.is_empty() {
         return (Cow::Borrowed(pkg), indexes);
     }
@@ -529,4 +892,213 @@ pub(crate) fn normalized_package(
         }
     }
     (Cow::Owned(normalized), indexes)
+}
+
+#[cfg(test)]
+mod control_guard_tests {
+    use super::contains_disallowed_xml_controls as words;
+    fn scalar(bytes: &[u8]) -> bool {
+        bytes
+            .iter()
+            .any(|&b| b < 0x20 && !matches!(b, b'\n' | b'\t'))
+    }
+
+    #[test]
+    fn adjacent_byte_pairs_and_partial_chunks_agree() {
+        for pair in 0..=u16::MAX {
+            for position in 0..8 {
+                let mut bytes = [b' '; 17];
+                bytes[position] = pair as u8;
+                bytes[position + 1] = (pair >> 8) as u8;
+                for length in [7, 8, 9, 16, 17] {
+                    assert_eq!(words(&bytes[..length]), scalar(&bytes[..length]));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn mixed_words_and_all_tail_positions_agree() {
+        let mut state = 0x6c92_e375_19fa_b248_u64;
+        for _ in 0..100000 {
+            let mut bytes = [0u8; 31];
+            for byte in &mut bytes {
+                state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+                *byte = (state >> 32) as u8;
+            }
+            for length in 0..=31 {
+                assert_eq!(words(&bytes[..length]), scalar(&bytes[..length]));
+            }
+        }
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod parallel_part_tests {
+    use super::*;
+    use crate::package::OoxmlPart;
+
+    #[test]
+    fn concurrent_preparation_preserves_order_and_errors() {
+        let mut pkg = OoxmlPackage {
+            parts: HashMap::new(),
+            binary_assets: HashMap::new(),
+            warnings: Vec::new(),
+        };
+        for index in 0..8 {
+            let name = format!("section-{index}.xml");
+            let prefix = if index % 2 == 0 { "w" } else { "alternate" };
+            let content = format!(
+                "<?xml version=\"1.0\"?><{prefix}:root xmlns:{prefix}=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><{prefix}:p>{}</{prefix}:p></{prefix}:root>",
+                "text &amp; value ".repeat(2048),
+            );
+            pkg.parts.insert(name.clone(), OoxmlPart { name, content });
+        }
+        pkg.parts
+            .get_mut("section-3.xml")
+            .unwrap()
+            .content
+            .push('<');
+        for names_match in [true, false] {
+            let Some(parallel) = prepare_parallel_parts(&pkg, names_match) else {
+                continue;
+            };
+            let mut prologs = PrologCache::default();
+            assert_eq!(parallel.len(), pkg.parts.len());
+            for ((actual_part, actual), expected_part) in
+                parallel.into_iter().zip(pkg.parts.values())
+            {
+                assert_eq!(actual_part.name, expected_part.name);
+                let expected = prepare_part(expected_part, names_match, &mut prologs);
+                assert_eq!(actual.0.is_some(), expected.0.is_some());
+                assert_eq!(actual.1, expected.1);
+            }
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn worker_pool() -> Option<&'static rayon::ThreadPool> {
+    static POOL: std::sync::OnceLock<Option<rayon::ThreadPool>> = std::sync::OnceLock::new();
+    POOL.get_or_init(|| {
+        let workers = std::thread::available_parallelism().ok()?.get().min(4);
+        if workers < 2 {
+            return None;
+        }
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(workers - 1)
+            .stack_size(64 * 1024 * 1024)
+            .thread_name(|index| format!("docx-parse-{index}"))
+            .build()
+            .ok()
+    })
+    .as_ref()
+}
+
+#[cfg(test)]
+mod root_plan_cache_tests {
+    #[test]
+    fn cached_plans_preserve_distinct_roots_through_eviction() {
+        for value in (0..48).chain((0..48).rev()) {
+            for name in ["document", "styles", "hdr", "ftr"] {
+                let xml = format!("<?xml version=\"1.0\"?>\r\n<w:{name} xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\" xmlns:q=\"urn:cache:{value}\" xmlns=\"urn:unused\"><w:p><w:r><w:t>Text &amp; detail</w:t></w:r></w:p></w:{name}>");
+                let expected = super::normalize_xml(&xml).unwrap();
+                let (actual, index) = super::normalize_prolog_xml(&xml).unwrap();
+                assert_eq!(actual, expected);
+                assert!(index.serialization_equivalent());
+            }
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+mod definition_indexes {
+    use super::*;
+    use std::collections::VecDeque;
+    use std::sync::{Mutex, OnceLock};
+
+    static PREPARED: OnceLock<Mutex<VecDeque<(String, PreparedPart)>>> = OnceLock::new();
+
+    fn copy(prepared: &PreparedPart) -> PreparedPart {
+        (prepared.0.as_ref().map(crate::xml_index::Index::shared_copy), prepared.1.clone())
+    }
+
+    pub(super) fn prepare<'a>(part: &'a crate::package::OoxmlPart, prologs: &mut PrologCache<'a>) -> PreparedPart {
+        let prepared = PREPARED.get_or_init(|| Mutex::new(VecDeque::new()));
+        {
+            let entries = prepared.lock().unwrap_or_else(|error| error.into_inner());
+            if let Some((_, result)) = entries.iter().find(|(key, _)| key == &part.content) {
+                return copy(result);
+            }
+        }
+        let result = prepare_uncached_part(part, true, prologs);
+        if result.0.is_some() && !matches!(result.1, Some(Err(_))) {
+            let entry = (part.content.clone(), copy(&result));
+            let mut entries = prepared.lock().unwrap_or_else(|error| error.into_inner());
+            if !entries.iter().any(|(key, _)| key == &part.content) {
+                let mut retained = entries.iter().map(|(key, _)| key.len()).sum::<usize>();
+                while entries.len() >= 8 || retained + part.content.len() > 1024 * 1024 {
+                    let Some((key, _)) = entries.pop_front() else { break };
+                    retained -= key.len();
+                }
+                entries.push_back(entry);
+            }
+        }
+        result
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod definition_index_tests {
+    use super::*;
+    use crate::package::OoxmlPart;
+
+    #[test]
+    fn normalization_reuse_preserves_namespace_changes_and_offsets() {
+        for value in (0..12).chain((0..12).rev()) {
+            let prefix = if value % 2 == 0 { "w" } else { "alternate" };
+            let content = format!("<?xml version=\"1.0\"?><{prefix}:styles xmlns:{prefix}=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><{prefix}:style {prefix}:val=\"{value}\"/></{prefix}:styles>");
+            let part = OoxmlPart { name: "word/styles.xml".to_owned(), content };
+            let expected = prepare_uncached_part(&part, true, &mut PrologCache::default()).1;
+            for _ in 0..2 {
+                let (index, normalized) = prepare_part(&part, true, &mut PrologCache::default());
+                assert_eq!(normalized, expected);
+                let xml = normalized.as_ref().map(|value| value.as_ref().unwrap().as_str()).unwrap_or(&part.content);
+                let _scope = crate::xml_index::scope([("part", xml)].into_iter(), HashMap::from([("part".to_owned(), index.unwrap())]));
+                assert!(crate::xml_index::tag(xml, "w:style").flatten().is_some());
+            }
+        }
+    }
+}
+
+
+#[cfg(test)]
+mod numeric_reference_preflight_tests {
+    use super::*;
+
+    fn wrapped(body: &str) -> String {
+        format!("<?xml version=\"1.0\"?>\r\n<w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:body>{body}</w:body></w:document>")
+    }
+
+    #[test]
+    fn numeric_references_keep_complete_normalization() {
+        for body in [
+            "<w:p><w:r><w:t>&#65; &#x1F600;</w:t></w:r></w:p>",
+            "<w:p w:val=\"&#xA;&#9;&#13;\"/>",
+            "<w:p w:val=\"&amp;#xA;\"><w:r><w:t>&amp;#65;</w:t></w:r></w:p>",
+        ] {
+            let xml = wrapped(body);
+            let part = crate::package::OoxmlPart { name: "part.xml".into(), content: xml.clone() };
+            let (_, replacement) = prepare_uncached_part(&part, true, &mut PrologCache::default());
+            assert_eq!(replacement.unwrap().unwrap(), normalize_xml(&xml).unwrap());
+        }
+    }
+
+    #[test]
+    fn escaped_reference_text_remains_eligible() {
+        let xml = wrapped("<w:p><w:r><w:t>&amp;#xA;</w:t></w:r></w:p>");
+        let (normalized, index) = normalize_prolog_cached(&xml, &mut PrologCache::default()).unwrap();
+        assert_eq!(normalized, normalize_xml(&xml).unwrap());
+        assert!(index.serialization_equivalent());
+    }
 }

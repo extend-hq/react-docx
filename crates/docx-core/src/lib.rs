@@ -19,7 +19,7 @@ pub use source_graph::{document_source_graph, DocumentSourceGraph};
 pub use structured::{
     extract_document_blocks, extract_document_blocks_with_options, BlockDetails, BlockType,
     DocumentBlock, DocumentWord, ExtractDocumentBlocksOptions, ParagraphDetails, ParagraphInline,
-    SourceRef, StructuredDocument,
+    SourceRef, StructuredDocument, TableCellDetails,
 };
 
 pub fn parse_document_blocks(bytes: &[u8]) -> Result<StructuredDocument, String> {

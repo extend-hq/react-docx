@@ -14,14 +14,24 @@ from assess import percentile
 from expanded_benchmark import ENGINES, sha256, write_json
 from frontier_report import CHART_METRICS
 
-LABELS = {'body_f1': 'Body text F1', 'tables': 'Table text', 'table_cells': 'Table-cell text',
-          'images': 'Image occurrences', 'equations': 'Equation occurrences',
+LABELS = {'body_f1': 'Body text F1', 'tables': 'Table text (legacy exact anchors)', 'table_cells': 'Table-cell text',
+          'images': 'Image nodes (legacy count)', 'image_occurrences': 'Image occurrences (payload matched)', 'equations': 'Equation occurrences',
           'hyperlinks': 'Hyperlink text', 'headings': 'Headings', 'lists': 'Lists',
-          'horizontal_merges': 'Raw horizontal spans', 'vertical_merges': 'Vertical merges',
-          'nested_tables': 'Nested tables', 'explicit_bold': 'Explicit bold text',
+          'horizontal_merges': 'Raw horizontal spans (legacy anchors)', 'vertical_merges': 'Vertical merges',
+          'nested_tables': 'Nested tables', 'explicit_bold': 'Explicit bold (legacy 5-grams)',
+          'horizontal_spans_literal': 'Horizontal spans (literal anchors)',
+          'explicit_bold_characters': 'Explicit bold text (aligned characters)',
+          'table_text_literal': 'Table text (literal anchors)',
           'explicit_italic': 'Explicit italic text', 'textbox_text': 'Text-box text',
           'header_text': 'Header text', 'footer_text': 'Footer text', 'footnotes_text': 'Footnote text',
           'endnotes_text': 'Endnote text', 'comments_text': 'Comment text'}
+
+
+def split_quality_labels(labels):
+    replacements = {'images': 'image_occurrences', 'horizontal_merges': 'horizontal_spans_literal',
+                    'explicit_bold': 'explicit_bold_characters', 'tables': 'table_text_literal'}
+    legacy = {key: label for key, label in labels.items() if replacements.get(key) in labels}
+    return {key: label for key, label in labels.items() if key not in legacy}, legacy
 
 
 def require(condition, message):
@@ -261,13 +271,14 @@ def main():
     fidelity_changes = fidelity_findings(args.out.parent, args.out)
     backlog_path = args.out.parent / 'feature-backlog.json'
     backlog = read_json(backlog_path) if backlog_path.exists() else None
+    labels, legacy_labels = split_quality_labels(labels)
     data = {'generated_at': datetime.datetime.now(ZoneInfo('America/New_York')).isoformat(),
             'scope': {'attempted': len(ids), 'common_success': len(common), 'quality_common': len(quality_common),
                       'cohort_name': 'Independent seeded DOCX corpus sample', 'repeats': timing_env['repeats'],
                       'complete': complete, 'scatter_documents': len(metric_rows),
                       'dimension_errors': len(dimension_errors)},
             'engines': ENGINES, 'summaries': summaries, 'quality_comparison': quality,
-            'quality_labels': labels, 'baseline': baseline,
+            'quality_labels': labels, 'legacy_quality_labels': legacy_labels, 'baseline': baseline,
             'charts': {'metric_definitions': CHART_METRICS,
                        'points': [{'ordinal': ordinal, 'metrics': metric_rows.get(key),
                                    'latency_ms': {engine: by_timing[(key, engine)]['medians']['total_ms'] for engine in ENGINES}}

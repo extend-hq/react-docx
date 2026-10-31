@@ -2829,7 +2829,7 @@ fn paragraph_properties_with_mark_xml(
         .as_ref()
         .and_then(|style| serialized_paragraph_snap_to_grid(style, state));
     let properties =
-        paragraph_properties_xml(paragraph.style.as_ref(), text_alignment, snap_to_grid);
+        paragraph_properties_xml(paragraph.style.as_deref(), text_alignment, snap_to_grid);
     let mark = paragraph_mark_xml(
         paragraph,
         paragraph.source_paragraph_mark_properties_xml.as_deref(),

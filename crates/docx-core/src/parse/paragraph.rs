@@ -9,7 +9,7 @@ use crate::model::{
 use crate::parse::context::ParseContext;
 use crate::parse::images::parse_run_image_tokens;
 use crate::parse::re;
-use crate::parse::style::{parse_paragraph_style_in_table, parse_run_style_in_table};
+use crate::parse::style::parse_run_style_in_table;
 use crate::parse::util::{
     active_xml as prefer_alternate_content_choice, decode_hex_code_point, decode_xml_attribute,
     normalize_legacy_form_display_value, on_off_value_to_boolean, parse_on_off_tag_value,
@@ -647,7 +647,10 @@ pub fn parse_run_text(run_xml: &str) -> String {
         .collect()
 }
 
-fn hyperlink_href_from_tag(hyperlink_tag: &str, context: &ParseContext<'_>) -> Option<String> {
+fn hyperlink_href_from_tag(
+    hyperlink_tag: &str,
+    context: &ParseContext<'_, impl std::borrow::Borrow<super::context::ParsedStyleSheet>>,
+) -> Option<String> {
     let relationship_id = get_attribute(hyperlink_tag, "r:id");
     let anchor = get_attribute(hyperlink_tag, "w:anchor");
     let relationship_target = relationship_id
@@ -707,7 +710,7 @@ fn hyperlink_href_from_field_instruction(raw_instruction: &str) -> Option<String
 
 pub fn parse_paragraph_runs(
     paragraph_xml: &str,
-    context: &ParseContext<'_>,
+    context: &ParseContext<'_, impl std::borrow::Borrow<super::context::ParsedStyleSheet>>,
 ) -> Vec<ParagraphRunToken> {
     paragraph_runs(paragraph_xml, context)
         .into_iter()
@@ -744,7 +747,10 @@ fn paragraph_nested_tag_ranges(paragraph_xml: &str, tag_name: &str) -> Vec<crate
     ranges
 }
 
-fn paragraph_runs<'a>(paragraph_xml: &'a str, context: &ParseContext<'_>) -> Vec<RunToken<'a>> {
+fn paragraph_runs<'a>(
+    paragraph_xml: &'a str,
+    context: &ParseContext<'_, impl std::borrow::Borrow<super::context::ParsedStyleSheet>>,
+) -> Vec<RunToken<'a>> {
     let run_ranges = extract_balanced_tag_ranges(paragraph_xml, "w:r");
     if run_ranges.is_empty() {
         return Vec::new();
@@ -956,7 +962,7 @@ fn decode_active_x_binary_markup(binary: &[u8]) -> String {
 
 pub fn parse_run_active_x_checkbox_field(
     run_xml: &str,
-    context: &ParseContext<'_>,
+    context: &ParseContext<'_, impl std::borrow::Borrow<super::context::ParsedStyleSheet>>,
     style: Option<TextStyle>,
     link: Option<String>,
 ) -> Option<FormFieldRunNode> {
@@ -965,7 +971,7 @@ pub fn parse_run_active_x_checkbox_field(
 
 fn parse_run_active_x_checkbox_field_shared(
     run_xml: &str,
-    context: &ParseContext<'_>,
+    context: &ParseContext<'_, impl std::borrow::Borrow<super::context::ParsedStyleSheet>>,
     style: Option<SharedTextStyle>,
     link: Option<String>,
 ) -> Option<FormFieldRunNode> {
@@ -1029,7 +1035,7 @@ fn parse_run_active_x_checkbox_field_shared(
 fn parse_legacy_form_field_from_range(
     paragraph_xml: &str,
     runs: &[RunToken<'_>],
-    context: &ParseContext<'_>,
+    context: &ParseContext<'_, impl std::borrow::Borrow<super::context::ParsedStyleSheet>>,
     paragraph_style_id: Option<&str>,
     table_run_style: Option<&TextStyle>,
     start_run_index: usize,
@@ -1357,7 +1363,7 @@ fn parse_legacy_form_field_from_range(
 fn parse_legacy_paragraph_form_field_tokens(
     paragraph_xml: &str,
     runs: &[RunToken<'_>],
-    context: &ParseContext<'_>,
+    context: &ParseContext<'_, impl std::borrow::Borrow<super::context::ParsedStyleSheet>>,
     paragraph_style_id: Option<&str>,
     table_run_style: Option<&TextStyle>,
 ) -> Vec<ParagraphFormFieldToken> {
@@ -1434,7 +1440,7 @@ fn parse_legacy_paragraph_form_field_tokens(
 
 fn parse_form_field_from_sdt_xml(
     sdt_xml: &str,
-    context: &ParseContext<'_>,
+    context: &ParseContext<'_, impl std::borrow::Borrow<super::context::ParsedStyleSheet>>,
     paragraph_style_id: Option<&str>,
     table_run_style: Option<&TextStyle>,
     link: Option<String>,
@@ -1686,7 +1692,7 @@ fn parse_form_field_from_sdt_xml(
 
 pub fn parse_paragraph_form_field_tokens(
     paragraph_xml: &str,
-    context: &ParseContext<'_>,
+    context: &ParseContext<'_, impl std::borrow::Borrow<super::context::ParsedStyleSheet>>,
     paragraph_style_id: Option<&str>,
     runs: Option<&[ParagraphRunToken]>,
 ) -> Vec<ParagraphFormFieldToken> {
@@ -1712,7 +1718,7 @@ pub fn parse_paragraph_form_field_tokens(
 
 fn parse_paragraph_form_field_tokens_in_table(
     paragraph_xml: &str,
-    context: &ParseContext<'_>,
+    context: &ParseContext<'_, impl std::borrow::Borrow<super::context::ParsedStyleSheet>>,
     paragraph_style_id: Option<&str>,
     runs: Option<&[RunToken<'_>]>,
     table_run_style: Option<&TextStyle>,
@@ -1800,76 +1806,39 @@ fn parse_paragraph_form_field_tokens_in_table(
     combined
 }
 
-fn parse_paragraph_mark_run_style(
-    paragraph_xml: &str,
-    context: &ParseContext<'_>,
-    paragraph_style_id: Option<&str>,
-    table_run_style: Option<&TextStyle>,
-) -> Option<SharedTextStyle> {
-    let paragraph_properties_xml =
-        super::styles::direct_table_property(paragraph_xml, "w:pPr").unwrap_or_default();
-    let mark_run_properties_xml =
-        crate::xml::extract_direct_child_tag_ranges(&paragraph_properties_xml)
-            .into_iter()
-            .find(|range| range.tag_name.eq_ignore_ascii_case("w:rPr"))
-            .map(|range| &paragraph_properties_xml[range.start..range.end])
-            .unwrap_or_default();
-    let mut effective_mark_run_properties_xml = std::borrow::Cow::Borrowed(mark_run_properties_xml);
-    for range in crate::xml::extract_direct_child_tag_ranges(&mark_run_properties_xml)
-        .into_iter()
-        .rev()
-        .filter(|range| range.tag_name.eq_ignore_ascii_case("w:rPrChange"))
-    {
-        effective_mark_run_properties_xml
-            .to_mut()
-            .replace_range(range.start..range.end, "");
-    }
-    super::style::parse_mark_run_style(
-        &effective_mark_run_properties_xml,
-        context,
-        paragraph_style_id,
-        table_run_style,
-    )
-}
-
 fn parse_paragraph_mark_formatting(
-    source_mark: Option<&str>,
-    context: &ParseContext<'_>,
+    current_mark: Option<&str>,
+    context: &ParseContext<'_, impl std::borrow::Borrow<super::context::ParsedStyleSheet>>,
     table_run_style: Option<&TextStyle>,
 ) -> crate::model::ParagraphMarkFormattingSource {
-    let source_mark = source_mark.unwrap_or("<w:rPr/>");
-    let mut current = std::borrow::Cow::Borrowed(source_mark);
-    for range in crate::xml::extract_direct_child_tag_ranges(source_mark)
-        .into_iter()
-        .rev()
-        .filter(|range| range.tag_name.eq_ignore_ascii_case("w:rPrChange"))
-    {
-        current.to_mut().replace_range(range.start..range.end, "");
-    }
-    let character_style = super::styles::direct_table_property(&current, "w:rStyle")
+    let current = current_mark.unwrap_or("<w:rPr/>");
+    let character_style = current_mark.and_then(|xml| super::styles::direct_table_property(xml, "w:rStyle"))
         .and_then(|tag| get_attribute(tag, "w:val"))
-        .and_then(|id| context.style_sheet.run_style_by_id.get(&id).cloned());
+        .and_then(|id| context.styles().run_style_by_id.get(&id).cloned());
     crate::model::ParagraphMarkFormattingSource {
         default_style: super::style::cached_mark_default_style(
-            context.style_sheet.default_run_style.as_ref(),
+            context.styles().default_run_style.as_ref(),
             table_run_style,
         ),
         character_style: character_style.map(Into::into),
-        direct_style: super::style::parse_text_style_from_xml(
-            &current,
-            &context.style_sheet.theme_fonts,
+        direct_style: super::style::parse_shared_text_style_from_xml(
+            current,
+            &context.styles().theme_fonts,
         )
         .map(Into::into),
     }
 }
 
-pub fn parse_paragraph(paragraph_xml: &str, context: &ParseContext<'_>) -> ParagraphNode {
+pub fn parse_paragraph(
+    paragraph_xml: &str,
+    context: &ParseContext<'_, impl std::borrow::Borrow<super::context::ParsedStyleSheet>>,
+) -> ParagraphNode {
     parse_paragraph_in_table(paragraph_xml, context, None)
 }
 
 pub fn parse_paragraph_in_table(
     paragraph_xml: &str,
-    context: &ParseContext<'_>,
+    context: &ParseContext<'_, impl std::borrow::Borrow<super::context::ParsedStyleSheet>>,
     table_paragraph_spacing: Option<&crate::model::ParagraphSpacing>,
 ) -> ParagraphNode {
     parse_paragraph_with_table_run_style(paragraph_xml, context, table_paragraph_spacing, None)
@@ -1877,30 +1846,30 @@ pub fn parse_paragraph_in_table(
 
 pub(crate) fn parse_paragraph_with_table_run_style(
     paragraph_xml: &str,
-    context: &ParseContext<'_>,
+    context: &ParseContext<'_, impl std::borrow::Borrow<super::context::ParsedStyleSheet>>,
     table_paragraph_spacing: Option<&crate::model::ParagraphSpacing>,
     table_run_style: Option<&TextStyle>,
 ) -> ParagraphNode {
     let mut children: Vec<ParagraphChildNode> = Vec::new();
-    let paragraph_style =
-        parse_paragraph_style_in_table(paragraph_xml, context, table_paragraph_spacing);
-    let paragraph_mark_style = parse_paragraph_mark_run_style(
-        paragraph_xml,
-        context,
-        paragraph_style
-            .as_ref()
-            .and_then(|style| style.style_id.as_deref()),
-        table_run_style,
-    );
     let paragraph_properties_xml =
         super::styles::direct_table_property(paragraph_xml, "w:pPr").unwrap_or_default();
+    let paragraph_style = super::style::parse_paragraph_style_from_properties(
+        paragraph_properties_xml,
+        context,
+        table_paragraph_spacing,
+    );
     let source_paragraph_mark_properties_xml =
-        crate::xml::extract_direct_child_tag_ranges(&paragraph_properties_xml)
-            .into_iter()
-            .find(|range| range.tag_name.eq_ignore_ascii_case("w:rPr"))
-            .map(|range| &paragraph_properties_xml[range.start..range.end]);
+        crate::xml::direct_child_tag(paragraph_properties_xml, "w:rPr");
+    let effective_mark_properties = source_paragraph_mark_properties_xml
+        .map(|xml| crate::xml::without_direct_child_tags(xml, "w:rPrChange"));
+    let paragraph_mark_style = super::style::parse_mark_run_style(
+        effective_mark_properties.as_deref().unwrap_or_default(),
+        context,
+        paragraph_style.as_ref().and_then(|style| style.style_id.as_deref()),
+        table_run_style,
+    );
     let source_paragraph_mark_formatting = parse_paragraph_mark_formatting(
-        source_paragraph_mark_properties_xml.as_deref(),
+        effective_mark_properties.as_deref(),
         context,
         table_run_style,
     );

@@ -22,7 +22,12 @@ def source_images(path):
             rid=attr(node,'embed')or attr(node,'id')or attr(node,'link');rel=rels.get(rid,{})
             target=resolve(main,rel['target'])if rel.get('target')and not rel.get('external')else None
             data=archive.read(target)if target in names else None
-            images.append({'rid':rid,'target':target,'sha256':sha(data)if data is not None else None,'external':rel.get('external',False)})
+            representations=[sha(data)]if data is not None else []
+            for alternative in node.iter('{http://schemas.microsoft.com/office/drawing/2016/SVG/main}svgBlip'):
+                alternate_rel=rels.get(attr(alternative,'embed'),{})
+                alternate_target=resolve(main,alternate_rel['target'])if alternate_rel.get('target')and not alternate_rel.get('external')else None
+                if alternate_target in names:representations.append(sha(archive.read(alternate_target)))
+            images.append({'rid':rid,'target':target,'sha256':sha(data)if data is not None else None,'external':rel.get('external',False),'representations':list(dict.fromkeys(representations))})
         return images
 
 def native_payloads(model,expected):

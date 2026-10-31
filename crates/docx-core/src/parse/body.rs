@@ -4,6 +4,9 @@ pub fn extract_body_xml(document_xml: &str) -> String {
 }
 
 pub(crate) fn body_xml(document_xml: &str) -> &str {
+    if let Some(body) = crate::xml_index::unique_inner_xml(document_xml, "w:body") {
+        return body;
+    }
     let Some(open) = super::scan::find_tag_token_ref(document_xml, "w:body") else {
         return document_xml;
     };

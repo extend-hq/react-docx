@@ -13,6 +13,7 @@ use crate::xml::{
     decode_xml_entities, extract_balanced_tag_blocks, get_attribute, normalize_alignment,
     parse_integer_attribute,
 };
+#[cfg(target_arch = "wasm32")]
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 
 pub fn regex_capture(xml: &str, pattern: &str) -> Option<String> {
@@ -116,6 +117,10 @@ pub(crate) fn active_xml(xml: &str) -> std::borrow::Cow<'_, str> {
         return std::borrow::Cow::Owned(output);
     }
 
+    if let Some(output) = scan_active_xml(xml) {
+        return output;
+    }
+
     let re = re::get_unchecked(r"(?is)<mc:AlternateContent\b[\s\S]*?</mc:AlternateContent>");
     re.replace_all(xml, |caps: &regex::Captures| {
         let alternate_xml = &caps[0];
@@ -130,6 +135,55 @@ pub(crate) fn active_xml(xml: &str) -> std::borrow::Cow<'_, str> {
         re::get_unchecked(r"(?i)</mc:Choice>")
             .replace(&without_open, "")
             .to_string()
+    })
+}
+
+fn scan_active_xml(xml: &str) -> Option<std::borrow::Cow<'_, str>> {
+    fn opening(xml: &str, mut start: usize, prefix: &str) -> Result<Option<usize>, ()> {
+        while let Some(position) = crate::xml::find_ignore_ascii_case(xml, start, prefix) {
+            let after = position + prefix.len();
+            match xml.as_bytes().get(after) {
+                Some(byte) if !byte.is_ascii() => return Err(()),
+                Some(byte) if byte.is_ascii_alphanumeric() || *byte == b'_' => start = after,
+                _ => return Ok(Some(position)),
+            }
+        }
+        Ok(None)
+    }
+    const ALTERNATE_OPEN: &str = "<mc:AlternateContent";
+    const ALTERNATE_CLOSE: &str = "</mc:AlternateContent>";
+    const CHOICE_OPEN: &str = "<mc:Choice";
+    const CHOICE_CLOSE: &str = "</mc:Choice>";
+    let mut output: Option<String> = None;
+    let mut cursor = 0;
+    while let Some(start) = opening(xml, cursor, ALTERNATE_OPEN).ok()? {
+        let Some(close) = crate::xml::find_ignore_ascii_case(xml, start + ALTERNATE_OPEN.len(), ALTERNATE_CLOSE) else {
+            break;
+        };
+        let end = close + ALTERNATE_CLOSE.len();
+        let alternate = &xml[start..end];
+        let target = output.get_or_insert_with(|| String::with_capacity(xml.len()));
+        target.push_str(&xml[cursor..start]);
+        let choice = opening(alternate, 0, CHOICE_OPEN).ok()?.and_then(|start| {
+            let close = crate::xml::find_ignore_ascii_case(alternate, start + CHOICE_OPEN.len(), CHOICE_CLOSE)?;
+            let content = start + alternate[start..close + CHOICE_CLOSE.len()].find('>')? + 1;
+            Some((content, close))
+        });
+        if let Some((content, close)) = choice {
+            if content < close {
+                target.push_str(&alternate[content..close]);
+            }
+        } else {
+            target.push_str(alternate);
+        }
+        cursor = end;
+    }
+    Some(match output {
+        Some(mut output) => {
+            output.push_str(&xml[cursor..]);
+            std::borrow::Cow::Owned(output)
+        }
+        None => std::borrow::Cow::Borrowed(xml),
     })
 }
 
@@ -584,6 +638,12 @@ pub fn clamp_i64(value: i64, minimum: i64, maximum: i64) -> i64 {
 }
 
 pub fn escape_xml_text(value: &str) -> String {
+    let bytes = value.as_bytes();
+    if memchr::memchr3(b'&', b'<', b'>', bytes).is_none()
+        && memchr::memchr2(b'"', b'\'', bytes).is_none()
+    {
+        return value.to_owned();
+    }
     value
         .replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -593,24 +653,59 @@ pub fn escape_xml_text(value: &str) -> String {
 }
 
 pub fn svg_data_uri(svg: &str) -> String {
-    format!("data:image/svg+xml;charset=utf-8,{}", urlencoding_like(svg))
-}
-
-fn urlencoding_like(value: &str) -> String {
-    let mut encoded = String::new();
-    for byte in value.bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                encoded.push(byte as char);
-            }
-            _ => encoded.push_str(&format!("%{byte:02X}")),
+    const PREFIX: &[u8] = b"data:image/svg+xml;charset=utf-8,";
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    const UNRESERVED: [bool; 256] = {
+        let mut values = [false; 256];
+        let mut byte = 0;
+        while byte < values.len() {
+            values[byte] = matches!(byte as u8,
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~');
+            byte += 1;
         }
+        values
+    };
+    let capacity = svg.len().checked_add(svg.len() / 8)
+        .and_then(|length| length.checked_add(PREFIX.len()))
+        .expect("encoded data exceeds addressable size");
+    let mut output = Vec::with_capacity(capacity);
+    output.extend_from_slice(PREFIX);
+    let bytes = svg.as_bytes();
+    let mut start = 0;
+    for (at, &byte) in bytes.iter().enumerate() {
+        if UNRESERVED[byte as usize] {
+            continue;
+        }
+        output.extend_from_slice(&bytes[start..at]);
+        output.extend_from_slice(&[b'%', HEX[(byte >> 4) as usize], HEX[(byte & 15) as usize]]);
+        start = at + 1;
     }
-    encoded
+    output.extend_from_slice(&bytes[start..]);
+    String::from_utf8(output).expect("percent-encoded output is ASCII")
 }
 
 pub fn bytes_to_base64(bytes: &[u8]) -> String {
-    STANDARD.encode(bytes)
+    #[cfg(not(target_arch = "wasm32"))]
+    { base64_simd::STANDARD.encode_to_string(bytes) }
+    #[cfg(target_arch = "wasm32")]
+    { STANDARD.encode(bytes) }
+}
+
+pub(crate) fn append_base64(bytes: &[u8], output: &mut String) {
+    #[cfg(not(target_arch = "wasm32"))]
+    base64_simd::STANDARD.encode_append(bytes, output);
+    #[cfg(target_arch = "wasm32")]
+    STANDARD.encode_string(bytes, output);
+}
+
+pub(crate) fn base64_data_uri(content_type: &str, bytes: &[u8]) -> String {
+    let encoded = base64::encoded_len(bytes.len(), true).expect("encoded data exceeds addressable size");
+    let mut output = String::with_capacity(13 + content_type.len() + encoded);
+    output.push_str("data:");
+    output.push_str(content_type);
+    output.push_str(";base64,");
+    append_base64(bytes, &mut output);
+    output
 }
 
 pub fn extension_from_part_name(part_name: &str) -> Option<String> {
@@ -1196,5 +1291,107 @@ mod tests {
         for value in ["", "yes", "no", "maybe"] {
             assert_eq!(on_off_value_to_boolean(Some(value)), None);
         }
+    }
+}
+
+#[cfg(test)]
+mod base64_output_tests {
+    use super::*;
+    use base64::Engine as _;
+
+    #[test]
+    fn encoding_preserves_all_tails_and_prefixed_output() {
+        let mut state = 0x61c4_28d9_u64;
+        let mut bytes = Vec::new();
+        for _ in 0..=1048576 {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+            bytes.push((state >> 32) as u8);
+        }
+        for length in (0..=512).chain([1023, 1024, 4097, 65539, 1048577]) {
+            let data = &bytes[..length];
+            let expected = base64::engine::general_purpose::STANDARD.encode(data);
+            assert_eq!(bytes_to_base64(data), expected);
+            for prefix in ["", "prefix:", "π:payload,"] {
+                let mut output = prefix.to_owned();
+                append_base64(data, &mut output);
+                assert_eq!(output, format!("{prefix}{expected}"));
+            }
+            assert_eq!(base64_data_uri("application/octet-stream", data), format!("data:application/octet-stream;base64,{expected}"));
+        }
+    }
+}
+
+#[cfg(test)]
+mod svg_uri_encoding_tests {
+    #[test]
+    fn reserved_characters_and_unicode_use_uppercase_utf8_escapes() {
+        assert_eq!(super::svg_data_uri("<svg a=\"a b&é😀\"/>"), "data:image/svg+xml;charset=utf-8,%3Csvg%20a%3D%22a%20b%26%C3%A9%F0%9F%98%80%22%2F%3E");
+        assert_eq!(super::svg_data_uri("AZaz09-_.~"), "data:image/svg+xml;charset=utf-8,AZaz09-_.~");
+        assert_eq!(super::svg_data_uri(""), "data:image/svg+xml;charset=utf-8,");
+        assert_eq!(super::svg_data_uri("\0\t\r\n%+/"), "data:image/svg+xml;charset=utf-8,%00%09%0D%0A%25%2B%2F");
+    }
+}
+
+#[cfg(test)]
+mod alternate_scanner_tests {
+    fn reference(xml: &str) -> String {
+        use super::re;
+        let re = re::get_unchecked(r"(?is)<mc:AlternateContent\b[\s\S]*?</mc:AlternateContent>");
+        re.replace_all(xml, |caps: &regex::Captures| {
+            let alternate = &caps[0];
+            let Some(choice) = re::get_unchecked(r"(?is)<mc:Choice\b[\s\S]*?</mc:Choice>").find(alternate) else {
+                return alternate.to_owned();
+            };
+            let content = re::get_unchecked(r"(?i)<mc:Choice\b[^>]*>").replace(choice.as_str(), "");
+            re::get_unchecked(r"(?i)</mc:Choice>").replace(&content, "").into_owned()
+        }).into_owned()
+    }
+
+    #[test]
+    fn scanner_preserves_lazy_matching_and_boundary_behavior() {
+        let opens = ["<mc:AlternateContent>", "<MC:ALTERNATECONTENT>", "<mc:AlternateContent:extra>", "<mc:AlternateContent_>", "<mc:AlternateContenté>", "<mc:AlternateContent\u{301}>", "<mc:AlternateContent"];
+        let contents = ["<mc:Choice>one</mc:Choice><mc:Fallback>two</mc:Fallback>", "<MC:CHOICE a=\"x>y\">one</MC:CHOICE>", "<mc:Choice:extra>one</mc:Choice>", "<mc:Choice_>one</mc:Choice>", "<mc:Choiceé>one</mc:Choice>", "<mc:Choice\u{301}>one</mc:Choice>", "<mc:Choice</mc:Choice>", "<mc:Choice>outer<mc:Choice>inner</mc:Choice>tail</mc:Choice>", "<mc:Fallback>retained</mc:Fallback>", "<mc:AlternateContent><mc:Choice>nested</mc:Choice></mc:AlternateContent>"];
+        for open in opens {
+            for content in contents {
+                for close in ["</mc:AlternateContent>", "</MC:ALTERNATECONTENT>", ""] {
+                    let xml = format!("before{open}{content}{close}after<mc:AlternateContent><mc:Choice>last</mc:Choice></mc:AlternateContent>");
+                    if let Some(scanned) = super::scan_active_xml(&xml) {
+                        assert_eq!(scanned, reference(&xml));
+                    }
+                }
+            }
+        }
+        assert!(super::scan_active_xml("<mc:AlternateContent><mc:Choice>one</mc:Choice></mc:AlternateContent>").is_some());
+    }
+}
+
+#[cfg(test)]
+mod sparse_encoding_tests {
+    #[test]
+    fn all_scalar_values_survive_encoded_and_unchanged_boundaries() {
+        use std::fmt::Write;
+        for scalar in (0..=0x10ffff).filter_map(char::from_u32) {
+            let text = format!("a{scalar}%{scalar}z");
+            let mut expected = String::from("data:image/svg+xml;charset=utf-8,");
+            for byte in text.bytes() {
+                if byte.is_ascii_alphanumeric() || b"-_.~".contains(&byte) {
+                    expected.push(byte as char);
+                } else {
+                    write!(expected, "%{byte:02X}").unwrap();
+                }
+            }
+            assert_eq!(super::svg_data_uri(&text), expected);
+        }
+    }
+
+    #[test]
+    fn long_runs_and_xml_escaping_preserve_exact_bytes() {
+        let run = "AZaz09-_.~".repeat(10000);
+        assert_eq!(super::svg_data_uri(&run), format!("data:image/svg+xml;charset=utf-8,{run}"));
+        let text = format!("{run}é{run}%");
+        assert_eq!(super::svg_data_uri(&text), format!("data:image/svg+xml;charset=utf-8,{run}%C3%A9{run}%25"));
+        assert_eq!(super::escape_xml_text(&run), run);
+        assert_eq!(super::escape_xml_text("a&<>\"'é\r\n"), "a&amp;&lt;&gt;&quot;&apos;é\r\n");
+        assert_eq!(super::escape_xml_text("é\r\n"), "é\r\n");
     }
 }

@@ -1,6 +1,6 @@
 use crate::model::{
     ParagraphDropCap, ParagraphDropCapType, ParagraphSpacing, ParagraphStyle,
-    ParagraphTextAlignment, SharedTextStyle, TextLigatures, TextStyle, VerticalAlign,
+    ParagraphTextAlignment, SharedParagraphStyle, SharedTextStyle, TextLigatures, TextStyle, VerticalAlign,
 };
 use crate::parse::context::{ParseContext, ThemeFontMap};
 use crate::parse::re;
@@ -144,6 +144,21 @@ pub fn parse_text_style_from_xml(xml: &str, theme_fonts: &ThemeFontMap) -> Optio
     cached_text_style(xml, theme_fonts, text_script_flags(xml))
 }
 
+fn has_drawing_text_style_tags(xml: &str) -> bool {
+    xml.split('<').skip(1).any(|tag| {
+        if !super::scan::starts_with_ignore_ascii_case(tag, "a:") {
+            return false;
+        }
+        let tag = &tag[2..];
+        match tag.as_bytes().first().map(u8::to_ascii_lowercase) {
+            Some(b'r') => super::scan::starts_with_ignore_ascii_case(tag, "rPr"),
+            Some(b'd') => super::scan::starts_with_ignore_ascii_case(tag, "defRPr"),
+            Some(b'l') => super::scan::starts_with_ignore_ascii_case(tag, "latin"),
+            _ => false,
+        }
+    })
+}
+
 fn parse_text_style_with_scripts(
     xml: &str,
     theme_fonts: &ThemeFontMap,
@@ -189,11 +204,7 @@ fn parse_text_style_with_scripts(
     let vertical_align_match =
         super::scan::find_attribute_value_in_tag(xml, "w:vertAlign", "w:val")
             .filter(|value| !value.is_empty());
-    let drawing_xml = if xml
-        .split('<')
-        .skip(1)
-        .any(|tag| super::scan::starts_with_ignore_ascii_case(tag, "a:"))
-    {
+    let drawing_xml = if has_drawing_text_style_tags(xml) {
         xml
     } else {
         ""
@@ -544,17 +555,23 @@ fn resolve_toggle_property(
     character_value.or(paragraph_value).or(default_value)
 }
 
+type RawStyleEntries =
+    std::collections::HashMap<String, Vec<(u8, ThemeFontMap, Option<SharedTextStyle>)>>;
+
 #[derive(Default)]
 struct RunStyleCache {
-    entries: std::collections::HashMap<String, Vec<(u8, ThemeFontMap, Option<TextStyle>)>>,
+    entries: RawStyleEntries,
     resolved: std::collections::HashMap<String, Vec<ResolvedRunStyle>>,
     paragraphs:
-        std::collections::HashMap<String, Vec<(Option<ParagraphSpacing>, Option<ParagraphStyle>)>>,
+        std::collections::HashMap<String, Vec<(Option<ParagraphSpacing>, Option<SharedParagraphStyle>)>>,
     mark_default: Option<CachedMarkDefaultStyle>,
+    #[cfg(not(target_arch = "wasm32"))]
+    sheet: Option<std::sync::Arc<super::context::ParsedStyleSheet>>,
 }
 
 struct CachedMarkDefaultStyle {
     document: Option<TextStyle>,
+    bound_document: bool,
     table: Option<TextStyle>,
     style: Option<SharedTextStyle>,
 }
@@ -572,15 +589,81 @@ thread_local! {
 
 pub(crate) struct RunStyleCacheScope(Option<RunStyleCache>);
 
+#[cfg(not(target_arch = "wasm32"))]
+thread_local! {
+    static RETAINED_RAW_STYLES: std::cell::RefCell<Option<RawStyleEntries>> = const { std::cell::RefCell::new(None) };
+    static RETAINED_RESOLVED_STYLES: std::cell::RefCell<Option<RunStyleCache>> = const { std::cell::RefCell::new(None) };
+}
+
+pub(crate) fn bind_style_cache(sheet: &super::context::ParsedStyleSheet) {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(identity) = super::styles::cached_document_style_identity(sheet) {
+        bind_shared_style_cache(identity);
+    }
+    #[cfg(target_arch = "wasm32")]
+    let _ = sheet;
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn bind_shared_style_cache(sheet: std::sync::Arc<super::context::ParsedStyleSheet>) {
+    RUN_STYLE_CACHE.with(|current| {
+        let mut current = current.borrow_mut();
+        let Some(current) = current.as_mut() else { return; };
+        if current.sheet.as_ref().is_some_and(|previous| std::sync::Arc::ptr_eq(previous, &sheet)) {
+            return;
+        }
+        let previous = RETAINED_RESOLVED_STYLES.with(|retained| retained.take())
+            .filter(|previous| previous.sheet.as_ref().is_some_and(|previous| std::sync::Arc::ptr_eq(previous, &sheet)));
+        current.resolved.clear();
+        current.paragraphs.clear();
+        current.mark_default = None;
+        current.sheet = Some(sheet);
+        if let Some(previous) = previous {
+            current.resolved = previous.resolved;
+            current.paragraphs = previous.paragraphs;
+            current.mark_default = previous.mark_default;
+        }
+    });
+}
+
 pub(crate) fn run_style_cache_scope() -> RunStyleCacheScope {
-    RunStyleCacheScope(RUN_STYLE_CACHE.with(|cache| cache.replace(Some(RunStyleCache::default()))))
+    #[allow(unused_mut)]
+    let mut current = RunStyleCache::default();
+    #[cfg(not(target_arch = "wasm32"))]
+    if RUN_STYLE_CACHE.with(|cache| cache.borrow().is_none()) {
+        current.entries = RETAINED_RAW_STYLES
+            .with(|cache| cache.take())
+            .unwrap_or_default();
+    }
+    RunStyleCacheScope(RUN_STYLE_CACHE.with(|cache| cache.replace(Some(current))))
 }
 
 impl Drop for RunStyleCacheScope {
     fn drop(&mut self) {
-        RUN_STYLE_CACHE.with(|cache| {
-            cache.replace(self.0.take());
-        });
+        #[cfg(not(target_arch = "wasm32"))]
+        let outer = self.0.is_none();
+        let _current = RUN_STYLE_CACHE.with(|cache| cache.replace(self.0.take()));
+        #[cfg(not(target_arch = "wasm32"))]
+        if outer {
+            if let Some(mut current) = _current {
+                if current.entries.len() <= 512
+                    && current.entries.keys().map(String::len).sum::<usize>() <= 512 * 1024
+                    && current.entries.values().map(Vec::len).sum::<usize>() <= 1024
+                {
+                    RETAINED_RAW_STYLES
+                        .with(|cache| cache.replace(Some(std::mem::take(&mut current.entries))));
+                }
+                current.entries = RawStyleEntries::default();
+                if current.sheet.is_some()
+                    && current.resolved.len() + current.paragraphs.len() <= 512
+                    && current.resolved.keys().chain(current.paragraphs.keys()).map(String::len).sum::<usize>() <= 512 * 1024
+                    && current.resolved.values().map(Vec::len).sum::<usize>()
+                        + current.paragraphs.values().map(Vec::len).sum::<usize>() <= 1024
+                {
+                    RETAINED_RESOLVED_STYLES.with(|cache| cache.replace(Some(current)));
+                }
+            }
+        }
     }
 }
 
@@ -617,14 +700,34 @@ fn same_mark_default_style(left: Option<&TextStyle>, right: Option<&TextStyle>) 
                 .map(f64::to_bits)
 }
 
+fn mark_document_is_bound(cache: &RunStyleCache, document: Option<&TextStyle>) -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        cache.sheet.as_ref().is_some_and(|sheet| {
+            match (sheet.default_run_style.as_ref(), document) {
+                (Some(left), Some(right)) => std::ptr::eq(left, right),
+                (None, None) => true,
+                _ => false,
+            }
+        })
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (cache, document);
+        false
+    }
+}
+
 pub(crate) fn cached_mark_default_style(
     document: Option<&TextStyle>,
     table: Option<&TextStyle>,
 ) -> Option<SharedTextStyle> {
     let cached = RUN_STYLE_CACHE.with(|cache| {
         let cache = cache.borrow();
-        let entry = cache.as_ref()?.mark_default.as_ref()?;
-        (same_mark_default_style(entry.document.as_ref(), document)
+        let cache = cache.as_ref()?;
+        let entry = cache.mark_default.as_ref()?;
+        ((entry.bound_document && mark_document_is_bound(cache, document)
+            || same_mark_default_style(entry.document.as_ref(), document))
             && same_mark_default_style(entry.table.as_ref(), table))
         .then(|| entry.style.clone())
     });
@@ -637,6 +740,7 @@ pub(crate) fn cached_mark_default_style(
         if let Some(cache) = cache.borrow_mut().as_mut() {
             cache.mark_default = Some(CachedMarkDefaultStyle {
                 document: document.cloned(),
+                bound_document: mark_document_is_bound(cache, document),
                 table: table.cloned(),
                 style: style.clone(),
             });
@@ -650,6 +754,31 @@ pub(crate) fn cached_definition_style(xml: &str, fonts: &ThemeFontMap) -> Option
 }
 
 fn cached_text_style(xml: &str, fonts: &ThemeFontMap, scripts: u8) -> Option<TextStyle> {
+    if xml.is_empty() {
+        return None;
+    }
+    if RUN_STYLE_CACHE.with(|cache| cache.borrow().is_none()) {
+        return if scripts == 128 {
+            super::styles::parse_definition_style_uncached(xml, fonts)
+        } else {
+            parse_text_style_with_scripts(xml, fonts, scripts)
+        };
+    }
+    cached_shared_text_style(xml, fonts, scripts).map(SharedTextStyle::into_owned)
+}
+
+pub(crate) fn parse_shared_text_style_from_xml(
+    xml: &str,
+    fonts: &ThemeFontMap,
+) -> Option<SharedTextStyle> {
+    cached_shared_text_style(xml, fonts, text_script_flags(xml))
+}
+
+fn cached_shared_text_style(
+    xml: &str,
+    fonts: &ThemeFontMap,
+    scripts: u8,
+) -> Option<SharedTextStyle> {
     if xml.is_empty() {
         return None;
     }
@@ -670,7 +799,8 @@ fn cached_text_style(xml: &str, fonts: &ThemeFontMap, scripts: u8) -> Option<Tex
         super::styles::parse_definition_style_uncached(xml, fonts)
     } else {
         parse_text_style_with_scripts(xml, fonts, scripts)
-    };
+    }
+    .map(SharedTextStyle::from);
     if xml.len() <= 8192 {
         RUN_STYLE_CACHE.with(|cache| {
             if let Some(cache) = cache
@@ -763,7 +893,10 @@ fn ordinary_run_properties(run_xml: &str) -> Option<&str> {
     None
 }
 
-fn parse_direct_run_style(run_xml: &str, context: &ParseContext<'_>) -> Option<TextStyle> {
+fn parse_direct_run_style(
+    run_xml: &str,
+    context: &ParseContext<'_, impl std::borrow::Borrow<super::context::ParsedStyleSheet>>,
+) -> Option<TextStyle> {
     let text_box_content = prefer_alternate_content_choice(run_xml);
     let text_box_run_xml = extract_balanced_tag_blocks(&text_box_content, "w:txbxContent")
         .into_iter()
@@ -771,13 +904,13 @@ fn parse_direct_run_style(run_xml: &str, context: &ParseContext<'_>) -> Option<T
         .and_then(|txbx| extract_balanced_tag_blocks(&txbx, "w:r").into_iter().next());
     parse_text_style_from_xml(
         text_box_run_xml.as_deref().unwrap_or(run_xml),
-        &context.style_sheet.theme_fonts,
+        &context.styles().theme_fonts,
     )
 }
 
 pub fn parse_run_style(
     run_xml: &str,
-    context: &ParseContext<'_>,
+    context: &ParseContext<'_, impl std::borrow::Borrow<super::context::ParsedStyleSheet>>,
     paragraph_style_id: Option<&str>,
 ) -> Option<TextStyle> {
     parse_run_style_in_table(run_xml, context, paragraph_style_id, None)
@@ -786,7 +919,7 @@ pub fn parse_run_style(
 
 pub(crate) fn parse_run_style_in_table(
     run_xml: &str,
-    context: &ParseContext<'_>,
+    context: &ParseContext<'_, impl std::borrow::Borrow<super::context::ParsedStyleSheet>>,
     paragraph_style_id: Option<&str>,
     table_run_style: Option<&TextStyle>,
 ) -> Option<SharedTextStyle> {
@@ -802,7 +935,7 @@ pub(crate) fn parse_run_style_in_table(
 
 pub(crate) fn parse_mark_run_style(
     properties: &str,
-    context: &ParseContext<'_>,
+    context: &ParseContext<'_, impl std::borrow::Borrow<super::context::ParsedStyleSheet>>,
     paragraph_style_id: Option<&str>,
     table_run_style: Option<&TextStyle>,
 ) -> Option<SharedTextStyle> {
@@ -818,7 +951,7 @@ pub(crate) fn parse_mark_run_style(
 fn resolve_run_style(
     run_xml: &str,
     properties: Option<&str>,
-    context: &ParseContext<'_>,
+    context: &ParseContext<'_, impl std::borrow::Borrow<super::context::ParsedStyleSheet>>,
     paragraph_style_id: Option<&str>,
     table_run_style: Option<&TextStyle>,
 ) -> Option<SharedTextStyle> {
@@ -841,7 +974,7 @@ pub(crate) fn parse_run_style_from_properties(
     run_xml: &str,
     properties: &str,
     scripts: u8,
-    context: &ParseContext<'_>,
+    context: &ParseContext<'_, impl std::borrow::Borrow<super::context::ParsedStyleSheet>>,
     paragraph_style_id: Option<&str>,
     table_run_style: Option<&TextStyle>,
 ) -> Option<SharedTextStyle> {
@@ -859,7 +992,7 @@ fn resolve_run_style_with_scripts(
     run_xml: &str,
     properties: Option<&str>,
     scripts: u8,
-    context: &ParseContext<'_>,
+    context: &ParseContext<'_, impl std::borrow::Borrow<super::context::ParsedStyleSheet>>,
     paragraph_style_id: Option<&str>,
     table_run_style: Option<&TextStyle>,
 ) -> Option<SharedTextStyle> {
@@ -874,7 +1007,7 @@ fn resolve_run_style_with_scripts(
                 .find(|entry| {
                     entry.scripts == scripts
                         && entry.paragraph.as_deref() == paragraph_style_id
-                        && entry.table.as_deref() == table_run_style
+                        && same_mark_default_style(entry.table.as_deref(), table_run_style)
                 })
                 .map(|entry| entry.style.clone())
         });
@@ -885,17 +1018,17 @@ fn resolve_run_style_with_scripts(
     let run_style_id = super::scan::find_attribute_value_in_tag(run_xml, "w:rStyle", "w:val")
         .filter(|value| !value.is_empty());
     let direct = match properties {
-        Some(xml) => cached_text_style(xml, &context.style_sheet.theme_fonts, scripts),
-        None => parse_direct_run_style(run_xml, context),
+        Some(xml) => cached_shared_text_style(xml, &context.styles().theme_fonts, scripts),
+        None => parse_direct_run_style(run_xml, context).map(SharedTextStyle::from),
     };
     let inherited_paragraph_run_style = paragraph_style_id
-        .and_then(|id| context.style_sheet.paragraph_style_by_id.get(id))
+        .and_then(|id| context.styles().paragraph_style_by_id.get(id))
         .and_then(|style| style.run_style.as_ref());
     let inherited_run_style = run_style_id
         .as_deref()
-        .and_then(|id| context.style_sheet.run_style_by_id.get(id));
+        .and_then(|id| context.styles().run_style_by_id.get(id));
     let default_run_style = super::util::merge_text_style_refs(&[
-        context.style_sheet.default_run_style.as_ref(),
+        context.styles().default_run_style.as_ref(),
         table_run_style,
     ]);
 
@@ -904,7 +1037,7 @@ fn resolve_run_style_with_scripts(
             default_run_style.as_ref().and_then(get),
             inherited_paragraph_run_style.and_then(get),
             inherited_run_style.and_then(get),
-            direct.as_ref().and_then(get),
+            direct.as_deref().and_then(get),
         )
     };
     let bold = toggle_of(|s| s.bold);
@@ -917,7 +1050,7 @@ fn resolve_run_style_with_scripts(
         default_run_style.as_ref(),
         inherited_paragraph_run_style,
         inherited_run_style,
-        direct.as_ref(),
+        direct.as_deref(),
     ]);
     let resolved = merged.map(|mut style| {
         style.bold = bold;
@@ -954,17 +1087,26 @@ fn resolve_run_style_with_scripts(
 
 pub fn parse_paragraph_style(
     paragraph_xml: &str,
-    context: &ParseContext<'_>,
+    context: &ParseContext<'_, impl std::borrow::Borrow<super::context::ParsedStyleSheet>>,
 ) -> Option<ParagraphStyle> {
     parse_paragraph_style_in_table(paragraph_xml, context, None)
 }
 
 pub fn parse_paragraph_style_in_table(
     paragraph_xml: &str,
-    context: &ParseContext<'_>,
+    context: &ParseContext<'_, impl std::borrow::Borrow<super::context::ParsedStyleSheet>>,
     table_paragraph_spacing: Option<&ParagraphSpacing>,
 ) -> Option<ParagraphStyle> {
     let xml = super::styles::direct_table_property(paragraph_xml, "w:pPr").unwrap_or("");
+    parse_paragraph_style_from_properties(xml, context, table_paragraph_spacing)
+        .map(SharedParagraphStyle::into_owned)
+}
+
+pub(crate) fn parse_paragraph_style_from_properties(
+    xml: &str,
+    context: &ParseContext<'_, impl std::borrow::Borrow<super::context::ParsedStyleSheet>>,
+    table_paragraph_spacing: Option<&ParagraphSpacing>,
+) -> Option<SharedParagraphStyle> {
     let cached = RUN_STYLE_CACHE.with(|cache| {
         let cache = cache.borrow();
         cache
@@ -978,7 +1120,8 @@ pub fn parse_paragraph_style_in_table(
     if let Some(style) = cached {
         return style;
     }
-    let style = parse_paragraph_style_uncached(paragraph_xml, context, table_paragraph_spacing);
+    let style = parse_paragraph_style_uncached(xml, context, table_paragraph_spacing)
+        .map(SharedParagraphStyle::from);
     if xml.len() <= 8192 {
         RUN_STYLE_CACHE.with(|cache| {
             if let Some(cache) = cache
@@ -1000,23 +1143,12 @@ pub fn parse_paragraph_style_in_table(
 }
 
 fn parse_paragraph_style_uncached(
-    paragraph_xml: &str,
-    context: &ParseContext<'_>,
+    original_paragraph_properties_xml: &str,
+    context: &ParseContext<'_, impl std::borrow::Borrow<super::context::ParsedStyleSheet>>,
     table_paragraph_spacing: Option<&ParagraphSpacing>,
 ) -> Option<ParagraphStyle> {
-    let original_paragraph_properties_xml =
-        super::styles::direct_table_property(paragraph_xml, "w:pPr").unwrap_or_default();
-    let mut paragraph_properties_xml =
-        std::borrow::Cow::Borrowed(original_paragraph_properties_xml);
-    for range in crate::xml::extract_direct_child_tag_ranges(&original_paragraph_properties_xml)
-        .into_iter()
-        .rev()
-        .filter(|range| range.tag_name.eq_ignore_ascii_case("w:pPrChange"))
-    {
-        paragraph_properties_xml
-            .to_mut()
-            .replace_range(range.start..range.end, "");
-    }
+    let paragraph_properties_xml =
+        crate::xml::without_direct_child_tags(original_paragraph_properties_xml, "w:pPrChange");
     let alignment_match =
         super::scan::find_attribute_value_in_tag(&paragraph_properties_xml, "w:jc", "w:val")
             .filter(|value| !value.is_empty());
@@ -1045,11 +1177,11 @@ fn parse_paragraph_style_uncached(
     let explicit_style_id = p_style_match;
     let style_id = explicit_style_id
         .clone()
-        .or_else(|| context.style_sheet.default_paragraph_style_id.clone());
+        .or_else(|| context.styles().default_paragraph_style_id.clone());
     let inherited = style_id
         .as_deref()
-        .and_then(|id| context.style_sheet.paragraph_style_by_id.get(id));
-    let default_paragraph_style = context.style_sheet.default_paragraph_style.as_ref();
+        .and_then(|id| context.styles().paragraph_style_by_id.get(id));
+    let default_paragraph_style = context.styles().default_paragraph_style.as_ref();
 
     let align = to_model_alignment(alignment_match.as_deref())
         .or_else(|| inherited.and_then(|s| s.align))
@@ -1057,7 +1189,7 @@ fn parse_paragraph_style_uncached(
     let inherited_text_alignment = inherited
         .and_then(|style| style.text_alignment)
         .or_else(|| default_paragraph_style.and_then(|style| style.text_alignment))
-        .or(context.style_sheet.default_paragraph_text_alignment);
+        .or(context.styles().default_paragraph_text_alignment);
     let text_alignment = direct_text_alignment.or(inherited_text_alignment);
     let inherited_snap_to_grid = inherited
         .and_then(|style| style.snap_to_grid)
@@ -1107,7 +1239,7 @@ fn parse_paragraph_style_uncached(
     };
     let spacing = merge_paragraph_spacing(
         merge_paragraph_spacing(
-            context.style_sheet.doc_default_paragraph_spacing.as_ref(),
+            context.styles().doc_default_paragraph_spacing.as_ref(),
             style_layer_spacing.as_ref(),
         )
         .as_ref(),
@@ -1250,4 +1382,220 @@ fn regex_capture(xml: &str, pattern: &str) -> Option<String> {
     re::get(pattern)?
         .captures(xml)
         .and_then(|caps| caps.get(1).map(|m| m.as_str().to_string()))
+}
+
+#[cfg(test)]
+mod shared_cache_tests {
+    #[test]
+    fn editing_one_cached_style_does_not_change_other_nodes() {
+        let scope = super::run_style_cache_scope();
+        let xml = "<w:rPr><w:b/></w:rPr>";
+        let mut first = super::parse_shared_text_style_from_xml(xml, &Default::default()).unwrap();
+        let second = super::parse_shared_text_style_from_xml(xml, &Default::default()).unwrap();
+        drop(scope);
+        first.bold = Some(false);
+        assert_eq!(first.bold, Some(false));
+        assert_eq!(second.bold, Some(true));
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod retained_style_tests {
+    #[test]
+    fn raw_style_reuse_preserves_theme_and_script_dependencies() {
+        let xml = "<w:rPr><w:rFonts w:asciiTheme='minorHAnsi' w:eastAsia='East'/><w:b/><w:sz w:val='24'/></w:rPr>";
+        for font in ["Serif", "Sans", "Serif"] {
+            let theme = super::ThemeFontMap {
+                minor_latin: Some(font.into()),
+                ..Default::default()
+            };
+            for scripts in [0, 1, 2, 128] {
+                let expected = if scripts == 128 {
+                    crate::parse::styles::parse_definition_style_uncached(xml, &theme)
+                } else {
+                    super::parse_text_style_with_scripts(xml, &theme, scripts)
+                };
+                let _scope = super::run_style_cache_scope();
+                assert_eq!(super::cached_text_style(xml, &theme, scripts), expected);
+            }
+        }
+    }
+
+    #[test]
+    fn oversized_raw_style_sets_are_not_retained() {
+        {
+            let _scope = super::run_style_cache_scope();
+            let theme = super::ThemeFontMap::default();
+            for index in 1..=520 {
+                let xml = format!("<w:rPr><w:sz w:val='{index}'/></w:rPr>");
+                let actual = super::cached_text_style(&xml, &theme, 0).unwrap();
+                assert_eq!(actual.font_size_pt, Some(index as f64 / 2.0));
+            }
+        }
+        super::RETAINED_RAW_STYLES.with(|cache| assert!(cache.borrow().is_none()));
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod retained_resolution_tests {
+    use super::*;
+    use crate::package::{OoxmlPackage, OoxmlPart};
+    use std::{cell::RefCell, collections::HashMap, sync::Arc};
+
+    #[test]
+    fn retained_resolution_is_bound_to_an_immutable_sheet() {
+        let sheets: Vec<_> = ["Alpha", "Beta"].into_iter().enumerate().map(|(index, font)| {
+            let name = "word/styles.xml".to_owned();
+            let content = format!(r#"<w:styles><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="{font}"/><w:b w:val="{index}"/></w:rPr></w:rPrDefault></w:docDefaults><w:style w:type="paragraph" w:default="1" w:styleId="Main"><w:name w:val="{font}"/><w:pPr><w:spacing w:before="{}"/></w:pPr></w:style></w:styles>"#, 120 * (index + 1));
+            let package = OoxmlPackage { parts: HashMap::from([(name.clone(), OoxmlPart { name, content })]), binary_assets: HashMap::new(), warnings: Vec::new() };
+            Arc::new(super::super::styles::parse_document_style_sheet(&package))
+        }).collect();
+        let parts = HashMap::new();
+        let assets = HashMap::new();
+        let run = r#"<w:r><w:rPr><w:i/></w:rPr><w:t>text</w:t></w:r>"#;
+        let paragraph = r#"<w:p><w:pPr><w:pStyle w:val="Main"/></w:pPr></w:p>"#;
+        let mut expected_styles = Vec::new();
+        for index in [0, 0, 1, 1, 0, 1, 0] {
+            let sheet = &sheets[index];
+            let context = ParseContext { relationships: HashMap::new(), content_types: Default::default(), parts: &parts, binary_assets: &assets, style_sheet: sheet.as_ref(), warnings: RefCell::new(Vec::new()) };
+            let expected_run = parse_run_style(run, &context, Some("Main"));
+            let expected_paragraph = parse_paragraph_style(paragraph, &context);
+            expected_styles.push((expected_run.clone(), expected_paragraph.clone()));
+            {
+                let _scope = run_style_cache_scope();
+                bind_shared_style_cache(Arc::clone(sheet));
+                let mut actual_run = parse_run_style(run, &context, Some("Main"));
+                let mut actual_paragraph = parse_paragraph_style(paragraph, &context);
+                assert_eq!(actual_run, expected_run);
+                assert_eq!(actual_paragraph, expected_paragraph);
+                actual_run.as_mut().unwrap().font_family = Some("changed".to_owned());
+                actual_paragraph.as_mut().unwrap().style_name = Some("changed".to_owned());
+            }
+            {
+                let _scope = run_style_cache_scope();
+                bind_shared_style_cache(Arc::clone(sheet));
+                assert_eq!(parse_run_style(run, &context, Some("Main")), expected_run);
+                assert_eq!(parse_paragraph_style(paragraph, &context), expected_paragraph);
+                {
+                    let _nested = run_style_cache_scope();
+                    bind_shared_style_cache(Arc::clone(&sheets[1 - index]));
+                }
+                assert_eq!(parse_run_style(run, &context, Some("Main")), expected_run);
+            }
+        }
+        assert_ne!(expected_styles[0], expected_styles[2]);
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod retained_numeric_style_tests {
+    use super::*;
+    use std::{cell::RefCell, collections::HashMap, sync::Arc};
+
+    #[test]
+    fn retained_table_formats_preserve_float_bits() {
+        let sheet = Arc::new(super::super::context::ParsedStyleSheet::empty());
+        let parts = HashMap::new();
+        let assets = HashMap::new();
+        let context = ParseContext { relationships: HashMap::new(), content_types: Default::default(), parts: &parts, binary_assets: &assets, style_sheet: sheet.as_ref(), warnings: RefCell::new(Vec::new()) };
+        for value in [0.0_f64, -0.0_f64, 0.0_f64, -0.0_f64] {
+            let mut table = parse_text_style_from_xml("<w:b/>", &Default::default()).unwrap();
+            table.font_size_pt = Some(value);
+            let _scope = run_style_cache_scope();
+            bind_shared_style_cache(Arc::clone(&sheet));
+            let actual = parse_run_style_in_table("<w:r><w:t>text</w:t></w:r>", &context, None, Some(&table)).unwrap();
+            assert_eq!(actual.font_size_pt.unwrap().to_bits(), value.to_bits());
+        }
+    }
+}
+
+#[cfg(test)]
+mod drawing_style_preflight_tests {
+    use super::*;
+
+    #[test]
+    fn preflight_keeps_text_styles_and_ignores_geometry_only_content() {
+        for xml in [
+            r#"<a:rPr b="1"/>"#,
+            r#"<A:RPR sz="1200"/>"#,
+            r#"<a:defRPr><a:latin typeface="Primary"/></a:defRPr>"#,
+            r#"<a:latin typeface="Primary"/>"#,
+            r#"<![CDATA[<a:rPr b="1"/>]]>"#,
+            r#"<a:rPr-extra b="1"/>"#,
+        ] {
+            assert!(has_drawing_text_style_tags(xml));
+            assert!(parse_text_style_from_xml(xml, &Default::default()).is_some());
+        }
+        for xml in [
+            "", "<a:", "<a:pt x=\"1\" y=\"2\"/>",
+            "<a:rPrExtra/>", "<a:ln><a:noFill/></a:ln>",
+            "<a:solidFill><a:srgbClr val=\"ffffff\"/></a:solidFill>",
+        ] {
+            assert!(parse_text_style_from_xml(xml, &Default::default()).is_none());
+        }
+        let xml = r#"<w:r><w:rPr><w:b/></w:rPr><a:pt x="1" y="2"/></w:r>"#;
+        assert!(!has_drawing_text_style_tags(xml));
+        assert_eq!(parse_text_style_from_xml(xml, &Default::default()).unwrap().bold, Some(true));
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod bound_mark_default_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    #[test]
+    fn bound_defaults_preserve_values_and_validate_unbound_inputs() {
+        let mut defaults = parse_text_style_from_xml("<w:b/>", &Default::default()).unwrap();
+        defaults.font_size_pt = Some(-0.0);
+        let mut sheet = super::super::context::ParsedStyleSheet::empty();
+        sheet.default_run_style = Some(defaults.clone());
+        let sheet = Arc::new(sheet);
+        let _scope = run_style_cache_scope();
+        bind_shared_style_cache(Arc::clone(&sheet));
+        for _ in 0..2 {
+            let actual = cached_mark_default_style(sheet.default_run_style.as_ref(), None).unwrap();
+            assert_eq!(*actual, defaults);
+            assert_eq!(actual.font_size_pt.unwrap().to_bits(), (-0.0_f64).to_bits());
+        }
+        for value in [0.0_f64, -0.0_f64] {
+            defaults.font_size_pt = Some(value);
+            let actual = cached_mark_default_style(Some(&defaults), None).unwrap();
+            assert_eq!(actual.font_size_pt.unwrap().to_bits(), value.to_bits());
+        }
+        defaults.bold = Some(false);
+        assert_eq!(cached_mark_default_style(Some(&defaults), None).unwrap().bold, Some(false));
+        assert_eq!(cached_mark_default_style(sheet.default_run_style.as_ref(), None).unwrap().bold, Some(true));
+        let table = parse_text_style_from_xml("<w:i/>", &Default::default()).unwrap();
+        assert_eq!(cached_mark_default_style(sheet.default_run_style.as_ref(), Some(&table)).unwrap().italic, Some(true));
+        assert_eq!(cached_mark_default_style(sheet.default_run_style.as_ref(), None).unwrap().italic, None);
+        bind_shared_style_cache(Arc::new(super::super::context::ParsedStyleSheet::empty()));
+        assert!(cached_mark_default_style(None, None).is_none());
+    }
+}
+
+#[cfg(test)]
+mod shared_paragraph_cache_tests {
+    use super::*;
+    use std::{cell::RefCell, collections::HashMap};
+
+    #[test]
+    fn shared_paragraph_styles_preserve_cached_values_and_serialization() {
+        let parts = HashMap::new();
+        let assets = HashMap::new();
+        let sheet = super::super::context::ParsedStyleSheet::empty();
+        let context = ParseContext { relationships: HashMap::new(), content_types: Default::default(), parts: &parts, binary_assets: &assets, style_sheet: &sheet, warnings: RefCell::new(Vec::new()) };
+        let _scope = run_style_cache_scope();
+        let properties = "<w:pPr><w:jc w:val='center'/></w:pPr>";
+        let mut first = parse_paragraph_style_from_properties(properties, &context, None).unwrap();
+        let second = parse_paragraph_style_from_properties(properties, &context, None).unwrap();
+        assert_eq!(serde_json::to_value(&second).unwrap(), serde_json::to_value(&*second).unwrap());
+        first.style_name = Some("changed".into());
+        assert!(second.style_name.is_none());
+        assert_eq!(parse_paragraph_style_from_properties(properties, &context, None).unwrap(), second);
+        let mut node: crate::model::ParagraphNode = serde_json::from_str(r#"{"type":"paragraph","children":[],"style":{"styleName":"base"}}"#).unwrap();
+        let unchanged = node.clone();
+        node.style.as_mut().unwrap().style_name = Some("changed".into());
+        assert_eq!(unchanged.style.as_ref().unwrap().style_name.as_deref(), Some("base"));
+    }
 }

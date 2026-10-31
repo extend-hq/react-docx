@@ -34,7 +34,7 @@ pub(crate) struct PartNodeCache<'a, 's> {
     content_types: &'s ContentTypeLookup,
     style_sheet: &'s ParsedStyleSheet,
     parsed_part_nodes_by_name: HashMap<String, Vec<DocNode>>,
-    context: Option<ParseContext<'a>>,
+    context: Option<ParseContext<'a, &'s ParsedStyleSheet>>,
 }
 
 impl<'a, 's> PartNodeCache<'a, 's> {
@@ -88,7 +88,7 @@ impl<'a, 's> PartNodeCache<'a, 's> {
                 content_types: self.content_types.clone(),
                 parts: &self.pkg.parts,
                 binary_assets: self.binary_assets,
-                style_sheet: self.style_sheet.clone(),
+                style_sheet: self.style_sheet,
                 warnings: RefCell::new(Vec::new()),
             });
         }
@@ -303,7 +303,7 @@ pub fn parse_document_notes_from_part(
         content_types: content_types.clone(),
         parts: &pkg.parts,
         binary_assets,
-        style_sheet: style_sheet.clone(),
+        style_sheet,
         warnings: RefCell::new(Vec::new()),
     };
 
@@ -359,7 +359,7 @@ pub fn parse_document_comments(
         content_types: content_types.clone(),
         parts: &pkg.parts,
         binary_assets,
-        style_sheet: style_sheet.clone(),
+        style_sheet,
         warnings: RefCell::new(Vec::new()),
     };
 
@@ -707,8 +707,12 @@ fn strip_leading_bracketed_index(text: &str) -> String {
     text.to_string()
 }
 
-fn find_opening_tags(xml: &str, local_name: &str) -> Vec<String> {
-    let open_prefix = format!("<w:{local_name}");
+fn find_opening_tags<'a>(xml: &'a str, local_name: &str) -> Vec<&'a str> {
+    let name = format!("w:{local_name}");
+    if let Some(tags) = crate::xml_index::opening_tags(xml, &name) {
+        return tags;
+    }
+    let open_prefix = format!("<{name}");
     let mut tags = Vec::new();
     let mut index = 0;
 
@@ -727,7 +731,7 @@ fn find_opening_tags(xml: &str, local_name: &str) -> Vec<String> {
         };
 
         let tag_end = tag_start + relative_gt + 1;
-        tags.push(xml[tag_start..tag_end].to_string());
+        tags.push(&xml[tag_start..tag_end]);
         index = tag_end;
     }
 
@@ -749,4 +753,33 @@ fn has_word_boundary_after(xml: &str, index: usize) -> bool {
 
 fn find_case_insensitive_at(haystack: &str, start: usize, needle: &str) -> Option<usize> {
     crate::xml::find_ignore_ascii_case(haystack, start, needle)
+}
+
+#[cfg(test)]
+mod indexed_reference_tests {
+    use super::*;
+
+    #[test]
+    fn indexed_openings_preserve_case_order_nesting_and_slice_boundaries() {
+        let xml = r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:headerReference w:type="default"><w:headerReference/></w:headerReference><w:HEADERREFERENCE/><w:headerReference_extra/><w:footerReference/></w:body></w:document>"#;
+        let start = xml.find("<w:body>").unwrap();
+        let end = xml.find("</w:body>").unwrap();
+        let fragments = [xml, &xml[start..end], &xml[start + 1..end], &xml[..end - 2]];
+        let expected: Vec<_> = fragments.iter().map(|fragment| find_opening_tags(fragment, "headerReference")).collect();
+        let index = crate::xml_index::Index::canonical(xml).unwrap();
+        let _scope = crate::xml_index::scope([("part", xml)].into_iter(), HashMap::from([("part".to_owned(), index)]));
+        for (fragment, expected) in fragments.into_iter().zip(expected) {
+            assert_eq!(find_opening_tags(fragment, "headerReference"), expected);
+            assert!(find_opening_tags(fragment, "missingReference").is_empty());
+        }
+    }
+
+    #[test]
+    fn unindexed_openings_preserve_legacy_token_boundaries() {
+        let xml = r#"<w:root><w:headerReference:extra/><w:headerReference-extra/><w:headerReference w:type="a>b"/></w:root>"#;
+        let expected = find_opening_tags(xml, "headerReference");
+        let _scope = crate::xml_index::scope([("part", xml)].into_iter(), HashMap::new());
+        assert_eq!(find_opening_tags(xml, "headerReference"), expected);
+        assert_eq!(expected.len(), 3);
+    }
 }

@@ -2182,6 +2182,10 @@ pub fn parse_style_sheet(pkg: &OoxmlPackage) -> ParsedStyleSheet {
 }
 
 pub(crate) fn parse_document_style_sheet(pkg: &OoxmlPackage) -> ParsedStyleSheet {
+    parse_referenced_style_sheet(pkg, document_style_references(pkg))
+}
+
+fn document_style_references(pkg: &OoxmlPackage) -> HashSet<String> {
     let mut referenced = HashSet::new();
     for part in pkg.parts.values() {
         for name in ["w:tblStyle", "w:rStyle", "w:pStyle"] {
@@ -2192,6 +2196,13 @@ pub(crate) fn parse_document_style_sheet(pkg: &OoxmlPackage) -> ParsedStyleSheet
             }
         }
     }
+    referenced
+}
+
+fn parse_referenced_style_sheet(
+    pkg: &OoxmlPackage,
+    mut referenced: HashSet<String>,
+) -> ParsedStyleSheet {
     if let Some(part) = crate::package::related_document_part(pkg, "styles") {
         let mut parents = HashMap::new();
         for style in crate::xml::extract_balanced_tag_slices(&part.content, "w:style") {
@@ -2223,6 +2234,113 @@ pub(crate) fn parse_document_style_sheet(pkg: &OoxmlPackage) -> ParsedStyleSheet
         }
     }
     parse_style_sheet_selected(pkg, Some(&referenced))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) type DocumentStyleSheet = std::sync::Arc<ParsedStyleSheet>;
+#[cfg(target_arch = "wasm32")]
+pub(crate) type DocumentStyleSheet = ParsedStyleSheet;
+
+#[cfg(not(target_arch = "wasm32"))]
+struct CachedDocumentStyleSheet {
+    styles: Option<String>,
+    theme: Option<String>,
+    references: Vec<String>,
+    source_bytes: usize,
+    parsed: std::sync::Arc<ParsedStyleSheet>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+static DOCUMENT_STYLE_CACHE: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::VecDeque<CachedDocumentStyleSheet>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::VecDeque::new()));
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn cached_document_style_identity(styles: &ParsedStyleSheet) -> Option<DocumentStyleSheet> {
+    DOCUMENT_STYLE_CACHE.lock().ok()?.iter()
+        .find(|entry| std::ptr::eq(entry.parsed.as_ref(), styles))
+        .map(|entry| std::sync::Arc::clone(&entry.parsed))
+}
+
+pub(crate) fn acquire_document_style_sheet(pkg: &OoxmlPackage) -> DocumentStyleSheet {
+    #[cfg(target_arch = "wasm32")]
+    {
+        parse_document_style_sheet(pkg)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let styles =
+            crate::package::related_document_part(pkg, "styles").map(|part| part.content.as_str());
+        let theme =
+            crate::package::related_document_part(pkg, "theme").map(|part| part.content.as_str());
+        if styles
+            .map_or(0, str::len)
+            .saturating_add(theme.map_or(0, str::len))
+            > 512 * 1024
+        {
+            return std::sync::Arc::new(parse_document_style_sheet(pkg));
+        }
+        let references = document_style_references(pkg);
+        if references.len() > 512 || references.iter().map(String::len).sum::<usize>() > 32 * 1024 {
+            return std::sync::Arc::new(parse_referenced_style_sheet(pkg, references));
+        }
+        let mut references: Vec<_> = references.into_iter().collect();
+        references.sort_unstable();
+        let source_bytes = styles.map_or(0, str::len)
+            + theme.map_or(0, str::len)
+            + references.iter().map(String::len).sum::<usize>();
+        let matches = |entry: &CachedDocumentStyleSheet| {
+            entry.styles.as_deref() == styles
+                && entry.theme.as_deref() == theme
+                && entry.references == references
+        };
+        if let Ok(cache) = DOCUMENT_STYLE_CACHE.lock() {
+            if let Some(entry) = cache.iter().find(|entry| matches(entry)) {
+                return entry.parsed.clone();
+            }
+        }
+        let parsed = std::sync::Arc::new(parse_referenced_style_sheet(
+            pkg,
+            references.iter().cloned().collect(),
+        ));
+        if let Ok(mut cache) = DOCUMENT_STYLE_CACHE.lock() {
+            if let Some(entry) = cache.iter().find(|entry| matches(entry)) {
+                return entry.parsed.clone();
+            }
+            if source_bytes > 512 * 1024 {
+                return parsed;
+            }
+            let mut retained = cache.iter().map(|entry| entry.source_bytes).sum::<usize>();
+            while cache.len() >= 4 || retained + source_bytes > 512 * 1024 {
+                let Some(old) = cache.pop_front() else { break };
+                retained -= old.source_bytes;
+            }
+            cache.push_back(CachedDocumentStyleSheet {
+                styles: styles.map(str::to_owned),
+                theme: theme.map(str::to_owned),
+                references,
+                source_bytes,
+                parsed: parsed.clone(),
+            });
+        }
+        parsed
+    }
+}
+
+pub(crate) fn release_document_style_metadata(
+    styles: DocumentStyleSheet,
+) -> (Vec<crate::model::ParagraphStyleDefinition>, Option<String>) {
+    #[cfg(not(target_arch = "wasm32"))]
+    let styles = match std::sync::Arc::try_unwrap(styles) {
+        Ok(styles) => styles,
+        Err(styles) => {
+            return (
+                styles.paragraph_styles.clone(),
+                styles.default_paragraph_style_id.clone(),
+            )
+        }
+    };
+    (styles.paragraph_styles, styles.default_paragraph_style_id)
 }
 
 fn parse_style_sheet_selected(
@@ -2977,5 +3095,60 @@ mod table_box_spacing_tests {
         assert_eq!(spacing.right_twips, Some(0));
         assert_eq!(spacing.top_twips, None);
         assert_eq!(spacing.bottom_twips, None);
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod document_style_cache_tests {
+    #[test]
+    fn shared_definitions_track_references_theme_changes_and_eviction() {
+        for selector in (0..12).chain((0..12).rev()) {
+            let selected = if selector % 2 == 0 { "a" } else { "b" };
+            let font = if selector % 3 == 0 { "Serif" } else { "Sans" };
+            let bold = if selector % 4 == 0 { "0" } else { "1" };
+            let mut package = crate::package::OoxmlPackage {
+                parts: Default::default(),
+                binary_assets: Default::default(),
+                warnings: vec![],
+            };
+            for (name, content) in [
+                ("word/document.xml", format!("<w:document><w:body><w:p><w:r><w:rPr><w:rStyle w:val='{selected}'/></w:rPr><w:t>text</w:t></w:r></w:p></w:body></w:document>")),
+                ("word/styles.xml", format!("<w:styles><w:style w:type='paragraph' w:styleId='normal' w:default='1'><w:name w:val='Normal'/></w:style><w:style w:type='character' w:styleId='a'><w:rPr><w:b w:val='{bold}'/></w:rPr></w:style><w:style w:type='character' w:styleId='b'><w:rPr><w:i/></w:rPr></w:style></w:styles>")),
+                ("word/theme/theme1.xml", format!("<a:theme><a:themeElements><a:fontScheme><a:majorFont><a:latin typeface='{font}'/></a:majorFont><a:minorFont><a:latin typeface='{font}'/></a:minorFont></a:fontScheme></a:themeElements></a:theme>")),
+            ] { package.parts.insert(name.into(), crate::package::OoxmlPart { name: name.into(), content }); }
+            let expected = super::parse_document_style_sheet(&package);
+            let actual = super::acquire_document_style_sheet(&package);
+            assert_eq!(&*actual, &expected);
+            let (mut metadata, _) = super::release_document_style_metadata(actual);
+            if let Some(style) = metadata.first_mut() {
+                style.name = "Changed".into();
+            }
+            assert_eq!(&*super::acquire_document_style_sheet(&package), &expected);
+        }
+    }
+}
+
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod bounded_large_definition_tests {
+    use super::*;
+
+    #[test]
+    fn large_definitions_preserve_values_and_resident_budget() {
+        for value in ["first", "second", "third", "first"] {
+            let mut pkg = crate::package::OoxmlPackage {
+                parts: Default::default(), binary_assets: Default::default(), warnings: vec![],
+            };
+            let name = format!("{value}{}", "x".repeat(140 * 1024));
+            let content = format!("<w:styles><w:style w:type='paragraph' w:styleId='normal' w:default='1'><w:name w:val='{name}'/></w:style></w:styles>");
+            pkg.parts.insert("word/styles.xml".into(), crate::package::OoxmlPart { name: "word/styles.xml".into(), content });
+            let expected = parse_document_style_sheet(&pkg);
+            for _ in 0..2 {
+                assert_eq!(*acquire_document_style_sheet(&pkg), expected);
+                let cache = DOCUMENT_STYLE_CACHE.lock().unwrap();
+                assert!(cache.len() <= 4);
+                assert!(cache.iter().map(|entry| entry.source_bytes).sum::<usize>() <= 512 * 1024);
+            }
+        }
     }
 }

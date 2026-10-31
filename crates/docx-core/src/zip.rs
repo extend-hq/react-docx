@@ -270,12 +270,105 @@ fn decode_xml_part(bytes: Vec<u8>) -> Result<String, String> {
         .map_err(|error| format!("Invalid or unsupported XML encoding: {error}"))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+fn extract_entry_group(
+    bytes: &[u8],
+    entries: &[ZipEntry],
+    group: &[usize],
+) -> Vec<(usize, Result<Vec<u8>, String>)> {
+    let mut inflater = ZipInflater::default();
+    group.iter().map(|&index| {
+        (index, extract_entry_data(bytes, &entries[index], &mut inflater))
+    }).collect()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[cold]
+fn parallel_entry_data(
+    bytes: &[u8],
+    entries: &[ZipEntry],
+) -> Option<Vec<Option<Result<Vec<u8>, String>>>> {
+    if bytes.len() < 16 * 1024
+        || entries.iter().map(|entry| u64::from(entry.uncompressed_size)).sum::<u64>() < 64 * 1024
+        || entries.iter().filter(|entry| {
+            !entry.name.ends_with('/')
+                && entry.compression_method == DEFLATE_COMPRESSION
+                && entry.uncompressed_size >= 16 * 1024
+        }).take(2).count() < 2
+    {
+        return None;
+    }
+    let pool = crate::parse::worker_pool()?;
+    let mut jobs: Vec<_> = entries.iter().enumerate()
+        .filter_map(|(index, entry)| (!entry.name.ends_with('/')).then_some(index))
+        .collect();
+    jobs.sort_unstable_by_key(|&index| std::cmp::Reverse(entries[index].uncompressed_size));
+    let mut groups: [Vec<usize>; 4] = std::array::from_fn(|_| Vec::new());
+    let mut weights = [0u64; 4];
+    for index in jobs {
+        let group = (0..4).min_by_key(|&group| weights[group]).unwrap();
+        weights[group] += u64::from(entries[index].uncompressed_size);
+        groups[group].push(index);
+    }
+    let mut outputs: [Option<Vec<(usize, Result<Vec<u8>, String>)>>; 4] = std::array::from_fn(|_| None);
+    let (caller, workers) = outputs.split_first_mut().unwrap();
+    pool.in_place_scope(|scope| {
+        for (slot, group) in workers.iter_mut().zip(&groups[1..]) {
+            scope.spawn(move |_| *slot = Some(extract_entry_group(bytes, entries, group)));
+        }
+        *caller = Some(extract_entry_group(bytes, entries, &groups[0]));
+    });
+    let mut result: Vec<_> = (0..entries.len()).map(|_| None).collect();
+    for group in outputs.into_iter().flatten() {
+        for (index, value) in group {
+            result[index] = Some(value);
+        }
+    }
+    Some(result)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[cold]
+fn package_from_parallel_entries(
+    entries: Vec<ZipEntry>,
+    results: Vec<Option<Result<Vec<u8>, String>>>,
+) -> Result<OoxmlPackage, String> {
+    let mut parts = HashMap::new();
+    let mut binary_assets = HashMap::new();
+    for (entry, data) in entries.into_iter().zip(results) {
+        if entry.name.ends_with('/') {
+            continue;
+        }
+        let data = data.expect("scheduled ZIP entry")?;
+        if is_text_part(&entry.name) {
+            parts.insert(entry.name.clone(), OoxmlPart {
+                name: entry.name,
+                content: decode_xml_part(data)?,
+            });
+        } else {
+            binary_assets.insert(entry.name, data);
+        }
+    }
+    let package = OoxmlPackage { parts, binary_assets, warnings: Vec::new() };
+    let main_part = crate::package::main_document_part_name(&package);
+    if !package.parts.contains_key(&main_part) {
+        return Err(format!("Invalid DOCX: missing {main_part}"));
+    }
+    Ok(package)
+}
+
 pub fn parse_docx(bytes: &[u8]) -> Result<OoxmlPackage, String> {
     if bytes.is_empty() {
         return Err("DOCX input cannot be empty".to_string());
     }
 
     let entries = parse_central_directory(bytes)?;
+    #[cfg(not(target_arch = "wasm32"))]
+    if bytes.len() >= 16 * 1024 {
+        if let Some(parallel) = parallel_entry_data(bytes, &entries) {
+            return package_from_parallel_entries(entries, parallel);
+        }
+    }
     let mut parts = HashMap::new();
     let mut binary_assets = HashMap::new();
     let mut inflater = ZipInflater::default();
@@ -627,4 +720,39 @@ mod tests {
             .content
             .contains("Hello DOCX"));
     }
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn parallel_entries_preserve_payloads_duplicates_and_error_order() {
+        let mut state = 123456789u32;
+        let payload: String = (0..512 * 1024).map(|_| {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            char::from(32 + (state % 95) as u8)
+        }).collect();
+        let mut zip = create_zip(&[
+            ZipSourceEntry { name: "word/document.xml", content: DOCUMENT_XML, deflate: false },
+            ZipSourceEntry { name: "payload/a.bin", content: &payload, deflate: true },
+            ZipSourceEntry { name: "payload/b.bin", content: &payload, deflate: true },
+            ZipSourceEntry { name: "payload/a.bin", content: "replacement", deflate: true },
+            ZipSourceEntry { name: "payload/", content: "", deflate: false },
+        ]);
+        let entries = parse_central_directory(&zip).unwrap();
+        let mut inflater = ZipInflater::default();
+        let expected: Vec<_> = entries.iter().map(|entry| {
+            (!entry.name.ends_with('/')).then(|| extract_entry_data(&zip, entry, &mut inflater))
+        }).collect();
+        assert_eq!(parallel_entry_data(&zip, &entries).unwrap(), expected);
+        let parsed = parse_docx(&zip).unwrap();
+        assert_eq!(parsed.binary_assets["payload/a.bin"], b"replacement");
+        assert_eq!(parsed.binary_assets["payload/b.bin"], payload.as_bytes());
+        assert!(!parsed.binary_assets.contains_key("payload/"));
+        let main = entries[0].local_header_offset as usize;
+        let content = main + 30 + read_u16_le(&zip, main + 26) as usize;
+        zip[content] = 0xff;
+        let later = entries[2].local_header_offset as usize;
+        zip[later..later + 4].fill(0);
+        assert!(parse_docx(&zip).unwrap_err().starts_with("Invalid or unsupported XML encoding:"));
+    }
+
 }

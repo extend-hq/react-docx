@@ -900,7 +900,7 @@ pub struct ParagraphNode {
     pub r#type: ParagraphNodeType,
     pub children: Vec<ParagraphChildNode>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub style: Option<ParagraphStyle>,
+    pub style: Option<SharedParagraphStyle>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub paragraph_mark_style: Option<SharedTextStyle>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1615,3 +1615,35 @@ mod deserialize_tests {
         );
     }
 }
+
+/// Fully resolved formatting shared until a caller edits its value.
+#[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct SharedParagraphStyle(std::sync::Arc<ParagraphStyle>);
+
+impl SharedParagraphStyle {
+    pub fn into_owned(self) -> ParagraphStyle {
+        std::sync::Arc::unwrap_or_clone(self.0)
+    }
+}
+
+impl From<ParagraphStyle> for SharedParagraphStyle {
+    fn from(style: ParagraphStyle) -> Self {
+        Self(std::sync::Arc::new(style))
+    }
+}
+
+impl std::ops::Deref for SharedParagraphStyle {
+    type Target = ParagraphStyle;
+
+    fn deref(&self) -> &ParagraphStyle {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for SharedParagraphStyle {
+    fn deref_mut(&mut self) -> &mut ParagraphStyle {
+        std::sync::Arc::make_mut(&mut self.0)
+    }
+}
+

@@ -1,4 +1,5 @@
 import argparse
+import bisect
 import collections
 import datetime
 import hashlib
@@ -14,7 +15,7 @@ import zipfile
 
 from assess import percentile
 from expanded_benchmark import ENGINES, sha256, write_json
-from expanded_report import LABELS, body_mean, features, latency, legacy_update, semantic_receipt, fidelity_findings
+from expanded_report import LABELS, body_mean, features, latency, legacy_update, semantic_receipt, fidelity_findings, split_quality_labels
 from frontier_report import CHART_METRICS
 
 
@@ -47,13 +48,35 @@ def process_commands():
         return []
 
 
+def timing_timeline(records, common, order, engines):
+    values = {engine: [] for engine in engines}
+    timeline = []
+    ordered = [key for key in order if key in common]
+    for count, key in enumerate(ordered, 1):
+        for engine in engines:
+            bisect.insort(values[engine], records[key, engine]['medians']['total_ms'])
+        if count % 10 and count != len(ordered):
+            continue
+        point = {'completed': count}
+        for metric, quantile in [('median_ms', .5), ('p95_ms', .95)]:
+            position = (count - 1) * quantile
+            lower = int(position)
+            point[metric] = {engine: samples[lower] + (samples[min(lower + 1, count - 1)] - samples[lower]) * (position - lower)
+                             for engine, samples in values.items()}
+        timeline.append(point)
+    return timeline
+
+
 class Publisher:
     def __init__(self, run, site):
         self.run = run.resolve()
         self.site = site.resolve()
         self.expanded = self.run / 'expanded'
         self.reader = Reader()
-        self.manifest_path = self.run / 'corpus-1k' / 'manifest.json'
+        self.presentation_sha256 = None
+        self.config = self.reader.read(self.run / 'report-config.json', {}) or {}
+        self.corpus = self.run / self.config.get('corpus_directory', 'corpus-1k')
+        self.manifest_path = self.corpus / 'manifest.json'
         self.manifest = self.reader.read(self.manifest_path)
         if not self.manifest:
             raise ValueError('Corpus manifest is unavailable')
@@ -68,6 +91,7 @@ class Publisher:
         self.last_optional_stamp = None
         self.optional = {'legacy_update': None, 'semantic_audits': [], 'fidelity_changes': []}
         self.site.mkdir(parents=True, exist_ok=True)
+        self.html_path = self.site / self.config.get('html_name', 'report.html')
         for name in ['report.html', 'report-data.json']:
             source, backup = self.site / name, self.site / ('saved-' + name)
             if source.exists() and not backup.exists():
@@ -78,6 +102,8 @@ class Publisher:
         elif not link.is_symlink() or link.resolve() != self.run:
             raise ValueError('Live evidence link belongs to another location')
         self.previous = self.reader.read(self.site / 'saved-report-data.json', {})
+        self.html_stage = None
+        self.html_updated_at = 0
 
     def records(self, phase, environment):
         rows = []
@@ -106,7 +132,7 @@ class Publisher:
     def dimension(self, key):
         if key not in self.dimensions:
             entry = self.entries[key]
-            truth = self.reader.read(self.run / 'corpus-1k' / 'oracle' / (key + '.json'), {})
+            truth = self.reader.read(self.corpus / 'oracle' / (key + '.json'), {})
             if not truth or 'error' in truth:
                 self.dimensions[key] = None
             else:
@@ -169,6 +195,8 @@ class Publisher:
         timing_running = any('expanded_benchmark.py' in command and belongs(command) and '--phase timing' in command for command in commands)
         semantic_running = any('semantic_audit.py' in command and belongs(command) for command in commands)
         steps = self.reader.read(self.run / 'run-steps.json', []) or []
+        if isinstance(steps, dict):
+            steps = steps.get('steps', [])
         completed_steps = {value['step']: value for value in steps}
         audited = {value['label']: value for value in self.optional.get('semantic_audits', [])}
         semantic_expanded = audited.get('Expanded sample', {})
@@ -181,6 +209,8 @@ class Publisher:
                   {'key': 'expanded-semantic', 'label': 'Expanded semantic audit', 'completed': semantic_expanded.get('attempted', 0), 'total': len(self.ids)},
                   {'key': 'legacy-semantic', 'label': 'Original semantic audit', 'completed': semantic_legacy.get('attempted', 0), 'total': 390},
                   {'key': 'expanded-timing', 'label': 'Native latency comparison', 'completed': len(timings), 'total': len(self.ids) * (len(ENGINES) + 1)}]
+        if not self.config.get('include_legacy', True):
+            stages = [stage for stage in stages if not stage['key'].startswith('legacy-')]
         for stage in stages:
             stage['status'] = 'complete' if stage['completed'] >= stage['total'] else 'pending'
             if stage['key'] in completed_steps and completed_steps[stage['key']].get('exit_code'):
@@ -217,6 +247,9 @@ class Publisher:
         if not directory.is_relative_to(self.run):
             return ''
         receipt = self.reader.read(directory / 'run-steps.json', {}) or {}
+        if not receipt:
+            build = self.reader.read(directory / 'build-receipt.json', {}) or {}
+            receipt = {**build, 'steps': self.reader.read(directory / 'steps.json', []) or []}
         binary_hash = receipt.get('binary_sha256')
         if not binary_hash or binary_hash != pending.get('binary_sha256'):
             return ''
@@ -228,7 +261,9 @@ class Publisher:
         labels = {'expanded-accuracy': 'new-corpus accuracy', 'legacy-accuracy': 'original-corpus accuracy',
                   'expanded-semantic': 'new-corpus semantic audit', 'legacy-semantic': 'original-corpus semantic audit',
                   'expanded-timing': 'full native latency comparison', 'full-parity': 'complete-output validation',
-                  'native-tests': 'native regression checks', 'wasm-tests': 'WASM regression checks'}
+                  'native-tests': 'native regression checks', 'wasm-build': 'WASM build', 'wasm-tests': 'WASM regression checks',
+                  'wasm-parity': 'WASM complete-output validation',
+                  'validation': 'complete-output and score validation'}
         if name not in labels:
             return ''
         completed, total = 0, step.get('total', 0)
@@ -238,11 +273,32 @@ class Publisher:
                 lines = stream.read().decode('utf-8', errors='replace').splitlines()
             for line in reversed(lines):
                 fields = line.split()
-                if len(fields) >= 4 and fields[0] in {'ACCURACY', 'AUDITED', 'TIMING'} and fields[1].isdigit() and fields[2] == '/' and fields[3].isdigit():
+                if len(fields) >= 4 and fields[0] in {'ACCURACY', 'AUDITED', 'TIMING', 'WASM'} and fields[1].isdigit() and fields[2] == '/' and fields[3].isdigit():
                     completed, total = int(fields[1]), int(fields[3])
                     break
         except OSError:
             pass
+        if name in {'expanded-accuracy', 'legacy-accuracy', 'expanded-timing'}:
+            cohort, phase = name.split('-', 1)
+            env = self.reader.read(directory / cohort / (phase + '-environment.json'), {}) or {}
+            if env.get('binary_sha256') == binary_hash and env.get('engines'):
+                ids = set(env.get('input_ids', []))
+                phase_engines = env['engines'] + (['docx-core-baseline'] if phase == 'timing' and env.get('baseline_binary_sha256') else [])
+                observed = collections.defaultdict(set)
+                for engine in phase_engines:
+                    expected_hash = env.get('baseline_binary_sha256') if engine == 'docx-core-baseline' else binary_hash
+                    for path in (directory / cohort / phase / engine).glob('*.json'):
+                        row = self.reader.read(path, {}) or {}
+                        identity = row.get('cache_identity', {})
+                        if (row.get('id') in ids and row.get('engine') == engine
+                                and identity.get('input_sha256') == row['id']
+                                and identity.get('binary_sha256') == expected_hash
+                                and identity.get('scorer_sha256') == env.get('scorer_sha256')
+                                and identity.get('phase') == phase
+                                and (phase != 'timing' or identity.get('repeats') == env.get('repeats'))):
+                            observed[row['id']].add(engine)
+                completed = sum(all(engine in engines for engine in phase_engines) for engines in observed.values())
+                total = env.get('attempted', len(ids))
         status = 'complete' if receipt.get('finished_at') else step.get('status', 'pending')
         if step.get('status') == 'complete':
             completed = total
@@ -253,9 +309,15 @@ class Publisher:
                 status = 'interrupted'
             except PermissionError:
                 pass
-        return {'stage': f'Candidate {binary_hash[:12]}: {labels[name]}',
+        guard = self.reader.read(directory / 'resource-guard.json', {}) or {}
+        waiting_for_space = (guard.get('child_pid') == receipt.get('pid')
+                             and guard.get('status') == 'waiting_for_disk_space')
+        if waiting_for_space:
+            status = 'waiting'
+        return {'stage': f'Candidate {binary_hash[:12]}: {labels[name]}'
+                         + (' · waiting for disk space' if waiting_for_space else ''),
                 'completed': completed, 'total': total, 'status': status,
-                'note': 'Candidate validation is separate from the published charts.'}
+                'note': 'Candidate measurements are labeled by build; acceptance requires completed validation.'}
 
     def latency_comparison(self, summaries, points, common, baseline, timing_env, timings):
         completed_pairs = {(row['id'], row['engine']) for row in timings}
@@ -363,6 +425,9 @@ class Publisher:
                   for key in ['expected', 'matched', 'composites', 'unresolved_source_relationships']}
         return {**totals, 'documents': len(records), 'audited_binary_sha256': audit['binary_sha256'],
                 'current_binary_sha256': self.binary_hash, 'equivalence_url': equivalence_url,
+                'svg_alternatives': sum(row.get('svg_alternatives', 0) for row in records),
+                'found': sum(row['found'] for row in records) if all('found' in row for row in records) else None,
+                'strict_matched': sum(row['strict_matched'] for row in records) if all('strict_matched' in row for row in records) else None,
                 'scope': audit.get('scope', ''), 'receipt_url': 'current/image-payload-audit/summary.json'}
 
     def feedback_loop(self):
@@ -480,6 +545,147 @@ class Publisher:
                                                  'candidate_rows_sha256': cohort.get('candidate_rows_sha256')}})
         return {'metrics': metrics, 'manifest_sha256': self.manifest_hash}
 
+    def candidate_live(self, pending=None):
+        workflow = (self.reader.read(self.run / 'feature-backlog.json', {}) or {}).get('workflow', {})
+        if pending is None:
+            pending = workflow.get('pending_evaluation', {})
+        if not isinstance(pending, dict) or not isinstance(pending.get('directory'), str):
+            return None
+        directory = (self.run / pending['directory']).resolve()
+        if not directory.is_relative_to(self.run):
+            return None
+        build = self.reader.read(directory / 'build-receipt.json', {}) or {}
+        binary_hash = build.get('binary_sha256')
+        if not binary_hash or binary_hash != pending.get('binary_sha256') or binary_hash == self.binary_hash:
+            return None
+        baseline_hash = build.get('baseline_binary_sha256')
+        timing_engines = [*ENGINES, 'docx-core-baseline']
+
+        def records(phase, engines):
+            env = self.reader.read(directory / 'expanded' / (phase + '-environment.json'), {}) or {}
+            if (env.get('binary_sha256') != binary_hash or env.get('manifest_sha256') != self.manifest_hash
+                    or env.get('phase') != phase or not env.get('scorer_sha256')
+                    or (phase == 'timing' and env.get('baseline_binary_sha256') != baseline_hash)):
+                return {}
+            result = {}
+            if env.get('finished_at'):
+                rows = self.reader.read(directory / 'expanded' / (phase + '-rows.json'), []) or []
+            else:
+                rows = (self.reader.read(path, {}) or {} for engine in engines
+                        for path in (directory / 'expanded' / phase / engine).glob('*.json'))
+            for row in rows:
+                identity = row.get('cache_identity', {})
+                expected_hash = baseline_hash if row.get('engine') == 'docx-core-baseline' else binary_hash
+                if (row.get('id') in self.ids and row.get('engine') in engines
+                        and identity.get('binary_sha256') == expected_hash
+                        and identity.get('scorer_sha256') == env['scorer_sha256']
+                        and identity.get('phase') == phase
+                        and identity.get('engine') == row['engine']
+                        and (phase != 'timing' or identity.get('repeats') == env.get('repeats'))
+                        and identity.get('input_sha256') == row['id']):
+                    result[row['id'], row['engine']] = row
+            return result
+
+        scores = records('accuracy', ENGINES)
+        timings = records('timing', timing_engines)
+        scored = {key for key in self.ids if all(scores.get((key, engine), {}).get('status') == 'ok' for engine in ENGINES)}
+        timed = {key for key in self.ids if all(latency([timings.get((key, engine), {})]) for engine in timing_engines)}
+        quality = {}
+        for engine in ENGINES:
+            rows = [scores[key, engine] for key in sorted(scored)]
+            quality[engine] = {'features': features(rows), 'body_f1': body_mean(rows)}
+        labels, legacy_labels = split_quality_labels({key: LABELS.get(key, key) for value in quality.values() for key in value['features']})
+        labels['body_f1'] = 'Body text F1'
+        times = {}
+        for engine in timing_engines:
+            values = latency([timings[key, engine] for key in timed])
+            times[engine] = {'median_ms': percentile(values, .5) if values else None,
+                             'p95_ms': percentile(values, .95) if values else None}
+        measurement = (self.reader.read(directory / 'measurement-summary-confirmed.json', {})
+                       or self.reader.read(directory / 'measurement-summary.json', {}) or {})
+        if measurement.get('binary_hashes', {}).get('native', {}).get('candidate') != binary_hash:
+            measurement = {}
+        decision = self.reader.read(directory / 'decision.json', {}) or {}
+        time_env = self.reader.read(directory / 'expanded/timing-environment.json', {}) or {}
+        comparison = None
+        if len(timings) == len(self.ids) * len(timing_engines) and time_env.get('finished_at') and timed:
+            summaries = {}
+            for engine in ENGINES:
+                rows = [row for (_, name), row in timings.items() if name == engine]
+                values = latency(rows)
+                summaries[engine] = {**times[engine], 'attempted': len(self.ids),
+                                     'timed_attempted': len(rows),
+                                     'statuses': dict(collections.Counter(row['status'] for row in rows)),
+                                     'success': sum(row['status'] == 'ok' for row in rows),
+                                     'all_median_ms': percentile(values, .5),
+                                     'all_p95_ms': percentile(values, .95)}
+            paired = [key for key in self.ids if all(latency([timings.get((key, engine), {})])
+                      for engine in ['docx-core', 'docx-core-baseline'])]
+            before = [timings[key, 'docx-core-baseline']['medians']['total_ms'] for key in paired]
+            after = [timings[key, 'docx-core']['medians']['total_ms'] for key in paired]
+            baseline_rows = [row for (_, engine), row in timings.items() if engine == 'docx-core-baseline']
+            comparison = {'engines': summaries, 'fixed_common': len(timed),
+                          'points': [{'ordinal': self.ordinals[key], 'metrics': self.dimension(key),
+                                      'latency_ms': {engine: timings[key, engine]['medians']['total_ms']
+                                                     for engine in ENGINES}} for key in sorted(timed)],
+                          'metric_definitions': CHART_METRICS,
+                          'baseline': {'documents': len(paired), 'attempted': len(baseline_rows),
+                                       'statuses': dict(collections.Counter(row['status'] for row in baseline_rows)),
+                                       'median_paired_speedup': statistics.median(a / b for a, b in zip(before, after)),
+                                       'baseline_median_ms': percentile(before, .5), 'candidate_median_ms': percentile(after, .5),
+                                       'baseline_p95_ms': percentile(before, .95), 'candidate_p95_ms': percentile(after, .95)},
+                          'scope': {'source': 'candidate_completed', 'binary_sha256': binary_hash,
+                                    'manifest_sha256': self.manifest_hash, 'scorer_sha256': time_env['scorer_sha256'],
+                                    'completed_at': time_env['finished_at'], 'attempted': len(self.ids),
+                                    'common_success': len(timed), 'repeats': time_env['repeats'],
+                                    'validation_status': decision.get('status', 'validating'),
+                                    'label': 'Latest complete timing; candidate validation reported separately'},
+                          'evidence_url': 'current/' + str(directory.relative_to(self.run)) + '/expanded/timing-rows.json',
+                          'snapshot_url': 'current/' + str(directory.relative_to(self.run)) + '/report-latency.json'}
+            snapshot_path = directory / 'report-latency.json'
+            saved = self.reader.read(snapshot_path, {}) or {}
+            if saved.get('scope') != comparison['scope']:
+                write_json(snapshot_path, comparison)
+        return {'binary_sha256': binary_hash, 'baseline_sha256': baseline_hash,
+                'status': decision.get('status', 'validating'), 'expected_documents': len(self.ids),
+                'accuracy_records': len(scores), 'timing_records': len(timings),
+                'accuracy_completed': min(sum(engine == name for _, engine in scores) for name in ENGINES),
+                'timing_completed': min(sum(engine == name for _, engine in timings) for name in timing_engines),
+                'accuracy_complete': len(scores) == len(self.ids) * len(ENGINES),
+                'timing_complete': len(timings) == len(self.ids) * len(timing_engines),
+                'quality_common': len(scored), 'timing_common': len(timed), 'engines': ENGINES,
+                'quality': quality, 'quality_labels': labels, 'legacy_quality_labels': legacy_labels,
+                'timings': times, 'targeted': measurement,
+                'comparison': comparison,
+                'timing_timeline': timing_timeline(timings, timed, time_env.get('input_ids', []), ENGINES),
+                'evidence_url': 'current/' + str(directory.relative_to(self.run)) + '/'}
+
+    def completed_candidate_live(self):
+        workflow = (self.reader.read(self.run / 'feature-backlog.json', {}) or {}).get('workflow', {})
+        recent = workflow.get('latest_completed_evaluation', {})
+        if (not recent or recent.get('binary_sha256') == workflow.get('pending_evaluation', {}).get('binary_sha256')):
+            return None
+        result = self.candidate_live(recent)
+        return result if result and result['accuracy_complete'] and result['timing_complete'] else None
+
+    def cohort_comparison(self, timings, scores):
+        groups = collections.defaultdict(set)
+        for key, entry in self.entries.items():
+            if entry.get('cohort'):
+                groups[entry['cohort']].add(key)
+        result = []
+        for label, keys in sorted(groups.items(), reverse=True):
+            common = {key for key in keys if all(latency([timings.get((key, engine), {})]) for engine in ENGINES)}
+            engines = {}
+            for engine in ENGINES:
+                values = latency([timings[key, engine] for key in common])
+                completed = [scores[key, engine] for key in keys if (key, engine) in scores]
+                engines[engine] = {'median_ms': percentile(values, .5) if values else None,
+                                   'p95_ms': percentile(values, .95) if values else None,
+                                   'scored': len(completed), 'features': features(completed)}
+            result.append({'name': label, 'documents': len(keys), 'common_timing': len(common), 'engines': engines})
+        return {'binary_sha256': self.binary_hash, 'groups': result}
+
     def build(self):
         timing_env = self.reader.read(self.expanded / 'timing-environment.json', {}) or {}
         accuracy_env = self.reader.read(self.expanded / 'accuracy-environment.json', {}) or {}
@@ -523,13 +729,14 @@ class Publisher:
         labels = {'body_f1': LABELS['body_f1']}
         labels.update({key: LABELS.get(key, key.replace('_', ' ').capitalize())
                        for key in sorted({name for value in summaries.values() for name in value['features_all']})})
+        labels, legacy_labels = split_quality_labels(labels)
         old_score = self.previous.get('quality_comparison', {}).get('docx-core', {}).get('features', {}).get('horizontal_merges')
         legacy = {'horizontal_recall': old_score['recall'], 'documents': self.previous['comparison']['docx_attempted'],
                   'common': self.previous['comparison']['fixed_common'], 'matched': old_score['matched'],
                   'expected': old_score['expected'], 'url': 'saved-report.html'} if old_score else None
         env = (timing_env if timing_env.get('binary_sha256') == self.binary_hash else
                accuracy_env if accuracy_env.get('binary_sha256') == self.binary_hash else {})
-        sampling = self.reader.read(self.run / 'corpus-1k' / 'sampling.json', {}) or {}
+        sampling = self.reader.read(self.corpus / 'sampling.json', {}) or {}
         corpus = {key: value for key, value in sampling.items() if isinstance(value, (str, int, float, bool, type(None)))}
         optional = self.optional_results(env.get('scorer_sha256'))
         live = self.progress(timings, scores)
@@ -538,20 +745,38 @@ class Publisher:
                    'latency_ms': {engine: by_timing[(key, engine)]['medians']['total_ms'] for engine in ENGINES}}
                   for key in sorted(common)]
         measured = self.latency_comparison(summaries, points, common, baseline, timing_env, timings)
+        candidate_live = self.candidate_live()
+        recent_candidate = self.completed_candidate_live()
+        for candidate in [recent_candidate, candidate_live]:
+            latest = candidate.pop('comparison', None) if candidate else None
+            previous_completed = measured['scope'].get('completed_at') or 0
+            if isinstance(previous_completed, str):
+                try:
+                    previous_completed = datetime.datetime.fromisoformat(previous_completed).timestamp()
+                except ValueError:
+                    previous_completed = 0
+            if latest and latest['scope']['completed_at'] > previous_completed:
+                measured = latest
         measured_hash = measured['scope'].get('binary_sha256')
         archived_timing = self.run / 'waves' / str(measured_hash) / 'expanded' / 'timing-rows.json'
         timing_receipt_url = ('current/waves/' + str(measured_hash) + '/expanded/timing-rows.json'
                               if archived_timing.exists() else 'current/expanded/timing-rows.json')
+        timing_receipt_url = measured.get('evidence_url', timing_receipt_url)
         validation = self.reader.read(self.run / 'completion-receipt.json', {}) or {}
         validation_current = (validation.get('binary_sha256') == self.binary_hash
                               and validation.get('status') == 'passed')
         return {'generated_at': timestamp(), 'scope': {'attempted': len(self.ids), 'common_success': len(common),
-                'quality_common': len(quality_common), 'cohort_name': 'Seeded DOCX corpus sample',
+                'quality_common': len(quality_common), 'cohort_name': self.config.get('cohort_name', 'Seeded DOCX corpus sample'),
                 'repeats': env.get('repeats', 5), 'complete': len(timings) >= len(self.ids)*5 and len(scores) == len(self.ids)*4,
                 'scatter_documents': len(common), 'dimension_errors': 0,
-                'quality_timing_same_cohort': quality_common == common},
+                'quality_timing_same_cohort': quality_common == common and measured_hash == self.binary_hash},
                 'engines': ENGINES, 'summaries': summaries, 'quality_comparison': quality, 'quality_labels': labels,
+                'legacy_quality_labels': legacy_labels,
+                'candidate_live': candidate_live,
+                'recent_candidate': recent_candidate,
+                'timing_timeline': timing_timeline(by_timing, common, timing_env.get('input_ids', []), ENGINES),
                 'baseline': baseline, 'charts': {'metric_definitions': CHART_METRICS, 'points': points},
+                'cohort_comparison': self.cohort_comparison(by_timing, by_score),
                 'latency_comparison': measured, 'latency_snapshot': dict(measured['scope']),
                 'feature_backlog': self.feature_backlog(),
                 'experimental_tuning': self.experimental_tuning(),
@@ -571,8 +796,8 @@ class Publisher:
                 'timing_environment_note': validation.get('timing_environment_note', '') if validation_current else '',
                 'timing_scope': env.get('scope', ''), 'quality_scope': 'Reference-bearing completed scores only; failures retain expected feature denominators in the all-attempt view. No latency measurements are inferred from accuracy runs.',
                 'receipt_links': {'chart': 'live-data.json', 'timing': timing_receipt_url,
-                                  'accuracy': 'current/expanded/accuracy-rows.json', 'corpus': 'current/corpus-1k/sampling.json',
-                                  'backlog': 'current/feature-backlog.json', 'latency_snapshot': 'current/measured-latency.json',
+                                  'accuracy': 'current/expanded/accuracy-rows.json', 'corpus': 'current/' + str(self.corpus.relative_to(self.run)) + '/sampling.json',
+                                  'backlog': 'current/feature-backlog.json', 'latency_snapshot': measured.get('snapshot_url', 'current/measured-latency.json'),
                                   **({'validation': 'current/completion-receipt.json'} if validation_current else {}),
                                   **({'research': 'current/rust-optimization-research.md'}
                                      if (self.run / 'rust-optimization-research.md').is_file() else {})},
@@ -580,13 +805,25 @@ class Publisher:
 
     def publish(self, rewrite_html=False):
         data = self.build()
-        write_json(self.site / 'live-data.json', data)
-        if rewrite_html or not (self.site / 'report.html').exists():
-            template = Path(__file__).with_name('expanded_report.html').read_text()
+        historical = ['experimental_tuning', 'feedback_loop', 'table_property_optimization',
+                      'normalization_optimization', 'instruction_analysis', 'single_document_trace',
+                      'experimental_memory']
+        data['history'] = {key: data.pop(key) for key in historical if key in data}
+        template = Path(__file__).with_name('expanded_report.html').read_text()
+        presentation = hashlib.sha256(template.encode()).hexdigest()
+        data['presentation_sha256'] = presentation
+        stage = (data['live']['stage'], data['live']['status'])
+        now = time.monotonic()
+        if (rewrite_html or presentation != self.presentation_sha256 or stage != self.html_stage
+                or now - self.html_updated_at >= 60 or not self.html_path.exists()):
             payload = json.dumps(data, ensure_ascii=False, separators=(',', ':')).replace('<', '\\u003c').replace('\u2028', '\\u2028').replace('\u2029', '\\u2029')
-            temporary = self.site / 'report.html.tmp'
+            temporary = self.html_path.with_suffix('.html.tmp')
             temporary.write_text(template.replace('REPORT_DATA', payload))
-            temporary.replace(self.site / 'report.html')
+            temporary.replace(self.html_path)
+            self.presentation_sha256 = presentation
+            self.html_stage = stage
+            self.html_updated_at = now
+        write_json(self.site / 'live-data.json', data)
         write_json(self.site / 'publisher-status.json', {'pid': os.getpid(), 'updated_at': timestamp(), 'status': 'running', 'stage': data['live']['stage']})
         return data
 

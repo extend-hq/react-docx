@@ -1,6 +1,5 @@
 use std::collections::HashSet;
 
-use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -91,7 +90,7 @@ pub enum ParagraphInline {
 pub struct ParagraphDetails {
     pub r#type: String,
     pub kind: String,
-    pub style: Option<ParagraphStyle>,
+    pub style: Option<SharedParagraphStyle>,
     pub style_id: String,
     pub heading_level: Option<HeadingLevel>,
     pub numbering: Option<ParagraphNumbering>,
@@ -99,11 +98,25 @@ pub struct ParagraphDetails {
     pub inlines: Vec<ParagraphInline>,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TableCellDetails {
+    pub r#type: String,
+    pub row_index: usize,
+    pub column_index: i64,
+    pub cell_index: usize,
+    pub column_span: i64,
+    pub row_span: i64,
+    pub is_header: bool,
+    pub style: Option<TableCellStyle>,
+}
+
 /// Eager semantic details with an unrestricted JSON representation for imported data.
 #[derive(Clone, Debug, Serialize)]
 #[serde(untagged)]
 pub enum BlockDetails {
     Paragraph(Box<ParagraphDetails>),
+    TableCell(Box<TableCellDetails>),
     Raw(Value),
 }
 
@@ -112,6 +125,8 @@ impl BlockDetails {
         match self {
             Self::Paragraph(details) => serde_json::to_value(details)
                 .expect("paragraph details contain JSON-compatible values"),
+            Self::TableCell(details) => serde_json::to_value(details)
+                .expect("table cell details contain JSON-compatible values"),
             Self::Raw(value) => value.clone(),
         }
     }
@@ -141,6 +156,12 @@ impl From<Value> for BlockDetails {
 impl From<ParagraphDetails> for BlockDetails {
     fn from(details: ParagraphDetails) -> Self {
         Self::Paragraph(Box::new(details))
+    }
+}
+
+impl From<TableCellDetails> for BlockDetails {
+    fn from(details: TableCellDetails) -> Self {
+        Self::TableCell(Box::new(details))
     }
 }
 
@@ -209,7 +230,7 @@ fn image_url(image: &ImageRunNode) -> Option<String> {
     url.push_str("data:");
     url.push_str(content_type);
     url.push_str(";base64,");
-    base64::engine::general_purpose::STANDARD.encode_string(data, &mut url);
+    crate::parse::append_base64(data, &mut url);
     Some(url)
 }
 
@@ -223,25 +244,41 @@ fn source_part(model: &DocModel, kind: &str) -> String {
         .unwrap_or_else(|| format!("word/{kind}.xml"))
 }
 
+fn indexed_path<const N: usize>(prefix: &str, components: [(&str, usize); N]) -> String {
+    let mut buffers: [itoa::Buffer; N] = std::array::from_fn(|_| itoa::Buffer::new());
+    let mut numbers = [""; N];
+    let mut capacity = prefix.len();
+    for ((buffer, (separator, number)), rendered) in buffers.iter_mut().zip(components).zip(numbers.iter_mut()) {
+        *rendered = buffer.format(number);
+        capacity += separator.len() + rendered.len();
+    }
+    let mut result = String::with_capacity(capacity);
+    result.push_str(prefix);
+    for ((separator, _), number) in components.into_iter().zip(numbers) {
+        result.push_str(separator);
+        result.push_str(number);
+    }
+    result
+}
+
 pub fn assign_source_ids(model: &mut DocModel, document_id: &str) {
     fn paragraph(node: &mut ParagraphNode, id: String) {
-        node.block_id = Some(id.clone());
         for (index, child) in node.children.iter_mut().enumerate() {
             if let ParagraphChildNode::Image(image) = child {
-                let image_id = format!("{id}/child/{index}");
-                image.block_id = Some(image_id.clone());
+                let image_id = indexed_path(&id, [("/child/", index)]);
                 if let Some(content) = &mut image.content_nodes {
                     nodes(content, &format!("{image_id}/content"));
                 }
+                image.block_id = Some(image_id);
             }
         }
+        node.block_id = Some(id);
     }
     fn table(node: &mut TableNode, id: String) {
-        node.block_id = Some(id.clone());
         for (ri, row) in node.rows.iter_mut().enumerate() {
             for (ci, cell) in row.cells.iter_mut().enumerate() {
                 for (ni, child) in cell.nodes.iter_mut().enumerate() {
-                    let id = format!("{id}/row/{ri}/cell/{ci}/{ni}");
+                    let id = indexed_path(&id, [("/row/", ri), ("/cell/", ci), ("/", ni)]);
                     match child {
                         TableCellContentNode::Paragraph(p) => paragraph(p, id),
                         TableCellContentNode::Table(t) => table(t, id),
@@ -249,10 +286,11 @@ pub fn assign_source_ids(model: &mut DocModel, document_id: &str) {
                 }
             }
         }
+        node.block_id = Some(id);
     }
     fn nodes(content: &mut [DocNode], root: &str) {
         for (index, node) in content.iter_mut().enumerate() {
-            let id = format!("{root}/{index}");
+            let id = indexed_path(root, [("/", index)]);
             match node {
                 DocNode::Paragraph(p) => paragraph(p, id),
                 DocNode::Table(t) => table(t, id),
@@ -298,6 +336,36 @@ pub fn assign_source_ids(model: &mut DocModel, document_id: &str) {
             );
         }
     }
+}
+
+fn joined_block_content(blocks: &[DocumentBlock], separator: &str) -> String {
+    let capacity = blocks.iter().map(|block| block.content.len()).sum::<usize>()
+        + separator.len() * blocks.len().saturating_sub(1);
+    let mut content = String::with_capacity(capacity);
+    for (index, block) in blocks.iter().enumerate() {
+        if index > 0 {
+            content.push_str(separator);
+        }
+        content.push_str(&block.content);
+    }
+    content
+}
+
+fn paragraph_field_instructions(xml: &str) -> Vec<String> {
+    if crate::xml::find_ignore_ascii_case(xml, 0, "<w:instrText").is_none() {
+        return Vec::new();
+    }
+    crate::xml::extract_balanced_tag_ranges(xml, "w:instrText")
+        .into_iter()
+        .map(|range| {
+            xml[range.start..range.end]
+                .split_once('>')
+                .map(|(_, value)| {
+                    crate::xml::decode_xml_entities(value.split("</").next().unwrap_or(""))
+                })
+                .unwrap_or_default()
+        })
+        .collect()
 }
 
 struct Extractor {
@@ -350,7 +418,7 @@ impl Extractor {
                 }
                 Some(DocumentWord {
                     object: "word".into(),
-                    id: format!("{block_id}/word/{start}-{offset}"),
+                    id: indexed_path(block_id, [("/word/", start), ("-", offset)]),
                     block_id: block_id.into(),
                     content: word.into(),
                     source_refs: vec![SourceRef {
@@ -370,11 +438,7 @@ impl Extractor {
     fn story_block(&self, nodes: &[DocNode], kind: BlockType) -> DocumentBlock {
         let id = format!("docx:{}/{}/story", self.document_id, self.part_name);
         let children = self.nodes(nodes, Some(&id));
-        let content = children
-            .iter()
-            .map(|b| b.content.as_str())
-            .collect::<Vec<_>>()
-            .join("\n");
+        let content = joined_block_content(&children, "\n");
         let refs = children
             .iter()
             .flat_map(|b| b.source_refs.clone())
@@ -389,7 +453,7 @@ impl Extractor {
             .iter()
             .enumerate()
             .map(|(index, node)| {
-                let fallback = format!("{}/{}", parent.unwrap_or("document"), index);
+                let fallback = indexed_path(parent.unwrap_or("document"), [("/", index)]);
                 match node {
                     DocNode::Paragraph(p) => self.paragraph(p, &fallback, parent),
                     DocNode::Table(t) => self.table(t, &fallback, parent),
@@ -405,21 +469,7 @@ impl Extractor {
         let field_instructions = p
             .source_xml
             .as_deref()
-            .map(|xml| {
-                crate::xml::extract_balanced_tag_blocks(xml, "w:instrText")
-                    .iter()
-                    .map(|field| {
-                        field
-                            .split_once('>')
-                            .map(|(_, value)| {
-                                crate::xml::decode_xml_entities(
-                                    value.split("</").next().unwrap_or(""),
-                                )
-                            })
-                            .unwrap_or_default()
-                    })
-                    .collect::<Vec<_>>()
-            })
+            .map(paragraph_field_instructions)
             .unwrap_or_default();
         let joined_instructions = field_instructions.join("").to_uppercase();
         let instruction_kind = joined_instructions.split_whitespace().next().unwrap_or("");
@@ -458,7 +508,7 @@ impl Extractor {
                     });
                 }
                 ParagraphChildNode::FormField(field) => {
-                    let child_id = format!("{id}/child/{index}");
+                    let child_id = indexed_path(&id, [("/child/", index)]);
                     let value = field.value.clone().unwrap_or_else(|| {
                         field
                             .checked
@@ -484,7 +534,7 @@ impl Extractor {
                     ));
                 }
                 ParagraphChildNode::Image(image) => {
-                    let child_id = format!("{id}/child/{index}");
+                    let child_id = indexed_path(&id, [("/child/", index)]);
                     let kind = match image.semantic_kind.as_deref() {
                         Some("formula") => BlockType::Formula,
                         Some("watermark") => BlockType::Watermark,
@@ -552,40 +602,50 @@ impl Extractor {
     fn table(&self, table: &TableNode, fallback: &str, parent: Option<&str>) -> DocumentBlock {
         let id = table.block_id.as_deref().unwrap_or(fallback);
         let mut children = Vec::new();
-        let mut row_text = Vec::new();
+        let mut row_text = String::new();
         let mut column_count = 0;
         for (ri, row) in table.rows.iter().enumerate() {
-            let row_id = format!("{id}/row/{ri}");
+            let row_id = indexed_path(id, [("/row/", ri)]);
             let is_header = row
                 .style
                 .as_ref()
                 .and_then(|s| s.is_header)
                 .unwrap_or(false);
-            let mut cells = Vec::new();
-            let mut cell_text = Vec::new();
+            let mut cells = Vec::with_capacity(row.cells.len());
             let mut column_index = row.style.as_ref().and_then(|s| s.grid_before).unwrap_or(0);
             for (ci, cell) in row.cells.iter().enumerate() {
-                let cell_id = format!("{row_id}/cell/{ci}");
+                let cell_id = indexed_path(&row_id, [("/cell/", ci)]);
                 let content = cell
                     .nodes
                     .iter()
                     .enumerate()
                     .map(|(ni, node)| match node {
                         TableCellContentNode::Paragraph(p) => {
-                            self.paragraph(p, &format!("{cell_id}/{ni}"), Some(&cell_id))
+                            self.paragraph(p, &indexed_path(&cell_id, [("/", ni)]), Some(&cell_id))
                         }
                         TableCellContentNode::Table(t) => {
-                            self.table(t, &format!("{cell_id}/{ni}"), Some(&cell_id))
+                            self.table(t, &indexed_path(&cell_id, [("/", ni)]), Some(&cell_id))
                         }
                     })
                     .collect::<Vec<_>>();
-                let text = content
-                    .iter()
-                    .map(|b| b.content.as_str())
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                cell_text.push(text.clone());
-                cells.push(self.block(cell_id, BlockType::TableCell, text, json!({"type":"table_cell_details", "rowIndex":ri, "columnIndex":column_index, "cellIndex":ci, "columnSpan":cell.style.as_ref().and_then(|s|s.grid_span).unwrap_or(1), "rowSpan":cell.style.as_ref().and_then(|s|s.row_span).unwrap_or(1), "isHeader":is_header, "style":cell.style}), content, Some(if is_header { &row_id } else { id })));
+                let text = joined_block_content(&content, "\n");
+                cells.push(self.block(
+                    cell_id,
+                    BlockType::TableCell,
+                    text,
+                    TableCellDetails {
+                        r#type: "table_cell_details".into(),
+                        row_index: ri,
+                        column_index,
+                        cell_index: ci,
+                        column_span: cell.style.as_ref().and_then(|s| s.grid_span).unwrap_or(1),
+                        row_span: cell.style.as_ref().and_then(|s| s.row_span).unwrap_or(1),
+                        is_header,
+                        style: cell.style.clone(),
+                    },
+                    content,
+                    Some(if is_header { &row_id } else { id }),
+                ));
                 column_index += cell
                     .style
                     .as_ref()
@@ -594,8 +654,11 @@ impl Extractor {
                     .max(1);
             }
             column_count = column_count.max(column_index);
-            let text = cell_text.join("\t");
-            row_text.push(text.clone());
+            let text = joined_block_content(&cells, "\t");
+            if ri > 0 {
+                row_text.push('\n');
+            }
+            row_text.push_str(&text);
             if is_header {
                 children.push(self.block(
                     row_id,
@@ -612,7 +675,7 @@ impl Extractor {
         self.block(
             id.to_string(),
             BlockType::Table,
-            row_text.join("\n"),
+            row_text,
             json!({"type":"table_details", "rowCount":table.rows.len(), "columnCount":column_count}),
             children,
             parent,
@@ -620,38 +683,51 @@ impl Extractor {
     }
 }
 
-fn without_empty_blocks(blocks: Vec<DocumentBlock>, parent: Option<&str>) -> Vec<DocumentBlock> {
-    blocks
-        .into_iter()
-        .flat_map(|mut block| {
-            block.children = without_empty_blocks(block.children, Some(&block.id));
+fn block_has_visible_text(block: &DocumentBlock) -> bool {
+    block.content.chars().any(|c| {
+        !c.is_whitespace() && !matches!(c, '\u{200b}' | '\u{feff}' | '\u{00ad}')
+    })
+}
+
+fn without_empty_blocks(mut blocks: Vec<DocumentBlock>, parent: Option<&str>) -> Vec<DocumentBlock> {
+    let mut needs_flattening = false;
+    blocks.retain_mut(|block| {
+        block.children = without_empty_blocks(std::mem::take(&mut block.children), Some(&block.id));
+        if block.parent_block_id.as_deref() != parent {
             block.parent_block_id = parent.map(str::to_string);
-            let has_text = block
-                .content
-                .chars()
-                .any(|c| !c.is_whitespace() && !matches!(c, '\u{200b}' | '\u{feff}' | '\u{00ad}'));
-            let has_object = matches!(
-                block.r#type,
-                BlockType::Figure
-                    | BlockType::Formula
-                    | BlockType::Barcode
-                    | BlockType::Watermark
-                    | BlockType::KeyValue
-            );
-            if !has_text && !has_object {
-                if matches!(block.r#type, BlockType::Text) {
-                    for child in &mut block.children {
-                        child.parent_block_id = parent.map(str::to_string);
-                    }
-                    return block.children;
-                }
-                if block.children.is_empty() {
-                    return Vec::new();
+        }
+        if block_has_visible_text(block) || matches!(block.r#type,
+            BlockType::Figure | BlockType::Formula | BlockType::Barcode
+                | BlockType::Watermark | BlockType::KeyValue)
+        {
+            return true;
+        }
+        if block.children.is_empty() {
+            return false;
+        }
+        needs_flattening |= matches!(block.r#type, BlockType::Text);
+        true
+    });
+    if !needs_flattening {
+        if blocks.capacity() > blocks.len().saturating_mul(4).max(64) {
+            blocks.shrink_to_fit();
+        }
+        return blocks;
+    }
+    let mut retained = Vec::with_capacity(blocks.len());
+    for mut block in blocks {
+        if matches!(block.r#type, BlockType::Text) && !block_has_visible_text(&block) {
+            for child in &mut block.children {
+                if child.parent_block_id.as_deref() != parent {
+                    child.parent_block_id = parent.map(str::to_string);
                 }
             }
-            vec![block]
-        })
-        .collect()
+            retained.extend(block.children);
+        } else {
+            retained.push(block);
+        }
+    }
+    retained
 }
 
 pub fn extract_document_blocks(model: &DocModel) -> StructuredDocument {
@@ -733,5 +809,112 @@ pub fn extract_document_blocks_with_options(
         blocks: without_empty_blocks(blocks, None),
         warnings: model.metadata.warnings.clone(),
         geometry_status: "requires_layout".into(),
+    }
+}
+
+#[cfg(test)]
+mod typed_table_tests {
+    #[test]
+    fn table_details_round_trip_through_imported_json() {
+        let mut package = crate::package::OoxmlPackage {
+            parts: Default::default(),
+            binary_assets: Default::default(),
+            warnings: vec![],
+        };
+        let name = "word/document.xml".to_owned();
+        package.parts.insert(name.clone(), crate::package::OoxmlPart { name, content: "<w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:body><w:tbl><w:tblGrid><w:gridCol w:w=\"1200\"/><w:gridCol w:w=\"1200\"/></w:tblGrid><w:tr><w:trPr><w:tblHeader/></w:trPr><w:tc><w:tcPr><w:gridSpan w:val=\"2\"/><w:shd w:fill=\"FFCC00\"/></w:tcPr><w:p><w:r><w:rPr><w:b/></w:rPr><w:t>cell content</w:t></w:r></w:p></w:tc></w:tr></w:tbl></w:body></w:document>".into() });
+        let model = crate::build_doc_model(&package);
+        for include_words in [false, true] {
+            let blocks = super::extract_document_blocks_with_options(
+                &model,
+                super::ExtractDocumentBlocksOptions { include_words },
+            );
+            let value = serde_json::to_value(&blocks).unwrap();
+            let imported: super::StructuredDocument =
+                serde_json::from_value(value.clone()).unwrap();
+            assert_eq!(blocks, imported);
+            assert_eq!(serde_json::to_value(imported).unwrap(), value);
+            let details = &value["blocks"][0]["children"][0]["children"][0]["details"];
+            assert_eq!(details["columnSpan"], 2);
+            assert_eq!(details["isHeader"], true);
+            assert_eq!(details["style"]["backgroundColor"], "#FFCC00");
+        }
+    }
+}
+
+#[cfg(test)]
+mod field_projection_tests {
+    use super::paragraph_field_instructions;
+
+    #[test]
+    fn borrowed_instruction_projection_matches_balanced_block_behavior() {
+        let cases = [
+            "", "<w:p><w:r><w:t>text</w:t></w:r></w:p>",
+            "<w:instrText>PAGE</w:instrText>",
+            "<W:INSTRText>NUMPAGES</W:INSTRText>",
+            "<w:instrText>HYPER&amp;LINK</w:instrText>",
+            "<w:instrText><w:instrText>PAGE</w:instrText></w:instrText>",
+            "<w:instrText>unfinished", "<w:instrText/>",
+            "<w:instrTextExtra>text</w:instrTextExtra>",
+            "<w:instrText xml:space=\"preserve\"> PAGE </w:instrText>",
+            "<w:instrText>PAGE</w:instrText><w:instrText>NUMPAGES</w:instrText>",
+        ];
+        for xml in cases {
+            let expected: Vec<_> = crate::xml::extract_balanced_tag_blocks(xml, "w:instrText")
+                .iter()
+                .map(|field| {
+                    field.split_once('>')
+                        .map(|(_, value)| crate::xml::decode_xml_entities(value.split("</").next().unwrap_or("")))
+                        .unwrap_or_default()
+                })
+                .collect();
+            assert_eq!(paragraph_field_instructions(xml), expected);
+        }
+    }
+}
+
+#[cfg(test)]
+mod indexed_path_tests {
+    use super::indexed_path;
+
+    #[test]
+    fn indexed_paths_preserve_integer_and_unicode_spelling() {
+        for prefix in ["", "prefix", "文😀"] {
+            for index in [0, 1, 9, 10, 99, 100, usize::MAX] {
+                assert_eq!(indexed_path(prefix, [("/", index)]), format!("{prefix}/{index}"));
+                assert_eq!(indexed_path(prefix, [("/row/", index), ("/cell/", 0), ("/", 10)]), format!("{prefix}/row/{index}/cell/0/10"));
+                assert_eq!(indexed_path(prefix, [("/word/", index), ("-", index)]), format!("{prefix}/word/{index}-{index}"));
+            }
+            assert_eq!(indexed_path(prefix, []), prefix);
+        }
+    }
+}
+
+#[cfg(test)]
+mod inplace_block_cleanup_tests {
+    #[test]
+    fn invisible_containers_flatten_objects_and_repair_only_parent_links() {
+        use super::*;
+        let extractor = Extractor {
+            document_id: "document".into(), part_name: "part".into(),
+            story: "body".into(), include_words: false,
+        };
+        let figure = extractor.block("figure".into(), BlockType::Figure, String::new(),
+            json!({}), Vec::new(), Some("container"));
+        let source_refs = figure.source_refs.clone();
+        let container = extractor.block("container".into(), BlockType::Text,
+            " \u{200b}\u{feff}\u{00ad}".into(), json!({}), vec![figure], Some("stale"));
+        let empty = extractor.block("empty".into(), BlockType::Table, String::new(),
+            json!({}), Vec::new(), None);
+        let text = extractor.block("text".into(), BlockType::Text, "content".into(),
+            json!({}), Vec::new(), Some("stale"));
+        let result = without_empty_blocks(vec![container, empty, text], Some("parent"));
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].id, "figure");
+        assert_eq!(result[0].source_refs, source_refs);
+        assert_eq!(result[1].content, "content");
+        assert!(result.iter().all(|block| block.parent_block_id.as_deref() == Some("parent")));
+        let root = without_empty_blocks(result, None);
+        assert!(root.iter().all(|block| block.parent_block_id.is_none()));
     }
 }

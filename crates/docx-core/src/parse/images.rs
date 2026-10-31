@@ -5,10 +5,10 @@ use crate::model::{
 use crate::parse::colors::normalize_hex_color;
 use crate::parse::context::ParseContext;
 use crate::parse::re;
-use crate::parse::relationships::{bytes_to_base64, content_type_for_part};
+use crate::parse::relationships::content_type_for_part;
 use crate::parse::shapes::{
-    parse_text_box_layout, parse_text_box_paragraphs, render_standalone_word_shape_svg,
-    render_text_box_svg,
+    parse_text_box_layout, parse_text_box_paragraphs, render_bounded_text_box_svg,
+    render_standalone_word_shape_svg, render_text_box_svg,
 };
 use crate::parse::util::{
     active_xml as prefer_alternate_content_choice, clamp, clamp_i64, emu_to_pixels,
@@ -256,7 +256,11 @@ pub fn parse_drawing_image_css_filter(_run_xml: &str) -> Option<String> {
     None
 }
 
-fn drawing_duotone_svg(run_xml: &str, source: &str, context: &ParseContext<'_>) -> Option<String> {
+fn drawing_duotone_svg(
+    run_xml: &str,
+    source: &str,
+    context: &ParseContext<'_, impl std::borrow::Borrow<super::context::ParsedStyleSheet>>,
+) -> Option<String> {
     let effect = extract_balanced_tag_blocks(run_xml, "a:duotone")
         .into_iter()
         .next()?;
@@ -269,7 +273,7 @@ fn drawing_duotone_svg(run_xml: &str, source: &str, context: &ParseContext<'_>) 
     for (index, range) in colors.iter().enumerate() {
         let resolved = super::colors::resolve_drawing_color_from_xml(
             Some(&effect[range.start..range.end]),
-            &context.style_sheet.theme_colors,
+            &context.styles().theme_colors,
         )?;
         for channel in 0..3 {
             endpoints[index][channel] =
@@ -1186,8 +1190,11 @@ fn vml_path_bounds(
     bounds.0.is_finite().then_some(bounds)
 }
 
-fn vml_group_image(run_xml: &str, context: &ParseContext<'_>) -> Option<ImageRunNode> {
-    if !run_xml.contains("<v:group") || run_xml.contains("<w:txbxContent") {
+fn vml_group_image(
+    run_xml: &str,
+    context: &ParseContext<'_, impl std::borrow::Borrow<super::context::ParsedStyleSheet>>,
+) -> Option<ImageRunNode> {
+    if !run_xml.contains("<v:group") || !run_xml.contains("<v:imagedata") {
         return None;
     }
     let groups = extract_balanced_tag_blocks(run_xml, "v:group");
@@ -1195,7 +1202,8 @@ fn vml_group_image(run_xml: &str, context: &ParseContext<'_>) -> Option<ImageRun
         return None;
     }
     let group = &groups[0];
-    if group.matches("<v:imagedata").count() < 2
+    let has_text_box = group.contains("<w:txbxContent");
+    if group.matches("<v:imagedata").count() < if has_text_box { 1 } else { 2 }
         || run_xml.matches("<v:imagedata").count() != group.matches("<v:imagedata").count()
     {
         return None;
@@ -1251,7 +1259,7 @@ fn vml_group_image(run_xml: &str, context: &ParseContext<'_>) -> Option<ImageRun
     let mut canvas = (origin_x, origin_y, origin_x + extent_x, origin_y + extent_y);
     for child in children {
         let xml = &group[child.start..child.end];
-        if child.tag_name == "w10:wrap" {
+        if matches!(child.tag_name.as_str(), "w10:wrap" | "w10:anchorlock") {
             continue;
         }
         if !matches!(child.tag_name.as_str(), "v:shape" | "v:rect" | "v:line") {
@@ -1260,11 +1268,12 @@ fn vml_group_image(run_xml: &str, context: &ParseContext<'_>) -> Option<ImageRun
         let tag = &xml[..crate::xml::tag_token_end(xml, 0)?];
         let declarations =
             parse_css_style_declarations(&get_attribute(tag, "style").unwrap_or_default());
-        if declarations.keys().any(|key| {
-            !matches!(
+        if declarations.iter().any(|(key, value)| {
+            !(matches!(
                 key.as_str(),
                 "position" | "left" | "top" | "width" | "height" | "z-index"
-            )
+            ) || (key == "visibility" && value == "visible")
+                || (key == "mso-wrap-style" && value == "none"))
         }) {
             return None;
         }
@@ -1357,6 +1366,21 @@ fn vml_group_image(run_xml: &str, context: &ParseContext<'_>) -> Option<ImageRun
                         _ => return None,
                     }
                 }
+                "v:textbox" => {
+                    if get_attribute(tag, "type").as_deref() != Some("#_x0000_t202")
+                        || get_attribute(tag, "path").is_some()
+                        || get_attribute(inner, "style").is_some_and(|style| {
+                            parse_css_style_declarations(&style)
+                                .iter()
+                                .any(|(key, value)| {
+                                    key != "mso-fit-shape-to-text"
+                                        || !matches!(value.as_str(), "t" | "true")
+                                })
+                        })
+                    {
+                        return None;
+                    }
+                }
                 _ => return None,
             }
         }
@@ -1371,9 +1395,11 @@ fn vml_group_image(run_xml: &str, context: &ParseContext<'_>) -> Option<ImageRun
                 None => "#ffffff".to_string(),
             }
         };
-        let stroke = if get_attribute(tag, "stroked")
-            .as_deref()
-            .is_some_and(|v| matches!(v, "false" | "f" | "0"))
+        let is_bitmap = xml.contains("<v:imagedata") && !xml.contains("<w:txbxContent");
+        let stroke = if (is_bitmap && get_attribute(tag, "stroked").is_none())
+            || get_attribute(tag, "stroked")
+                .as_deref()
+                .is_some_and(|v| matches!(v, "false" | "f" | "0"))
         {
             "none".to_string()
         } else {
@@ -1427,7 +1453,51 @@ fn vml_group_image(run_xml: &str, context: &ParseContext<'_>) -> Option<ImageRun
             if child.tag_name == "v:rect" {
                 bounds = (x, y, x + w, y + h);
                 format!(r#"<rect x="{x}" y="{y}" width="{w}" height="{h}" {paint}/>"#)
-            } else if xml.contains("<v:imagedata") {
+            } else if xml.contains("<w:txbxContent") {
+                if get_attribute(tag, "type").as_deref() != Some("#_x0000_t202")
+                    || xml.matches("<v:textbox").count() != 1
+                {
+                    return None;
+                }
+                let paragraphs = parse_text_box_paragraphs(xml, context);
+                let physical_width = w * width / extent_x;
+                let physical_height = h * height / extent_y;
+                if !physical_width.is_finite() || !physical_height.is_finite() {
+                    return None;
+                }
+                let mut layout = parse_text_box_layout(xml);
+                if let Some(layout) = layout.as_mut() {
+                    if let Some(inset) = regex_capture_tag(xml, r"(?i)<v:textbox\b[^>]*>")
+                        .and_then(|tag| get_attribute(&tag, "inset"))
+                    {
+                        for (padding, value) in [
+                            &mut layout.padding_left_px,
+                            &mut layout.padding_top_px,
+                            &mut layout.padding_right_px,
+                            &mut layout.padding_bottom_px,
+                        ]
+                        .into_iter()
+                        .zip(inset.split(','))
+                        {
+                            if vml_finite(value) == Some(0.0) {
+                                *padding = Some(0.0);
+                            }
+                        }
+                    }
+                }
+                let text = render_bounded_text_box_svg(
+                    &paragraphs,
+                    physical_width,
+                    physical_height,
+                    layout.as_ref(),
+                );
+                let text_width = physical_width.round().clamp(1.0, 2400.0);
+                let text_height = physical_height.round().clamp(1.0, 2400.0);
+                bounds = (x, y, x + w, y + h);
+                format!(
+                    r#"<rect x="{x}" y="{y}" width="{w}" height="{h}" {paint}/><svg x="{x}" y="{y}" width="{w}" height="{h}" viewBox="0 0 {text_width} {text_height}" preserveAspectRatio="none" overflow="hidden">{text}</svg>"#
+                )
+            } else if is_bitmap {
                 if xml.matches("<v:imagedata").count() != 1
                     || get_attribute(tag, "path").is_some()
                     || get_attribute(tag, "type").as_deref() != Some("#_x0000_t75")
@@ -1533,7 +1603,7 @@ fn vml_group_image(run_xml: &str, context: &ParseContext<'_>) -> Option<ImageRun
         semantic_kind: None,
         math_ml: None,
         src: Some(svg_data_uri(&svg)),
-        alt: None,
+        alt: has_text_box.then(|| resolve_doc_pr_alt(run_xml).unwrap_or_else(|| "Text box".into())),
         width_px: Some(width_px),
         height_px: Some(height_px),
         part_name: None,
@@ -1544,12 +1614,15 @@ fn vml_group_image(run_xml: &str, context: &ParseContext<'_>) -> Option<ImageRun
         css_filter: None,
         css_opacity: None,
         floating,
-        synthetic_text_box: None,
+        synthetic_text_box: has_text_box.then_some(true),
         text_box_text: None,
     })
 }
 
-pub fn parse_run_image_block(run_xml: &str, context: &ParseContext<'_>) -> Option<ImageRunNode> {
+pub fn parse_run_image_block(
+    run_xml: &str,
+    context: &ParseContext<'_, impl std::borrow::Borrow<super::context::ParsedStyleSheet>>,
+) -> Option<ImageRunNode> {
     let normalized_run_xml = prefer_alternate_content_choice(run_xml);
     let mut active_run_xml = normalized_run_xml.as_ref();
     if let Some(image) = vml_group_image(active_run_xml, context) {
@@ -1810,10 +1883,7 @@ pub fn parse_run_image_block(run_xml: &str, context: &ParseContext<'_>) -> Optio
         }
 
         if src.is_none() {
-            src = Some(format!(
-                "data:{mime_type};base64,{}",
-                bytes_to_base64(binary)
-            ));
+            src = Some(super::util::base64_data_uri(&mime_type, binary));
             resolved_content_type = Some(mime_type);
         }
     }
@@ -1847,7 +1917,10 @@ pub fn parse_run_image_block(run_xml: &str, context: &ParseContext<'_>) -> Optio
     })
 }
 
-pub fn parse_run_images(run_xml: &str, context: &ParseContext<'_>) -> Vec<ImageRunNode> {
+pub fn parse_run_images(
+    run_xml: &str,
+    context: &ParseContext<'_, impl std::borrow::Borrow<super::context::ParsedStyleSheet>>,
+) -> Vec<ImageRunNode> {
     parse_run_image_tokens(run_xml, context)
         .into_iter()
         .map(|(_, image)| image)
@@ -1856,7 +1929,7 @@ pub fn parse_run_images(run_xml: &str, context: &ParseContext<'_>) -> Vec<ImageR
 
 pub fn parse_run_image_tokens(
     run_xml: &str,
-    context: &ParseContext<'_>,
+    context: &ParseContext<'_, impl std::borrow::Borrow<super::context::ParsedStyleSheet>>,
 ) -> Vec<(usize, ImageRunNode)> {
     if !memchr::memchr_iter(b'<', run_xml.as_bytes()).any(|position| {
         let tag = &run_xml[position + 1..];

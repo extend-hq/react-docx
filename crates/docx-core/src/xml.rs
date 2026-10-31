@@ -126,6 +126,21 @@ pub(crate) fn direct_child_tag<'a>(xml: &'a str, name: &str) -> Option<&'a str> 
     });
     found
 }
+pub(crate) fn without_direct_child_tags<'a>(xml: &'a str, name: &str) -> std::borrow::Cow<'a, str> {
+    if direct_child_tag(xml, name).is_none() {
+        return std::borrow::Cow::Borrowed(xml);
+    }
+    let mut result = std::borrow::Cow::Borrowed(xml);
+    for range in extract_direct_child_tag_ranges(xml)
+        .into_iter()
+        .rev()
+        .filter(|range| range.tag_name.eq_ignore_ascii_case(name))
+    {
+        result.to_mut().replace_range(range.start..range.end, "");
+    }
+    result
+}
+
 pub type ParagraphAlignment = &'static str;
 
 fn is_word_char(byte: u8) -> bool {
@@ -646,6 +661,22 @@ pub fn parse_integer_attribute(tag_xml: &str, attribute: &str) -> Option<i64> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn direct_child_removal_preserves_nested_changes_and_borrows_unchanged_markup() {
+        let changed = "<w:pPr><w:spacing/><w:pPrChange><w:pPrChange/></w:pPrChange><w:pPrChange/><w:other><w:pPrChange/></w:other></w:pPr>";
+        let expected = "<w:pPr><w:spacing/><w:other><w:pPrChange/></w:other></w:pPr>";
+        let unchanged = "<w:pPr><!-- <w:pPrChange/> --><w:other><w:pPrChange/></w:other></w:pPr>";
+        for indexed in [false, true] {
+            let _scope = indexed.then(|| crate::xml_index::scope(
+                [("changed", changed), ("unchanged", unchanged)].into_iter(),
+                Default::default(),
+            ));
+            assert_eq!(super::without_direct_child_tags(changed, "w:PPRCHANGE"), expected);
+            assert!(matches!(super::without_direct_child_tags(unchanged, "w:pPrChange"), std::borrow::Cow::Borrowed(_)));
+            assert_eq!(super::direct_child_tag(changed, "w:spacing"), Some("<w:spacing/>"));
+        }
+    }
+
     use super::*;
 
     #[test]

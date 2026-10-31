@@ -6,6 +6,13 @@ use std::{
 
 use crate::xml::{TagRange, TaggedRange};
 
+#[inline]
+fn token_requires_edit_checks(token: &str) -> bool {
+    let bytes = token.as_bytes();
+    memchr::memchr_iter(b'x', bytes).any(|at| bytes[at..].starts_with(b"xmlns"))
+        || memchr::memchr_iter(b'&', bytes).any(|at| bytes.get(at + 1) == Some(&b'#'))
+}
+
 struct Element {
     start: u32,
     open_end: u32,
@@ -23,7 +30,8 @@ impl Element {
 }
 
 struct NamedElements {
-    positions: Vec<u32>,
+    start: u32,
+    end: u32,
     name_len: u32,
 }
 
@@ -41,19 +49,53 @@ struct NameCacheEntry {
     id: Option<usize>,
 }
 
-pub(crate) struct Index {
+pub(crate) struct IndexData {
     address: usize,
     len: usize,
     elements: Vec<Element>,
     names: HashMap<String, usize>,
     named_elements: Vec<NamedElements>,
-    tag_cache: RefCell<TagCache>,
-    name_cache: RefCell<Vec<NameCacheEntry>>,
+    positions: Vec<u32>,
     canonical: bool,
     serialization_equivalent: bool,
+    hoisted_validation: bool,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+type IndexStorage = std::sync::Arc<IndexData>;
+#[cfg(target_arch = "wasm32")]
+type IndexStorage = IndexData;
+
+pub(crate) struct Index {
+    address: usize,
+    len: usize,
+    data: IndexStorage,
+    tag_cache: RefCell<TagCache>,
+    name_cache: RefCell<Vec<NameCacheEntry>>,
+}
+
+impl std::ops::Deref for Index {
+    type Target = IndexData;
+    fn deref(&self) -> &Self::Target {
+        &self.data
+    }
 }
 
 impl Index {
+    fn from_data(data: IndexData) -> Self {
+        let address = data.address;
+        let len = data.len;
+        #[cfg(not(target_arch = "wasm32"))]
+        let data = std::sync::Arc::new(data);
+        Self {
+            address,
+            len,
+            data,
+            tag_cache: RefCell::new(TagCache::default()),
+            name_cache: RefCell::new(Vec::new()),
+        }
+    }
+
     pub(crate) fn build(xml: &str) -> Option<Self> {
         Self::build_impl::<false, false, false, false>(xml).map(|(index, _)| index)
     }
@@ -83,6 +125,10 @@ impl Index {
         self.serialization_equivalent
     }
 
+    pub(crate) fn all_elements_qualified(&self) -> bool {
+        self.names.keys().all(|name| name.contains(':'))
+    }
+
     pub(crate) fn canonical_hoisted(xml: &str) -> Option<(String, Self)> {
         let (index, xml) = Self::build_impl::<true, true, true, true>(xml)?;
         Some((xml?, index))
@@ -99,20 +145,21 @@ impl Index {
         if xml.len() > u32::MAX as usize {
             return None;
         }
-        let mut index = Self {
+        let name_capacity = (xml.len() / 256).clamp(4, 128);
+        let mut index = IndexData {
             address: xml.as_ptr() as usize,
             len: xml.len(),
             elements: Vec::new(),
-            names: HashMap::new(),
-            named_elements: Vec::new(),
-            tag_cache: RefCell::new(TagCache::default()),
-            name_cache: RefCell::new(Vec::new()),
+            names: HashMap::with_capacity(name_capacity),
+            named_elements: Vec::with_capacity(name_capacity),
+            positions: Vec::new(),
             canonical: CANONICAL,
             serialization_equivalent: false,
+            hoisted_validation: HOIST,
         };
-        let mut interned = HashMap::<&str, usize>::new();
+        let mut interned = HashMap::<&str, usize>::with_capacity(name_capacity);
         let mut name_cache = [("", 0usize); 128];
-        let mut open_cache = [""; 128];
+        let mut open_cache = [("", 0usize); 128];
         let mut stack = Vec::<usize>::new();
         let mut canonical = Canonical {
             serialized: true,
@@ -121,7 +168,7 @@ impl Index {
         let mut roots = 0;
         let mut root_name_end = 0;
         let mut cursor = 0;
-        while let Some(offset) = memchr::memchr(b'<', &xml.as_bytes()[cursor..]) {
+        while let Some(offset) = next_markup_start(&xml.as_bytes()[cursor..]) {
             let start = cursor + offset;
             if CANONICAL
                 && cursor != start
@@ -130,7 +177,7 @@ impl Index {
                 return None;
             }
             let end = if CANONICAL {
-                start + memchr::memchr(b'>', &xml.as_bytes()[start..])? + 1
+                start + canonical_token_end(&xml.as_bytes()[start..])? + 1
             } else {
                 crate::xml::tag_token_end(xml, start)?
             };
@@ -179,49 +226,47 @@ impl Index {
                 element.end = end as u32;
                 element.next = next as u32;
             } else {
-                let name_start = start + 1;
-                let mut name_end = name_start;
-                loop {
-                    let byte = *xml.as_bytes().get(name_end)?;
-                    if byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b':') {
-                        name_end += 1;
-                    } else if byte.is_ascii_whitespace() || matches!(byte, b'/' | b'>') {
-                        break;
-                    } else {
-                        return None;
-                    }
-                }
-                if name_end == name_start {
-                    return None;
-                }
-                let name = &xml[name_start..name_end];
-                if SERIALIZED && !canonical_name(name) {
-                    canonical.serialized = false;
-                }
-                if CANONICAL {
-                    if stack.is_empty() {
-                        roots += 1;
-                    }
-                    let root = stack.is_empty();
-                    if root {
-                        root_name_end = name_end;
-                    }
-                    let cacheable = !HOIST
-                        || (canonical
-                            .activations
-                            .last()
-                            .is_none_or(|(depth, _)| *depth == 0)
-                            && !token.contains("xmlns")
-                            && !token.contains("&#"));
+                let root = stack.is_empty();
+                let cache_slot = if CANONICAL {
                     let bytes = token.as_bytes();
-                    let slot = (bytes.len().wrapping_mul(31)
+                    (bytes.len().wrapping_mul(31)
                         ^ ((bytes[1] as usize) << 3)
                         ^ ((bytes[bytes.len() / 2] as usize) << 1)
                         ^ bytes[bytes.len() - 2] as usize)
-                        & (open_cache.len() - 1);
-                    // Non-root declarations cannot change a validated namespace binding.
-                    // Exact tokens can reuse that proof; serialization failure is monotonic.
-                    if root || !cacheable || open_cache[slot] != token {
+                        & (open_cache.len() - 1)
+                } else {
+                    0
+                };
+                let scope_cacheable = CANONICAL && (!HOIST
+                    || canonical.activations.last().is_none_or(|(depth, _)| *depth == 0));
+                let cached = !root && scope_cacheable && open_cache[cache_slot].0 == token;
+                let name_id = if cached {
+                    // Exact validated tokens retain their interned name in the same index.
+                    open_cache[cache_slot].1
+                } else {
+                    let name_start = start + 1;
+                    let mut name_end = name_start;
+                    loop {
+                        let byte = *xml.as_bytes().get(name_end)?;
+                        if byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b':') {
+                            name_end += 1;
+                        } else if byte.is_ascii_whitespace() || matches!(byte, b'/' | b'>') {
+                            break;
+                        } else {
+                            return None;
+                        }
+                    }
+                    if name_end == name_start {
+                        return None;
+                    }
+                    let name = &xml[name_start..name_end];
+                    let cacheable = scope_cacheable
+                        && (!HOIST || !token_requires_edit_checks(token));
+                    if CANONICAL {
+                        if root {
+                            roots += 1;
+                            root_name_end = name_end;
+                        }
                         if !canonical.open::<SERIALIZED, NORMALIZED, HOIST>(
                             name,
                             &xml[name_end..end],
@@ -231,47 +276,52 @@ impl Index {
                         ) {
                             return None;
                         }
-                        if !root && cacheable && token.len() <= 256 {
-                            open_cache[slot] = token;
-                        }
                     }
-                }
+                    let bytes = name.as_bytes();
+                    let slot = (bytes.len().wrapping_mul(31)
+                        ^ ((bytes[0] as usize) << 3)
+                        ^ ((bytes[bytes.len() / 2] as usize) << 1)
+                        ^ bytes[bytes.len() - 1] as usize)
+                        & (name_cache.len() - 1);
+                    let name_id = if name_cache[slot].0 == name {
+                        name_cache[slot].1
+                    } else {
+                        if SERIALIZED && !canonical_name(name) {
+                            return None;
+                        }
+                        let name_id = *interned.entry(name).or_insert_with(|| {
+                            let lower = name.to_ascii_lowercase();
+                            let name_id = if let Some(name_id) = index.names.get(&lower) {
+                                *name_id
+                            } else {
+                                let name_id = index.named_elements.len();
+                                // ASCII case folding preserves the QName byte length.
+                                index.named_elements.push(NamedElements {
+                                    start: 0,
+                                    end: 0,
+                                    name_len: name.len() as u32,
+                                });
+                                index.names.insert(lower, name_id);
+                                name_id
+                            };
+                            if name.bytes().any(|b| b.is_ascii_uppercase()) {
+                                index.names.insert(name.to_owned(), name_id);
+                            }
+                            name_id
+                        });
+                        name_cache[slot] = (name, name_id);
+                        name_id
+                    };
+                    if !root && cacheable && token.len() <= 256 {
+                        open_cache[cache_slot] = (token, name_id);
+                    }
+                    name_id
+                };
                 let id = index.elements.len();
                 if id == 0 {
                     index.elements.reserve((xml.len() / 48).min(65536));
                 }
                 let empty = token.ends_with("/>");
-                let bytes = name.as_bytes();
-                let slot = (bytes.len().wrapping_mul(31)
-                    ^ ((bytes[0] as usize) << 3)
-                    ^ ((bytes[bytes.len() / 2] as usize) << 1)
-                    ^ bytes[bytes.len() - 1] as usize)
-                    & (name_cache.len() - 1);
-                let name_id = if name_cache[slot].0 == name {
-                    name_cache[slot].1
-                } else {
-                    let name_id = *interned.entry(name).or_insert_with(|| {
-                        let lower = name.to_ascii_lowercase();
-                        let name_id = if let Some(name_id) = index.names.get(&lower) {
-                            *name_id
-                        } else {
-                            let name_id = index.named_elements.len();
-                            // ASCII case folding preserves the QName byte length.
-                            index.named_elements.push(NamedElements {
-                                positions: Vec::new(),
-                                name_len: name.len() as u32,
-                            });
-                            index.names.insert(lower, name_id);
-                            name_id
-                        };
-                        if name.bytes().any(|b| b.is_ascii_uppercase()) {
-                            index.names.insert(name.to_owned(), name_id);
-                        }
-                        name_id
-                    });
-                    name_cache[slot] = (name, name_id);
-                    name_id
-                };
                 index.elements.push(Element {
                     start: start as u32,
                     open_end: end as u32,
@@ -281,7 +331,7 @@ impl Index {
                     name_id: name_id as u32,
                 });
                 // Each element consumes XML bytes, so the input size bound also bounds IDs.
-                index.named_elements[name_id].positions.push(id as u32);
+                index.named_elements[name_id].end += 1;
                 if !empty {
                     stack.push(id);
                 } else if HOIST {
@@ -297,6 +347,19 @@ impl Index {
         index.serialization_equivalent = SERIALIZED && canonical.serialized;
         if !stack.is_empty() {
             return None;
+        }
+        let mut offset = 0;
+        for named in &mut index.named_elements {
+            let count = named.end;
+            named.start = offset;
+            named.end = offset;
+            offset += count;
+        }
+        index.positions.resize(index.elements.len(), 0);
+        for (id, element) in index.elements.iter().enumerate() {
+            let named = &mut index.named_elements[element.name_id as usize];
+            index.positions[named.end as usize] = id as u32;
+            named.end += 1;
         }
         if HOIST {
             if !canonical.serialized {
@@ -342,20 +405,54 @@ impl Index {
             if out.len() > u32::MAX as usize {
                 return None;
             }
-            let translate = |offset: u32| {
-                let at = offsets.partition_point(|(end, _)| *end <= offset as usize);
-                (offset as i64 + if at == 0 { 0 } else { offsets[at - 1].1 }) as u32
+            let mut edit = 0;
+            let mut delta = 0i64;
+            let mut translate = |offset: u32| {
+                while edit < offsets.len() && offsets[edit].0 <= offset as usize {
+                    delta = offsets[edit].1;
+                    edit += 1;
+                }
+                (offset as i64 + delta) as u32
             };
-            for element in &mut index.elements {
+            let mut parent = u32::MAX;
+            for id in 0..index.elements.len() {
+                let start = index.elements[id].start;
+                while parent != u32::MAX && index.elements[parent as usize].end <= start {
+                    let element = &mut index.elements[parent as usize];
+                    element.end = translate(element.end);
+                    parent = element.parent;
+                }
+                let element = &mut index.elements[id];
+                let empty = element.open_end == element.end;
                 element.start = translate(element.start);
                 element.open_end = translate(element.open_end);
+                if empty {
+                    element.end = element.open_end;
+                } else {
+                    parent = id as u32;
+                }
+            }
+            while parent != u32::MAX {
+                let element = &mut index.elements[parent as usize];
                 element.end = translate(element.end);
+                parent = element.parent;
             }
             index.address = out.as_ptr() as usize;
             index.len = out.len();
-            return Some((index, Some(out)));
+            return Some((Self::from_data(index), Some(out)));
         }
-        Some((index, None))
+        Some((Self::from_data(index), None))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn shared_copy(&self) -> Self {
+        Self {
+            address: self.address,
+            len: self.len,
+            data: std::sync::Arc::clone(&self.data),
+            tag_cache: RefCell::new(TagCache::default()),
+            name_cache: RefCell::new(Vec::new()),
+        }
     }
 
     fn name_id(&self, name: &str) -> Option<usize> {
@@ -403,20 +500,55 @@ impl Index {
         Some(*id)
     }
 
-    fn named(&self, name: &str) -> Option<&[u32]> {
-        Some(&self.named_elements[self.name_id(name)?].positions)
+    fn positions_for(&self, name_id: usize) -> &[u32] {
+        let named = &self.named_elements[name_id];
+        &self.positions[named.start as usize..named.end as usize]
     }
+
+    fn named(&self, name: &str) -> Option<&[u32]> {
+        Some(self.positions_for(self.name_id(name)?))
+    }
+}
+
+#[inline]
+fn next_markup_start(bytes: &[u8]) -> Option<usize> {
+    if bytes.first() == Some(&b'<') {
+        Some(0)
+    } else {
+        memchr::memchr(b'<', bytes)
+    }
+}
+
+#[inline]
+fn canonical_token_end(bytes: &[u8]) -> Option<usize> {
+    if let Some(prefix) = bytes.first_chunk::<8>() {
+        let value = u64::from_le_bytes(*prefix) ^ u64::from_le_bytes([b'>'; 8]);
+        let matches = value.wrapping_sub(0x0101010101010101) & !value & 0x8080808080808080;
+        if matches != 0 {
+            // Borrow propagation can mark later bytes, but the first match is exact.
+            return Some(matches.trailing_zeros() as usize / 8);
+        }
+        return memchr::memchr(b'>', &bytes[8..]).map(|offset| offset + 8);
+    }
+    memchr::memchr(b'>', bytes)
 }
 
 #[derive(Default)]
 struct Canonical<'a> {
     bindings: HashMap<&'a str, &'a str>,
     attributes: Vec<&'a str>,
+    attribute_names: [(&'a str, bool); 32],
     bound_prefixes: u32,
     serialized: bool,
     active_unknown: HashSet<&'a str>,
     activations: Vec<(usize, &'a str)>,
     edits: Vec<(usize, usize, String)>,
+}
+
+fn is_prefix_list_attribute(key: &str) -> bool {
+    matches!(key, "Requires" | "Ignorable")
+        || key.ends_with(":Requires")
+        || key.ends_with(":Ignorable")
 }
 
 fn canonical_name(name: &str) -> bool {
@@ -550,15 +682,25 @@ impl<'a> Canonical<'a> {
                 return false;
             };
             let key = &trimmed[..key_end];
-            if key.is_empty()
-                || !key
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b':' | b'-' | b'.'))
-                || self.attributes.contains(&key)
-            {
+            if key.is_empty() || self.attributes.contains(&key) {
                 return false;
             }
-            if SERIALIZED && !canonical_name(key) {
+            let bytes = key.as_bytes();
+            let slot = (bytes.len().wrapping_mul(31)
+                ^ ((bytes[0] as usize) << 3)
+                ^ ((bytes[bytes.len() / 2] as usize) << 1)
+                ^ bytes[bytes.len() - 1] as usize) & (self.attribute_names.len() - 1);
+            let canonical = if self.attribute_names[slot].0 == key {
+                self.attribute_names[slot].1
+            } else {
+                if !bytes.iter().all(|&b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b':' | b'-' | b'.')) {
+                    return false;
+                }
+                let canonical = !SERIALIZED || canonical_name(key);
+                self.attribute_names[slot] = (key, canonical);
+                canonical
+            };
+            if SERIALIZED && !canonical {
                 self.serialized = false;
             }
             if HOIST && key.ends_with(":xmlns") {
@@ -609,15 +751,12 @@ impl<'a> Canonical<'a> {
                 self.edits
                     .push((start, start + source.len() + 1, replacement.to_owned()));
             }
-            if HOIST
-                && matches!(key.rsplit(':').next(), Some("Requires" | "Ignorable"))
-                && value.contains("&#")
-            {
+            if HOIST && is_prefix_list_attribute(key) && value.contains("&#") {
                 return false;
             }
             self.attributes.push(key);
             if SERIALIZED
-                && matches!(key.rsplit(':').next(), Some("Requires" | "Ignorable"))
+                && is_prefix_list_attribute(key)
                 && !value.split_whitespace().eq(value.split(' '))
             {
                 self.serialized = false;
@@ -696,9 +835,18 @@ thread_local! {
     static INDEXES: RefCell<Vec<Index>> = const { RefCell::new(Vec::new()) };
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+struct IndexedSource {
+    address: usize,
+    len: usize,
+    data: std::sync::Arc<IndexData>,
+}
+
 // Source borrows and thread affinity keep address-based lookups valid for the scope.
 pub(crate) struct Scope<'a> {
     previous: Vec<Index>,
+    #[cfg(not(target_arch = "wasm32"))]
+    shared: std::sync::Arc<[IndexedSource]>,
     source: PhantomData<std::rc::Rc<&'a str>>,
 }
 
@@ -710,13 +858,67 @@ pub(crate) fn scope<'a>(
         .filter_map(|(name, xml)| {
             let mut index = prepared.remove(name).or_else(|| Index::build(xml))?;
             index.address = xml.as_ptr() as usize;
+            #[cfg(target_arch = "wasm32")]
+            {
+                index.data.address = xml.as_ptr() as usize;
+            }
             Some(index)
         })
         .collect();
     indexes.sort_unstable_by_key(|index| index.address);
+    #[cfg(not(target_arch = "wasm32"))]
+    let shared = indexes
+        .iter()
+        .map(|index| IndexedSource {
+            address: index.address,
+            len: index.len,
+            data: std::sync::Arc::clone(&index.data),
+        })
+        .collect::<Vec<_>>()
+        .into();
     Scope {
         previous: INDEXES.with(|current| current.replace(indexes)),
+        #[cfg(not(target_arch = "wasm32"))]
+        shared,
         source: PhantomData,
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) struct ScopeSnapshot<'a> {
+    shared: std::sync::Arc<[IndexedSource]>,
+    source: PhantomData<&'a str>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Scope<'_> {
+    pub(crate) fn snapshot(&self) -> ScopeSnapshot<'_> {
+        ScopeSnapshot {
+            shared: std::sync::Arc::clone(&self.shared),
+            source: PhantomData,
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl<'a> ScopeSnapshot<'a> {
+    pub(crate) fn enter(self) -> Scope<'a> {
+        let indexes = self
+            .shared
+            .iter()
+            .map(|source| Index {
+                address: source.address,
+                len: source.len,
+                data: std::sync::Arc::clone(&source.data),
+                tag_cache: RefCell::new(TagCache::default()),
+                name_cache: RefCell::new(Vec::new()),
+            })
+            .collect();
+        Scope {
+            previous: INDEXES.with(|current| current.replace(indexes)),
+            shared: self.shared,
+            source: PhantomData,
+        }
     }
 }
 
@@ -772,7 +974,7 @@ pub(crate) fn tag<'a>(xml: &'a str, name: &str) -> Option<Option<&'a str>> {
             }
             id as usize
         } else {
-            let names = &index.named_elements[name_id].positions;
+            let names = index.positions_for(name_id);
             let pos =
                 names.partition_point(|id| (index.elements[*id as usize].start as usize) < start);
             *names.get(pos)? as usize
@@ -781,6 +983,155 @@ pub(crate) fn tag<'a>(xml: &'a str, name: &str) -> Option<Option<&'a str>> {
         ((element.open_end as usize) <= end)
             .then(|| &xml[element.start as usize - start..element.open_end as usize - start])
     })
+}
+
+pub(crate) fn unique_inner_xml<'a>(xml: &'a str, name: &str) -> Option<&'a str> {
+    lookup(xml, |index, start, end| {
+        if !index.canonical || index.names.keys().any(|candidate| {
+            candidate.len() > name.len()
+                && candidate.as_bytes()[..name.len()].eq_ignore_ascii_case(name.as_bytes())
+        }) {
+            return None;
+        }
+        let positions = index.named(name)?;
+        let first = positions.partition_point(|id| (index.elements[*id as usize].start as usize) < start);
+        let id = *positions.get(first)? as usize;
+        let element = &index.elements[id];
+        if element.end <= element.open_end || element.end as usize > end
+            || positions.get(first + 1).is_some_and(|id| (index.elements[*id as usize].start as usize) < end)
+        {
+            return None;
+        }
+        // Canonical closing tokens contain only the matching QName and delimiters.
+        let close_start = (element.end as usize).checked_sub(name.len() + 3)?;
+        xml.get(element.open_end as usize - start..close_start.checked_sub(start)?)
+    }).flatten()
+}
+
+pub(crate) fn opening_tags<'a>(xml: &'a str, name: &str) -> Option<Vec<&'a str>> {
+    lookup(xml, |index, start, end| {
+        if !index.canonical || index.names.keys().any(|candidate| {
+            candidate.len() > name.len()
+                && candidate.as_bytes()[name.len()] == b':'
+                && candidate.as_bytes()[..name.len()].eq_ignore_ascii_case(name.as_bytes())
+        }) {
+            return None;
+        }
+        let Some(name_id) = index.name_id(name) else {
+            return Some(Vec::new());
+        };
+        let positions = index.positions_for(name_id);
+        let first = positions.partition_point(|id| (index.elements[*id as usize].start as usize) < start);
+        let mut tags = Vec::new();
+        for id in &positions[first..] {
+            let element = &index.elements[*id as usize];
+            if element.open_end as usize > end {
+                break;
+            }
+            tags.push(&xml[element.start as usize - start..element.open_end as usize - start]);
+        }
+        Some(tags)
+    }).flatten()
+}
+
+fn valid_xml_characters(xml: &str) -> bool {
+    let bytes = xml.as_bytes();
+    let invalid = bytes.iter().fold(0u8, |invalid, &byte| {
+        invalid | u8::from(byte < 0x20 && !matches!(byte, b'\t' | b'\n' | b'\r'))
+    });
+    invalid == 0 && !memchr::memchr_iter(0xef, bytes).any(|at| {
+        bytes.get(at + 1) == Some(&0xbf) && matches!(bytes.get(at + 2), Some(0xbe | 0xbf))
+    })
+}
+
+pub(crate) fn feature_names(
+    xml: &str,
+    names: &[&str],
+    mut visit: impl FnMut(&str, &str),
+) -> Option<()> {
+    lookup(xml, |index, start, end| {
+        if !index.canonical || start != 0 || end != index.len
+            || !valid_xml_characters(xml)
+        {
+            return None;
+        }
+        let root = index.elements.first()?;
+        let mut depths = Vec::<u8>::with_capacity(index.elements.len());
+        for element in &index.elements {
+            let depth = if element.parent == u32::MAX {
+                0
+            } else {
+                depths.get(element.parent as usize)?.checked_add(1)?
+            };
+            if depth >= 64 {
+                return None;
+            }
+            depths.push(depth);
+        }
+        if !index.hoisted_validation {
+            if memchr::memmem::find_iter(xml.as_bytes(), b"&#").any(|offset| {
+                !["&#9;", "&#10;", "&#13;"].iter().any(|reference| xml[offset..].starts_with(reference))
+            }) || xml.contains("]]>")
+                || index.names.keys().any(|name| !canonical_name(name))
+                || xml[root.open_end as usize..].contains("<?")
+            {
+                return None;
+            }
+            let mut checked = [""; 128];
+            for element in &index.elements {
+                let open_end = element.open_end as usize;
+                let trim = if xml.as_bytes()[open_end - 2] == b'/' { 2 } else { 1 };
+                let content = &xml[element.start as usize + 1..open_end - trim];
+                let bytes = content.as_bytes();
+                let slot = (bytes.len().wrapping_mul(31)
+                    ^ ((bytes[0] as usize) << 3)
+                    ^ ((bytes[bytes.len() / 2] as usize) << 1)
+                    ^ bytes[bytes.len() - 1] as usize) & (checked.len() - 1);
+                if checked[slot] == content {
+                    continue;
+                }
+                let name_len = index.named_elements[element.name_id as usize].name_len as usize;
+                let tag = quick_xml::events::BytesStart::from_content(content, name_len);
+                for attribute in tag.attributes().with_checks(false) {
+                    let attribute = attribute.ok()?;
+                    let name: &str = attribute.key.as_ref();
+                    if !canonical_name(name) || name.ends_with(":xmlns")
+                        || (name.starts_with("xmlns:") && attribute.value.is_empty())
+                    {
+                        return None;
+                    }
+                }
+                if content.len() <= 256 {
+                    checked[slot] = content;
+                }
+            }
+        }
+        let mut root_xml = xml[..root.open_end as usize - 1].to_owned();
+        if !root_xml.ends_with('/') {
+            root_xml.push('/');
+        }
+        root_xml.push('>');
+        let declaration = roxmltree::Document::parse(&root_xml).ok()?;
+        let root_node = declaration.root_element();
+        for name_id in 0..index.named_elements.len() {
+            let positions = index.positions_for(name_id);
+            let Some(first) = positions.first() else { continue; };
+            let first = &index.elements[*first as usize];
+            let name = &xml[first.name_range(&index.named_elements, 0)];
+            let local = name.rsplit(':').next().unwrap_or(name);
+            if !names.iter().any(|candidate| local.eq_ignore_ascii_case(candidate)) {
+                continue;
+            }
+            for position in positions {
+                let element = &index.elements[*position as usize];
+                let qualified = &xml[element.name_range(&index.named_elements, 0)];
+                let (prefix, local) = qualified.split_once(':')
+                    .map_or((None, qualified), |(prefix, local)| (Some(prefix), local));
+                visit(root_node.lookup_namespace_uri(prefix).unwrap_or(""), local);
+            }
+        }
+        Some(())
+    }).flatten()
 }
 
 pub(crate) fn contains_local_names(xml: &str, names: &[&str]) -> Option<bool> {
@@ -1024,4 +1375,236 @@ pub(crate) fn child<'a>(xml: &'a str, name: &str) -> Option<Option<&'a str>> {
         Some(None)
     })
     .flatten()
+}
+
+#[cfg(test)]
+mod position_tests {
+    #[test]
+    fn positions_remain_ordered_across_interleaved_and_case_variant_names() {
+        let xml = "<w:root><w:a/><w:b><w:a/></w:b><w:A/><w:a/></w:root>";
+        let index = super::Index::build(xml).unwrap();
+        assert_eq!(index.named("w:a"), Some([1, 3, 4, 5].as_slice()));
+        assert_eq!(index.named("w:A"), Some([1, 3, 4, 5].as_slice()));
+        assert_eq!(index.named("w:b"), Some([2].as_slice()));
+        let _scope = super::scope([("part", xml)].into_iter(), Default::default());
+        let nested = &xml[xml.find("<w:b>").unwrap()..xml.find("</w:b>").unwrap() + 6];
+        assert_eq!(super::tag(nested, "w:a"), Some(Some("<w:a/>")));
+        assert_eq!(super::children(nested).unwrap().len(), 1);
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod shared_scope_tests {
+    #[test]
+    fn snapshot_retains_its_source_across_nested_scopes_and_threads() {
+        let outer = "<w:root><w:a/></w:root>";
+        let inner = "<w:root><w:b/></w:root>";
+        let scope = super::scope([("outer", outer)].into_iter(), Default::default());
+        let _nested = super::scope([("inner", inner)].into_iter(), Default::default());
+        let snapshot = scope.snapshot();
+        std::thread::scope(|threads| {
+            threads
+                .spawn(move || {
+                    let _installed = snapshot.enter();
+                    assert_eq!(super::tag(outer, "w:a"), Some(Some("<w:a/>")));
+                    assert_eq!(super::tag(inner, "w:b"), None);
+                })
+                .join()
+                .unwrap();
+        });
+        assert_eq!(super::tag(inner, "w:b"), Some(Some("<w:b/>")));
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod shared_index_tests {
+    use super::*;
+
+    #[test]
+    fn shared_offsets_rebase_for_independent_buffers_and_workers() {
+        let original = String::from("<root><item value=\"one\"/><item value=\"two\"/></root>");
+        let index = Index::build(&original).unwrap();
+        for _ in 0..4 {
+            let copied = original.clone();
+            assert_ne!(original.as_ptr(), copied.as_ptr());
+            let scope = scope([("part", copied.as_str())].into_iter(), HashMap::from([("part".to_owned(), index.shared_copy())]));
+            let token = tag(&copied, "item").flatten().unwrap();
+            assert_eq!(token, "<item value=\"one\"/>");
+            assert_eq!(token.as_ptr(), copied[6..].as_ptr());
+            let snapshot = scope.snapshot();
+            std::thread::scope(|threads| {
+                threads.spawn(|| {
+                    let _entered = snapshot.enter();
+                    let token = tag(&copied, "item").flatten().unwrap();
+                    assert_eq!(token.as_ptr(), copied[6..].as_ptr());
+                }).join().unwrap();
+            });
+        }
+    }
+}
+
+#[cfg(test)]
+mod cached_attribute_proof_tests {
+    use super::Index;
+
+    fn wrapped(body: &str) -> String {
+        format!("<w:root xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\">{body}</w:root>")
+    }
+
+    #[test]
+    fn repeated_names_keep_duplicate_and_namespace_checks() {
+        for tail in [
+            "<w:item w:key=\"a\" w:key=\"b\"/>",
+            "<w:item xmlns:w=\"urn:changed\" w:key=\"b\"/>",
+            "<w:item q:key=\"b\"/>",
+            "<w:item w:ke?y=\"b\"/>",
+        ] {
+            let xml = wrapped(&format!("<w:item w:key=\"a\"/>{tail}"));
+            assert!(Index::canonical(&xml).is_none());
+        }
+    }
+
+    #[test]
+    fn attribute_proofs_preserve_serialization_and_index_positions() {
+        let body: String = (0..96).map(|index| format!("<w:item key{index}=\"value\" w:key=\"{index}\"/>")).collect();
+        let xml = wrapped(&body);
+        let index = Index::canonical_serialized(&xml).unwrap();
+        assert!(index.serialization_equivalent());
+        assert_eq!(index.elements.len(), 97);
+        let invalid = wrapped("<w:item 1key=\"a\"/><w:item 1key=\"b\"/>");
+        assert!(!Index::canonical_serialized(&invalid).unwrap().serialization_equivalent());
+    }
+}
+
+
+#[cfg(test)]
+mod linear_offset_remap_tests {
+    use super::Index;
+
+    #[test]
+    fn translated_boundaries_equal_a_fresh_index() {
+        for repetitions in [1, 7, 129] {
+            let fragment = "<w:p><w:r w:val=\"&#xA;&#x9;\"><w:t>λ😀&amp;text</w:t></w:r><w:p/><w:r></w:r><q:item xmlns:q=\"urn:shared\"><q:leaf/><q:item></q:item></q:item></w:p>";
+            let xml = format!("<w:root xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\">{}</w:root>", fragment.repeat(repetitions));
+            let (normalized, actual) = Index::canonical_hoisted(&xml).unwrap();
+            let expected = Index::canonical_normalized(&normalized).unwrap();
+            assert_eq!(actual.elements.len(), expected.elements.len());
+            for (actual, expected) in actual.elements.iter().zip(&expected.elements) {
+                assert_eq!((actual.start, actual.open_end, actual.end, actual.parent, actual.next),
+                           (expected.start, expected.open_end, expected.end, expected.parent, expected.next));
+            }
+            assert_eq!(actual.positions, expected.positions);
+        }
+    }
+}
+
+#[cfg(test)]
+mod hoist_token_search_tests {
+    #[test]
+    fn byte_prefilters_preserve_edit_detection() {
+        let fragments = ["", "x", "xml", "xmlns", "xmlns:", "xxmlns", "&", "&#", "&amp;", "x&", "α中😀", "\0", "#", "x#m"];
+        for prefix in fragments {
+            for middle in fragments {
+                for suffix in fragments {
+                    let token = format!("{prefix}{middle}{suffix}");
+                    assert_eq!(super::token_requires_edit_checks(&token), token.contains("xmlns") || token.contains("&#"));
+                }
+            }
+        }
+        for padding in 0..=129 {
+            for middle in fragments {
+                let token = format!("{}{}{}", " ".repeat(padding), middle, " ".repeat(131 - padding));
+                assert_eq!(super::token_requires_edit_checks(&token), token.contains("xmlns") || token.contains("&#"));
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod hoist_cache_prefilter_tests {
+    #[test]
+    fn cached_tokens_do_not_hide_scoped_bindings_or_repeated_edits() {
+        let binding = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+        let xml = format!("<w:root xmlns:w=\"{binding}\"><w:p/><w:p/><w:p w:val=\"&#xA;\"/><w:p w:val=\"&#xA;\"/><w:group xmlns:q=\"urn:qualified\"><q:item/><w:p/><q:item/></w:group><w:p/></w:root>");
+        let (normalized, _) = super::Index::canonical_hoisted(&xml).unwrap();
+        assert_eq!(normalized.matches("&#10;").count(), 2);
+        let original = roxmltree::Document::parse(&xml).unwrap();
+        let actual = roxmltree::Document::parse(&normalized).unwrap();
+        let signature = |doc: &roxmltree::Document<'_>| doc.descendants().filter(|node| node.is_element()).map(|node| {
+            (node.tag_name().namespace().map(str::to_owned), node.tag_name().name().to_owned(),
+             node.attributes().map(|attr| (attr.namespace().map(str::to_owned), attr.name().to_owned(), attr.value().to_owned())).collect::<Vec<_>>())
+        }).collect::<Vec<_>>();
+        assert_eq!(signature(&original), signature(&actual));
+        let unbound = xml.replace("</w:root>", "<q:item/></w:root>");
+        assert!(super::Index::canonical_hoisted(&unbound).is_none());
+    }
+}
+
+#[cfg(test)]
+mod feature_character_tests {
+    #[test]
+    fn byte_validation_matches_every_unicode_scalar() {
+        for scalar in (0..=0x10ffff).filter_map(char::from_u32) {
+            let valid = matches!(scalar, '\t' | '\n' | '\r')
+                || (scalar >= '\u{20}' && !matches!(scalar, '\u{fffe}' | '\u{ffff}'));
+            for padding in [0, 15, 31] {
+                let text = format!("{}{scalar}{}", "a".repeat(padding), "z".repeat(32));
+                assert_eq!(super::valid_xml_characters(&text), valid);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod token_metadata_tests {
+    use super::Index;
+
+    #[test]
+    fn repeated_token_metadata_matches_uncached_index_positions() {
+        let mut body = String::new();
+        for index in 0..256 {
+            body.push_str(&format!("<w:outer><w:item/><w:item/><w:Item/><w:other a=\"{index}\"/></w:outer>"));
+        }
+        let xml = format!("<w:root xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\">{body}</w:root>");
+        let actual = Index::canonical(&xml).unwrap();
+        let expected = Index::build(&xml).unwrap();
+        assert_eq!(actual.elements.len(), expected.elements.len());
+        assert_eq!(actual.positions, expected.positions);
+        assert_eq!(actual.names, expected.names);
+        for (actual, expected) in actual.elements.iter().zip(&expected.elements) {
+            assert_eq!((actual.start, actual.open_end, actual.end, actual.parent, actual.next, actual.name_id),
+                       (expected.start, expected.open_end, expected.end, expected.parent, expected.next, expected.name_id));
+        }
+    }
+
+    #[test]
+    fn cached_tokens_cannot_supply_a_second_root() {
+        assert!(Index::canonical("<root><item/></root><item/>").is_none());
+        assert!(Index::canonical_serialized("<root><item/></root><item/>").is_none());
+    }
+}
+
+#[cfg(test)]
+mod short_token_scan_tests {
+    #[test]
+    fn delimiter_offsets_match_byte_search_across_all_pairs_and_boundaries() {
+        for left in 0..=255 {
+            for right in 0..=255 {
+                for padding in 0..=17 {
+                    let mut bytes = vec![b'z'; padding];
+                    bytes.extend([left, right]);
+                    bytes.extend([b'z'; 17]);
+                    assert_eq!(super::canonical_token_end(&bytes), memchr::memchr(b'>', &bytes));
+                    assert_eq!(super::next_markup_start(&bytes), memchr::memchr(b'<', &bytes));
+                }
+            }
+        }
+        for length in 0..=17 {
+            for position in 0..=length {
+                let mut bytes = vec![b'z'; length];
+                if position < length { bytes[position] = b'>'; }
+                assert_eq!(super::canonical_token_end(&bytes), memchr::memchr(b'>', &bytes));
+            }
+        }
+    }
 }

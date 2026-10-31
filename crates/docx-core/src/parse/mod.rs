@@ -20,6 +20,7 @@ mod styles;
 mod symbols;
 mod table;
 mod util;
+pub(crate) use util::append_base64;
 
 pub use body::extract_body_xml;
 pub use build::build_doc_model;
@@ -45,6 +46,8 @@ pub use metadata::{
     parse_document_page_count_from_app_properties,
 };
 pub(crate) use namespaces::prefix as canonical_namespace_prefix;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use namespaces::worker_pool;
 pub use numbering::{
     parse_css_point_value, parse_numbering_definitions, parse_numbering_level_definition,
     parse_numbering_picture_bullet_definitions, points_to_pixels,

@@ -40,7 +40,9 @@ def normalize(engine, data):
     def paragraph(text, story, runs=(), heading=None, listing=False, textbox=False, table=False):
         if not norm(text):
             return
-        paragraphs.append({'text':text,'story':story,'textbox':textbox,'table':table})
+        paragraphs.append({'text':text,'story':story,'textbox':textbox,'table':table,
+                           'runs': [{'text': norm(run.get('text', '')), 'bold': bool(run.get('bold')),
+                                     'italic': bool(run.get('italic'))} for run in runs]})
         if heading:
             feature('headings',story,text,value=int(heading))
         if listing:

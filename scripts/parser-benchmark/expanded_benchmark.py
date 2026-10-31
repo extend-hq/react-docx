@@ -13,6 +13,8 @@ import time
 
 from assess import feature_score, load_native, text_score
 from normalize import core_block_paragraphs, normalize
+from image_occurrences import score_image_occurrences
+from literal_features import score_literal_features
 
 ENGINES = ['docx-core', 'docx-rs', 'office_oxide', 'undoc']
 HERE = Path(__file__).resolve().parent
@@ -35,18 +37,18 @@ def write_json(path, value):
 
 def scorer_hash():
     value = hashlib.sha256()
-    for name in ['assess.py', 'normalize.py', 'corpus.py', 'expanded_benchmark.py']:
+    for name in ['assess.py', 'normalize.py', 'corpus.py', 'expanded_benchmark.py', 'image_occurrences.py', 'image_payload_audit.py', 'literal_features.py', 'semantic_audit.py']:
         value.update(name.encode())
         value.update((HERE / name).read_bytes())
     return value.hexdigest()
 
 
-def invoke(binary, engine, entry, prefix, repeats, timeout):
+def invoke(binary, engine, entry, prefix, repeats, timeout, compact=True):
     started = time.time()
     record = {'started_at': started, 'load_before': os.getloadavg()}
     try:
         process = subprocess.run([str(binary), engine, entry['path'], entry['format'], str(prefix),
-                                  str(repeats), 'compact'], capture_output=True, text=True,
+                                  str(repeats), *(['compact'] if compact else [])], capture_output=True, text=True,
                                  timeout=timeout)
         if process.returncode:
             record.update(status='process_error', returncode=process.returncode,
@@ -164,14 +166,20 @@ def main():
                     record.update(status='reference_error', error=truth['error'])
                 else:
                     actual = {'paragraphs': [], 'features': {}}
+                    image_score = None
+                    measure_images = entry['format'] == 'docx'
                     reference = [p for p in truth['paragraphs'] if p['story'] == 'body']
                     with tempfile.TemporaryDirectory(prefix='accuracy-', dir=args.out) as temporary:
                         prefix = Path(temporary) / 'parsed'
-                        record.update(invoke(selected_binary, parse_engine, entry, prefix, 0, args.timeout))
+                        record.update(invoke(selected_binary, parse_engine, entry, prefix, 0, args.timeout,
+                                             compact=not measure_images))
                         parse_status = record['status']
                         if parse_status == 'ok':
                             try:
-                                native = load_native(parse_engine, prefix.with_suffix('.json.gz'))
+                                native = load_native(parse_engine, prefix.with_suffix('.json.gz'),
+                                                     preserve_image_payloads=measure_images)
+                                if measure_images:
+                                    image_score = score_image_occurrences(entry['path'], native, parse_engine)
                                 actual = normalize(parse_engine, native)
                                 del native
                                 if parse_engine == 'docx-core':
@@ -196,6 +204,11 @@ def main():
                         if record['status'] != 'ok':
                             record['body'].update(recall=0.0, precision=0.0, f1=0.0, paragraph_recall=0.0, exact_text=False)
                         record['features'] = feature_score(truth, actual)
+                        if entry['format'] == 'docx':
+                            record['features'].update(score_literal_features(entry['path'], truth, actual))
+                        if measure_images:
+                            record['features']['image_occurrences'] = image_score or score_image_occurrences(
+                                entry['path'], {'resource_payload_sha256': {}}, parse_engine)
                         record['parse_status'] = parse_status
                 record['engine'] = engine
                 write_json(target, record)

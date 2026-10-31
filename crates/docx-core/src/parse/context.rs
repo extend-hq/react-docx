@@ -179,16 +179,20 @@ pub fn default_table_look() -> ParsedTableLook {
 }
 
 /// Mirrors TypeScript `ParseContext`.
-pub struct ParseContext<'a> {
+pub struct ParseContext<'a, S = ParsedStyleSheet> {
     pub relationships: HashMap<String, String>,
     pub content_types: ContentTypeLookup,
     pub parts: &'a HashMap<String, OoxmlPart>,
     pub binary_assets: &'a HashMap<String, Vec<u8>>,
-    pub style_sheet: ParsedStyleSheet,
+    pub style_sheet: S,
     pub warnings: RefCell<Vec<String>>,
 }
 
-impl<'a> ParseContext<'a> {
+impl<'a, S: std::borrow::Borrow<ParsedStyleSheet>> ParseContext<'a, S> {
+    pub fn styles(&self) -> &ParsedStyleSheet {
+        self.style_sheet.borrow()
+    }
+
     pub fn push_warning(&self, message: impl Into<String>) {
         self.warnings.borrow_mut().push(message.into());
     }

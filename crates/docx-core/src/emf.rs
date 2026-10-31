@@ -5,6 +5,8 @@
 //! supported set abort the conversion so the caller can fall back to the
 //! unsupported-image placeholder instead of rendering something wrong.
 
+use std::fmt::Write as _;
+
 fn read_u32(data: &[u8], offset: usize) -> Option<u32> {
     data.get(offset..offset + 4)
         .map(|bytes| u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
@@ -110,13 +112,38 @@ impl Mapping {
     }
 }
 
-fn fmt(value: f64) -> String {
-    let rounded = (value * 100.0).round() / 100.0;
-    if rounded == rounded.trunc() {
-        format!("{}", rounded as i64)
-    } else {
-        format!("{rounded}")
+struct Coordinate(f64);
+
+impl std::fmt::Display for Coordinate {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let scaled = (self.0 * 100.0).round();
+        let rounded = scaled / 100.0;
+        if rounded == rounded.trunc() {
+            write!(formatter, "{}", rounded as i64)
+        } else if scaled.abs() <= (1u64 << 40) as f64 {
+            // Scaled integers are exact here, and distinct cents map to distinct f64 values.
+            let value = scaled as i64;
+            let absolute = value.unsigned_abs();
+            if value < 0 {
+                formatter.write_str("-")?;
+            }
+            write!(formatter, "{}.", absolute / 100)?;
+            let fraction = absolute % 100;
+            if fraction < 10 {
+                write!(formatter, "0{fraction}")
+            } else if fraction % 10 == 0 {
+                write!(formatter, "{}", fraction / 10)
+            } else {
+                write!(formatter, "{fraction}")
+            }
+        } else {
+            write!(formatter, "{rounded}")
+        }
     }
+}
+
+fn fmt(value: f64) -> Coordinate {
+    Coordinate(value)
 }
 
 const EMR_HEADER: u32 = 1;
@@ -334,13 +361,13 @@ impl<'a> Converter<'a> {
         let mut unit_index = 0;
         if advances.is_empty() {
             let point = self.map_point(x, y);
-            xs.push(fmt(point.0));
-            ys.push(fmt(point.1));
+            xs.push(fmt(point.0).to_string());
+            ys.push(fmt(point.1).to_string());
         } else {
             for character in text.chars() {
                 let point = self.map_point(position.0, position.1);
-                xs.push(fmt(point.0));
-                ys.push(fmt(point.1));
+                xs.push(fmt(point.0).to_string());
+                ys.push(fmt(point.1).to_string());
                 for _ in 0..character.len_utf16() {
                     position.0 += advances[unit_index].0;
                     position.1 += advances[unit_index].1;
@@ -443,9 +470,9 @@ impl<'a> Converter<'a> {
         let mut d = String::new();
         for (index, (x, y)) in points.iter().enumerate() {
             if index == 0 {
-                d.push_str(&format!("M{} {}", fmt(*x), fmt(*y)));
+                write!(d, "M{} {}", fmt(*x), fmt(*y)).expect("writing into a string cannot fail");
             } else {
-                d.push_str(&format!("L{} {}", fmt(*x), fmt(*y)));
+                write!(d, "L{} {}", fmt(*x), fmt(*y)).expect("writing into a string cannot fail");
             }
         }
         if close && !d.is_empty() {
@@ -460,7 +487,7 @@ impl<'a> Converter<'a> {
             let Some(((x, y), rest)) = points.split_first() else {
                 return None;
             };
-            d.push_str(&format!("M{} {}", fmt(*x), fmt(*y)));
+            write!(d, "M{} {}", fmt(*x), fmt(*y)).expect("writing into a string cannot fail");
             rest
         } else {
             points
@@ -469,7 +496,7 @@ impl<'a> Converter<'a> {
             return None;
         }
         for triple in control_points.chunks(3) {
-            d.push_str(&format!(
+            write!(d, 
                 "C{} {} {} {} {} {}",
                 fmt(triple[0].0),
                 fmt(triple[0].1),
@@ -477,7 +504,7 @@ impl<'a> Converter<'a> {
                 fmt(triple[1].1),
                 fmt(triple[2].0),
                 fmt(triple[2].1)
-            ));
+            ).expect("writing into a string cannot fail");
         }
         Some(d)
     }
@@ -762,9 +789,7 @@ pub fn emf_to_svg(data: &[u8]) -> Option<String> {
                 );
                 converter.current_point = point;
                 if converter.in_path {
-                    converter
-                        .path_data
-                        .push_str(&format!("M{} {}", fmt(point.0), fmt(point.1)));
+                    write!(converter.path_data, "M{} {}", fmt(point.0), fmt(point.1)).expect("writing into a string cannot fail");
                 }
             }
             EMR_LINETO => {
@@ -775,9 +800,7 @@ pub fn emf_to_svg(data: &[u8]) -> Option<String> {
                 );
                 converter.current_point = point;
                 if converter.in_path {
-                    converter
-                        .path_data
-                        .push_str(&format!("L{} {}", fmt(point.0), fmt(point.1)));
+                    write!(converter.path_data, "L{} {}", fmt(point.0), fmt(point.1)).expect("writing into a string cannot fail");
                 } else {
                     converter.emit_path(
                         format!(
@@ -803,9 +826,7 @@ pub fn emf_to_svg(data: &[u8]) -> Option<String> {
                 }
                 if record_type == EMR_POLYLINETO16 {
                     for (x, y) in &points {
-                        converter
-                            .path_data
-                            .push_str(&format!("L{} {}", fmt(*x), fmt(*y)));
+                        write!(converter.path_data, "L{} {}", fmt(*x), fmt(*y)).expect("writing into a string cannot fail");
                     }
                 } else {
                     let segment = Converter::bezier_to_d(&points, false)?;
@@ -926,4 +947,45 @@ pub fn emf_to_svg(data: &[u8]) -> Option<String> {
         "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"{left} {top} {width} {height}\" width=\"{width}\" height=\"{height}\" preserveAspectRatio=\"xMidYMid meet\">{defs}{}</svg>",
         converter.elements.join("")
     ))
+}
+
+#[cfg(test)]
+mod coordinate_output_tests {
+    #[test]
+    fn coordinates_preserve_rounding_and_saturated_integer_output() {
+        for (value, expected) in [
+            (0.0, "0"), (-0.0, "0"), (0.004, "0"), (-0.004, "0"),
+            (0.005, "0.01"), (-0.005, "-0.01"), (123.456, "123.46"),
+            (-123.456, "-123.46"), (1234567890123.0, "1234567890123"),
+            (f64::INFINITY, "9223372036854775807"),
+            (f64::NEG_INFINITY, "-9223372036854775808"), (f64::NAN, "NaN"),
+        ] {
+            assert_eq!(super::fmt(value).to_string(), expected);
+        }
+    }
+}
+
+#[cfg(test)]
+mod bounded_coordinate_tests {
+    #[test]
+    fn bounded_decimal_paths_match_standard_float_display() {
+        let mut state = 17u64;
+        for index in 0..1000000 {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let integer = ((state >> 16) % (1u64 << 41)) as i64 - (1i64 << 40);
+            let value = match index % 4 {
+                0 => integer as f64 / 100.0,
+                1 => f64::from_bits(state),
+                2 => (integer % 10000000) as f64 / 123.0,
+                _ => f64::from_bits((integer as f64 / 100.0).to_bits().wrapping_add(index % 3)),
+            };
+            let rounded = (value * 100.0).round() / 100.0;
+            let expected = if rounded == rounded.trunc() {
+                format!("{}", rounded as i64)
+            } else {
+                format!("{rounded}")
+            };
+            assert_eq!(super::fmt(value).to_string(), expected);
+        }
+    }
 }

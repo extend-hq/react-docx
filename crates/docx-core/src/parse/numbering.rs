@@ -260,9 +260,21 @@ pub(crate) fn parse_numbering_with_assets(
     binary_assets: &HashMap<String, Vec<u8>>,
 ) -> Option<NumberingDefinitionSet> {
     let numbering_xml = crate::package::related_document_part(pkg, "numbering")?.content.as_str();
+    #[cfg(not(target_arch = "wasm32"))]
+    if numbering_xml.len() <= 128 * 1024
+        && !super::scan::contains_tag(numbering_xml, "w:numPicBullet")
+    {
+        return numbering_templates::parse(numbering_xml);
+    }
     let picture_bullets_by_id =
         parse_picture_bullets_with_assets(pkg, numbering_xml, content_types, binary_assets);
+    parse_numbering_xml(numbering_xml, &picture_bullets_by_id)
+}
 
+fn parse_numbering_xml(
+    numbering_xml: &str,
+    picture_bullets_by_id: &HashMap<i64, NumberingPictureBulletDefinition>,
+) -> Option<NumberingDefinitionSet> {
     let parsed_abstracts: Vec<IntermediateAbstractDefinition> =
         crate::xml::extract_balanced_tag_slices(numbering_xml, "w:abstractNum")
             .into_iter()
@@ -279,7 +291,7 @@ pub(crate) fn parse_numbering_with_assets(
                     crate::xml::extract_balanced_tag_slices(&abstract_xml, "w:lvl")
                         .into_iter()
                         .filter_map(|level_xml| {
-                            parse_numbering_level_definition(&level_xml, &picture_bullets_by_id)
+                            parse_numbering_level_definition(&level_xml, picture_bullets_by_id)
                         })
                         .collect();
                 levels.sort_by_key(|level| level.ilvl);
@@ -365,7 +377,7 @@ pub(crate) fn parse_numbering_with_assets(
                         crate::xml::extract_balanced_tag_slices(&override_xml, "w:lvl").into_iter().next()
                     {
                         if let Some(parsed_level) =
-                            parse_numbering_level_definition(&level_xml, &picture_bullets_by_id)
+                            parse_numbering_level_definition(&level_xml, picture_bullets_by_id)
                         {
                             level_overrides.push(parsed_level);
                         }
@@ -409,4 +421,78 @@ struct IntermediateAbstractDefinition {
     style_link: Option<String>,
     num_style_link: Option<String>,
     levels: Vec<NumberingLevelDefinition>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+mod numbering_templates {
+    use super::*;
+    use std::collections::VecDeque;
+    use std::sync::{Arc, Mutex, OnceLock};
+
+    type Entry = (String, Arc<Option<NumberingDefinitionSet>>);
+    static TEMPLATES: OnceLock<Mutex<VecDeque<Entry>>> = OnceLock::new();
+
+    pub(super) fn parse(xml: &str) -> Option<NumberingDefinitionSet> {
+        let templates = TEMPLATES.get_or_init(|| Mutex::new(VecDeque::new()));
+        let cached = {
+            let entries = templates.lock().unwrap_or_else(|error| error.into_inner());
+            entries.iter().find(|(key, _)| key == xml).map(|(_, value)| Arc::clone(value))
+        };
+        if let Some(value) = cached {
+            return (*value).clone();
+        }
+        let parsed = parse_numbering_xml(xml, &HashMap::new());
+        let entry = (xml.to_owned(), Arc::new(parsed.clone()));
+        let mut entries = templates.lock().unwrap_or_else(|error| error.into_inner());
+        if !entries.iter().any(|(key, _)| key == xml) {
+            if entries.len() == 4 {
+                entries.pop_front();
+            }
+            entries.push_back(entry);
+        }
+        parsed
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod template_tests {
+    use super::*;
+    use crate::package::OoxmlPart;
+
+    fn package(xml: String) -> OoxmlPackage {
+        let name = "word/numbering.xml".to_owned();
+        OoxmlPackage {
+            parts: HashMap::from([(name.clone(), OoxmlPart { name, content: xml })]),
+            binary_assets: HashMap::new(),
+            warnings: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn definition_reuse_preserves_changes_and_owned_results() {
+        for value in (1..13).chain((1..13).rev()) {
+            let xml = format!(r#"<w:numbering><w:abstractNum w:abstractNumId="1"><w:lvl w:ilvl="0"><w:start w:val="{value}"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1.{value}"/><w:rPr><w:color w:val="123456"/></w:rPr></w:lvl></w:abstractNum><w:num w:numId="2"><w:abstractNumId w:val="1"/><w:lvlOverride w:ilvl="0"><w:startOverride w:val="{value}"/></w:lvlOverride></w:num></w:numbering>"#);
+            let expected = parse_numbering_xml(&xml, &HashMap::new());
+            let pkg = package(xml);
+            let mut actual = parse_numbering_definitions(&pkg, &ContentTypeLookup::default());
+            assert_eq!(actual, expected);
+            actual.as_mut().unwrap().abstracts.clear();
+            assert_eq!(parse_numbering_definitions(&pkg, &ContentTypeLookup::default()), expected);
+        }
+    }
+
+    #[test]
+    fn picture_bullet_assets_are_resolved_for_each_package() {
+        let xml = r#"<w:numbering><w:numPicBullet w:numPicBulletId="5"><w:pict><v:shape><v:imagedata r:id="rId1"/></v:shape></w:pict></w:numPicBullet><w:abstractNum w:abstractNumId="1"><w:lvl w:ilvl="0"><w:lvlPicBulletId w:val="5"/></w:lvl></w:abstractNum></w:numbering>"#;
+        let mut pkg = package(xml.to_owned());
+        let name = "word/_rels/numbering.xml.rels".to_owned();
+        pkg.parts.insert(name.clone(), OoxmlPart { name, content: r#"<Relationships><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/bullet.png"/></Relationships>"#.to_owned() });
+        let mut types = ContentTypeLookup::default();
+        types.default_by_extension.insert("png".to_owned(), "image/png".to_owned());
+        pkg.binary_assets.insert("word/media/bullet.png".to_owned(), vec![1, 2, 3]);
+        let before = parse_numbering_definitions(&pkg, &types).unwrap();
+        pkg.binary_assets.insert("word/media/bullet.png".to_owned(), vec![4, 5, 6]);
+        let after = parse_numbering_definitions(&pkg, &types).unwrap();
+        assert_ne!(before.abstracts[0].levels[0].picture_bullet, after.abstracts[0].levels[0].picture_bullet);
+    }
 }

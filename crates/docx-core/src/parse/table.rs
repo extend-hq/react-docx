@@ -26,7 +26,10 @@ use crate::xml::{
 
 pub fn parse_table_cell_content(
     cell_xml: &str,
-    context: &crate::parse::context::ParseContext<'_>,
+    context: &crate::parse::context::ParseContext<
+        '_,
+        impl std::borrow::Borrow<super::context::ParsedStyleSheet>,
+    >,
     table_paragraph_spacing: Option<&crate::model::ParagraphSpacing>,
 ) -> Vec<TableCellContentNode> {
     parse_table_cell_content_with_run_style(cell_xml, context, table_paragraph_spacing, None)
@@ -34,7 +37,10 @@ pub fn parse_table_cell_content(
 
 fn parse_table_cell_content_with_run_style(
     cell_xml: &str,
-    context: &crate::parse::context::ParseContext<'_>,
+    context: &crate::parse::context::ParseContext<
+        '_,
+        impl std::borrow::Borrow<super::context::ParsedStyleSheet>,
+    >,
     table_paragraph_spacing: Option<&crate::model::ParagraphSpacing>,
     table_run_style: Option<&TextStyle>,
 ) -> Vec<TableCellContentNode> {
@@ -82,7 +88,10 @@ pub struct ParsedTableCellResult {
 
 pub fn parse_table_cell(
     cell_xml: &str,
-    context: &crate::parse::context::ParseContext<'_>,
+    context: &crate::parse::context::ParseContext<
+        '_,
+        impl std::borrow::Borrow<super::context::ParsedStyleSheet>,
+    >,
     table_paragraph_spacing: Option<&crate::model::ParagraphSpacing>,
 ) -> ParsedTableCellResult {
     let mut result = parse_table_cell_geometry(cell_xml);
@@ -205,7 +214,10 @@ impl CellPropertyTokens<'_> {
 }
 
 fn parse_table_cell_geometry(cell_xml: &str) -> ParsedTableCellResult {
-    let source = direct_table_property(cell_xml, "w:tcPr");
+    parse_table_cell_properties(direct_table_property(cell_xml, "w:tcPr"))
+}
+
+fn parse_table_cell_properties(source: Option<&str>) -> ParsedTableCellResult {
     let tokens = source.and_then(indexed_cell_property_tokens);
     let owned_fallback = if tokens.is_none() {
         source.map(str::to_owned)
@@ -339,7 +351,10 @@ fn parse_table_cell_geometry(cell_xml: &str) -> ParsedTableCellResult {
 
 pub fn parse_table(
     table_xml: &str,
-    context: &crate::parse::context::ParseContext<'_>,
+    context: &crate::parse::context::ParseContext<
+        '_,
+        impl std::borrow::Borrow<super::context::ParsedStyleSheet>,
+    >,
 ) -> TableNode {
     let table_properties_xml = direct_table_property(table_xml, "w:tblPr");
     let table_style_id = table_properties_xml
@@ -348,15 +363,11 @@ pub fn parse_table(
         .and_then(|tag| get_attribute(tag, "w:val"));
     let resolved_table_style_id = table_style_id
         .as_deref()
-        .or(context.style_sheet.default_table_style_id.as_deref());
+        .or(context.styles().default_table_style_id.as_deref());
     let table_style =
-        resolved_table_style_id.and_then(|id| context.style_sheet.table_style_by_id.get(id));
-    let table_paragraph_spacing = resolved_table_style_id.and_then(|id| {
-        context
-            .style_sheet
-            .table_paragraph_spacing_by_style_id
-            .get(id)
-    });
+        resolved_table_style_id.and_then(|id| context.styles().table_style_by_id.get(id));
+    let table_paragraph_spacing = resolved_table_style_id
+        .and_then(|id| context.styles().table_paragraph_spacing_by_style_id.get(id));
     let style_table_properties = table_style
         .and_then(|style| style.conditions.get(&TableConditionalStyleType::WholeTable))
         .and_then(|condition| condition.table_properties.clone());
@@ -454,6 +465,8 @@ pub fn parse_table(
     let mut active_vertical_merge_by_column: HashMap<i64, VerticalMergeAnchor> = HashMap::new();
     let mut has_row_spacing_override = false;
     let mut has_row_table_exception = false;
+    let cache_geometry = row_blocks.len() >= 12 && table_xml.len() >= 64 * 1024;
+    let mut geometry_cache = HashMap::<&str, ParsedTableCellResult>::new();
     for row_xml in row_blocks {
         let row_properties_xml = direct_table_property(row_xml, "w:trPr");
         has_row_table_exception |= direct_table_property(row_xml, "w:tblPrEx").is_some();
@@ -514,7 +527,25 @@ pub fn parse_table(
         let cell_sources = crate::xml::extract_balanced_tag_slices(row_xml, "w:tc");
         let parsed_cells: Vec<ParsedTableCellResult> = cell_sources
             .iter()
-            .map(|cell_xml| parse_table_cell_geometry(cell_xml))
+            .map(|cell_xml| {
+                if !cache_geometry {
+                    return parse_table_cell_geometry(cell_xml);
+                }
+                let source = direct_table_property(cell_xml, "w:tcPr");
+                let Some(properties) = source.filter(|xml| {
+                    (16..=4096).contains(&xml.len())
+                }) else {
+                    return parse_table_cell_properties(source);
+                };
+                if let Some(parsed) = geometry_cache.get(properties) {
+                    return parsed.clone();
+                }
+                let parsed = parse_table_cell_properties(source);
+                if geometry_cache.len() < 32 {
+                    geometry_cache.insert(properties, parsed.clone());
+                }
+                parsed
+            })
             .collect();
         if parsed_cells.is_empty() {
             continue;
@@ -1569,7 +1600,10 @@ fn merge_table_conditional_style(
 fn apply_snap_to_grid_to_table_cell_content(
     nodes: &mut [TableCellContentNode],
     table_snap_to_grid: bool,
-    context: &crate::parse::context::ParseContext<'_>,
+    context: &crate::parse::context::ParseContext<
+        '_,
+        impl std::borrow::Borrow<super::context::ParsedStyleSheet>,
+    >,
 ) {
     for node in nodes {
         let TableCellContentNode::Paragraph(paragraph) = node else {
@@ -1585,7 +1619,7 @@ fn apply_snap_to_grid_to_table_cell_content(
             direct_property.and_then(|tag| crate::xml::parse_on_off_attribute(tag, "snapToGrid"));
         let explicit_style = direct_table_property(properties, "w:pStyle")
             .and_then(|tag| get_attribute(tag, "w:val"))
-            .and_then(|id| context.style_sheet.paragraph_style_by_id.get(&id))
+            .and_then(|id| context.styles().paragraph_style_by_id.get(&id))
             .filter(|style| style.source_has_snap_to_grid != Some(false))
             .and_then(|style| style.snap_to_grid);
         let inherited = explicit_style.or(Some(table_snap_to_grid));
@@ -1601,7 +1635,10 @@ fn apply_snap_to_grid_to_table_cell_content(
 fn apply_text_alignment_to_table_cell_content(
     nodes: &mut [TableCellContentNode],
     table_alignment: crate::model::ParagraphTextAlignment,
-    context: &crate::parse::context::ParseContext<'_>,
+    context: &crate::parse::context::ParseContext<
+        '_,
+        impl std::borrow::Borrow<super::context::ParsedStyleSheet>,
+    >,
 ) {
     for node in nodes {
         let TableCellContentNode::Paragraph(paragraph) = node else {
@@ -1615,7 +1652,7 @@ fn apply_text_alignment_to_table_cell_content(
         let direct = super::style::parse_paragraph_text_alignment_from_xml(properties);
         let explicit_style = direct_table_property(properties, "w:pStyle")
             .and_then(|tag| get_attribute(tag, "w:val"))
-            .and_then(|id| context.style_sheet.paragraph_style_by_id.get(&id))
+            .and_then(|id| context.styles().paragraph_style_by_id.get(&id))
             .filter(|style| style.source_has_text_alignment != Some(false))
             .and_then(|style| style.text_alignment);
         let inherited = explicit_style.or(Some(table_alignment));
@@ -1648,7 +1685,7 @@ fn apply_text_alignment_to_table_cell_content(
             widow_control: None,
             page_break_before: None,
             drop_cap: None,
-        });
+        }.into());
         style.text_alignment = direct.or(inherited);
         style.source_has_text_alignment =
             Some(direct_table_property(properties, "w:textAlignment").is_some());
@@ -1709,7 +1746,7 @@ fn apply_paragraph_alignment_to_table_cell_content(
                     widow_control: None,
                     page_break_before: None,
                     drop_cap: None,
-                });
+                }.into());
                 style.align = Some(paragraph_align);
             }
             TableCellContentNode::Table(nested_table) => {

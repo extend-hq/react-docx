@@ -39,7 +39,7 @@ struct ShapeFillMarkup {
 
 pub fn parse_text_box_paragraphs(
     run_xml: &str,
-    context: &ParseContext<'_>,
+    context: &ParseContext<'_, impl std::borrow::Borrow<super::context::ParsedStyleSheet>>,
 ) -> Vec<ParsedTextBoxParagraph> {
     let normalized_run_xml = prefer_alternate_content_choice(run_xml);
     let text_box_xml = extract_balanced_tag_blocks(&normalized_run_xml, "w:txbxContent")
@@ -77,7 +77,7 @@ pub fn parse_text_box_paragraphs(
         );
         let paragraph_style = paragraph_style_id
             .as_deref()
-            .and_then(|id| context.style_sheet.paragraph_style_by_id.get(id));
+            .and_then(|id| context.styles().paragraph_style_by_id.get(id));
         let first_run_xml = extract_balanced_tag_blocks(&paragraph_xml, "w:r")
             .into_iter()
             .next();
@@ -97,13 +97,10 @@ pub fn parse_text_box_paragraphs(
                 .or_else(|| regex_tag(&paragraph_properties_xml, r"(?i)<w:rPr\b[^>]*/?>"))
                 .unwrap_or_default();
         let style = super::util::merge_text_styles(&[
-            context.style_sheet.default_run_style.clone(),
+            context.styles().default_run_style.clone(),
             paragraph_style.and_then(|s| s.run_style.clone()),
-            parse_text_style_from_xml(
-                &paragraph_run_properties_xml,
-                &context.style_sheet.theme_fonts,
-            ),
-            parse_text_style_from_xml(&run_properties_xml, &context.style_sheet.theme_fonts),
+            parse_text_style_from_xml(&paragraph_run_properties_xml, &context.styles().theme_fonts),
+            parse_text_style_from_xml(&run_properties_xml, &context.styles().theme_fonts),
         ]);
         let align = super::style::parse_paragraph_align_from_xml(&paragraph_properties_xml)
             .or_else(|| paragraph_style.and_then(|s| s.align));
@@ -163,7 +160,30 @@ pub fn render_text_box_svg(
     height_px: Option<f64>,
     layout: Option<&ParsedTextBoxLayout>,
 ) -> String {
-    let safe_width = clamp_i64(width_px.unwrap_or(320.0).round() as i64, 80, 2400) as f64;
+    render_text_box_svg_impl(paragraphs, width_px, height_px, layout, false)
+}
+
+pub(crate) fn render_bounded_text_box_svg(
+    paragraphs: &[ParsedTextBoxParagraph],
+    width_px: f64,
+    height_px: f64,
+    layout: Option<&ParsedTextBoxLayout>,
+) -> String {
+    render_text_box_svg_impl(paragraphs, Some(width_px), Some(height_px), layout, true)
+}
+
+fn render_text_box_svg_impl(
+    paragraphs: &[ParsedTextBoxParagraph],
+    width_px: Option<f64>,
+    height_px: Option<f64>,
+    layout: Option<&ParsedTextBoxLayout>,
+    bounded: bool,
+) -> String {
+    let safe_width = clamp_i64(
+        width_px.unwrap_or(320.0).round() as i64,
+        if bounded { 1 } else { 80 },
+        2400,
+    ) as f64;
     let line_heights: Vec<i64> = paragraphs
         .iter()
         .map(|paragraph| {
@@ -186,29 +206,29 @@ pub fn render_text_box_svg(
     let estimated_height: i64 = line_heights.iter().sum::<i64>() + 24;
     let safe_height = clamp_i64(
         height_px.unwrap_or(estimated_height as f64).round() as i64,
-        48,
+        if bounded { 1 } else { 48 },
         2400,
     ) as f64;
     let horizontal_inset = ((layout
         .and_then(|l| l.padding_left_px)
         .unwrap_or(safe_width * 0.03))
     .round() as i64)
-        .max(8) as f64;
+        .max(if bounded { 0 } else { 8 }) as f64;
     let top_inset = ((layout
         .and_then(|l| l.padding_top_px)
         .unwrap_or(safe_height * 0.04))
     .round() as i64)
-        .max(8) as f64;
+        .max(if bounded { 0 } else { 8 }) as f64;
     let right_inset = ((layout
         .and_then(|l| l.padding_right_px)
         .unwrap_or(horizontal_inset))
     .round() as i64)
-        .max(8) as f64;
+        .max(if bounded { 0 } else { 8 }) as f64;
     let bottom_inset = ((layout
         .and_then(|l| l.padding_bottom_px)
         .unwrap_or(top_inset))
     .round() as i64)
-        .max(8) as f64;
+        .max(if bounded { 0 } else { 8 }) as f64;
     let max_text_width = (safe_width - horizontal_inset * 2.0).max(20.0);
     let total_text_height: f64 = line_heights.iter().map(|h| *h as f64).sum();
     let available_height = (safe_height - top_inset - bottom_inset).max(0.0);
@@ -534,7 +554,7 @@ pub fn render_standalone_word_shape_svg(
     run_xml: &str,
     width_px: Option<f64>,
     height_px: Option<f64>,
-    context: &ParseContext<'_>,
+    context: &ParseContext<'_, impl std::borrow::Borrow<super::context::ParsedStyleSheet>>,
 ) -> Option<String> {
     if let Some(group_xml) = extract_balanced_tag_blocks(run_xml, "wpg:wgp")
         .into_iter()
@@ -620,12 +640,12 @@ pub fn render_standalone_word_shape_svg(
                 .unwrap_or_default();
             let fill = drawing_shape_fill_markup(
                 &format!("{shape_properties_xml}{style_xml}"),
-                &context.style_sheet.theme_colors,
+                &context.styles().theme_colors,
                 &format!("group-fill-{shape_index}"),
             );
             let stroke = drawing_shape_stroke_markup(
                 &format!("{shape_properties_xml}{style_xml}"),
-                &context.style_sheet.theme_colors,
+                &context.styles().theme_colors,
             );
             let text_box_paragraphs = parse_text_box_paragraphs(&shape_xml, context);
             let text_box_svg = if !text_box_paragraphs.is_empty() {
@@ -769,12 +789,12 @@ pub fn render_standalone_word_shape_svg(
         .unwrap_or_default();
     let fill = drawing_shape_fill_markup(
         &format!("{shape_properties_xml}{style_xml}"),
-        &context.style_sheet.theme_colors,
+        &context.styles().theme_colors,
         "shape-fill",
     );
     let stroke = drawing_shape_stroke_markup(
         &format!("{shape_properties_xml}{style_xml}"),
-        &context.style_sheet.theme_colors,
+        &context.styles().theme_colors,
     );
     let path_data =
         drawing_shape_resolved_path_data(&shape_properties_xml, safe_width, safe_height);
@@ -830,7 +850,7 @@ pub fn render_standalone_word_shape_svg(
 fn render_grouped_picture_svg_element(
     picture_xml: &str,
     transform: DrawingGroupTransform,
-    context: &ParseContext<'_>,
+    context: &ParseContext<'_, impl std::borrow::Borrow<super::context::ParsedStyleSheet>>,
 ) -> Option<String> {
     let picture_properties_xml = extract_balanced_tag_blocks(picture_xml, "pic:spPr")
         .into_iter()
@@ -875,7 +895,12 @@ fn render_grouped_picture_svg_element(
     ))
 }
 
-fn simple_rect_bitmap_fill_relationship(shape_properties_xml: &str) -> Option<String> {
+struct RectBitmapFill {
+    relationship_id: String,
+    offsets: [f64; 4],
+}
+
+fn simple_rect_bitmap_fill(shape_properties_xml: &str) -> Option<RectBitmapFill> {
     if !shape_properties_xml.contains("a:blipFill") {
         return None;
     }
@@ -933,26 +958,45 @@ fn simple_rect_bitmap_fill_relationship(shape_properties_xml: &str) -> Option<St
         return None;
     }
     let fill_rect = &stretch[stretch_children[0].start..stretch_children[0].end];
-    if !crate::xml::extract_direct_child_tag_ranges(fill_rect).is_empty()
-        || ["l", "t", "r", "b"].iter().any(|name| {
-            get_attribute(fill_rect, name).is_some_and(|value| value.trim().parse::<i64>() != Ok(0))
-        })
-    {
+    if !crate::xml::extract_direct_child_tag_ranges(fill_rect).is_empty() {
         return None;
     }
-    get_attribute(blip, "r:embed").filter(|id| !id.is_empty())
+    let mut offsets = [0.0; 4];
+    for (index, name) in ["l", "t", "r", "b"].into_iter().enumerate() {
+        if let Some(value) = get_attribute(fill_rect, name) {
+            let value = value.trim();
+            offsets[index] = if let Some(percent) = value.strip_suffix('%') {
+                percent.parse::<f64>().ok()? / 100.0
+            } else {
+                value.parse::<i32>().ok()? as f64 / 100_000.0
+            };
+            if !offsets[index].is_finite() {
+                return None;
+            }
+        }
+    }
+    let width = 1.0 - offsets[0] - offsets[2];
+    let height = 1.0 - offsets[1] - offsets[3];
+    if !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 0.0 {
+        return None;
+    }
+    Some(RectBitmapFill {
+        relationship_id: get_attribute(blip, "r:embed").filter(|id| !id.is_empty())?,
+        offsets,
+    })
 }
 
 fn render_rect_shape_bitmap_fill_svg(
     shape_properties_xml: &str,
     width_px: i64,
     height_px: i64,
-    context: &ParseContext<'_>,
+    context: &ParseContext<'_, impl std::borrow::Borrow<super::context::ParsedStyleSheet>>,
 ) -> Option<String> {
     if width_px <= 0 || height_px <= 0 {
         return None;
     }
-    let relationship_id = simple_rect_bitmap_fill_relationship(shape_properties_xml)?;
+    let fill = simple_rect_bitmap_fill(shape_properties_xml)?;
+    let relationship_id = fill.relationship_id;
     let Some(part_name) = context.relationships.get(&relationship_id) else {
         context.push_warning(format!("Missing relationship target for {relationship_id}"));
         return None;
@@ -972,9 +1016,100 @@ fn render_rect_shape_bitmap_fill_svg(
         return None;
     }
     let src = format!("data:{mime_type};base64,{}", bytes_to_base64(binary));
+    if fill.offsets.iter().any(|offset| *offset != 0.0) {
+        let [left, top, right, bottom] = fill.offsets;
+        let x = width_px as f64 * left;
+        let y = height_px as f64 * top;
+        let width = width_px as f64 * (1.0 - left - right);
+        let height = height_px as f64 * (1.0 - top - bottom);
+        if ![x, y, width, height].into_iter().all(f64::is_finite) {
+            return None;
+        }
+        return Some(format!(
+            r#"<svg x="0" y="0" width="{width_px}" height="{height_px}" viewBox="0 0 {width_px} {height_px}" overflow="hidden"><image href="{src}" x="{}" y="{}" width="{}" height="{}" preserveAspectRatio="none"/></svg>"#,
+            format_js_number(x),
+            format_js_number(y),
+            format_js_number(width),
+            format_js_number(height),
+        ));
+    }
     Some(format!(
         r#"<image href="{src}" x="0" y="0" width="{width_px}" height="{height_px}" preserveAspectRatio="none"/>"#
     ))
+}
+
+
+
+fn find_fill_token(xml: &str, token: &str, mut cursor: usize, boundary: bool) -> Option<usize> {
+    while let Some(offset) = memchr::memchr(b'<', xml.as_bytes().get(cursor..)?) {
+        let start = cursor + offset;
+        let end = start.checked_add(token.len())?;
+        if xml.get(start..end).is_some_and(|value| value.eq_ignore_ascii_case(token))
+            && (!boundary || xml.as_bytes().get(end).is_none_or(|next| {
+                !next.is_ascii_alphanumeric() && *next != b'_'
+            }))
+        {
+            return Some(start);
+        }
+        cursor = start + 1;
+    }
+    None
+}
+
+fn remove_fill_tokens(xml: &str, opening: &str, closing: Option<&str>) -> Option<String> {
+    let mut output = None;
+    let mut cursor = 0;
+    let mut search = 0;
+    while let Some(start) = find_fill_token(xml, opening, search, true) {
+        let end = if let Some(closing) = closing {
+            let Some(end) = find_fill_token(xml, closing, start + opening.len(), false) else {
+                break;
+            };
+            end + closing.len()
+        } else {
+            let Some(offset) = memchr::memchr(b'>', &xml.as_bytes()[start..]) else {
+                break;
+            };
+            let end = start + offset + 1;
+            if xml.as_bytes()[end - 2] != b'/' {
+                search = start + 1;
+                continue;
+            }
+            end
+        };
+        output.get_or_insert_with(|| String::with_capacity(xml.len())).push_str(&xml[cursor..start]);
+        cursor = end;
+        search = end;
+    }
+    if let Some(output) = output.as_mut() {
+        output.push_str(&xml[cursor..]);
+    }
+    output
+}
+
+fn drawing_shape_fill_scope(xml: &str) -> std::borrow::Cow<'_, str> {
+    let mut output = std::borrow::Cow::Borrowed(xml);
+    if xml.is_ascii() {
+        for (opening, closing) in [
+            ("<a:ln", Some("</a:ln>")), ("<a:ln", None),
+            ("<a:extLst", Some("</a:extLst>")), ("<a:extLst", None),
+        ] {
+            if let Some(value) = remove_fill_tokens(&output, opening, closing) {
+                output = std::borrow::Cow::Owned(value);
+            }
+        }
+    } else {
+        for pattern in [r"(?is)<a:ln\b[\s\S]*?</a:ln>", r"(?i)<a:ln\b[^>]*/>", r"(?is)<a:extLst\b[\s\S]*?</a:extLst>", r"(?i)<a:extLst\b[^>]*/>"] {
+            let replacement = match re::get_unchecked(pattern).replace_all(&output, "") {
+                std::borrow::Cow::Owned(value) => Some(value),
+                std::borrow::Cow::Borrowed(_) => None,
+            };
+            if let Some(value) = replacement {
+                output = std::borrow::Cow::Owned(value);
+            }
+        }
+    }
+    output
 }
 
 fn drawing_shape_fill_markup(
@@ -982,18 +1117,7 @@ fn drawing_shape_fill_markup(
     theme_colors: &crate::parse::context::ThemeColorMap,
     gradient_id: &str,
 ) -> ShapeFillMarkup {
-    let fill_scope_xml = re::get_unchecked(r"(?is)<a:ln\b[\s\S]*?</a:ln>")
-        .replace_all(shape_properties_xml, "")
-        .to_string();
-    let fill_scope_xml = re::get_unchecked(r"(?i)<a:ln\b[^>]*/>")
-        .replace_all(&fill_scope_xml, "")
-        .to_string();
-    let fill_scope_xml = re::get_unchecked(r"(?is)<a:extLst\b[\s\S]*?</a:extLst>")
-        .replace_all(&fill_scope_xml, "")
-        .to_string();
-    let fill_scope_xml = re::get_unchecked(r"(?i)<a:extLst\b[^>]*/>")
-        .replace_all(&fill_scope_xml, "")
-        .to_string();
+    let fill_scope_xml = drawing_shape_fill_scope(shape_properties_xml);
     if let Some(solid_fill_xml) = extract_balanced_tag_blocks(&fill_scope_xml, "a:solidFill")
         .into_iter()
         .next()
@@ -1143,6 +1267,78 @@ fn drawing_shape_stroke_markup(
     )
 }
 
+const DRAWING_COMMAND_PATTERN: &str = r"(?is)<a:moveTo\b[\s\S]*?(?:</a:moveTo>|/>)|<a:lnTo\b[\s\S]*?(?:</a:lnTo>|/>)|<a:cubicBezTo\b[\s\S]*?(?:</a:cubicBezTo>|/>)|<a:close\b[\s\S]*?(?:</a:close>|/>)";
+
+fn drawing_path_commands(xml: &str) -> impl Iterator<Item = &str> {
+    let mut fallback =
+        (!xml.is_ascii()).then(|| re::get_unchecked(DRAWING_COMMAND_PATTERN).find_iter(xml));
+    let mut remaining = xml;
+    let mut exhausted = 0u8;
+    std::iter::from_fn(move || {
+        if let Some(matches) = &mut fallback {
+            return matches.next().map(|matched| matched.as_str());
+        }
+        while let Some(start) = memchr::memchr(b'<', remaining.as_bytes()) {
+            let candidate = &remaining[start..];
+            remaining = &candidate[1..];
+            let name = ["a:moveTo", "a:lnTo", "a:cubicBezTo", "a:close"]
+                .into_iter()
+                .enumerate()
+                .find(|(_, name)| {
+                    remaining
+                        .as_bytes()
+                        .get(..name.len())
+                        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(name.as_bytes()))
+                        && remaining
+                            .as_bytes()
+                            .get(name.len())
+                            .is_none_or(|byte| !byte.is_ascii_alphanumeric() && *byte != b'_')
+                });
+            let Some((id, name)) = name else {
+                continue;
+            };
+            if exhausted & (1 << id) != 0 {
+                continue;
+            }
+            let tail = &candidate[name.len() + 1..];
+            let end = memchr::memchr2_iter(b'/', b'<', tail.as_bytes()).find_map(|position| {
+                let token = &tail.as_bytes()[position..];
+                if token.starts_with(b"/>") {
+                    Some(position + 2)
+                } else if token.starts_with(b"</")
+                    && token
+                        .get(2..name.len() + 2)
+                        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(name.as_bytes()))
+                    && token.get(name.len() + 2) == Some(&b'>')
+                {
+                    Some(position + name.len() + 3)
+                } else {
+                    None
+                }
+            });
+            if let Some(end) = end {
+                let end = name.len() + 1 + end;
+                remaining = &candidate[end..];
+                return Some(&candidate[..end]);
+            }
+            exhausted |= 1 << id;
+        }
+        None
+    })
+}
+
+fn simple_drawing_point(command_xml: &str) -> Option<(&str, &str)> {
+    let body = &command_xml[command_xml.find('>')? + 1..];
+    let x = body.strip_prefix("<a:pt x=\"")?;
+    let x_end = x.find('"')?;
+    let y = x[x_end..].strip_prefix("\" y=\"")?;
+    let y_end = y.find('"')?;
+    if x_end == 0 || y_end == 0 || &y[y_end..] != "\"/>" {
+        return None;
+    }
+    Some((&x[..x_end], &y[..y_end]))
+}
+
 fn drawing_shape_path_data(path_xml: &str, width_px: i64, height_px: i64) -> Option<String> {
     let path_tag = regex_tag(path_xml, r"(?i)<a:path\b[^>]*>").unwrap_or_default();
     let base_width = parse_integer_attribute(&path_tag, "w")
@@ -1151,11 +1347,6 @@ fn drawing_shape_path_data(path_xml: &str, width_px: i64, height_px: i64) -> Opt
     let base_height = parse_integer_attribute(&path_tag, "h")
         .unwrap_or(21600)
         .max(1) as f64;
-    let command_re = re::get_unchecked(
-        r"(?is)<a:moveTo\b[\s\S]*?(?:</a:moveTo>|/>)|<a:lnTo\b[\s\S]*?(?:</a:lnTo>|/>)|<a:cubicBezTo\b[\s\S]*?(?:</a:cubicBezTo>|/>)|<a:close\b[\s\S]*?(?:</a:close>|/>)",
-    );
-    let point_re = re::get_unchecked(r#"(?i)<a:pt\b[^>]*x="([^"]+)"[^>]*y="([^"]+)"[^>]*/>"#);
-
     let scale_point = |x_raw: &str, y_raw: &str| -> Option<String> {
         let x: f64 = x_raw.trim().parse().ok().filter(|v: &f64| v.is_finite())?;
         let y: f64 = y_raw.trim().parse().ok().filter(|v: &f64| v.is_finite())?;
@@ -1170,9 +1361,8 @@ fn drawing_shape_path_data(path_xml: &str, width_px: i64, height_px: i64) -> Opt
 
     let mut commands = Vec::new();
     let mut matched_any = false;
-    for command_match in command_re.find_iter(path_xml) {
+    for command_xml in drawing_path_commands(path_xml) {
         matched_any = true;
-        let command_xml = command_match.as_str();
         let command_type = command_xml
             .get(..14)
             .unwrap_or(command_xml)
@@ -1182,19 +1372,19 @@ fn drawing_shape_path_data(path_xml: &str, width_px: i64, height_px: i64) -> Opt
             continue;
         }
 
-        let points: Vec<(String, String)> = point_re
-            .captures_iter(command_xml)
-            .map(|caps| {
-                (
-                    caps.get(1)
-                        .map(|m| m.as_str().to_string())
-                        .unwrap_or_default(),
-                    caps.get(2)
-                        .map(|m| m.as_str().to_string())
-                        .unwrap_or_default(),
-                )
-            })
-            .collect();
+        let points: Vec<(&str, &str)> = if let Some(point) = simple_drawing_point(command_xml) {
+            vec![point]
+        } else {
+            re::get_unchecked(r#"(?i)<a:pt\b[^>]*x="([^"]+)"[^>]*y="([^"]+)"[^>]*/>"#)
+                .captures_iter(command_xml)
+                .map(|caps| {
+                    (
+                        caps.get(1).map(|m| m.as_str()).unwrap_or_default(),
+                        caps.get(2).map(|m| m.as_str()).unwrap_or_default(),
+                    )
+                })
+                .collect()
+        };
         if command_type.contains("moveto") || command_type.contains("lnto") {
             let Some((x_raw, y_raw)) = points.first() else {
                 continue;
@@ -1584,4 +1774,223 @@ fn regex_capture(xml: &str, pattern: &str) -> Option<String> {
 
 fn regex_tag(xml: &str, pattern: &str) -> Option<String> {
     re::get(pattern)?.find(xml).map(|m| m.as_str().to_string())
+}
+
+#[cfg(test)]
+mod bitmap_fill_tests {
+    use super::*;
+    use crate::parse::empty_style_sheet;
+    use std::{cell::RefCell, collections::HashMap};
+
+    fn properties(offsets: &str) -> String {
+        format!(
+            r#"<wps:spPr><a:prstGeom prst="rect"/><a:blipFill><a:blip r:embed="rId1"/><a:stretch><a:fillRect {offsets}/></a:stretch></a:blipFill></wps:spPr>"#
+        )
+    }
+
+    fn render(offsets: &str) -> Option<String> {
+        let parts = HashMap::new();
+        let assets = HashMap::from([("word/media/image.png".to_string(), vec![1, 2, 3])]);
+        let context = ParseContext {
+            parts: &parts,
+            binary_assets: &assets,
+            relationships: HashMap::from([(
+                "rId1".to_string(),
+                "word/media/image.png".to_string(),
+            )]),
+            content_types: Default::default(),
+            style_sheet: empty_style_sheet(),
+            warnings: RefCell::new(Vec::new()),
+        };
+        render_rect_shape_bitmap_fill_svg(&properties(offsets), 200, 100, &context)
+    }
+
+    #[test]
+    fn zero_offsets_preserve_the_unclipped_representation() {
+        let implicit = render("").unwrap();
+        assert!(implicit.starts_with("<image "));
+        assert_eq!(implicit, render(r#"l="0" t="0" r="0" b="0""#).unwrap());
+        assert_eq!(implicit, render(r#"l="0%" r="0.0%""#).unwrap());
+    }
+
+    #[test]
+    fn insets_scale_and_position_the_fill() {
+        let svg = render(r#"l="10000" t="20000" r="25000" b="10000""#).unwrap();
+        assert!(svg.contains(r#"x="20" y="20" width="130" height="70""#));
+        assert!(svg.contains(r#"viewBox="0 0 200 100" overflow="hidden""#));
+        assert_eq!(svg, render(r#"l="10%" t="20%" r="25%" b="10%""#).unwrap());
+    }
+
+    #[test]
+    fn outsets_keep_the_shape_clip_and_preserve_source_bytes() {
+        let svg = render(r#"l="-25000" r="-25000""#).unwrap();
+        assert!(svg.contains(r#"x="-50" y="0" width="300" height="100""#));
+        assert!(svg.contains("data:image/png;base64,AQID"));
+        assert!(svg.contains(r#"overflow="hidden""#));
+    }
+
+    #[test]
+    fn rejects_invalid_or_empty_fill_rectangles() {
+        for offsets in [
+            r#"l="50000" r="50000""#,
+            r#"t="100001""#,
+            r#"r="NaN%""#,
+            r#"l="inf%""#,
+            r#"b="invalid""#,
+        ] {
+            assert!(render(offsets).is_none(), "{offsets}");
+        }
+    }
+
+    #[test]
+    fn retains_guards_for_unsupported_fill_operations() {
+        for xml in [
+            properties("").replace("a:stretch", "a:tile"),
+            properties("").replace("r:embed", "r:link"),
+            properties("").replace("rect", "ellipse"),
+            properties("").replace("<a:stretch>", "<a:srcRect l=\"10000\"/><a:stretch>"),
+            properties("").replace("</wps:spPr>", "<a:effectLst/></wps:spPr>"),
+        ] {
+            assert!(simple_rect_bitmap_fill(&xml).is_none());
+        }
+    }
+}
+#[cfg(test)]
+mod geometry_scan_tests {
+    use super::*;
+
+    #[test]
+    fn drawing_commands_match_regex_across_boundaries() {
+        let names = [
+            "moveTo",
+            "lnTo",
+            "cubicBezTo",
+            "close",
+            "MOVETO",
+            "cloſe",
+            "lnToExtra",
+            "moveTo-",
+            "close.",
+        ];
+        let tails = ["/>", ">", " x=\"/>\">", "\n>", " ", ":>"];
+        let bodies = [
+            "",
+            "<a:pt x=\"1\" y=\"2\"/>",
+            "<a:pt y=\"2\" x=\"1\"/>",
+            "<a:close/>",
+            "text",
+            "é",
+            "<a:lnTo><a:pt x=\"-1\" y=\"0\"/>",
+        ];
+        let endings = [
+            "",
+            "</a:moveTo>",
+            "</a:lnTo>",
+            "</a:cubicBezTo>",
+            "</a:close>",
+            "</A:MOVETO>",
+            "/>",
+        ];
+        let regex = re::get_unchecked(DRAWING_COMMAND_PATTERN);
+        for name in names {
+            for tail in tails {
+                for body in bodies {
+                    for ending in endings {
+                        let xml =
+                            format!("<a:path><a:{name}{tail}{body}{ending}<a:close/></a:path>");
+                        let expected: Vec<_> =
+                            regex.find_iter(&xml).map(|value| value.as_str()).collect();
+                        assert_eq!(
+                            drawing_path_commands(&xml).collect::<Vec<_>>(),
+                            expected,
+                            "{xml}"
+                        );
+                    }
+                }
+            }
+        }
+        let pieces = [
+            "<",
+            ">",
+            "/>",
+            "a:moveTo",
+            "<a:lnTo",
+            "</a:lnTo>",
+            "<a:close/>",
+            "<a:cubicBezTo>",
+            "<a:pt x=\"1\" y=\"2\"/>",
+            " ",
+            "\n",
+            "-",
+            ":",
+        ];
+        let mut seed = 0x7bc2_9164_u64;
+        for _ in 0..4096 {
+            let mut xml = String::new();
+            for _ in 0..32 {
+                seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                xml.push_str(pieces[(seed >> 32) as usize % pieces.len()]);
+            }
+            let expected: Vec<_> = regex.find_iter(&xml).map(|value| value.as_str()).collect();
+            assert_eq!(
+                drawing_path_commands(&xml).collect::<Vec<_>>(),
+                expected,
+                "{xml}"
+            );
+        }
+    }
+
+    #[test]
+    fn simple_points_preserve_captured_coordinates() {
+        let regex = re::get_unchecked(r#"(?i)<a:pt\b[^>]*x="([^"]+)"[^>]*y="([^"]+)"[^>]*/>"#);
+        let coordinates = [
+            "", "1", "-2", " 1.5 ", "1e5", "NaN", "∞", "a&b", "x>y", "\"", "\" y=\"3",
+        ];
+        for x in coordinates {
+            for y in coordinates {
+                let xml = format!("<a:moveTo><a:pt x=\"{x}\" y=\"{y}\"/>");
+                if let Some(point) = simple_drawing_point(&xml) {
+                    let captures = regex.captures(&xml).unwrap();
+                    assert_eq!(
+                        point,
+                        (
+                            captures.get(1).unwrap().as_str(),
+                            captures.get(2).unwrap().as_str()
+                        )
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod shape_fill_scope_tests {
+    use super::*;
+
+    #[test]
+    fn fill_exclusions_preserve_sequential_regex_semantics() {
+        let fragments = [
+            "", "<a:solidFill><a:srgbClr val='123456'/></a:solidFill>",
+            "<a:ln/>", "<a:ln><a:solidFill/></a:ln>",
+            "<A:LN><a:ln/></A:LN>", "<a:lnTo><a:pt x='1' y='2'/></a:lnTo>",
+            "<a:extLst/>", "<a:extLst><a:ln/></a:extLst>",
+            "<a:extLſt/>", "<!--<a:ln/>-->", "<![CDATA[<a:extLst/>]]>",
+            "<a:ext<a:ln>discard</a:ln>Lst/>",
+            "<a:ln-variant>discard</a:ln>", "<a:ln_unchanged/>",
+            "<a:ln/><a:solidFill/><a:ln>discard</a:ln>",
+            "<a:extLst><a:ln></a:extLst></a:ln>",
+        ];
+        for left in fragments {
+            for right in fragments {
+                let input = format!("{left}{right}");
+                let mut expected = input.clone();
+                for pattern in [r"(?is)<a:ln\b[\s\S]*?</a:ln>", r"(?i)<a:ln\b[^>]*/>", r"(?is)<a:extLst\b[\s\S]*?</a:extLst>", r"(?i)<a:extLst\b[^>]*/>"] {
+                    expected = re::get_unchecked(pattern).replace_all(&expected, "").into_owned();
+                }
+                assert_eq!(drawing_shape_fill_scope(&input), expected);
+            }
+        }
+        assert!(matches!(drawing_shape_fill_scope("<a:lnTo/>"), std::borrow::Cow::Borrowed(_)));
+    }
 }

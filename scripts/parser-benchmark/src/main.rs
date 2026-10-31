@@ -2,6 +2,7 @@ use std::{fs, hint::black_box, io::{BufWriter, Cursor, Write}, sync::Arc, time::
 use flate2::{write::GzEncoder, Compression};
 use serde::Serialize;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 mod compact;
 
 enum Parsed {
@@ -76,7 +77,18 @@ fn run(args: &[String]) -> Result<Value, String> {
         }
         Parsed::Rs(doc) => write_json(&format!("{output}.json.gz"), doc)?,
         Parsed::Oxide(doc) => write_json(&format!("{output}.json.gz"), doc)?,
-        Parsed::Undoc(doc) => write_json(&format!("{output}.json.gz"), doc)?,
+        Parsed::Undoc(doc) => {
+            #[derive(Serialize)]
+            struct Output<'a> {
+                #[serde(flatten)]
+                document: &'a undoc::Document,
+                resource_payload_sha256: std::collections::BTreeMap<&'a str, String>,
+            }
+            let resource_payload_sha256 = doc.resources.iter().map(|(id, resource)| {
+                (id.as_str(), format!("{:x}", Sha256::digest(&resource.data)))
+            }).collect();
+            write_json(&format!("{output}.json.gz"), &Output { document: doc, resource_payload_sha256 })?;
+        }
     } }
     drop(warm);
     let loops = ((20.0 / warm_ms.iter().sum::<f64>().max(0.01)).ceil() as usize).clamp(1, 20);

@@ -15,6 +15,11 @@ pub fn parse_document_default_tab_stop_twips(pkg: &OoxmlPackage) -> Option<i64> 
 
 /// Mirrors TypeScript `extractBodyXml`.
 fn extract_body_xml(document_xml: &str) -> &str {
+    if let Some(body) = crate::xml_index::unique_inner_xml(document_xml, "w:body") {
+        if !body.is_empty() {
+            return body;
+        }
+    }
     if let Some(start) = find_subsequence_ignore_ascii_case(document_xml, "<w:body") {
         let after_open = &document_xml[start..];
         let open_end = after_open.find('>').map(|index| start + index + 1);
@@ -225,4 +230,32 @@ fn find_subsequence_ignore_ascii_case(haystack: &str, needle: &str) -> Option<us
         return Some(0);
     }
     crate::xml::find_ignore_ascii_case(haystack, 0, needle)
+}
+
+#[cfg(test)]
+mod indexed_body_bounds_tests {
+    #[test]
+    fn indexed_body_bounds_preserve_legacy_metadata_and_body_results() {
+        let binding = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+        for content in [
+            "<w:body><w:p/><w:sectPr/></w:body>",
+            "<w:body></w:body><w:sectPr/>",
+            "<w:body/><w:sectPr/>",
+            "<w:bodyExtra/><w:body><w:sectPr/></w:body>",
+            "<w:body><w:body><w:sectPr/></w:body><w:sectPr/></w:body>",
+            "<w:body><w:sectPr/></w:body><w:body><w:p/></w:body>",
+            "<w:BODY><w:p/><w:sectPr/></w:BODY>",
+            "<w:body><w:p><w:r><w:t>λ😀&lt;w:body&gt;</w:t></w:r></w:p><w:sectPr/></w:body>",
+        ] {
+            let xml = format!("<w:document xmlns:w=\"{binding}\">{content}</w:document>");
+            let expected = (super::extract_section_properties_xml(&xml), super::super::body::body_xml(&xml).to_owned());
+            let Some(index) = crate::xml_index::Index::canonical(&xml) else { continue; };
+            let _scope = crate::xml_index::scope(
+                [("part", xml.as_str())].into_iter(),
+                std::collections::HashMap::from([("part".to_owned(), index)]),
+            );
+            let actual = (super::extract_section_properties_xml(&xml), super::super::body::body_xml(&xml).to_owned());
+            assert_eq!(actual, expected);
+        }
+    }
 }
