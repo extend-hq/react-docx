@@ -5,6 +5,7 @@ import type {
   ParagraphChildNode,
   TableCellContentNode
 } from "./types";
+import { invalidateFormFieldSource, resolveFormFieldSourcePreview } from "./form-field";
 
 function normalizeUint8Array(value: unknown): Uint8Array | undefined {
   if (value instanceof Uint8Array) {
@@ -16,7 +17,28 @@ function normalizeUint8Array(value: unknown): Uint8Array | undefined {
   return undefined;
 }
 
-function normalizeParagraphChild(child: ParagraphChildNode): ParagraphChildNode {
+function normalizeParagraphChild(
+  child: ParagraphChildNode,
+  invalidated: Set<object>
+): ParagraphChildNode {
+  if (child.type === "form-field" && child.sourcePreview) {
+    const image = resolveFormFieldSourcePreview(child);
+    if (!image) {
+      const stateChanged = typeof child.sourcePreview.checked === "boolean" && (
+        child.fieldType !== "checkbox" ||
+        child.sourcePreview.checked !== Boolean(child.checked ?? child.widget?.checkbox?.defaultChecked)
+      );
+      const normalized = stateChanged
+        ? invalidateFormFieldSource(child)
+        : { ...child, sourcePreview: undefined };
+      if (stateChanged) invalidated.add(normalized);
+      return normalized;
+    }
+    const normalizedImage = normalizeParagraphChild(image, invalidated) as ImageRunNode;
+    return normalizedImage === image
+      ? child
+      : { ...child, sourcePreview: { ...child.sourcePreview, image: normalizedImage } };
+  }
   if (child.type !== "image") {
     return child;
   }
@@ -30,77 +52,82 @@ function normalizeParagraphChild(child: ParagraphChildNode): ParagraphChildNode 
   return {
     ...image,
     data,
-    contentNodes: image.contentNodes?.map(normalizeDocNode)
+    contentNodes: image.contentNodes?.map((node) => normalizeDocNode(node, invalidated))
   };
 }
 
-function normalizeTableCellContent(node: TableCellContentNode): TableCellContentNode {
-  if (node.type === "table") {
-    return normalizeDocNode(node) as TableCellContentNode;
-  }
-
-  return {
-    ...node,
-    children: node.children.map(normalizeParagraphChild)
-  };
+function normalizeTableCellContent(node: TableCellContentNode, invalidated: Set<object>): TableCellContentNode {
+  return normalizeDocNode(node, invalidated) as TableCellContentNode;
 }
 
-function normalizeDocNode(node: DocNode): DocNode {
+function normalizeDocNode(node: DocNode, invalidated: Set<object>): DocNode {
   if (node.type === "paragraph") {
-    return {
+    const children = node.children.map((child) => normalizeParagraphChild(child, invalidated));
+    const stateChanged = invalidated.size > 0 && children.some((child) => invalidated.has(child));
+    const normalized = {
       ...node,
-      children: node.children.map(normalizeParagraphChild)
+      ...(stateChanged ? { sourceXml: undefined, sourceTextPatch: undefined } : {}),
+      children
     };
+    if (stateChanged) invalidated.add(normalized);
+    return normalized;
   }
 
-  return {
-    ...node,
-    rows: node.rows.map((row) => ({
-      ...row,
-      cells: row.cells.map((cell) => ({
-        ...cell,
-        nodes: cell.nodes.map(normalizeTableCellContent)
-      }))
+  const rows = node.rows.map((row) => ({
+    ...row,
+    cells: row.cells.map((cell) => ({
+      ...cell,
+      nodes: cell.nodes.map((content) => normalizeTableCellContent(content, invalidated))
     }))
+  }));
+  const stateChanged = invalidated.size > 0 && rows.some((row) => row.cells.some((cell) => cell.nodes.some((content) => invalidated.has(content))));
+  const normalized = {
+    ...node,
+    ...(stateChanged ? { sourceXml: undefined, sourceTextPatches: undefined } : {}),
+    rows
   };
+  if (stateChanged) invalidated.add(normalized);
+  return normalized;
 }
 
 export function normalizeDocModel(model: DocModel): DocModel {
+  const invalidated = new Set<object>();
+  const normalize = (node: DocNode): DocNode => normalizeDocNode(node, invalidated);
   return {
     ...model,
-    nodes: model.nodes.map(normalizeDocNode),
+    nodes: model.nodes.map(normalize),
     metadata: {
       ...model.metadata,
       headerSections: model.metadata.headerSections.map((section) => ({
         ...section,
-        nodes: section.nodes.map(normalizeDocNode)
+        nodes: section.nodes.map(normalize)
       })),
       footerSections: model.metadata.footerSections.map((section) => ({
         ...section,
-        nodes: section.nodes.map(normalizeDocNode)
+        nodes: section.nodes.map(normalize)
       })),
       sections: model.metadata.sections?.map((section) => ({
         ...section,
         headerSections: section.headerSections.map((header) => ({
           ...header,
-          nodes: header.nodes.map(normalizeDocNode)
+          nodes: header.nodes.map(normalize)
         })),
         footerSections: section.footerSections.map((footer) => ({
           ...footer,
-          nodes: footer.nodes.map(normalizeDocNode)
+          nodes: footer.nodes.map(normalize)
         }))
       })),
       footnotes: model.metadata.footnotes?.map((note) => ({
         ...note,
-        nodes: note.nodes?.map(normalizeDocNode)
+        nodes: note.nodes?.map(normalize)
       })),
       comments: model.metadata.comments?.map((comment) => ({
         ...comment,
-        nodes: comment.nodes?.map(normalizeDocNode)
+        nodes: comment.nodes?.map(normalize)
       })),
       endnotes: model.metadata.endnotes?.map((note) => ({
         ...note,
-        nodes: note.nodes?.map(normalizeDocNode)
+        nodes: note.nodes?.map(normalize)
       }))
     }
   };

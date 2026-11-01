@@ -160,6 +160,7 @@ struct Relationship {
 }
 
 struct ImageSerializationState<'a> {
+    owner_part_name: String,
     next_image_index: i64,
     next_relationship_index: i64,
     relationships: Vec<Relationship>,
@@ -1203,16 +1204,80 @@ fn decode_base64(input: &str) -> Option<Vec<u8>> {
     Some(output)
 }
 
+fn decode_uri_octets(value: &str) -> Option<Vec<u8>> {
+    let bytes = value.as_bytes();
+    let mut result = Vec::with_capacity(bytes.len());
+    let mut offset = 0;
+    let hex = |byte: u8| match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    };
+    while let Some(&byte) = bytes.get(offset) {
+        if byte == b'%' {
+            let high = hex(*bytes.get(offset + 1)?)?;
+            let low = hex(*bytes.get(offset + 2)?)?;
+            result.push(high * 16 + low);
+            offset += 3;
+        } else {
+            result.push(byte);
+            offset += 1;
+        }
+    }
+    Some(result)
+}
+
+fn data_uri_token(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_graphic() && !b"()<>@,;:\\\"/[]?=".contains(&byte))
+}
+
 fn decode_data_uri(data_uri: &str) -> Option<(String, Vec<u8>)> {
-    let lower = data_uri.to_ascii_lowercase();
-    if !lower.starts_with("data:") {
+    if !data_uri.get(..5)?.eq_ignore_ascii_case("data:") {
         return None;
     }
-    let rest = &data_uri[5..];
-    let semi = rest.find(';')?;
-    let mime_type = rest[..semi].to_string();
-    let payload = rest[semi + 1..].strip_prefix("base64,")?;
-    let data = decode_base64(payload)?;
+    let (metadata, payload) = data_uri[5..].split_once(',')?;
+    let mut fields = metadata.split(';').peekable();
+    let encoded_mime_type = fields.next()?;
+    let mime_type = if encoded_mime_type.is_empty() {
+        "text/plain".to_string()
+    } else {
+        let decoded = String::from_utf8(decode_uri_octets(encoded_mime_type)?).ok()?;
+        let (kind, subtype) = decoded.split_once('/')?;
+        if !data_uri_token(kind) || !data_uri_token(subtype) {
+            return None;
+        }
+        decoded
+    };
+    let mut base64 = false;
+    while let Some(field) = fields.next() {
+        if field.eq_ignore_ascii_case("base64") {
+            if fields.peek().is_some() {
+                return None;
+            }
+            base64 = true;
+        } else {
+            let (attribute, value) = field.split_once('=')?;
+            let attribute = String::from_utf8(decode_uri_octets(attribute)?).ok()?;
+            if !data_uri_token(&attribute) {
+                return None;
+            }
+            decode_uri_octets(value)?;
+        }
+    }
+    let data = if base64 {
+        if payload.contains('%') {
+            let decoded = decode_uri_octets(payload)?;
+            decode_base64(std::str::from_utf8(&decoded).ok()?)?
+        } else {
+            decode_base64(payload)?
+        }
+    } else {
+        decode_uri_octets(payload)?
+    };
     Some((mime_type, data))
 }
 
@@ -1503,11 +1568,768 @@ fn image_wrap_text_attr(wrap_text: Option<ImageWrapText>) -> String {
         .unwrap_or_default()
 }
 
+const VML_NS: &str = "urn:schemas-microsoft-com:vml";
+const VML_WORD_NS: &str = "urn:schemas-microsoft-com:office:word";
+const VML_SOURCE_NAMESPACES: &str = r#"xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w10="urn:schemas-microsoft-com:office:word" xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006""#;
+
+fn vml_source_frame(root: roxmltree::Node<'_, '_>) -> Option<(f64, f64, Option<ImageFloating>)> {
+    let style = root.attribute("style")?;
+    let mut declarations = HashMap::new();
+    for entry in style
+        .split(';')
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+    {
+        let (key, value) = entry.split_once(':')?;
+        let key = key.trim().to_ascii_lowercase();
+        let value = value.trim().to_ascii_lowercase();
+        if key.is_empty() || value.is_empty() || declarations.insert(key, value).is_some() {
+            return None;
+        }
+    }
+    let dimension = |name: &str| -> Option<f64> {
+        let value = declarations.get(name)?;
+        let split = value.find(|c: char| c.is_ascii_alphabetic())?;
+        let number: f64 = value[..split].trim().parse().ok()?;
+        let scale = match value[split..].trim() {
+            "px" => 1.0,
+            "pt" => 96.0 / 72.0,
+            "in" => 96.0,
+            "cm" => 96.0 / 2.54,
+            "mm" => 96.0 / 25.4,
+            _ => return None,
+        };
+        let pixels = number * scale;
+        (pixels.is_finite() && pixels > 0.0).then_some(pixels)
+    };
+    let width = dimension("width")?;
+    let height = dimension("height")?;
+    let wraps: Vec<_> = root
+        .children()
+        .filter(|node| node.has_tag_name((VML_WORD_NS, "wrap")))
+        .collect();
+    if wraps.len() > 1 {
+        return None;
+    }
+    let wrap = wraps
+        .first()
+        .map(|node| {
+            let attributes = ["type", "side"]
+                .into_iter()
+                .filter_map(|name| {
+                    node.attribute(name)
+                        .map(|value| format!(" {name}=\"{}\"", escape_xml(value)))
+                })
+                .collect::<String>();
+            format!("<w10:wrap{attributes}/>")
+        })
+        .unwrap_or_default();
+    let synthetic = format!("<v:shape style=\"{}\">{wrap}</v:shape>", escape_xml(style));
+    let mut floating = crate::parse::parse_vml_floating_anchor_from_run_xml(&synthetic);
+    let inert = declarations.keys().all(|key| {
+        matches!(
+            key.as_str(),
+            "width"
+                | "height"
+                | "position"
+                | "mso-position-horizontal-relative"
+                | "mso-position-vertical-relative"
+        )
+    }) && declarations
+        .get("position")
+        .is_none_or(|value| matches!(value.as_str(), "static" | "relative"));
+    if inert {
+        if let Some(anchor) = floating.as_mut() {
+            anchor.horizontal_relative_to = None;
+            anchor.vertical_relative_to = None;
+            if anchor.x_px.is_none()
+                && anchor.y_px.is_none()
+                && anchor.horizontal_align.is_none()
+                && anchor.vertical_align.is_none()
+                && anchor.dist_l_px.is_none()
+                && anchor.dist_r_px.is_none()
+                && anchor.dist_t_px.is_none()
+                && anchor.dist_b_px.is_none()
+                && anchor.wrap_type.is_none()
+                && anchor.wrap_text.is_none()
+                && anchor.behind_document.is_none()
+                && anchor.z_index.is_none()
+            {
+                floating = None;
+            }
+        }
+    }
+    Some((width, height, floating))
+}
+
+fn vml_paragraph_bookmarks(
+    paragraph: roxmltree::Node<'_, '_>,
+    source: &str,
+    seen_ids: &mut std::collections::HashSet<String>,
+) -> Option<(String, String)> {
+    let text_runs: Vec<_> = paragraph
+        .children()
+        .filter(|node| {
+            node.has_tag_name((WORD_MAIN_NS, "r"))
+                && node.children().any(|child| {
+                    child.has_tag_name((WORD_MAIN_NS, "t"))
+                        && child.text().is_some_and(|text| !text.is_empty())
+                        || child.tag_name().namespace() == Some(WORD_MAIN_NS)
+                            && matches!(child.tag_name().name(), "tab" | "br" | "cr")
+                })
+        })
+        .collect();
+    let mut open = std::collections::HashSet::new();
+    let mut before = String::new();
+    let mut after = String::new();
+    for marker in paragraph.children().filter(|node| {
+        node.has_tag_name((WORD_MAIN_NS, "bookmarkStart"))
+            || node.has_tag_name((WORD_MAIN_NS, "bookmarkEnd"))
+    }) {
+        let raw = &source[marker.range()];
+        if !raw.starts_with(&format!("<w:{}", marker.tag_name().name()))
+            || marker.children().any(|node| {
+                node.is_element() || node.text().is_some_and(|text| !text.trim().is_empty())
+            })
+            || marker.attributes().any(|attribute| {
+                attribute.namespace() != Some(WORD_MAIN_NS)
+                    || &source[attribute.range_qname()] != format!("w:{}", attribute.name())
+            })
+        {
+            return None;
+        }
+        let id = marker.attribute((WORD_MAIN_NS, "id"))?;
+        if id.is_empty() {
+            return None;
+        }
+        if marker.has_tag_name((WORD_MAIN_NS, "bookmarkStart")) {
+            if !open.insert(id) || !seen_ids.insert(id.to_owned()) {
+                return None;
+            }
+        } else if !open.remove(id) {
+            return None;
+        }
+        if let (Some(first), Some(last)) = (text_runs.first(), text_runs.last()) {
+            if marker.range().start > first.range().start && marker.range().end < last.range().end {
+                return None;
+            }
+            if marker.range().start < first.range().start {
+                before.push_str(raw);
+            } else {
+                after.push_str(raw);
+            }
+        } else {
+            before.push_str(raw);
+        }
+    }
+    open.is_empty().then_some((before, after))
+}
+
+struct VmlTextboxSourcePlan {
+    wrapped: String,
+    open_len: usize,
+    paragraphs: Vec<(
+        std::ops::Range<usize>,
+        std::ops::Range<usize>,
+        Vec<(String, String)>,
+    )>,
+    run_start: Option<usize>,
+    is_pict: bool,
+    namespaces: Vec<(String, String)>,
+}
+
+fn finite_coordinates<const N: usize>(value: &str) -> Option<[f64; N]> {
+    let values = value
+        .split(|character: char| character == ',' || character.is_ascii_whitespace())
+        .filter(|value| !value.is_empty())
+        .map(|value| value.parse::<f64>().ok().filter(|value| value.is_finite()))
+        .collect::<Option<Vec<_>>>()?;
+    values.try_into().ok()
+}
+
+fn valid_image_paint_bounds(image: &ImageRunNode) -> bool {
+    let Some(bounds) = image.paint_bounds.as_deref() else {
+        return true;
+    };
+    let Some((width, height)) = image.width_px.zip(image.height_px) else {
+        return false;
+    };
+    let scale_x = width / bounds.layout_width_px;
+    let scale_y = height / bounds.layout_height_px;
+    bounds.x_px.is_finite()
+        && bounds.y_px.is_finite()
+        && [
+            bounds.width_px,
+            bounds.height_px,
+            bounds.layout_width_px,
+            bounds.layout_height_px,
+        ]
+        .into_iter()
+        .all(|value| value.is_finite() && value > 0.0)
+        && image
+            .width_px
+            .is_some_and(|value| value.is_finite() && value > 0.0)
+        && image
+            .height_px
+            .is_some_and(|value| value.is_finite() && value > 0.0)
+        && image.floating.is_none()
+        && [
+            scale_x,
+            scale_y,
+            bounds.width_px * scale_x,
+            bounds.height_px * scale_y,
+        ]
+        .into_iter()
+        .all(|value| value.is_finite() && value > 0.0)
+        && (bounds.x_px * scale_x).is_finite()
+        && (bounds.y_px * scale_y).is_finite()
+        && (bounds.x_px + bounds.width_px).is_finite()
+        && (bounds.y_px + bounds.height_px).is_finite()
+        && (bounds.x_px * scale_x + bounds.width_px * scale_x).is_finite()
+        && (bounds.y_px * scale_y + bounds.height_px * scale_y).is_finite()
+}
+
+fn vml_paint_matches_source(
+    image: &ImageRunNode,
+    svg: roxmltree::Node<'_, '_>,
+    source: roxmltree::Node<'_, '_>,
+    source_width: f64,
+    source_height: f64,
+    frame_width: f64,
+    frame_height: f64,
+) -> bool {
+    let Some(bounds) = image.paint_bounds.as_deref() else {
+        return source_width == frame_width
+            && source_height == frame_height
+            && image.width_px == Some(frame_width)
+            && image.height_px == Some(frame_height);
+    };
+    if !valid_image_paint_bounds(image)
+        || image.width_px != Some(source_width)
+        || image.height_px != Some(source_height)
+        || bounds.layout_width_px != source_width
+        || bounds.layout_height_px != source_height
+        || bounds.width_px != frame_width
+        || bounds.height_px != frame_height
+        || svg.attribute("preserveAspectRatio") != Some("none")
+    {
+        return false;
+    }
+    let Some([origin_x, origin_y]) =
+        finite_coordinates::<2>(source.attribute("coordorigin").unwrap_or("0,0"))
+    else {
+        return false;
+    };
+    let Some([extent_x, extent_y]) =
+        finite_coordinates::<2>(source.attribute("coordsize").unwrap_or("1000,1000"))
+    else {
+        return false;
+    };
+    let Some([canvas_x, canvas_y, canvas_width, canvas_height]) =
+        svg.attribute("viewBox").and_then(finite_coordinates::<4>)
+    else {
+        return false;
+    };
+    extent_x > 0.0
+        && extent_y > 0.0
+        && canvas_width > 0.0
+        && canvas_height > 0.0
+        && bounds.x_px
+            == if source_width == extent_x {
+                canvas_x - origin_x
+            } else {
+                (canvas_x - origin_x) * source_width / extent_x
+            }
+        && bounds.y_px
+            == if source_height == extent_y {
+                canvas_y - origin_y
+            } else {
+                (canvas_y - origin_y) * source_height / extent_y
+            }
+        && bounds.width_px
+            == if source_width == extent_x {
+                canvas_width
+            } else if canvas_width == extent_x {
+                source_width
+            } else {
+                canvas_width * source_width / extent_x
+            }
+        && bounds.height_px
+            == if source_height == extent_y {
+                canvas_height
+            } else if canvas_height == extent_y {
+                source_height
+            } else {
+                canvas_height * source_height / extent_y
+            }
+}
+
+fn edited_vml_textbox_source_plan(
+    image: &ImageRunNode,
+    owner_part_name: &str,
+    relationships: &[Relationship],
+    package: &OoxmlPackage,
+) -> Option<VmlTextboxSourcePlan> {
+    if image.synthetic_text_box != Some(true)
+        || (image.text_box_text.is_none() && image.paint_bounds.is_none())
+        || image.part_name.is_some()
+        || image.data.is_some()
+        || image.crop.is_some()
+        || image.css_filter.is_some()
+        || image.css_opacity.is_some()
+    {
+        return None;
+    }
+    let source = image.source_xml.as_deref()?;
+    let (mime, svg_bytes) = decode_data_uri(image.src.as_deref()?)?;
+    if mime != "image/svg+xml" {
+        return None;
+    }
+    let svg_text = std::str::from_utf8(&svg_bytes).ok()?;
+    let svg = roxmltree::Document::parse(svg_text).ok()?;
+    if !svg
+        .root_element()
+        .has_tag_name(("http://www.w3.org/2000/svg", "svg"))
+    {
+        return None;
+    }
+    let frame_width: f64 = svg.root_element().attribute("width")?.parse().ok()?;
+    let frame_height: f64 = svg.root_element().attribute("height")?.parse().ok()?;
+    if !frame_width.is_finite()
+        || !frame_height.is_finite()
+        || frame_width <= 0.0
+        || frame_height <= 0.0
+    {
+        return None;
+    }
+    let open = format!("<root {VML_SOURCE_NAMESPACES}>");
+    let wrapped = format!("{open}{source}</root>");
+    let document = roxmltree::Document::parse(&wrapped).ok()?;
+    let top: Vec<_> = document
+        .root_element()
+        .children()
+        .filter(|node| node.is_element())
+        .collect();
+    match top.as_slice() {
+        [node] if node.has_tag_name((WORD_MAIN_NS, "pict")) => {}
+        [node] if node.has_tag_name((WORD_MAIN_NS, "r")) => {
+            let children: Vec<_> = node.children().filter(|child| child.is_element()).collect();
+            if children
+                .iter()
+                .filter(|child| child.has_tag_name((WORD_MAIN_NS, "pict")))
+                .count()
+                != 1
+                || children.iter().any(|child| {
+                    !child.has_tag_name((WORD_MAIN_NS, "pict"))
+                        && !child.has_tag_name((WORD_MAIN_NS, "rPr"))
+                })
+            {
+                return None;
+            }
+        }
+        _ => {
+            if top.is_empty()
+                || top.iter().any(|node| {
+                    !node.has_tag_name((VML_NS, "group"))
+                        && !node.has_tag_name((VML_NS, "shapetype"))
+                })
+            {
+                return None;
+            }
+        }
+    };
+    let groups: Vec<_> = document
+        .descendants()
+        .filter(|node| {
+            node.has_tag_name((VML_NS, "group"))
+                && !node
+                    .ancestors()
+                    .skip(1)
+                    .any(|parent| parent.has_tag_name((VML_NS, "group")))
+        })
+        .collect();
+    if groups.len() != 1 {
+        return None;
+    }
+    let root = groups[0];
+    let (source_width, source_height, source_anchor) = vml_source_frame(root)?;
+    if !vml_paint_matches_source(
+        image,
+        svg.root_element(),
+        root,
+        source_width,
+        source_height,
+        frame_width,
+        frame_height,
+    ) || source_anchor != image.floating
+    {
+        return None;
+    }
+    for attribute in document.descendants().flat_map(|node| node.attributes()) {
+        if attribute.namespace() == Some(OFFICE_REL_NS) {
+            if !matches!(attribute.name(), "id" | "embed") {
+                return None;
+            }
+            let relationship = relationships
+                .iter()
+                .find(|relationship| relationship.id == attribute.value())?;
+            if relationship.r#type != format!("{OFFICE_REL_NS}/image")
+                || relationship.target_mode.is_some()
+                || !package
+                    .binary_assets
+                    .contains_key(&crate::parse::resolve_part_path(
+                        owner_part_name,
+                        &relationship.target,
+                    ))
+            {
+                return None;
+            }
+        }
+    }
+    if image.paint_bounds.is_some() {
+        let source_bitmaps: Vec<_> = root
+            .descendants()
+            .filter(|node| node.has_tag_name((VML_NS, "imagedata")))
+            .collect();
+        let rendered_bitmaps: Vec<_> = svg
+            .descendants()
+            .filter(|node| node.has_tag_name(("http://www.w3.org/2000/svg", "image")))
+            .collect();
+        if source_bitmaps.len() != rendered_bitmaps.len() {
+            return None;
+        }
+        let mut remaining: Vec<_> = source_bitmaps
+            .iter()
+            .map(|bitmap| {
+                let id = bitmap.attribute((OFFICE_REL_NS, "id"))?;
+                let relationship = relationships
+                    .iter()
+                    .find(|relationship| relationship.id == id)?;
+                package.binary_assets.get(&crate::parse::resolve_part_path(
+                    owner_part_name,
+                    &relationship.target,
+                ))
+            })
+            .collect::<Option<Vec<_>>>()?;
+        for bitmap in rendered_bitmaps {
+            let (_, bytes) = decode_data_uri(bitmap.attribute("href")?)?;
+            let index = remaining
+                .iter()
+                .position(|source| source.as_slice() == bytes.as_slice())?;
+            remaining.swap_remove(index);
+        }
+    }
+    let stories: Vec<_> = root
+        .descendants()
+        .filter(|node| node.has_tag_name((WORD_MAIN_NS, "txbxContent")))
+        .collect();
+    let content = image.content_nodes.as_ref()?;
+    if stories.is_empty() {
+        return None;
+    }
+    let mut cursor = 0;
+    let mut story_texts = Vec::with_capacity(stories.len());
+    let mut plans = Vec::with_capacity(stories.len());
+    let mut bookmark_ids = std::collections::HashSet::new();
+    for story in stories {
+        if story
+            .ancestors()
+            .skip(1)
+            .any(|node| node.has_tag_name((WORD_MAIN_NS, "txbxContent")))
+        {
+            return None;
+        }
+        let paragraphs: Vec<_> = story.children().filter(|node| node.is_element()).collect();
+        if paragraphs.is_empty()
+            || paragraphs
+                .iter()
+                .any(|node| !node.has_tag_name((WORD_MAIN_NS, "p")))
+        {
+            return None;
+        }
+        let mut paragraph_markers = Vec::with_capacity(paragraphs.len());
+        for paragraph in &paragraphs {
+            if paragraph
+                .descendants()
+                .filter(|node| node.is_element())
+                .any(|node| {
+                    node.tag_name().namespace() != Some(WORD_MAIN_NS)
+                        || (matches!(node.tag_name().name(), "bookmarkStart" | "bookmarkEnd")
+                            && node.parent() != Some(*paragraph))
+                        || matches!(
+                            node.tag_name().name(),
+                            "drawing"
+                                | "pict"
+                                | "object"
+                                | "txbxContent"
+                                | "fldChar"
+                                | "instrText"
+                                | "hyperlink"
+                                | "sdt"
+                        )
+                })
+            {
+                return None;
+            }
+            for node in paragraph.children().filter(|node| node.is_element()) {
+                if node.has_tag_name((WORD_MAIN_NS, "pPr")) {
+                    if node
+                        .descendants()
+                        .any(|child| child.has_tag_name((WORD_MAIN_NS, "sectPr")))
+                    {
+                        return None;
+                    }
+                } else if node.has_tag_name((WORD_MAIN_NS, "r")) {
+                    if node
+                        .children()
+                        .filter(|child| child.is_element())
+                        .any(|child| {
+                            child.tag_name().namespace() != Some(WORD_MAIN_NS)
+                                || !matches!(
+                                    child.tag_name().name(),
+                                    "rPr" | "t" | "tab" | "br" | "cr"
+                                )
+                        })
+                    {
+                        return None;
+                    }
+                } else if !node.has_tag_name((WORD_MAIN_NS, "bookmarkStart"))
+                    && !node.has_tag_name((WORD_MAIN_NS, "bookmarkEnd"))
+                {
+                    return None;
+                }
+            }
+            paragraph_markers.push(vml_paragraph_bookmarks(
+                *paragraph,
+                &wrapped,
+                &mut bookmark_ids,
+            )?);
+        }
+        let end = cursor + paragraphs.len();
+        let typed = content.get(cursor..end)?;
+        let mut texts = Vec::with_capacity(typed.len());
+        for node in typed {
+            let DocNode::Paragraph(paragraph) = node else {
+                return None;
+            };
+            let mut text = String::new();
+            for child in &paragraph.children {
+                let ParagraphChildNode::Text(run) = child else {
+                    return None;
+                };
+                if run.note_reference.is_some() {
+                    return None;
+                }
+                text.push_str(&run.text);
+            }
+            texts.push(text);
+        }
+        story_texts.push(texts.join("\n"));
+        plans.push((story.range(), cursor..end, paragraph_markers));
+        cursor = end;
+    }
+    if cursor != content.len()
+        || image.text_box_text.as_ref().is_some_and(|current| {
+            story_texts
+                .iter()
+                .filter(|text| !text.is_empty())
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("\n")
+                != *current
+        })
+    {
+        return None;
+    }
+    let run_start = (top.len() == 1 && top[0].has_tag_name((WORD_MAIN_NS, "r")))
+        .then(|| top[0].range().start - open.len());
+    let is_pict = top.len() == 1 && top[0].has_tag_name((WORD_MAIN_NS, "pict"));
+    let namespaces = document
+        .root_element()
+        .namespaces()
+        .filter_map(|namespace| {
+            namespace
+                .name()
+                .map(|prefix| (prefix.to_owned(), namespace.uri().to_owned()))
+        })
+        .collect();
+    Some(VmlTextboxSourcePlan {
+        wrapped,
+        open_len: open.len(),
+        paragraphs: plans,
+        run_start,
+        is_pict,
+        namespaces,
+    })
+}
+
+fn edited_vml_textbox_run_xml(
+    image: &ImageRunNode,
+    state: &mut ImageSerializationState<'_>,
+    run_id: i64,
+) -> Option<String> {
+    let plan = edited_vml_textbox_source_plan(
+        image,
+        &state.owner_part_name,
+        &state.relationships,
+        state.pkg,
+    )?;
+    let content = image.content_nodes.as_ref()?;
+    let mut output = plan.wrapped;
+    let mut next_run_id = run_id;
+    for (range, nodes, paragraph_markers) in plan.paragraphs.into_iter().rev() {
+        let mut replacement = format!("<w:txbxContent {VML_SOURCE_NAMESPACES}>");
+        for (node, (before, after)) in content[nodes].iter().zip(paragraph_markers) {
+            let DocNode::Paragraph(paragraph) = node else {
+                unreachable!()
+            };
+            let mut current = paragraph.clone();
+            current.source_xml = None;
+            current.source_text_patch = None;
+            current.source_run_provenance = None;
+            current.source_paragraph_mark_style = None;
+            current.source_paragraph_mark_formatting = None;
+            current.source_paragraph_mark_properties_xml = None;
+            let mut generated = paragraph_xml(&current, state, &mut next_run_id);
+            let before_offset = direct_property_children(&generated)
+                .into_iter()
+                .find(|(name, _)| name != "w:pPr")
+                .map(|(_, range)| range.start)
+                .unwrap_or("<w:p>".len());
+            generated.insert_str(generated.len() - "</w:p>".len(), &after);
+            generated.insert_str(before_offset, &before);
+            replacement.push_str(&generated);
+        }
+        replacement.push_str("</w:txbxContent>");
+        output.replace_range(range, &replacement);
+    }
+    let output = &output[plan.open_len..output.len() - "</root>".len()];
+    if let Some(start) = plan.run_start {
+        let end = opening_tag_end(output, start)?;
+        let mut tag = output[start..end].to_string();
+        for (prefix, uri) in plan.namespaces {
+            tag = ensure_namespace(&tag, &prefix, &uri);
+        }
+        Some(format!("{}{}{}", &output[..start], tag, &output[end..]))
+    } else if plan.is_pict {
+        Some(format!("<w:r {VML_SOURCE_NAMESPACES}>{output}</w:r>"))
+    } else {
+        Some(format!(
+            "<w:r {VML_SOURCE_NAMESPACES}><w:pict>{output}</w:pict></w:r>"
+        ))
+    }
+}
+
+fn overflowing_paint_viewport(
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    layout_width: f64,
+    layout_height: f64,
+) -> bool {
+    let right = x + width;
+    let bottom = y + height;
+    x <= 0.0
+        && y <= 0.0
+        && right.is_finite()
+        && bottom.is_finite()
+        && right >= layout_width
+        && bottom >= layout_height
+        && (x < 0.0 || y < 0.0 || right > layout_width || bottom > layout_height)
+}
+
+fn paint_png_bytes(image: &ImageRunNode) -> Option<Vec<u8>> {
+    if !valid_image_paint_bounds(image)
+        || image.paint_bounds.is_none()
+        || image.part_name.is_some()
+        || image.data.is_some()
+        || image.crop.is_some()
+        || image.css_filter.is_some()
+        || image.css_opacity.is_some()
+        || image
+            .content_type
+            .as_deref()
+            .is_some_and(|mime| mime != "image/png")
+    {
+        return None;
+    }
+    let bounds = image.paint_bounds.as_deref()?;
+    let width = image.width_px?;
+    let height = image.height_px?;
+    let scale_x = width / bounds.layout_width_px;
+    let scale_y = height / bounds.layout_height_px;
+    if !overflowing_paint_viewport(
+        bounds.x_px,
+        bounds.y_px,
+        bounds.width_px,
+        bounds.height_px,
+        bounds.layout_width_px,
+        bounds.layout_height_px,
+    ) || !overflowing_paint_viewport(
+        bounds.x_px * scale_x,
+        bounds.y_px * scale_y,
+        bounds.width_px * scale_x,
+        bounds.height_px * scale_y,
+        width,
+        height,
+    ) {
+        return None;
+    }
+    let (mime, bytes) = decode_data_uri(image.src.as_deref()?)?;
+    if mime != "image/png"
+        || bytes.get(..8) != Some(b"\x89PNG\r\n\x1a\n")
+        || bytes.get(8..16) != Some(b"\x00\x00\x00\x0dIHDR")
+        || !bytes.ends_with(b"\x00\x00\x00\x00IEND\xae\x42\x60\x82")
+        || u32::from_be_bytes(bytes.get(16..20)?.try_into().ok()?) == 0
+        || u32::from_be_bytes(bytes.get(20..24)?.try_into().ok()?) == 0
+    {
+        return None;
+    }
+    Some(bytes)
+}
+
+const VML_BITMAP_SHAPE_TYPE: &str = r#"<v:shapetype id="_x0000_t75" coordsize="21600,21600" o:spt="75" o:preferrelative="t" path="m@4@5l@4@11@9@11@9@5xe" filled="f" stroked="f"><v:stroke joinstyle="miter"/><v:formulas><v:f eqn="if lineDrawn pixelLineWidth 0"/><v:f eqn="sum @0 1 0"/><v:f eqn="sum 0 0 @1"/><v:f eqn="prod @2 1 2"/><v:f eqn="prod @3 21600 pixelWidth"/><v:f eqn="prod @3 21600 pixelHeight"/><v:f eqn="sum @0 0 1"/><v:f eqn="prod @6 1 2"/><v:f eqn="prod @7 21600 pixelWidth"/><v:f eqn="sum @8 21600 0"/><v:f eqn="prod @7 21600 pixelHeight"/><v:f eqn="sum @10 21600 0"/></v:formulas><v:path o:extrusionok="f" gradientshapeok="t" o:connecttype="rect"/><o:lock v:ext="edit" aspectratio="t"/></v:shapetype>"#;
+
+fn inline_paint_png_run_xml(
+    image: &ImageRunNode,
+    state: &mut ImageSerializationState<'_>,
+    run_id: i64,
+) -> Option<String> {
+    paint_png_bytes(image)?;
+    let bounds = image.paint_bounds.as_deref()?;
+    let (relationship, width, height, alt) = ensure_image_part_and_relationship(image, state)?;
+    let scale_x = width / bounds.layout_width_px;
+    let scale_y = height / bounds.layout_height_px;
+    let x = bounds.x_px * scale_x;
+    let y = bounds.y_px * scale_y;
+    let paint_width = bounds.width_px * scale_x;
+    let paint_height = bounds.height_px * scale_y;
+    Some(format!(
+        r##"<w:r {VML_SOURCE_NAMESPACES}><w:pict>{VML_BITMAP_SHAPE_TYPE}<v:group style="position:static;width:{width}px;height:{height}px" coordorigin="0,0" coordsize="{},{}"><v:shape id="_x0000_i{run_id}" type="#_x0000_t75" style="position:absolute;left:{};top:{};width:{};height:{}" filled="f" stroked="f"><v:imagedata r:id="{}" o:title="{}"/></v:shape></v:group></w:pict></w:r>"##,
+        width,
+        height,
+        x,
+        y,
+        paint_width,
+        paint_height,
+        escape_xml(&relationship),
+        escape_xml(&alt),
+    ))
+}
+
 fn drawing_run_xml(
     image: &ImageRunNode,
     state: &mut ImageSerializationState<'_>,
     run_id: i64,
 ) -> String {
+    if let Some(source) = edited_vml_textbox_run_xml(image, state, run_id) {
+        return source;
+    }
+    if image.paint_bounds.is_some() {
+        return inline_paint_png_run_xml(image, state, run_id)
+            .expect("Inline paint requires preserved source or a current PNG viewport; validate before serialization");
+    }
     let Some((relationship_id, width_px, height_px, alt)) =
         ensure_image_part_and_relationship(image, state)
     else {
@@ -1912,9 +2734,49 @@ fn legacy_form_field_run_xml(
     wrap_with_hyperlink_xml(&legacy_field_xml, field.link.as_deref(), state)
 }
 
+fn form_field_source_preview_is_stale(field: &FormFieldRunNode) -> bool {
+    field.source_preview.as_ref().is_some_and(|preview| {
+        let checked = field
+            .checked
+            .or_else(|| {
+                field
+                    .widget
+                    .as_ref()
+                    .and_then(|widget| widget.checkbox.as_ref())
+                    .and_then(|checkbox| checkbox.default_checked)
+            })
+            .unwrap_or(false);
+        field.field_type != FormFieldType::Checkbox
+            || checked != preview.checked
+            || field.source_xml.as_deref().map_or(true, str::is_empty)
+    })
+}
+
+fn paragraph_has_stale_form_field_preview(paragraph: &ParagraphNode) -> bool {
+    paragraph.children.iter().any(|child| match child {
+        ParagraphChildNode::FormField(field) => form_field_source_preview_is_stale(field),
+        _ => false,
+    })
+}
+
+fn table_has_stale_form_field_preview(table: &TableNode) -> bool {
+    table.rows.iter().any(|row| {
+        row.cells.iter().any(|cell| {
+            cell.nodes.iter().any(|node| match node {
+                TableCellContentNode::Paragraph(paragraph) => {
+                    paragraph_has_stale_form_field_preview(paragraph)
+                }
+                TableCellContentNode::Table(table) => table_has_stale_form_field_preview(table),
+            })
+        })
+    })
+}
+
 fn form_field_run_xml(field: &FormFieldRunNode, state: &mut ImageSerializationState<'_>) -> String {
-    if let Some(source_xml) = &field.source_xml {
-        return wrap_with_hyperlink_xml(source_xml, field.link.as_deref(), state);
+    if !form_field_source_preview_is_stale(field) {
+        if let Some(source_xml) = &field.source_xml {
+            return wrap_with_hyperlink_xml(source_xml, field.link.as_deref(), state);
+        }
     }
 
     if field.source_kind == Some(FormFieldSourceKind::Legacy) {
@@ -3125,13 +3987,15 @@ fn paragraph_xml(
     state: &mut ImageSerializationState<'_>,
     run_id_ref: &mut i64,
 ) -> String {
-    if let Some(source_xml) = &paragraph.source_xml {
-        if let Some(patch_plan) = &paragraph.source_text_patch {
-            if let Some(patched) = patch_source_paragraph_text(paragraph, source_xml, patch_plan) {
-                return patch_source_paragraph_properties(paragraph, &patched, state);
+    if !paragraph_has_stale_form_field_preview(paragraph) {
+        if let Some(source_xml) = &paragraph.source_xml {
+            if let Some(patch_plan) = &paragraph.source_text_patch {
+                if let Some(patched) = patch_source_paragraph_text(paragraph, source_xml, patch_plan) {
+                    return patch_source_paragraph_properties(paragraph, &patched, state);
+                }
+            } else {
+                return patch_source_paragraph_properties(paragraph, source_xml, state);
             }
-        } else {
-            return patch_source_paragraph_properties(paragraph, source_xml, state);
         }
     }
 
@@ -3932,20 +4796,22 @@ fn table_xml(
     state: &mut ImageSerializationState<'_>,
     run_id_ref: &mut i64,
 ) -> String {
-    if let Some(source_xml) = &table.source_xml {
-        let source = if table
-            .source_text_patches
-            .as_ref()
-            .is_some_and(|patches| !patches.is_empty())
-        {
-            patch_table_source_text(table, source_xml, state, run_id_ref)
-        } else {
-            Some(source_xml.clone())
-        };
-        if let Some(patched) =
-            source.and_then(|source| patch_table_source_properties(table, &source, state))
-        {
-            return patched;
+    if !table_has_stale_form_field_preview(table) {
+        if let Some(source_xml) = &table.source_xml {
+            let source = if table
+                .source_text_patches
+                .as_ref()
+                .is_some_and(|patches| !patches.is_empty())
+            {
+                patch_table_source_text(table, source_xml, state, run_id_ref)
+            } else {
+                Some(source_xml.clone())
+            };
+            if let Some(patched) =
+                source.and_then(|source| patch_table_source_properties(table, &source, state))
+            {
+                return patched;
+            }
         }
     }
 
@@ -4405,6 +5271,7 @@ fn create_image_serialization_state<'a>(
         .and_then(|style| style.text_alignment)
         .or(styles.default_paragraph_text_alignment);
     ImageSerializationState {
+        owner_part_name: owner_part_name.to_string(),
         paragraph_style_grid_owners,
         paragraph_snap_to_grid_by_style_id,
         default_paragraph_snap_to_grid,
@@ -5590,7 +6457,133 @@ fn model_to_document_xml_with_pkg(model: &DocModel, pkg: &mut OoxmlPackage) -> S
     )
 }
 
+pub fn can_preserve_image_paint_source(
+    image: &ImageRunNode,
+    base_package: Option<&OoxmlPackage>,
+    owner_part_name: &str,
+) -> bool {
+    if image.paint_bounds.is_none() || !valid_image_paint_bounds(image) {
+        return false;
+    }
+    let default_package;
+    let package = match base_package {
+        Some(package) => package,
+        None => {
+            default_package = create_minimal_docx_package(None);
+            &default_package
+        }
+    };
+    let owner = owner_part_name;
+    if owner.is_empty() {
+        return false;
+    }
+    let relationships = package
+        .parts
+        .get(&relationship_part_name_for_word_part(owner))
+        .map(|part| parse_relationships_xml(&part.content))
+        .unwrap_or_default();
+    edited_vml_textbox_source_plan(image, owner, &relationships, package).is_some()
+}
+
+pub fn validate_image_paint_bounds(
+    model: &DocModel,
+    base_package: Option<&OoxmlPackage>,
+) -> Result<(), String> {
+    fn paragraph<'a>(
+        value: &'a ParagraphNode,
+        owner: &str,
+        images: &mut Vec<(&'a ImageRunNode, String)>,
+    ) {
+        for child in &value.children {
+            if let ParagraphChildNode::Image(image) = child {
+                if image.paint_bounds.is_some() {
+                    images.push((image, owner.to_owned()));
+                }
+                if let Some(content) = &image.content_nodes {
+                    nodes(content, owner, images);
+                }
+            }
+        }
+    }
+    fn table<'a>(value: &'a TableNode, owner: &str, images: &mut Vec<(&'a ImageRunNode, String)>) {
+        for row in &value.rows {
+            for cell in &row.cells {
+                for child in &cell.nodes {
+                    match child {
+                        TableCellContentNode::Paragraph(value) => paragraph(value, owner, images),
+                        TableCellContentNode::Table(value) => table(value, owner, images),
+                    }
+                }
+            }
+        }
+        if let Some(patches) = &value.source_text_patches {
+            for patch in patches {
+                paragraph(&patch.paragraph, owner, images);
+            }
+        }
+    }
+    fn nodes<'a>(values: &'a [DocNode], owner: &str, images: &mut Vec<(&'a ImageRunNode, String)>) {
+        for value in values {
+            match value {
+                DocNode::Paragraph(value) => paragraph(value, owner, images),
+                DocNode::Table(value) => table(value, owner, images),
+            }
+        }
+    }
+    let default_package;
+    let package = match base_package {
+        Some(package) => package,
+        None => {
+            default_package = create_minimal_docx_package(None);
+            &default_package
+        }
+    };
+    let mut images = Vec::new();
+    nodes(
+        &model.nodes,
+        &crate::package::main_document_part_name(package),
+        &mut images,
+    );
+    let mut seen_parts = std::collections::HashSet::new();
+    let mut add_part = |part_name: &str, values| {
+        let owner = normalize_word_part_name(part_name);
+        if !owner.is_empty() && seen_parts.insert(owner.clone()) {
+            nodes(values, &owner, &mut images);
+        }
+    };
+    for section in &model.metadata.header_sections {
+        add_part(&section.part_name, &section.nodes);
+    }
+    for section in &model.metadata.footer_sections {
+        add_part(&section.part_name, &section.nodes);
+    }
+    if let Some(sections) = &model.metadata.sections {
+        for section in sections {
+            for header in &section.header_sections {
+                add_part(&header.part_name, &header.nodes);
+            }
+            for footer in &section.footer_sections {
+                add_part(&footer.part_name, &footer.nodes);
+            }
+        }
+    }
+    for (image, owner) in images {
+        if !valid_image_paint_bounds(image) {
+            return Err("Inline image paint bounds require finite positive geometry and an inline layout frame".into());
+        }
+        if !can_preserve_image_paint_source(image, Some(package), &owner)
+            && paint_png_bytes(image).is_none()
+        {
+            return Err("Inline image paint cannot be preserved from source; a current full-viewport PNG is required before export".into());
+        }
+    }
+    Ok(())
+}
+
+/// Panics for unsupported inline paint. Use validation before infallible XML output.
 pub fn model_to_document_xml(model: &DocModel, base_package: Option<&OoxmlPackage>) -> String {
+    validate_image_paint_bounds(model, base_package)
+        .expect("Unsupported inline image paint; validate before XML serialization");
     let mut pkg = base_package.cloned().unwrap_or_else(|| {
         create_minimal_docx_package(Some(
             r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t/></w:r></w:p></w:body></w:document>"#,
@@ -5599,7 +6592,17 @@ pub fn model_to_document_xml(model: &DocModel, base_package: Option<&OoxmlPackag
     model_to_document_xml_with_pkg(model, &mut pkg)
 }
 
+/// Panics for unsupported inline paint. Use `try_serialize_doc_model` for a fallible result.
 pub fn serialize_doc_model(model: &DocModel, base_package: Option<&OoxmlPackage>) -> OoxmlPackage {
+    try_serialize_doc_model(model, base_package)
+        .expect("Unsupported inline image paint; use try_serialize_doc_model")
+}
+
+pub fn try_serialize_doc_model(
+    model: &DocModel,
+    base_package: Option<&OoxmlPackage>,
+) -> Result<OoxmlPackage, String> {
+    validate_image_paint_bounds(model, base_package)?;
     let mut seed = base_package
         .cloned()
         .unwrap_or_else(|| create_minimal_docx_package(None));
@@ -5616,7 +6619,7 @@ pub fn serialize_doc_model(model: &DocModel, base_package: Option<&OoxmlPackage>
     serialize_header_footer_parts(model, &mut result);
     serialize_comment_parts(model, &mut result);
     serialize_document_settings(model, &mut result);
-    result
+    Ok(result)
 }
 
 pub fn serialize_docx(
@@ -5624,5 +6627,1038 @@ pub fn serialize_docx(
     base_package: Option<&OoxmlPackage>,
 ) -> Result<Vec<u8>, String> {
     crate::table_grid::validate_collapsed_table_grids(model)?;
-    package_to_bytes(&serialize_doc_model(model, base_package))
+    package_to_bytes(&try_serialize_doc_model(model, base_package)?)
+}
+
+#[cfg(test)]
+mod data_uri_tests {
+    use super::*;
+
+    #[test]
+    fn data_uri_preserves_utf8_and_literal_octets() {
+        let uri = "data:image/svg+xml;charset=utf-8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%3E%3Ctext%3E%C3%A9%20%F0%9F%98%80%20+%2B%2C%3B%2520%3C%2Ftext%3E%3C%2Fsvg%3E";
+        let (mime, bytes) = decode_data_uri(uri).unwrap();
+        assert_eq!(mime, "image/svg+xml");
+        assert_eq!(
+            bytes,
+            "<svg xmlns=\"http://www.w3.org/2000/svg\"><text>é 😀 ++,;%20</text></svg>".as_bytes()
+        );
+        assert_eq!(
+            decode_data_uri("data:,%00%ff,%3b+").unwrap(),
+            ("text/plain".into(), vec![0, 255, b',', b';', b'+'])
+        );
+        assert_eq!(
+            decode_data_uri("data:;charset=utf-8,%C3%A9").unwrap().1,
+            "é".as_bytes()
+        );
+        assert_eq!(
+            decode_data_uri("data:text/plain,").unwrap().1,
+            Vec::<u8>::new()
+        );
+    }
+
+    #[test]
+    fn data_uri_preserves_base64_with_parameters() {
+        for uri in [
+            "data:image/png;base64,AAEC/w==",
+            "DATA:image/png;charset=utf-8;BASE64,AAEC/w==",
+            "data:image/png;name=a%3Bb;base64,AAEC%2Fw%3D%3D",
+        ] {
+            assert_eq!(
+                decode_data_uri(uri).unwrap(),
+                ("image/png".into(), vec![0, 1, 2, 255])
+            );
+        }
+        assert_eq!(
+            decode_data_uri("data:text/plain;base64=ordinary,SGVsbG8=")
+                .unwrap()
+                .1,
+            b"SGVsbG8="
+        );
+    }
+
+    #[test]
+    fn data_uri_rejects_malformed_escapes_and_metadata() {
+        for uri in [
+            "data:text/plain,%",
+            "data:text/plain,%0",
+            "data:text/plain,%GG",
+            "data:text/plain,%Cé",
+            "data:text/plain;base64,AA%Q0",
+            "data:text/plain;charset=%0,ok",
+            "data:image%Q0png,ok",
+            "data:image/png;base64;charset=utf-8,AAEC",
+            "data:image/png;base64;base64,AAEC",
+            "data:image/png;unknown,ok",
+            "data:image/,ok",
+            "data:image/png/extra,ok",
+            "data:image/png",
+            "https://invalid.test/image.png",
+            "δata:image/png,ok",
+        ] {
+            assert!(decode_data_uri(uri).is_none(), "{uri}");
+        }
+    }
+
+    #[test]
+    fn data_uri_src_only_svg_survives_document_export() {
+        let document = r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Initial text</w:t></w:r></w:p></w:body></w:document>"#;
+        let package = crate::create_minimal_docx_package(Some(document));
+        let mut model = crate::build_doc_model(&package);
+        let DocNode::Paragraph(paragraph) = &mut model.nodes[0] else {
+            panic!("paragraph")
+        };
+        paragraph.source_xml = None;
+        let source = "data:image/svg+xml;charset=utf-8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22160%22%20height%3D%2280%22%3E%3Ctext%3EUpdated%20%C3%A9%20%2B%20text%3C%2Ftext%3E%3C%2Fsvg%3E";
+        let expected = b"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"160\" height=\"80\"><text>Updated \xc3\xa9 + text</text></svg>";
+        let image: ImageRunNode = serde_json::from_value(serde_json::json!({
+            "type": "image", "src": source, "widthPx": 160.0, "heightPx": 80.0
+        }))
+        .unwrap();
+        paragraph.children = vec![ParagraphChildNode::Image(Box::new(image))];
+        let exported = serialize_doc_model(&model, Some(&package));
+        let xml = &exported.parts["word/document.xml"].content;
+        assert!(xml.contains("<w:drawing>"));
+        assert!(xml.contains("<wp:inline "));
+        assert!(xml.contains(r#"<wp:extent cx="1524000" cy="762000"/>"#));
+        let (part, bytes) = exported
+            .binary_assets
+            .iter()
+            .find(|(part, _)| part.ends_with(".svg"))
+            .unwrap();
+        assert_eq!(bytes, expected);
+        assert!(exported.parts["[Content_Types].xml"]
+            .content
+            .contains("image/svg+xml"));
+        assert!(exported.parts["word/_rels/document.xml.rels"]
+            .content
+            .contains(part.strip_prefix("word/").unwrap()));
+        let reparsed = crate::build_doc_model(&exported);
+        let DocNode::Paragraph(paragraph) = &reparsed.nodes[0] else {
+            panic!("paragraph")
+        };
+        let ParagraphChildNode::Image(image) = &paragraph.children[0] else {
+            panic!("image")
+        };
+        assert_eq!(image.data.as_deref(), Some(expected.as_slice()));
+        assert_eq!((image.width_px, image.height_px), (Some(160.0), Some(80.0)));
+    }
+}
+
+#[cfg(test)]
+mod edited_vml_textbox_tests {
+    use super::*;
+
+    fn fixture() -> (OoxmlPackage, DocModel, ImageRunNode) {
+        let xml = r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Initial</w:t></w:r></w:p></w:body></w:document>"#;
+        let mut package = crate::create_minimal_docx_package(Some(xml));
+        package
+            .binary_assets
+            .insert("word/media/original.png".into(), vec![1, 2, 3, 4]);
+        package.parts.insert("word/_rels/document.xml.rels".into(), OoxmlPart {
+            name: "word/_rels/document.xml.rels".into(),
+            content: format!(r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdBitmap" Type="{OFFICE_REL_NS}/image" Target="media/original.png"/></Relationships>"#),
+        });
+        let model = crate::build_doc_model(&package);
+        let source = r##"<w:pict><v:group style="width:160px;height:80px" coordsize="160,80"><v:shape style="width:20;height:20"><v:imagedata r:id="rIdBitmap"/></v:shape><v:rect fillcolor="#123456"><v:textbox><w:txbxContent><w:p><w:r><w:t>Old first</w:t></w:r></w:p></w:txbxContent></v:textbox></v:rect><v:shape><v:textbox><w:txbxContent><w:p><w:r><w:t>Old second</w:t></w:r></w:p></w:txbxContent></v:textbox></v:shape></v:group></w:pict>"##;
+        let image: ImageRunNode = serde_json::from_value(serde_json::json!({
+            "type": "image", "syntheticTextBox": true, "textBoxText": "First current\nSecond current",
+            "widthPx": 160.0, "heightPx": 80.0, "sourceXml": source,
+            "src": "data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20width=%22160%22%20height=%2280%22%3E%3Ctext%3EFirst%20current%20Second%20current%3C/text%3E%3C/svg%3E",
+            "contentNodes": [
+                {"type":"paragraph", "sourceXml":"<w:p><w:r><w:t>Stale cache</w:t></w:r></w:p>", "children":[{"type":"text", "text":"First current", "style":{"bold":true}}]},
+                {"type":"paragraph", "children":[{"type":"text", "text":"Second current"}]}
+            ]
+        })).unwrap();
+        (package, model, image)
+    }
+
+    fn export(package: &OoxmlPackage, mut model: DocModel, image: ImageRunNode) -> OoxmlPackage {
+        let DocNode::Paragraph(paragraph) = &mut model.nodes[0] else {
+            panic!("paragraph")
+        };
+        paragraph.source_xml = None;
+        paragraph.children = vec![ParagraphChildNode::Image(Box::new(image))];
+        serialize_doc_model(&model, Some(package))
+    }
+
+    #[test]
+    fn edited_vml_textbox_preserves_stories_artwork_and_current_styles() {
+        let (package, model, image) = fixture();
+        let exported = export(&package, model, image);
+        let xml = &exported.parts["word/document.xml"].content;
+        let document = roxmltree::Document::parse(xml).unwrap();
+        assert_eq!(
+            document
+                .descendants()
+                .filter(|node| node.has_tag_name((WORD_MAIN_NS, "txbxContent")))
+                .count(),
+            2
+        );
+        assert!(xml.contains("First current"));
+        assert!(xml.contains("Second current"));
+        assert!(xml.contains("<w:b/>"));
+        assert!(
+            !xml.contains("Old first")
+                && !xml.contains("Old second")
+                && !xml.contains("Stale cache")
+        );
+        assert!(xml.contains(r##"fillcolor="#123456""##));
+        assert!(xml.contains(r#"r:id="rIdBitmap""#));
+        assert!(!xml.contains("<w:drawing>"));
+        assert_eq!(exported.binary_assets, package.binary_assets);
+        assert!(exported.parts["word/_rels/document.xml.rels"]
+            .content
+            .contains("media/original.png"));
+    }
+
+    #[test]
+    fn edited_vml_textbox_keeps_story_blank_paragraphs_and_empty_placeholders() {
+        let (package, model, mut image) = fixture();
+        image.source_xml = image.source_xml.map(|source| {
+            source.replace(
+                "<w:p><w:r><w:t>Old first</w:t></w:r></w:p>",
+                "<w:p/><w:p/><w:p/>",
+            )
+        });
+        image.content_nodes = Some(
+            serde_json::from_value(serde_json::json!([
+                {"type":"paragraph", "children":[]},
+                {"type":"paragraph", "children":[{"type":"text", "text":"Centered"}]},
+                {"type":"paragraph", "children":[]},
+                {"type":"paragraph", "children":[]}
+            ]))
+            .unwrap(),
+        );
+        image.text_box_text = Some("\nCentered\n".into());
+        let exported = export(&package, model, image);
+        let xml = &exported.parts["word/document.xml"].content;
+        let document = roxmltree::Document::parse(xml).unwrap();
+        let stories: Vec<_> = document
+            .descendants()
+            .filter(|node| node.has_tag_name((WORD_MAIN_NS, "txbxContent")))
+            .collect();
+        assert_eq!(stories.len(), 2);
+        assert_eq!(
+            stories[0]
+                .children()
+                .filter(|node| node.is_element())
+                .count(),
+            3
+        );
+        assert_eq!(
+            stories[1]
+                .children()
+                .filter(|node| node.is_element())
+                .count(),
+            1
+        );
+        assert!(xml.contains("Centered"));
+        assert!(!xml.contains("<w:drawing>"));
+    }
+
+    #[test]
+    fn edited_vml_textbox_retains_run_namespace_bindings() {
+        let (package, model, mut image) = fixture();
+        image.source_xml = image.source_xml.map(|source| format!(r#"<!-- leading --><w:r xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml" w14:textId="ABC"><w:rPr><w:b/></w:rPr>{source}</w:r>"#));
+        let exported = export(&package, model, image);
+        let xml = &exported.parts["word/document.xml"].content;
+        roxmltree::Document::parse(xml).unwrap();
+        assert!(xml.contains(r#"w14:textId="ABC""#));
+        assert!(xml.contains("First current"));
+        assert!(xml.contains("<w:pict>"));
+    }
+
+    #[test]
+    fn edited_vml_textbox_rejects_stale_geometry_and_unproven_story_mapping() {
+        for change in 0..11 {
+            let (mut package, model, mut image) = fixture();
+            match change {
+                0 => image.width_px = Some(320.0),
+                1 => image.text_box_text = Some("Mismatch".into()),
+                2 => {
+                    image.content_nodes.as_mut().unwrap().pop();
+                }
+                3 => {
+                    package.binary_assets.clear();
+                }
+                4 => {
+                    image.source_xml = image
+                        .source_xml
+                        .map(|source| source.replace("width:160px", "width:161px"))
+                }
+                5 => {
+                    image.source_xml = image.source_xml.map(|source| {
+                        source.replace("<w:pict>", "<w:pict xmlns:v=\"urn:unsupported\">")
+                    })
+                }
+                6 => {
+                    image.floating =
+                        Some(serde_json::from_value(serde_json::json!({"xPx":20.0})).unwrap())
+                }
+                7 => {
+                    image.source_xml = image
+                        .source_xml
+                        .map(|source| source.replace("width:160px", "width:160px;width:300px"))
+                }
+                8 => {
+                    image.source_xml = image.source_xml.map(|source| {
+                        source.replace(
+                        "<w:t>Old first</w:t>",
+                        "<w:pict><v:group><w:txbxContent><w:p/></w:txbxContent></v:group></w:pict>",
+                    )
+                    })
+                }
+                9 => {
+                    image.source_xml = image
+                        .source_xml
+                        .map(|source| source.replace("width:160px", "min-width:160px"))
+                }
+                10 => {
+                    image.source_xml = image
+                        .source_xml
+                        .map(|source| source.replace("width:160px", "width:160pxgarbage"))
+                }
+                _ => unreachable!(),
+            }
+            let expected = decode_data_uri(image.src.as_deref().unwrap()).unwrap().1;
+            let exported = export(&package, model, image);
+            let xml = &exported.parts["word/document.xml"].content;
+            assert!(xml.contains("<w:drawing>"), "case {change}");
+            assert!(!xml.contains("<w:pict>"), "case {change}");
+            assert!(exported
+                .binary_assets
+                .values()
+                .any(|bytes| bytes == &expected));
+        }
+    }
+
+    #[test]
+    fn edited_vml_textbox_rebinds_generated_text_and_hyperlinks() {
+        let (package, model, mut image) = fixture();
+        image.source_xml = image.source_xml.map(|source| source.replace("w:", "ww:").replace("r:id", "rr:id").replace("<ww:pict>", &format!("<ww:pict xmlns:ww=\"{WORD_MAIN_NS}\" xmlns:rr=\"{OFFICE_REL_NS}\" xmlns:w=\"urn:other-word\" xmlns:r=\"urn:other-rel\" xmlns:w14=\"urn:other-word14\">")));
+        let DocNode::Paragraph(paragraph) = &mut image.content_nodes.as_mut().unwrap()[0] else {
+            panic!("paragraph")
+        };
+        let ParagraphChildNode::Text(run) = &mut paragraph.children[0] else {
+            panic!("text")
+        };
+        run.link = Some("https://example.invalid/current".into());
+        run.style =
+            Some(serde_json::from_value(serde_json::json!({"contextualAlternates":true})).unwrap());
+        let exported = export(&package, model, image);
+        let xml = &exported.parts["word/document.xml"].content;
+        let document = roxmltree::Document::parse(xml).unwrap();
+        let link = document
+            .descendants()
+            .find(|node| node.has_tag_name((WORD_MAIN_NS, "hyperlink")))
+            .unwrap();
+        assert!(link.attribute((OFFICE_REL_NS, "id")).is_some());
+        assert!(document.descendants().any(|node| node.has_tag_name((
+            "http://schemas.microsoft.com/office/word/2010/wordml",
+            "cntxtAlts"
+        ))));
+        assert!(document
+            .descendants()
+            .any(|node| node.has_tag_name((WORD_MAIN_NS, "t"))
+                && node.text() == Some("First current")));
+        assert!(!xml.contains("<w:drawing>"));
+    }
+
+    #[test]
+    fn edited_vml_textbox_uses_unrounded_group_dimensions() {
+        let text =
+            format!("<v:group xmlns:v=\"{VML_NS}\" style=\"width:610pt;height:145.950pt\"/>");
+        let document = roxmltree::Document::parse(&text).unwrap();
+        let (width, height, anchor) = vml_source_frame(document.root_element()).unwrap();
+        assert_eq!(width, 813.3333333333333);
+        assert_eq!(height, 194.59999999999997);
+        assert_eq!(anchor, None);
+    }
+
+    #[test]
+    fn edited_vml_textbox_preserves_direct_wrap_with_alternate_prefix() {
+        let (package, model, mut image) = fixture();
+        image.source_xml = image.source_xml.map(|source| {
+            source.replace(
+                "</v:group>",
+                &format!("<wrap:wrap xmlns:wrap=\"{VML_WORD_NS}\" type=\"none\"/></v:group>"),
+            )
+        });
+        image.floating =
+            Some(serde_json::from_value(serde_json::json!({"wrapType":"none"})).unwrap());
+        let exported = export(&package, model, image);
+        let xml = &exported.parts["word/document.xml"].content;
+        roxmltree::Document::parse(xml).unwrap();
+        assert!(xml.contains("<wrap:wrap"));
+        assert!(!xml.contains("<w:drawing>"));
+    }
+
+    fn assert_bookmarked_paragraph_count(count: usize) {
+        let (package, model, mut image) = fixture();
+        let markers: Vec<_> = (0..4)
+            .map(|index| {
+                (
+                    format!("<w:bookmarkStart w:id=\"{index}\" w:name=\"range{index}\"/>"),
+                    format!("<w:bookmarkEnd w:id=\"{index}\"/>"),
+                )
+            })
+            .collect();
+        let mut edges = vec![(String::new(), String::new()); count];
+        for (index, (start, end)) in markers.iter().enumerate() {
+            let target = index.min(count - 1);
+            if index >= count {
+                edges[target].1.push_str(start);
+            } else {
+                edges[target].0.push_str(start);
+            }
+            edges[target].1.push_str(end);
+        }
+        let source_paragraphs = edges.iter().map(|(before, after)| format!("<w:p><w:pPr><w:jc w:val=\"center\"/></w:pPr>{before}<w:r><w:t>Previous</w:t></w:r>{after}</w:p>")).collect::<String>();
+        image.source_xml = image.source_xml.map(|source| {
+            source.replace(
+                "<w:p><w:r><w:t>Old first</w:t></w:r></w:p>",
+                &source_paragraphs,
+            )
+        });
+        let lines: Vec<_> = (0..count).map(|index| format!("Current {index}")).collect();
+        let mut content: Vec<DocNode> = lines.iter().map(|line| serde_json::from_value(serde_json::json!({
+            "type":"paragraph", "style":{"align":"center"}, "children":[{"type":"text", "text":line}]
+        })).unwrap()).collect();
+        content.push(image.content_nodes.as_ref().unwrap()[1].clone());
+        image.content_nodes = Some(content);
+        image.text_box_text = Some(format!("{}\nSecond current", lines.join("\n")));
+        let exported = export(&package, model, image);
+        let xml = &exported.parts["word/document.xml"].content;
+        let document = roxmltree::Document::parse(xml).unwrap();
+        let stories: Vec<_> = document
+            .descendants()
+            .filter(|node| node.has_tag_name((WORD_MAIN_NS, "txbxContent")))
+            .collect();
+        assert_eq!(stories.len(), 2);
+        let paragraphs: Vec<_> = stories[0]
+            .children()
+            .filter(|node| node.has_tag_name((WORD_MAIN_NS, "p")))
+            .collect();
+        assert_eq!(paragraphs.len(), count);
+        let actual: Vec<_> = stories[0]
+            .descendants()
+            .filter(|node| {
+                node.has_tag_name((WORD_MAIN_NS, "bookmarkStart"))
+                    || node.has_tag_name((WORD_MAIN_NS, "bookmarkEnd"))
+            })
+            .map(|node| xml[node.range()].to_owned())
+            .collect();
+        let expected: Vec<_> = markers
+            .iter()
+            .flat_map(|(start, end)| [start.clone(), end.clone()])
+            .collect();
+        assert_eq!(actual, expected);
+        for (index, paragraph) in paragraphs.iter().enumerate() {
+            let text = paragraph
+                .descendants()
+                .find(|node| node.has_tag_name((WORD_MAIN_NS, "t")))
+                .unwrap();
+            assert_eq!(text.text(), Some(lines[index].as_str()));
+            let raw = &xml[paragraph.range()];
+            let before_position = raw.find(&edges[index].0).unwrap();
+            if !edges[index].0.is_empty() {
+                assert!(before_position < raw.find("<w:r>").unwrap());
+                assert!(before_position > raw.find("</w:pPr>").unwrap());
+            }
+            if !edges[index].1.is_empty() {
+                assert!(raw.find(&edges[index].1).unwrap() > raw.find("</w:r>").unwrap());
+            }
+        }
+        assert_eq!(exported.binary_assets, package.binary_assets);
+        assert!(xml.contains("r:id=\"rIdBitmap\""));
+        assert!(!xml.contains("<w:drawing>") && !xml.contains("Previous"));
+    }
+
+    #[test]
+    fn edited_vml_textbox_preserves_bookmarks_at_normal_paragraph_count() {
+        assert_bookmarked_paragraph_count(4);
+    }
+
+    #[test]
+    fn edited_vml_textbox_preserves_relocated_bookmarks_after_paragraph_reduction() {
+        assert_bookmarked_paragraph_count(2);
+    }
+
+    #[test]
+    fn edited_vml_textbox_does_not_duplicate_bookmarks_after_paragraph_increase() {
+        assert_bookmarked_paragraph_count(6);
+    }
+
+    #[test]
+    fn edited_vml_textbox_preserves_empty_paragraph_bookmark_edges() {
+        let (package, model, mut image) = fixture();
+        let start = "<w:bookmarkStart w:id=\"0\" w:name=\"empty\"/>";
+        let end = "<w:bookmarkEnd w:id=\"0\"/>";
+        image.source_xml = image.source_xml.map(|source| {
+            source.replace(
+                "<w:p><w:r><w:t>Old first</w:t></w:r></w:p>",
+                &format!("<w:p>{start}<w:r><w:t/></w:r>{end}</w:p>"),
+            )
+        });
+        image.content_nodes.as_mut().unwrap()[0] =
+            serde_json::from_value(serde_json::json!({"type":"paragraph", "children":[]})).unwrap();
+        image.text_box_text = Some("Second current".into());
+        let exported = export(&package, model, image);
+        let xml = &exported.parts["word/document.xml"].content;
+        roxmltree::Document::parse(xml).unwrap();
+        assert!(xml.contains(&format!("{start}{end}<w:r><w:t/></w:r>")));
+        assert!(!xml.contains("<w:drawing>"));
+        assert_eq!(exported.binary_assets, package.binary_assets);
+    }
+
+    #[test]
+    fn edited_vml_textbox_rejects_ambiguous_bookmark_ranges() {
+        let start = "<w:bookmarkStart w:id=\"0\" w:name=\"range\"/>";
+        let end = "<w:bookmarkEnd w:id=\"0\"/>";
+        for case in 0..11 {
+            let (package, model, mut image) = fixture();
+            let replacement = match case {
+                0 => format!("<w:p><w:r><w:t>A</w:t></w:r>{start}<w:r><w:t>B</w:t></w:r>{end}</w:p>"),
+                1 => format!("<w:p>{start}<w:r><w:t>A</w:t></w:r></w:p><w:p><w:r><w:t>B</w:t></w:r>{end}</w:p>"),
+                2 => format!("<w:p>{start}<w:r><w:t>A</w:t></w:r></w:p>"),
+                3 => format!("<w:p>{end}<w:r><w:t>A</w:t></w:r>{start}</w:p>"),
+                4 => format!("<w:p>{start}{end}{start}<w:r><w:t>A</w:t></w:r>{end}</w:p>"),
+                5 => format!("<w:p><w:r><w:rPr>{start}{end}</w:rPr><w:t>A</w:t></w:r></w:p>"),
+                6 => format!("<w:p><w:bookmarkStart w:name=\"range\"/><w:r><w:t>A</w:t></w:r>{end}</w:p>"),
+                7 => format!("<w:p>{start}<w:r><w:t>A</w:t></w:r>{end}</w:p>"),
+                8 => format!("<w:p><w:bookmarkStart w:id=\"0\" W:name=\"range\"/><w:r><w:t>A</w:t></w:r>{end}</w:p>"),
+                9 => format!("<w:p><w:bookmarkStart w:id=\"0\" w:name=\"range\">payload</w:bookmarkStart><w:r><w:t>A</w:t></w:r>{end}</w:p>"),
+                10 => format!("<w:p><w:bookmarkStart w:id=\"0\" W:name=\"range w:name='shadow'\"/><w:r><w:t>A</w:t></w:r>{end}</w:p>"),
+                _ => unreachable!(),
+            };
+            image.source_xml = image.source_xml.map(|source| {
+                let source =
+                    source.replace("<w:p><w:r><w:t>Old first</w:t></w:r></w:p>", &replacement);
+                if case == 2 {
+                    source.replace(
+                        "<w:t>Old second</w:t></w:r>",
+                        &format!("<w:t>Old second</w:t></w:r>{end}"),
+                    )
+                } else if case == 8 || case == 10 {
+                    source.replacen(
+                        "<w:txbxContent>",
+                        &format!("<w:txbxContent xmlns:W=\"{WORD_MAIN_NS}\">"),
+                        1,
+                    )
+                } else if case == 7 {
+                    source.replace(
+                        "<w:p><w:r><w:t>Old second</w:t></w:r></w:p>",
+                        &format!("<w:p>{start}<w:r><w:t>Old second</w:t></w:r>{end}</w:p>"),
+                    )
+                } else {
+                    source
+                }
+            });
+            if case == 1 {
+                let duplicate = image.content_nodes.as_ref().unwrap()[0].clone();
+                image.content_nodes.as_mut().unwrap().insert(1, duplicate);
+                image.text_box_text = Some("First current\nFirst current\nSecond current".into());
+            }
+            let expected = decode_data_uri(image.src.as_deref().unwrap()).unwrap().1;
+            let exported = export(&package, model, image);
+            let xml = &exported.parts["word/document.xml"].content;
+            assert!(xml.contains("<w:drawing>"), "case {case}");
+            assert!(!xml.contains("bookmarkStart"), "case {case}");
+            assert!(exported
+                .binary_assets
+                .values()
+                .any(|bytes| bytes == &expected));
+        }
+    }
+
+    #[test]
+    fn edited_vml_textbox_resolves_relationships_from_owning_part() {
+        let (mut package, _, image) = fixture();
+        let mut relationships = package
+            .parts
+            .remove("word/_rels/document.xml.rels")
+            .unwrap();
+        relationships.name = "word/headers/_rels/header.xml.rels".into();
+        relationships.content = relationships
+            .content
+            .replace("media/original.png", "../media/original.png");
+        package
+            .parts
+            .insert(relationships.name.clone(), relationships);
+        let mut state = create_image_serialization_state(&mut package, "word/headers/header.xml");
+        let xml = edited_vml_textbox_run_xml(&image, &mut state, 1).unwrap();
+        assert!(xml.contains("<w:pict>"));
+        assert!(xml.contains("First current"));
+    }
+
+    fn inline_paint_fixture() -> (OoxmlPackage, DocModel) {
+        let xml = r##"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body><w:p><w:r><w:pict><v:group style="width:270pt;height:105pt" coordorigin="0,0" coordsize="360,140"><v:shape id="bitmap" type="#_x0000_t75" style="position:absolute;left:10;top:18;width:45;height:45" stroked="f"><v:imagedata r:id="rIdBitmap"/></v:shape><v:line from="0,120" to="360,120" strokecolor="#3355aa" strokeweight="0.75pt"/><v:shape id="story-0" type="#_x0000_t202" style="position:absolute;left:65;top:12;width:190;height:40" filled="f" stroked="f"><v:textbox inset="0,0,0,0"><w:txbxContent><w:p><w:bookmarkStart w:id="0" w:name="story-0"/><w:r><w:rPr><w:rFonts w:ascii="Arial"/><w:b/><w:sz w:val="24"/></w:rPr><w:t>Original upper story</w:t></w:r><w:bookmarkEnd w:id="0"/></w:p></w:txbxContent></v:textbox></v:shape><v:shape id="story-1" type="#_x0000_t202" style="position:absolute;left:145;top:67;width:190;height:40" filled="f" stroked="f"><v:textbox inset="0,0,0,0"><w:txbxContent><w:p><w:bookmarkStart w:id="1" w:name="story-1"/><w:r><w:rPr><w:rFonts w:ascii="Arial"/><w:b/><w:sz w:val="24"/></w:rPr><w:t>Original lower story</w:t></w:r><w:bookmarkEnd w:id="1"/></w:p></w:txbxContent></v:textbox></v:shape></v:group></w:pict></w:r></w:p><w:p><w:r><w:t>Following body text</w:t></w:r></w:p></w:body></w:document>"##;
+        let mut package = crate::create_minimal_docx_package(Some(xml));
+        let bytes = decode_data_uri("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==").unwrap().1;
+        package
+            .binary_assets
+            .insert("word/media/bitmap.png".into(), bytes);
+        package.parts.insert("word/_rels/document.xml.rels".into(), OoxmlPart {
+            name: "word/_rels/document.xml.rels".into(),
+            content: format!(r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdBitmap" Type="{OFFICE_REL_NS}/image" Target="media/bitmap.png"/></Relationships>"#),
+        });
+        let mut model = crate::build_doc_model(&package);
+        let DocNode::Paragraph(paragraph) = &mut model.nodes[0] else {
+            panic!("paragraph")
+        };
+        paragraph.source_xml = None;
+        paragraph.source_text_patch = None;
+        (package, model)
+    }
+
+    fn inline_image(model: &DocModel) -> &ImageRunNode {
+        let DocNode::Paragraph(paragraph) = &model.nodes[0] else {
+            panic!("paragraph")
+        };
+        let ParagraphChildNode::Image(image) = &paragraph.children[0] else {
+            panic!("image")
+        };
+        image
+    }
+
+    fn inline_image_mut(model: &mut DocModel) -> &mut ImageRunNode {
+        let DocNode::Paragraph(paragraph) = &mut model.nodes[0] else {
+            panic!("paragraph")
+        };
+        let ParagraphChildNode::Image(image) = &mut paragraph.children[0] else {
+            panic!("image")
+        };
+        image
+    }
+
+    fn source_plan_preserves_bitmap_and_stories(package: &OoxmlPackage, model: &DocModel) {
+        let before = inline_image(model);
+        assert_eq!(
+            (before.width_px, before.height_px, &before.floating),
+            (Some(360.0), Some(140.0), &None)
+        );
+        let bounds = before.paint_bounds.as_deref().unwrap();
+        assert_eq!(
+            (
+                bounds.x_px,
+                bounds.y_px,
+                bounds.width_px,
+                bounds.height_px,
+                bounds.layout_width_px,
+                bounds.layout_height_px
+            ),
+            (-0.5, 0.0, 361.0, 140.0, 360.0, 140.0)
+        );
+        assert!(can_preserve_image_paint_source(
+            before,
+            Some(package),
+            "word/document.xml"
+        ));
+        let exported = try_serialize_doc_model(model, Some(package)).unwrap();
+        assert_eq!(exported.binary_assets, package.binary_assets);
+        let document =
+            roxmltree::Document::parse(&exported.parts["word/document.xml"].content).unwrap();
+        assert_eq!(
+            document
+                .descendants()
+                .filter(|node| node.has_tag_name((VML_NS, "imagedata")))
+                .count(),
+            1
+        );
+        assert_eq!(
+            document
+                .descendants()
+                .filter(|node| node.has_tag_name((WORD_MAIN_NS, "txbxContent")))
+                .count(),
+            2
+        );
+        assert_eq!(
+            document
+                .descendants()
+                .filter(|node| node.has_tag_name((WORD_MAIN_NS, "bookmarkStart")))
+                .count(),
+            2
+        );
+        let after_model = crate::build_doc_model(&exported);
+        let after = inline_image(&after_model);
+        assert_eq!(
+            (after.width_px, after.height_px, &after.floating),
+            (before.width_px, before.height_px, &before.floating)
+        );
+        assert_eq!(after.paint_bounds, before.paint_bounds);
+        let story_children = |image: &ImageRunNode| {
+            image.content_nodes.as_ref().unwrap().iter().map(|node| {
+                let DocNode::Paragraph(paragraph) = node else { panic!("paragraph") };
+                paragraph.children.clone()
+            }).collect::<Vec<_>>()
+        };
+        assert_eq!(story_children(after), story_children(before));
+        assert!(after.text_box_text.is_none());
+        let (_, svg) = decode_data_uri(after.src.as_deref().unwrap()).unwrap();
+        let svg = std::str::from_utf8(&svg).unwrap();
+        let svg = roxmltree::Document::parse(svg).unwrap();
+        assert_eq!(
+            svg.descendants()
+                .filter(|node| node.has_tag_name(("http://www.w3.org/2000/svg", "image")))
+                .count(),
+            1
+        );
+        assert_eq!(
+            svg.root_element().attribute("viewBox"),
+            Some("-0.5 0 361 140")
+        );
+    }
+
+    #[test]
+    fn inline_paint_source_regeneration_preserves_logical_frame_and_full_artwork() {
+        let (package, model) = inline_paint_fixture();
+        source_plan_preserves_bitmap_and_stories(&package, &model);
+    }
+
+    #[test]
+    fn inline_paint_edited_export_preserves_current_stories_bookmarks_and_bitmap() {
+        let (package, mut model) = inline_paint_fixture();
+        let image = inline_image_mut(&mut model);
+        let DocNode::Paragraph(paragraph) = &mut image.content_nodes.as_mut().unwrap()[0] else {
+            panic!("paragraph")
+        };
+        let ParagraphChildNode::Text(run) = &mut paragraph.children[0] else {
+            panic!("text")
+        };
+        run.text = "Edited upper story".into();
+        image.text_box_text = Some("Edited upper story\nOriginal lower story".into());
+        source_plan_preserves_bitmap_and_stories(&package, &model);
+        let exported = try_serialize_doc_model(&model, Some(&package)).unwrap();
+        assert!(exported.parts["word/document.xml"]
+            .content
+            .contains("Edited upper story"));
+        assert!(!exported.parts["word/document.xml"]
+            .content
+            .contains("Original upper story"));
+    }
+
+    #[test]
+    fn inline_paint_rejects_source_coordinate_and_viewport_mismatches_without_flattening() {
+        use base64::Engine as _;
+        for case in 0..6 {
+            let (package, mut model) = inline_paint_fixture();
+            let image = inline_image_mut(&mut model);
+            match case {
+                0 => image.paint_bounds.as_mut().unwrap().x_px = -0.25,
+                1 => image.paint_bounds.as_mut().unwrap().layout_width_px = 361.0,
+                2 => {
+                    image.source_xml = image
+                        .source_xml
+                        .as_ref()
+                        .map(|source| source.replace("coordorigin=\"0,0\"", "coordorigin=\"1,0\""))
+                }
+                3 => {
+                    image.source_xml = image.source_xml.as_ref().map(|source| {
+                        source.replace("coordsize=\"360,140\"", "coordsize=\"361,140\"")
+                    })
+                }
+                4 | 5 => {
+                    let (_, bytes) = decode_data_uri(image.src.as_deref().unwrap()).unwrap();
+                    let svg = String::from_utf8(bytes).unwrap();
+                    let svg = if case == 4 {
+                        svg.replace("viewBox=\"-0.5 0 361 140\"", "viewBox=\"0 0 361 140\"")
+                    } else {
+                        svg.replace("width=\"361\"", "width=\"360\"")
+                    };
+                    image.src = Some(format!(
+                        "data:image/svg+xml;base64,{}",
+                        base64::engine::general_purpose::STANDARD.encode(svg)
+                    ));
+                }
+                _ => unreachable!(),
+            }
+            assert!(
+                !can_preserve_image_paint_source(image, Some(&package), "word/document.xml"),
+                "case {case}"
+            );
+            assert!(
+                serialize_docx(&model, Some(&package))
+                    .unwrap_err()
+                    .contains("full-viewport PNG"),
+                "case {case}"
+            );
+        }
+    }
+
+    #[test]
+    fn inline_paint_resize_requires_a_current_raster_instead_of_reusing_stale_source() {
+        let (package, mut model) = inline_paint_fixture();
+        let image = inline_image_mut(&mut model);
+        image.width_px = Some(720.0);
+        image.height_px = Some(280.0);
+        assert!(valid_image_paint_bounds(image));
+        assert!(!can_preserve_image_paint_source(
+            image,
+            Some(&package),
+            "word/document.xml"
+        ));
+        assert!(try_serialize_doc_model(&model, Some(&package))
+            .unwrap_err()
+            .contains("full-viewport PNG"));
+    }
+
+    #[test]
+    fn inline_paint_raster_fallback_preserves_continuous_overflow_after_resize() {
+        let (package, mut model) = inline_paint_fixture();
+        let image = inline_image_mut(&mut model);
+        image.width_px = Some(720.0);
+        image.height_px = Some(280.0);
+        image.src = Some("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==".into());
+        image.content_type = Some("image/png".into());
+        image.source_xml = None;
+        image.content_nodes = None;
+        image.synthetic_text_box = None;
+        image.text_box_text = None;
+        let expected_png = decode_data_uri(image.src.as_deref().unwrap()).unwrap().1;
+        let exported = try_serialize_doc_model(&model, Some(&package)).unwrap();
+        let xml = &exported.parts["word/document.xml"].content;
+        let document = roxmltree::Document::parse(xml).unwrap();
+        let group = document
+            .descendants()
+            .find(|node| node.has_tag_name((VML_NS, "group")))
+            .unwrap();
+        assert_eq!(
+            group.attribute("style"),
+            Some("position:static;width:720px;height:280px")
+        );
+        assert_eq!(group.attribute("coordsize"), Some("720,280"));
+        let shape = group
+            .children()
+            .find(|node| node.has_tag_name((VML_NS, "shape")))
+            .unwrap();
+        assert_eq!(
+            shape.attribute("style"),
+            Some("position:absolute;left:-1;top:0;width:722;height:280")
+        );
+        assert!(!document
+            .descendants()
+            .any(|node| node.has_tag_name((WORD_MAIN_NS, "txbxContent"))));
+        assert!(exported
+            .binary_assets
+            .values()
+            .any(|value| value == &expected_png));
+        let reparsed = crate::build_doc_model(&exported);
+        let image = inline_image(&reparsed);
+        assert_eq!(
+            (image.width_px, image.height_px, &image.floating),
+            (Some(720.0), Some(280.0), &None)
+        );
+        let bounds = image.paint_bounds.as_deref().unwrap();
+        assert_eq!(
+            (bounds.x_px, bounds.y_px, bounds.width_px, bounds.height_px),
+            (-1.0, 0.0, 722.0, 280.0)
+        );
+    }
+
+    #[test]
+    fn inline_paint_rejects_nonfinite_or_unrepresentable_geometry() {
+        for case in 0..7 {
+            let (package, mut model) = inline_paint_fixture();
+            let image = inline_image_mut(&mut model);
+            let bounds = image.paint_bounds.as_mut().unwrap();
+            match case {
+                0 => bounds.x_px = f64::NAN,
+                1 => bounds.height_px = 0.0,
+                2 => bounds.layout_width_px = f64::INFINITY,
+                3 => bounds.layout_width_px = f64::MIN_POSITIVE,
+                4 => image.width_px = Some(f64::MAX),
+                5 => image.height_px = Some(-1.0),
+                6 => {
+                    image.floating =
+                        Some(serde_json::from_value(serde_json::json!({"xPx":0.0})).unwrap())
+                }
+                _ => unreachable!(),
+            }
+            assert!(
+                serialize_docx(&model, Some(&package))
+                    .unwrap_err()
+                    .contains("finite positive geometry"),
+                "case {case}"
+            );
+        }
+    }
+
+    #[test]
+    fn inline_paint_source_uses_the_default_coordinate_extent() {
+        let (mut package, _) = inline_paint_fixture();
+        let part = package.parts.get_mut("word/document.xml").unwrap();
+        part.content = part.content.replace(" coordsize=\"360,140\"", "");
+        let mut model = crate::build_doc_model(&package);
+        let DocNode::Paragraph(paragraph) = &mut model.nodes[0] else {
+            panic!("paragraph")
+        };
+        paragraph.source_xml = None;
+        assert!(can_preserve_image_paint_source(
+            inline_image(&model),
+            Some(&package),
+            "word/document.xml"
+        ));
+        let before = inline_image(&model).paint_bounds.clone();
+        let exported = try_serialize_doc_model(&model, Some(&package)).unwrap();
+        let reparsed = crate::build_doc_model(&exported);
+        assert_eq!(inline_image(&reparsed).paint_bounds, before);
+        assert_eq!(exported.binary_assets, package.binary_assets);
+    }
+
+    #[test]
+    fn inline_paint_validator_uses_first_wins_normalized_header_owner() {
+        let (mut package, mut model) = inline_paint_fixture();
+        let header_nodes = vec![model.nodes.remove(0)];
+        let mut relationship = package
+            .parts
+            .remove("word/_rels/document.xml.rels")
+            .unwrap();
+        relationship.name = "word/headers/_rels/header.xml.rels".into();
+        relationship.content = relationship
+            .content
+            .replace("media/bitmap.png", "../media/bitmap.png");
+        package
+            .parts
+            .insert(relationship.name.clone(), relationship);
+        model.metadata.header_sections.push(HeaderSection {
+            part_name: "/word/headers/header.xml".into(),
+            reference_type: None,
+            nodes: header_nodes.clone(),
+        });
+        let mut rejected_nodes = header_nodes.clone();
+        let DocNode::Paragraph(paragraph) = &mut rejected_nodes[0] else {
+            panic!("paragraph")
+        };
+        let ParagraphChildNode::Image(image) = &mut paragraph.children[0] else {
+            panic!("image")
+        };
+        image.paint_bounds.as_mut().unwrap().width_px = 0.0;
+        model.metadata.footer_sections.push(FooterSection {
+            part_name: "word/headers/header.xml".into(),
+            reference_type: None,
+            nodes: rejected_nodes,
+        });
+        assert!(validate_image_paint_bounds(&model, Some(&package)).is_ok());
+        let exported = try_serialize_doc_model(&model, Some(&package)).unwrap();
+        assert!(exported.parts["word/headers/header.xml"]
+            .content
+            .contains("Original upper story"));
+        assert!(exported.parts["word/headers/_rels/header.xml.rels"]
+            .content
+            .contains("../media/bitmap.png"));
+    }
+
+    #[test]
+    fn inline_paint_validator_ignores_note_and_comment_node_projections() {
+        let (package, mut model) = inline_paint_fixture();
+        inline_image_mut(&mut model)
+            .paint_bounds
+            .as_mut()
+            .unwrap()
+            .width_px = 0.0;
+        let ignored_nodes = vec![model.nodes.remove(0)];
+        model.metadata.footnotes = Some(vec![DocumentNoteDefinition {
+            id: 1,
+            text: "Retained note".into(),
+            nodes: Some(ignored_nodes.clone()),
+        }]);
+        let mut comment: DocumentCommentDefinition =
+            serde_json::from_value(serde_json::json!({"id":1,"text":"Retained comment"})).unwrap();
+        comment.nodes = Some(ignored_nodes);
+        model.metadata.comments = Some(vec![comment]);
+        assert!(validate_image_paint_bounds(&model, Some(&package)).is_ok());
+    }
+
+    #[test]
+    fn inline_paint_raster_requires_a_real_overflow_viewport() {
+        for (x, width) in [(0.0, 360.0), (10.0, 100.0), (-100.0, 361.0)] {
+            let (package, mut model) = inline_paint_fixture();
+            let image = inline_image_mut(&mut model);
+            image.src = Some("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==".into());
+            image.content_type = Some("image/png".into());
+            image.source_xml = None;
+            let bounds = image.paint_bounds.as_mut().unwrap();
+            bounds.x_px = x;
+            bounds.width_px = width;
+            assert!(try_serialize_doc_model(&model, Some(&package))
+                .unwrap_err()
+                .contains("full-viewport PNG"));
+        }
+    }
+
+    #[test]
+    fn inline_paint_fractional_raster_mapping_keeps_unit_coordinates_exact() {
+        let (package, mut model) = inline_paint_fixture();
+        let image = inline_image_mut(&mut model);
+        image.width_px = Some(3.0);
+        image.height_px = Some(140.0);
+        image.paint_bounds = Some(Box::new(ImagePaintBounds {
+            x_px: -0.1,
+            y_px: 0.0,
+            width_px: 3.2,
+            height_px: 140.0,
+            layout_width_px: 3.0,
+            layout_height_px: 140.0,
+        }));
+        image.src = Some("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==".into());
+        image.content_type = Some("image/png".into());
+        image.source_xml = None;
+        image.content_nodes = None;
+        image.synthetic_text_box = None;
+        image.text_box_text = None;
+        let exported = try_serialize_doc_model(&model, Some(&package)).unwrap();
+        let xml = &exported.parts["word/document.xml"].content;
+        assert!(xml.contains("coordsize=\"3,140\""));
+        assert!(xml.contains("left:-0.1;top:0;width:3.2;height:140"));
+        let reparsed = crate::build_doc_model(&exported);
+        let image = inline_image(&reparsed);
+        assert_eq!((image.width_px, image.height_px), (Some(3.0), Some(140.0)));
+        let bounds = image.paint_bounds.as_deref().unwrap();
+        assert_eq!(bounds.x_px, -0.1);
+        assert_eq!(
+            bounds.width_px,
+            ((-0.1_f64 + 3.2_f64).max(3.0)) - (-0.1_f64)
+        );
+        assert_eq!(bounds.layout_width_px, 3.0);
+    }
+
+    #[test]
+    fn inline_paint_all_public_output_boundaries_reject_unsupported_geometry() {
+        let (package, mut model) = inline_paint_fixture();
+        inline_image_mut(&mut model)
+            .paint_bounds
+            .as_mut()
+            .unwrap()
+            .width_px = 0.0;
+        assert!(validate_image_paint_bounds(&model, Some(&package)).is_err());
+        assert!(try_serialize_doc_model(&model, Some(&package)).is_err());
+        assert!(serialize_docx(&model, Some(&package)).is_err());
+        assert!(std::panic::catch_unwind(|| serialize_doc_model(&model, Some(&package))).is_err());
+        assert!(
+            std::panic::catch_unwind(|| model_to_document_xml(&model, Some(&package))).is_err()
+        );
+    }
+
+    #[test]
+    fn inline_paint_raster_rejects_overflow_lost_during_scaling() {
+        let (package, mut model) = inline_paint_fixture();
+        let image = inline_image_mut(&mut model);
+        image.width_px = Some(f64::MIN_POSITIVE);
+        image.paint_bounds = Some(Box::new(ImagePaintBounds {
+            x_px: -f64::MIN_POSITIVE,
+            y_px: 0.0,
+            width_px: 2.0,
+            height_px: 140.0,
+            layout_width_px: 2.0,
+            layout_height_px: 140.0,
+        }));
+        image.src = Some("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==".into());
+        image.content_type = Some("image/png".into());
+        image.source_xml = None;
+        assert!(valid_image_paint_bounds(image));
+        assert!(try_serialize_doc_model(&model, Some(&package))
+            .unwrap_err()
+            .contains("full-viewport PNG"));
+    }
 }

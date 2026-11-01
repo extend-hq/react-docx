@@ -91,7 +91,17 @@ export interface TextRunNode {
   };
 }
 
+export interface ImagePaintBounds {
+  xPx: number;
+  yPx: number;
+  widthPx: number;
+  heightPx: number;
+  layoutWidthPx: number;
+  layoutHeightPx: number;
+}
+
 export interface ImageRunNode {
+  paintBounds?: ImagePaintBounds;
   mathMl?: string;
   blockId?: string;
   contentNodes?: DocNode[];
@@ -175,6 +185,13 @@ export interface FormFieldWidgetSettings {
   dropdown?: FormFieldDropdownWidgetSettings;
 }
 
+export interface FormFieldSourcePreview {
+  relationshipId: string;
+  shapeId: string;
+  checked: boolean;
+  image: ImageRunNode;
+}
+
 export interface FormFieldRunNode {
   type: "form-field";
   fieldType: FormFieldType;
@@ -192,6 +209,7 @@ export interface FormFieldRunNode {
   style?: TextStyle;
   link?: string;
   sourceXml?: string;
+  sourcePreview?: FormFieldSourcePreview;
 }
 
 export type ParagraphChildNode = TextRunNode | ImageRunNode | FormFieldRunNode;

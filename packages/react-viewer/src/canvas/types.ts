@@ -1,4 +1,5 @@
-import type { LayoutPage } from "@extend-ai/react-docx-layout-engine";
+import type { LayoutFormField, LayoutImageRun, LayoutPage } from "@extend-ai/react-docx-layout-engine";
+import type { DocxFormFieldLocation } from "../editor";
 
 export type DocxRenderEngine = "dom" | "canvas" | "auto";
 
@@ -16,11 +17,12 @@ export interface DocxLayoutLineGeometry {
   y: number;
   width: number;
   height: number;
+  fontSizePx?: number;
 }
 
 export interface DocxLayoutObjectGeometry {
   id: string;
-  kind: "paragraph" | "table" | "image";
+  kind: "paragraph" | "table" | "image" | "form-field";
   page: number;
   x: number;
   y: number;
@@ -28,6 +30,9 @@ export interface DocxLayoutObjectGeometry {
   height: number;
   nodeIndex?: number;
   lines?: DocxLayoutLineGeometry[];
+  image?: LayoutImageRun;
+  formField?: LayoutFormField;
+  formFieldLocation?: DocxFormFieldLocation;
 }
 
 export interface DocxLayoutPageGeometry {

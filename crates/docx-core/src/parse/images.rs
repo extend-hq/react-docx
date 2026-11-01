@@ -1,5 +1,5 @@
 use crate::model::{
-    ImageCrop, ImageFloating, ImageHorizontalAlign, ImageRunNode, ImageRunNodeType,
+    ImageCrop, ImageFloating, ImageHorizontalAlign, ImagePaintBounds, ImageRunNode, ImageRunNodeType,
     ImageVerticalAlign, ImageWrapText, ImageWrapType,
 };
 use crate::parse::colors::normalize_hex_color;
@@ -1077,7 +1077,9 @@ fn vml_finite(value: &str) -> Option<f64> {
 
 fn vml_pixels(value: &str) -> Option<f64> {
     let value = value.trim();
-    let split = value.find(|c: char| c.is_ascii_alphabetic())?;
+    let Some(split) = value.find(|c: char| c.is_ascii_alphabetic()) else {
+        return vml_finite(value);
+    };
     let number = vml_finite(&value[..split])?;
     let factor = match value[split..].trim().to_ascii_lowercase().as_str() {
         "px" => 1.0,
@@ -1100,6 +1102,95 @@ fn vml_pair(value: &str) -> Option<(f64, f64)> {
 }
 
 fn vml_svg_path(path: &str) -> Option<String> {
+    vml_explicit_svg_path(path).or_else(|| vml_compact_svg_path(path))
+}
+
+fn vml_compact_svg_path(path: &str) -> Option<String> {
+    use std::fmt::Write;
+
+    let mut result = String::with_capacity(path.len());
+    let mut remaining = path.trim();
+    let mut current = (0.0, 0.0);
+    let mut start = current;
+    while !remaining.is_empty() {
+        let command = *remaining.as_bytes().first()?;
+        if !matches!(command, b'm' | b'l' | b'r' | b'c' | b'x' | b'e')
+            || (result.is_empty() && command != b'm')
+        {
+            return None;
+        }
+        remaining = &remaining[1..];
+        let end = remaining
+            .find(|c: char| c.is_ascii_alphabetic())
+            .unwrap_or(remaining.len());
+        let parameters = remaining[..end].trim();
+        let mut numbers = Vec::new();
+        if !parameters.is_empty() {
+            for field in parameters.split(',') {
+                if field.trim().is_empty() {
+                    numbers.push(0.0);
+                } else {
+                    for number in field.split_ascii_whitespace() {
+                        numbers.push(vml_finite(number)?);
+                    }
+                }
+            }
+        }
+        let valid = match command {
+            b'm' | b'l' | b'r' => !numbers.is_empty() && numbers.len() % 2 == 0,
+            b'c' => !numbers.is_empty() && numbers.len() % 6 == 0,
+            _ => numbers.is_empty(),
+        };
+        if !valid {
+            return None;
+        }
+        remaining = remaining[end..].trim();
+        match command {
+            b'e' => {
+                if !remaining.is_empty() {
+                    return None;
+                }
+            }
+            b'x' => {
+                result.push('Z');
+                current = start;
+            }
+            b'c' => {
+                result.push('C');
+                for (index, value) in numbers.iter().enumerate() {
+                    if index != 0 {
+                        result.push(' ');
+                    }
+                    write!(result, "{value}").ok()?;
+                }
+                current = (numbers[numbers.len() - 2], numbers[numbers.len() - 1]);
+            }
+            _ => {
+                for (index, pair) in numbers.chunks_exact(2).enumerate() {
+                    let point = if command == b'r' {
+                        (current.0 + pair[0], current.1 + pair[1])
+                    } else {
+                        (pair[0], pair[1])
+                    };
+                    if !point.0.is_finite() || !point.1.is_finite() {
+                        return None;
+                    }
+                    let output_command = if command == b'm' && index == 0 {
+                        start = point;
+                        'M'
+                    } else {
+                        'L'
+                    };
+                    write!(result, "{output_command}{} {}", point.0, point.1).ok()?;
+                    current = point;
+                }
+            }
+        }
+    }
+    (!result.is_empty()).then_some(result)
+}
+
+fn vml_explicit_svg_path(path: &str) -> Option<String> {
     let mut result = String::with_capacity(path.len());
     let mut remaining = path.trim();
     while !remaining.is_empty() {
@@ -1190,6 +1281,443 @@ fn vml_path_bounds(
     bounds.0.is_finite().then_some(bounds)
 }
 
+fn vml_attributes_are_known(xml: &str, names: &[&[u8]]) -> bool {
+    let mut reader = quick_xml::Reader::from_str(xml);
+    let Ok(quick_xml::events::Event::Start(element) | quick_xml::events::Event::Empty(element)) =
+        reader.read_event()
+    else {
+        return false;
+    };
+    element.attributes().all(|attribute| {
+        attribute.is_ok_and(|attribute| {
+            names.contains(&attribute.key.as_ref().as_bytes())
+                || attribute.key.as_ref().starts_with("xmlns:")
+        })
+    })
+}
+
+fn vml_bitmap_rectangle_type(xml: &str) -> bool {
+    let Some(end) = crate::xml::tag_token_end(xml, 0) else {
+        return false;
+    };
+    let opening = &xml[..end];
+    if !vml_attributes_are_known(
+        xml,
+        &[
+            b"id",
+            b"coordsize",
+            b"o:spt",
+            b"o:preferrelative",
+            b"path",
+            b"filled",
+            b"stroked",
+        ],
+    ) || get_attribute(opening, "id").as_deref() != Some("_x0000_t75")
+        || get_attribute(opening, "coordsize").and_then(|value| vml_pair(&value))
+            != Some((21600.0, 21600.0))
+        || get_attribute(opening, "o:spt").as_deref() != Some("75")
+        || get_attribute(opening, "path").as_deref() != Some("m@4@5l@4@11@9@11@9@5xe")
+        || !["filled", "stroked"].iter().all(|name| {
+            get_attribute(opening, name)
+                .is_some_and(|value| matches!(value.as_str(), "f" | "false" | "0"))
+        })
+        || get_attribute(opening, "o:preferrelative")
+            .is_some_and(|value| !matches!(value.as_str(), "t" | "true" | "1"))
+    {
+        return false;
+    }
+    let children = crate::xml::extract_direct_child_tag_ranges(xml);
+    let mut formulas_seen = false;
+    let mut seen = std::collections::HashSet::new();
+    for child in children {
+        if !seen.insert(child.tag_name.clone()) {
+            return false;
+        }
+        let inner = &xml[child.start..child.end];
+        let valid = match child.tag_name.as_str() {
+            "v:stroke" => {
+                vml_attributes_are_known(inner, &[b"joinstyle"])
+                    && get_attribute(inner, "joinstyle").as_deref() == Some("miter")
+                    && crate::xml::extract_direct_child_tag_ranges(inner).is_empty()
+            }
+            "v:path" => {
+                vml_attributes_are_known(
+                    inner,
+                    &[b"o:extrusionok", b"gradientshapeok", b"o:connecttype"],
+                ) && crate::xml::extract_direct_child_tag_ranges(inner).is_empty()
+            }
+            "o:lock" => {
+                vml_attributes_are_known(inner, &[b"v:ext", b"aspectratio"])
+                    && crate::xml::extract_direct_child_tag_ranges(inner).is_empty()
+            }
+            "v:formulas" => {
+                formulas_seen = true;
+                let expected = [
+                    "if lineDrawn pixelLineWidth 0",
+                    "sum @0 1 0",
+                    "sum 0 0 @1",
+                    "prod @2 1 2",
+                    "prod @3 21600 pixelWidth",
+                    "prod @3 21600 pixelHeight",
+                    "sum @0 0 1",
+                    "prod @6 1 2",
+                    "prod @7 21600 pixelWidth",
+                    "sum @8 21600 0",
+                    "prod @7 21600 pixelHeight",
+                    "sum @10 21600 0",
+                ];
+                let formulas = crate::xml::extract_direct_child_tag_ranges(inner);
+                vml_attributes_are_known(inner, &[])
+                    && formulas.len() == expected.len()
+                    && formulas.iter().zip(expected).all(|(formula, expected)| {
+                        let item = &inner[formula.start..formula.end];
+                        formula.tag_name == "v:f"
+                            && vml_attributes_are_known(item, &[b"eqn"])
+                            && get_attribute(item, "eqn").is_some_and(|value| {
+                                value
+                                    .split_ascii_whitespace()
+                                    .eq(expected.split_ascii_whitespace())
+                            })
+                            && crate::xml::extract_direct_child_tag_ranges(item).is_empty()
+                    })
+            }
+            _ => false,
+        };
+        if !valid {
+            return false;
+        }
+    }
+    formulas_seen
+}
+
+fn vml_textbox_rectangle_type(xml: &str) -> bool {
+    let Some(end) = crate::xml::tag_token_end(xml, 0) else {
+        return false;
+    };
+    let tag = &xml[..end];
+    if !vml_attributes_are_known(tag, &[b"id", b"coordsize", b"o:spt", b"path"])
+        || get_attribute(tag, "id").as_deref() != Some("_x0000_t202")
+        || get_attribute(tag, "o:spt").as_deref() != Some("202")
+        || get_attribute(tag, "coordsize").and_then(|value| vml_pair(&value))
+            != Some((21600.0, 21600.0))
+        || get_attribute(tag, "path").as_deref() != Some("m,l,21600r21600,l21600,xe")
+    {
+        return false;
+    }
+    let mut stroke = false;
+    let mut path = false;
+    for child in crate::xml::extract_direct_child_tag_ranges(xml) {
+        let inner = &xml[child.start..child.end];
+        if !crate::xml::extract_direct_child_tag_ranges(inner).is_empty() {
+            return false;
+        }
+        match child.tag_name.as_str() {
+            "v:stroke" if !stroke => {
+                stroke = true;
+                if !vml_attributes_are_known(inner, &[b"joinstyle"])
+                    || get_attribute(inner, "joinstyle").as_deref() != Some("miter")
+                {
+                    return false;
+                }
+            }
+            "v:path" if !path => {
+                path = true;
+                if !vml_attributes_are_known(inner, &[b"gradientshapeok", b"o:connecttype"])
+                    || get_attribute(inner, "gradientshapeok").as_deref() != Some("t")
+                    || get_attribute(inner, "o:connecttype").as_deref() != Some("rect")
+                {
+                    return false;
+                }
+            }
+            _ => return false,
+        }
+    }
+    stroke && path
+}
+
+fn vml_editing_lock(xml: &str) -> bool {
+    vml_attributes_are_known(xml, &[b"v:ext", b"aspectratio"])
+        && get_attribute(xml, "v:ext").as_deref() == Some("edit")
+        && get_attribute(xml, "aspectratio")
+            .is_none_or(|value| matches!(value.as_str(), "t" | "f" | "true" | "false" | "0" | "1"))
+        && crate::xml::extract_direct_child_tag_ranges(xml).is_empty()
+}
+
+fn vml_no_wrap(xml: &str) -> bool {
+    vml_attributes_are_known(xml, &[b"type"])
+        && get_attribute(xml, "type").as_deref() == Some("none")
+        && crate::xml::extract_direct_child_tag_ranges(xml).is_empty()
+}
+
+fn vml_identity_group(xml: &str) -> Option<()> {
+    let tag = &xml[..crate::xml::tag_token_end(xml, 0)?];
+    if !vml_attributes_are_known(
+        tag,
+        &[
+            b"id",
+            b"o:spid",
+            b"alt",
+            b"style",
+            b"coordorigin",
+            b"coordsize",
+        ],
+    ) || get_attribute(tag, "alt").is_some_and(|value| !value.is_empty())
+    {
+        return None;
+    }
+    let declarations = parse_css_style_declarations(&get_attribute(tag, "style")?);
+    if declarations.get("position").map(String::as_str) != Some("absolute")
+        || declarations.iter().any(|(key, value)| {
+            !matches!(
+                key.as_str(),
+                "position" | "left" | "top" | "width" | "height"
+            ) && !(key == "visibility" && value == "visible")
+                && !(key == "z-index" && vml_finite(value) == Some(0.0))
+        })
+    {
+        return None;
+    }
+    let origin = vml_pair(&get_attribute(tag, "coordorigin").unwrap_or_else(|| "0,0".into()))?;
+    let size = vml_pair(&get_attribute(tag, "coordsize")?)?;
+    let left = declarations
+        .get("left")
+        .map(|value| vml_finite(value))
+        .unwrap_or(Some(0.0))?;
+    let top = declarations
+        .get("top")
+        .map(|value| vml_finite(value))
+        .unwrap_or(Some(0.0))?;
+    let width = vml_finite(declarations.get("width")?)?;
+    let height = vml_finite(declarations.get("height")?)?;
+    (origin == (left, top) && size == (width, height) && width > 0.0 && height > 0.0).then_some(())
+}
+
+fn vml_group_leaves(xml: &str) -> Option<Vec<crate::xml::TaggedRange>> {
+    fn append(
+        xml: &str,
+        offset: usize,
+        depth: usize,
+        output: &mut Vec<crate::xml::TaggedRange>,
+    ) -> Option<()> {
+        if depth > 32 {
+            return None;
+        }
+        for mut child in crate::xml::extract_direct_child_tag_ranges(xml) {
+            let inner = &xml[child.start..child.end];
+            if child.tag_name == "v:group" {
+                vml_identity_group(inner)?;
+                append(inner, offset + child.start, depth + 1, output)?;
+            } else {
+                if depth > 0 {
+                    let tag = &inner[..crate::xml::tag_token_end(inner, 0)?];
+                    let style = parse_css_style_declarations(
+                        &get_attribute(tag, "style").unwrap_or_default(),
+                    );
+                    if style
+                        .get("z-index")
+                        .is_some_and(|value| vml_finite(value) != Some(0.0))
+                    {
+                        return None;
+                    }
+                }
+                child.start += offset;
+                child.end += offset;
+                output.push(child);
+            }
+        }
+        Some(())
+    }
+    let mut output = Vec::new();
+    append(xml, 0, 0, &mut output)?;
+    Some(output)
+}
+
+fn vml_canvas_hit_test_shape(xml: &str, origin: (f64, f64), extent: (f64, f64)) -> bool {
+    let Some(end) = crate::xml::tag_token_end(xml, 0) else {
+        return false;
+    };
+    let tag = &xml[..end];
+    if !vml_attributes_are_known(tag, &[b"id", b"o:spid", b"type", b"style"])
+        || get_attribute(tag, "type").as_deref() != Some("#_x0000_t75")
+    {
+        return false;
+    }
+    let declarations =
+        parse_css_style_declarations(&get_attribute(tag, "style").unwrap_or_default());
+    if declarations.get("position").map(String::as_str) != Some("absolute")
+        || declarations.iter().any(|(key, value)| {
+            !matches!(
+                key.as_str(),
+                "position" | "left" | "top" | "width" | "height"
+            ) && !(key == "visibility" && value == "visible")
+        })
+    {
+        return false;
+    }
+    for (key, expected) in [
+        ("left", origin.0),
+        ("top", origin.1),
+        ("width", extent.0),
+        ("height", extent.1),
+    ] {
+        let value = declarations
+            .get(key)
+            .map(|value| vml_finite(value))
+            .unwrap_or(Some(0.0));
+        if value != Some(expected) {
+            return false;
+        }
+    }
+    let mut fill = false;
+    let mut path = false;
+    for child in crate::xml::extract_direct_child_tag_ranges(xml) {
+        let inner = &xml[child.start..child.end];
+        if !crate::xml::extract_direct_child_tag_ranges(inner).is_empty() {
+            return false;
+        }
+        match child.tag_name.as_str() {
+            "v:fill" if !fill => {
+                fill = true;
+                if !vml_attributes_are_known(inner, &[b"o:detectmouseclick"])
+                    || get_attribute(inner, "o:detectmouseclick").as_deref() != Some("t")
+                {
+                    return false;
+                }
+            }
+            "v:path" if !path => {
+                path = true;
+                if !vml_attributes_are_known(inner, &[b"o:connecttype"])
+                    || get_attribute(inner, "o:connecttype").as_deref() != Some("none")
+                {
+                    return false;
+                }
+            }
+            _ => return false,
+        }
+    }
+    fill && path
+}
+
+fn vml_declares_unpainted_bitmap(xml: &str) -> bool {
+    let mut found = false;
+    for definition in extract_balanced_tag_blocks(xml, "v:shapetype") {
+        let Some(end) = crate::xml::tag_token_end(&definition, 0) else {
+            return false;
+        };
+        if get_attribute(&definition[..end], "id").as_deref() == Some("_x0000_t75") {
+            if !vml_bitmap_rectangle_type(&definition) {
+                return false;
+            }
+            found = true;
+        }
+    }
+    found
+}
+
+fn vml_inherits_unpainted_bitmap(
+    group: &str,
+    context: &ParseContext<'_, impl std::borrow::Borrow<super::context::ParsedStyleSheet>>,
+) -> bool {
+    let mut found = false;
+    for part in context
+        .parts
+        .values()
+        .filter(|part| part.content.contains(group))
+    {
+        if !vml_declares_unpainted_bitmap(&part.content) {
+            return false;
+        }
+        found = true;
+    }
+    found
+}
+
+fn vml_rect_has_default_stroke(xml: &str) -> bool {
+    let Some(end) = crate::xml::tag_token_end(xml, 0) else {
+        return false;
+    };
+    let tag = &xml[..end];
+    get_attribute(tag, "strokeweight").is_none()
+        && !get_attribute(tag, "stroked")
+            .is_some_and(|value| matches!(value.as_str(), "f" | "false" | "0"))
+}
+
+fn vml_browser_bitmap_src(src: &str, part_name: Option<&str>, content_type: Option<&str>) -> bool {
+    if part_name
+        .and_then(|value| value.rsplit_once('.'))
+        .is_some_and(|(_, suffix)| {
+            suffix.eq_ignore_ascii_case("emf") || suffix.eq_ignore_ascii_case("wmf")
+        })
+        || content_type.is_some_and(|value| {
+            [
+                "image/x-emf",
+                "image/emf",
+                "image/x-wmf",
+                "image/wmf",
+                "application/x-msmetafile",
+            ]
+            .iter()
+            .any(|kind| value.eq_ignore_ascii_case(kind))
+        })
+    {
+        return false;
+    }
+    [
+        "data:image/png;",
+        "data:image/jpeg;",
+        "data:image/gif;",
+        "data:image/bmp;",
+        "data:image/webp;",
+        "data:image/svg+xml;",
+    ]
+    .iter()
+    .any(|prefix| src.starts_with(prefix))
+}
+
+fn vml_inline_reference_hints(
+    style: &std::collections::HashMap<String, String>,
+    has_root_wrap: bool,
+    floating: Option<&ImageFloating>,
+) -> bool {
+    if has_root_wrap
+        || style.keys().any(|key| {
+            !matches!(
+                key.as_str(),
+                "width"
+                    | "height"
+                    | "position"
+                    | "mso-position-horizontal-relative"
+                    | "mso-position-vertical-relative"
+            )
+        })
+        || style.get("position").is_some_and(|value| {
+            !value.eq_ignore_ascii_case("static") && !value.eq_ignore_ascii_case("relative")
+        })
+    {
+        return false;
+    }
+    let Some(ImageFloating {
+        x_px: None,
+        y_px: None,
+        horizontal_align: None,
+        vertical_align: None,
+        horizontal_relative_to,
+        vertical_relative_to,
+        dist_l_px: None,
+        dist_r_px: None,
+        dist_t_px: None,
+        dist_b_px: None,
+        wrap_type: None,
+        wrap_text: None,
+        behind_document: None,
+        z_index: None,
+    }) = floating
+    else {
+        return false;
+    };
+    horizontal_relative_to.is_some() || vertical_relative_to.is_some()
+}
+
 fn vml_group_image(
     run_xml: &str,
     context: &ParseContext<'_, impl std::borrow::Borrow<super::context::ParsedStyleSheet>>,
@@ -1203,8 +1731,9 @@ fn vml_group_image(
     }
     let group = &groups[0];
     let has_text_box = group.contains("<w:txbxContent");
-    if group.matches("<v:imagedata").count() < if has_text_box { 1 } else { 2 }
-        || run_xml.matches("<v:imagedata").count() != group.matches("<v:imagedata").count()
+    let bitmap_count = group.matches("<v:imagedata").count();
+    if bitmap_count == 0
+        || run_xml.matches("<v:imagedata").count() != bitmap_count
     {
         return None;
     }
@@ -1254,12 +1783,175 @@ fn vml_group_image(
     }
     let _index_scope =
         crate::xml_index::scope(std::iter::once(("", group.as_str())), Default::default());
-    let children = crate::xml_index::children(group)?;
+    let original_children = crate::xml_index::children(group)?;
+    if !has_text_box && bitmap_count == 1 {
+        if style.iter().any(|(key, value)| {
+            !matches!(key.as_str(), "width" | "height")
+                && !(key == "position" && matches!(value.as_str(), "static" | "relative"))
+        }) || original_children.iter().any(|child| {
+            !matches!(child.tag_name.as_str(), "v:shape" | "v:shapetype")
+        }) {
+            return None;
+        }
+        let mut shapes = original_children.iter().filter(|child| child.tag_name == "v:shape");
+        let shape = shapes.next()?;
+        if shapes.next().is_some() {
+            return None;
+        }
+        let xml = &group[shape.start..shape.end];
+        let tag = &xml[..crate::xml::tag_token_end(xml, 0)?];
+        let declarations = parse_css_style_declarations(&get_attribute(tag, "style")?);
+        let x = declarations.get("left").map(|value| vml_finite(value)).unwrap_or(Some(0.0))?;
+        let y = declarations.get("top").map(|value| vml_finite(value)).unwrap_or(Some(0.0))?;
+        let w = vml_finite(declarations.get("width")?)?;
+        let h = vml_finite(declarations.get("height")?)?;
+        if w <= 0.0 || h <= 0.0
+            || (x >= origin_x && y >= origin_y && x + w <= origin_x + extent_x && y + h <= origin_y + extent_y)
+        {
+            return None;
+        }
+        let relationship = resolve_preferred_drawing_relationship_id(xml)
+            .or_else(|| regex_capture(xml, r#"(?i)<v:imagedata\b[^>]*r:id="([^"]+)""#))
+            .or_else(|| regex_capture(xml, r#"(?i)<c:chart\b[^>]*r:id="([^"]+)""#))?;
+        let part_name = context.relationships.get(&relationship)?;
+        context.binary_assets.get(part_name)?;
+    }
+    let mut root_wraps = original_children
+        .iter()
+        .filter(|child| child.tag_name == "w10:wrap");
+    let root_wrap = root_wraps
+        .next()
+        .map(|child| &group[child.start..child.end]);
+    let multiple_root_wraps = root_wraps.next().is_some();
+    let nested_groups = original_children
+        .iter()
+        .any(|child| child.tag_name == "v:group");
+    let children = if nested_groups {
+        vml_group_leaves(group)?
+    } else {
+        original_children
+    };
+    let has_placeholder = get_attribute(opening, "editas").as_deref() == Some("canvas")
+        && children.iter().any(|child| {
+            child.tag_name == "v:shape"
+                && vml_canvas_hit_test_shape(
+                    &group[child.start..child.end],
+                    (origin_x, origin_y),
+                    (extent_x, extent_y),
+                )
+        });
+    let skip_placeholder = has_placeholder && vml_inherits_unpainted_bitmap(group, context);
+    let mut bitmap_definition = false;
+    let mut textbox_definition = false;
+    for child in children
+        .iter()
+        .filter(|child| child.tag_name == "v:shapetype")
+    {
+        let xml = &group[child.start..child.end];
+        if !bitmap_definition && vml_bitmap_rectangle_type(xml) {
+            bitmap_definition = true;
+        } else if !textbox_definition && vml_textbox_rectangle_type(xml) {
+            textbox_definition = true;
+        } else {
+            return None;
+        }
+    }
+    if bitmap_definition || textbox_definition {
+        for child in &children {
+            if child.tag_name == "v:shapetype" {
+                continue;
+            }
+            let xml = &group[child.start..child.end];
+            let tag = &xml[..crate::xml::tag_token_end(xml, 0)?];
+            if let Some(kind) = get_attribute(tag, "type") {
+                let supported = match kind.as_str() {
+                    "#_x0000_t75" => {
+                        xml.contains("<v:imagedata")
+                            || (skip_placeholder
+                                && vml_canvas_hit_test_shape(
+                                    xml,
+                                    (origin_x, origin_y),
+                                    (extent_x, extent_y),
+                                ))
+                    }
+                    "#_x0000_t202" => {
+                        textbox_definition
+                            && xml.contains("<w:txbxContent")
+                            && ["filled", "stroked"].iter().all(|name| {
+                                get_attribute(tag, name).is_some_and(|value| {
+                                    matches!(value.as_str(), "f" | "false" | "0")
+                                })
+                            })
+                    }
+                    _ => false,
+                };
+                if !supported
+                    || crate::xml::extract_direct_child_tag_ranges(xml)
+                        .iter()
+                        .any(|item| item.tag_name == "v:formulas")
+                    || ["path", "coordorigin", "coordsize", "adj"]
+                        .iter()
+                        .any(|name| get_attribute(tag, name).is_some())
+                {
+                    return None;
+                }
+            }
+        }
+    }
+    let expanded_support = nested_groups
+        || textbox_definition
+        || skip_placeholder
+        || children.iter().any(|child| {
+            let xml = &group[child.start..child.end];
+            child.tag_name == "o:lock"
+                || (child.tag_name == "v:rect" && vml_rect_has_default_stroke(xml))
+                || (child.tag_name == "v:shape"
+                    && (xml.contains("<o:lock") || xml.contains("<w10:wrap")))
+        });
+    if expanded_support {
+        let mut containing_part = false;
+        for part in context
+            .parts
+            .values()
+            .filter(|part| part.content.contains(group.as_str()))
+        {
+            containing_part = true;
+            for definition in extract_balanced_tag_blocks(&part.content, "v:shapetype") {
+                let end = crate::xml::tag_token_end(&definition, 0)?;
+                let kind = get_attribute(&definition[..end], "id");
+                match kind.as_deref() {
+                    Some("_x0000_t75") if !vml_bitmap_rectangle_type(&definition) => return None,
+                    Some("_x0000_t202")
+                        if has_text_box && !vml_textbox_rectangle_type(&definition) =>
+                    {
+                        return None
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if !containing_part {
+            return None;
+        }
+    }
     let mut elements = Vec::new();
+    let mut browser_bitmap_payloads = true;
     let mut canvas = (origin_x, origin_y, origin_x + extent_x, origin_y + extent_y);
     for child in children {
         let xml = &group[child.start..child.end];
-        if matches!(child.tag_name.as_str(), "w10:wrap" | "w10:anchorlock") {
+        if child.tag_name == "o:lock" && vml_editing_lock(xml) {
+            continue;
+        }
+        if skip_placeholder
+            && child.tag_name == "v:shape"
+            && vml_canvas_hit_test_shape(xml, (origin_x, origin_y), (extent_x, extent_y))
+        {
+            continue;
+        }
+        if matches!(
+            child.tag_name.as_str(),
+            "w10:wrap" | "w10:anchorlock" | "v:shapetype"
+        ) {
             continue;
         }
         if !matches!(child.tag_name.as_str(), "v:shape" | "v:rect" | "v:line") {
@@ -1313,13 +2005,18 @@ fn vml_group_image(
                     if get_attribute(inner, "type")
                         .as_deref()
                         .is_some_and(|value| value != "solid")
-                        || ["opacity", "color", "color2", "on"]
-                            .iter()
-                            .any(|name| get_attribute(inner, name).is_some())
+                        || ["opacity", "color", "color2", "on"].iter().any(|name| {
+                            get_attribute(inner, name).is_some()
+                                && (*name != "opacity"
+                                    || !get_attribute(tag, "filled").is_some_and(|value| {
+                                        matches!(value.as_str(), "f" | "false" | "0")
+                                    }))
+                        })
                     {
                         return None;
                     }
                 }
+                "v:formulas" => {}
                 "v:path" => {
                     if ["v", "fillok", "strokeok", "shadowok", "limo"]
                         .iter()
@@ -1338,7 +2035,6 @@ fn vml_group_image(
                         "style",
                         "linestyle",
                         "miterlimit",
-                        "joinstyle",
                         "endcap",
                         "filltype",
                         "src",
@@ -1353,6 +2049,7 @@ fn vml_group_image(
                     ]
                     .iter()
                     .any(|name| get_attribute(inner, name).is_some())
+                        || get_attribute(inner, "joinstyle").is_some_and(|value| value != "round")
                         || !crate::xml_index::children(inner)?.is_empty()
                     {
                         return None;
@@ -1366,6 +2063,8 @@ fn vml_group_image(
                         _ => return None,
                     }
                 }
+                "o:lock" if vml_editing_lock(inner) => {}
+                "w10:wrap" if vml_no_wrap(inner) => {}
                 "v:textbox" => {
                     if get_attribute(tag, "type").as_deref() != Some("#_x0000_t202")
                         || get_attribute(tag, "path").is_some()
@@ -1409,7 +2108,7 @@ fn vml_group_image(
             }
         };
         let stroke_weight = get_attribute(tag, "strokeweight");
-        if stroke != "none" && stroke_weight.is_none() {
+        if stroke != "none" && stroke_weight.is_none() && child.tag_name != "v:rect" {
             return None;
         }
         let stroke_width = stroke_weight
@@ -1507,7 +2206,16 @@ fn vml_group_image(
                     return None;
                 }
                 let image = parse_run_image_block(xml, context)?;
-                let src = escape_xml_text(image.src.as_deref()?);
+                let image_src = image.src.as_deref()?;
+                browser_bitmap_payloads &= vml_browser_bitmap_src(
+                    image_src,
+                    image.part_name.as_deref(),
+                    image.content_type.as_deref(),
+                );
+                if expanded_support && !browser_bitmap_payloads {
+                    return None;
+                }
+                let src = escape_xml_text(image_src);
                 bounds = (x, y, x + w, y + h);
                 format!(
                     r#"<image href="{src}" x="{x}" y="{y}" width="{w}" height="{h}" preserveAspectRatio="none"/>"#
@@ -1557,12 +2265,12 @@ fn vml_group_image(
         .collect::<String>();
     let canvas_width = canvas.2 - canvas.0;
     let canvas_height = canvas.3 - canvas.1;
-    let width_px = if canvas_width == extent_x {
+    let mut width_px = if canvas_width == extent_x {
         width
     } else {
         canvas_width * width / extent_x
     };
-    let height_px = if canvas_height == extent_y {
+    let mut height_px = if canvas_height == extent_y {
         height
     } else {
         canvas_height * height / extent_y
@@ -1584,19 +2292,66 @@ fn vml_group_image(
             }
         }
     }
-    if canvas != (origin_x, origin_y, origin_x + extent_x, origin_y + extent_y) {
-        let anchor = floating.as_mut()?;
-        if anchor.horizontal_align.is_some() || anchor.vertical_align.is_some() {
+    if expanded_support && vml_inline_reference_hints(&style, false, floating.as_ref()) {
+        if let Some(wrap) = root_wrap {
+            if !multiple_root_wraps && vml_no_wrap(wrap) {
+                let anchor = floating.as_mut()?;
+                anchor.horizontal_relative_to = None;
+                anchor.vertical_relative_to = None;
+                anchor.wrap_type = Some(ImageWrapType::WrapNone);
+            }
+        } else {
+            floating = None;
+        }
+    }
+    let paint_bounds = if canvas != (origin_x, origin_y, origin_x + extent_x, origin_y + extent_y) {
+        let x_px = (canvas.0 - origin_x) * width / extent_x;
+        let y_px = (canvas.1 - origin_y) * height / extent_y;
+        if !x_px.is_finite() || !y_px.is_finite() || width_px <= 0.0 || height_px <= 0.0 {
             return None;
         }
-        *anchor.x_px.as_mut()? += (canvas.0 - origin_x) * width / extent_x;
-        *anchor.y_px.as_mut()? += (canvas.1 - origin_y) * height / extent_y;
+        if let Some(anchor) = floating.as_mut() {
+            if anchor.horizontal_align.is_some() || anchor.vertical_align.is_some() {
+                return None;
+            }
+            *anchor.x_px.as_mut()? += x_px;
+            *anchor.y_px.as_mut()? += y_px;
+            None
+        } else {
+            let x_px = if width == extent_x { canvas.0 - origin_x } else { x_px };
+            let y_px = if height == extent_y { canvas.1 - origin_y } else { y_px };
+            if width == extent_x {
+                width_px = canvas_width;
+            }
+            if height == extent_y {
+                height_px = canvas_height;
+            }
+            Some(Box::new(ImagePaintBounds {
+                x_px,
+                y_px,
+                width_px,
+                height_px,
+                layout_width_px: width,
+                layout_height_px: height,
+            }))
+        }
+    } else {
+        None
+    };
+    if !has_text_box && bitmap_count == 1 && paint_bounds.is_none() {
+        return None;
+    }
+    if paint_bounds.is_some() && !browser_bitmap_payloads {
+        return None;
     }
     let svg = format!(
         r#"<svg xmlns="http://www.w3.org/2000/svg" width="{width_px}" height="{height_px}" viewBox="{} {} {canvas_width} {canvas_height}" preserveAspectRatio="none">{body}</svg>"#,
         canvas.0, canvas.1
     );
     Some(ImageRunNode {
+        width_px: Some(if paint_bounds.is_some() { width } else { width_px }),
+        height_px: Some(if paint_bounds.is_some() { height } else { height_px }),
+        paint_bounds,
         r#type: ImageRunNodeType::Image,
         block_id: None,
         content_nodes: None,
@@ -1604,8 +2359,6 @@ fn vml_group_image(
         math_ml: None,
         src: Some(svg_data_uri(&svg)),
         alt: has_text_box.then(|| resolve_doc_pr_alt(run_xml).unwrap_or_else(|| "Text box".into())),
-        width_px: Some(width_px),
-        height_px: Some(height_px),
         part_name: None,
         content_type: Some("image/svg+xml".to_string()),
         data: None,
@@ -1625,6 +2378,16 @@ pub fn parse_run_image_block(
 ) -> Option<ImageRunNode> {
     let normalized_run_xml = prefer_alternate_content_choice(run_xml);
     let mut active_run_xml = normalized_run_xml.as_ref();
+    let _drawing_index = if active_run_xml.len() > 8192
+        && crate::xml_index::tag(active_run_xml, "w:drawing").is_none()
+    {
+        Some(crate::xml_index::scope(
+            std::iter::once(("", active_run_xml)),
+            Default::default(),
+        ))
+    } else {
+        None
+    };
     if let Some(image) = vml_group_image(active_run_xml, context) {
         return Some(image);
     }
@@ -1693,6 +2456,7 @@ pub fn parse_run_image_block(
                 parse_text_box_layout(active_run_xml).as_ref(),
             ));
             return Some(ImageRunNode {
+                paint_bounds: None,
                 r#type: ImageRunNodeType::Image,
                 block_id: None,
                 content_nodes: None,
@@ -1752,6 +2516,7 @@ pub fn parse_run_image_block(
             }
         }
         return Some(ImageRunNode {
+            paint_bounds: None,
             r#type: ImageRunNodeType::Image,
             block_id: None,
             content_nodes: None,
@@ -1801,6 +2566,7 @@ pub fn parse_run_image_block(
             chart_xml.and_then(|xml| chart_xml_to_svg_data_uri(xml, width_px, height_px))
         {
             return Some(ImageRunNode {
+                paint_bounds: None,
                 r#type: ImageRunNodeType::Image,
                 block_id: None,
                 content_nodes: None,
@@ -1837,6 +2603,7 @@ pub fn parse_run_image_block(
             parse_text_box_layout(active_run_xml).as_ref(),
         ));
         return Some(ImageRunNode {
+            paint_bounds: None,
             r#type: ImageRunNodeType::Image,
             block_id: None,
             content_nodes: None,
@@ -1895,6 +2662,7 @@ pub fn parse_run_image_block(
     }
 
     Some(ImageRunNode {
+        paint_bounds: None,
         r#type: ImageRunNodeType::Image,
         block_id: None,
         content_nodes: None,
@@ -1968,6 +2736,494 @@ pub fn parse_run_image_tokens(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn rectangular_bitmap_type() -> &'static str {
+        r#"<v:shapetype id="_x0000_t75" coordsize="21600,21600" o:spt="75" path="m@4@5l@4@11@9@11@9@5xe" filled="f" stroked="f"><v:stroke joinstyle="miter"/><v:formulas><v:f eqn="if lineDrawn pixelLineWidth 0"/><v:f eqn="sum @0 1 0"/><v:f eqn="sum 0 0 @1"/><v:f eqn="prod @2 1 2"/><v:f eqn="prod @3 21600 pixelWidth"/><v:f eqn="prod @3 21600 pixelHeight"/><v:f eqn="sum @0 0 1"/><v:f eqn="prod @6 1 2"/><v:f eqn="prod @7 21600 pixelWidth"/><v:f eqn="sum @8 21600 0"/><v:f eqn="prod @7 21600 pixelHeight"/><v:f eqn="sum @10 21600 0"/></v:formulas></v:shapetype>"#
+    }
+
+    #[test]
+    fn bitmap_type_declarations_reject_geometry_and_paint_overrides() {
+        let xml = rectangular_bitmap_type();
+        assert!(vml_bitmap_rectangle_type(xml));
+        for changed in [
+            xml.replace("filled=\"f\"", "filled=\"t\""),
+            xml.replace("stroked=\"f\"", "stroked=\"t\""),
+            xml.replace("21600 pixelWidth", "10800 pixelWidth"),
+            xml.replace("<v:shapetype ", "<v:shapetype opacity=\"0.5\" "),
+            xml.replace("</v:shapetype>", "<v:fill color=\"red\"/></v:shapetype>"),
+        ] {
+            assert!(!vml_bitmap_rectangle_type(&changed));
+        }
+    }
+
+    #[test]
+    fn rectangular_textbox_declarations_reject_inherited_effects() {
+        let xml = r#"<v:shapetype id="_x0000_t202" coordsize="21600,21600" o:spt="202" path="m,l,21600r21600,l21600,xe"><v:stroke joinstyle="miter"/><v:path gradientshapeok="t" o:connecttype="rect"/></v:shapetype>"#;
+        assert!(vml_textbox_rectangle_type(xml));
+        for changed in [
+            xml.replace("<v:shapetype ", "<v:shapetype fillcolor=\"red\" "),
+            xml.replace("21600r21600", "21600r10800"),
+            xml.replace("joinstyle=\"miter\"", "joinstyle=\"round\""),
+            xml.replace("</v:shapetype>", "<v:shadow on=\"t\"/></v:shapetype>"),
+        ] {
+            assert!(!vml_textbox_rectangle_type(&changed));
+        }
+    }
+
+    #[test]
+    fn identity_groups_preserve_leaf_order_and_overflow_geometry() {
+        let xml = r#"<v:group><v:rect id="first"/><v:group id="座標" alt="" style="position:absolute;left:10;top:20;width:100;height:200" coordorigin="10,20" coordsize="100,200"><v:shape id="middle" style="position:absolute;left:-5;top:12;width:140;height:230"/><v:group style="position:absolute;left:30;top:40;width:50;height:60" coordorigin="30,40" coordsize="50,60"><v:line id="last" from="-20,70" to="240,70"/></v:group></v:group></v:group>"#;
+        let leaves = vml_group_leaves(xml).unwrap();
+        assert_eq!(leaves.len(), 3);
+        let ids: Vec<_> = leaves
+            .iter()
+            .map(|range| get_attribute(&xml[range.start..range.end], "id").unwrap())
+            .collect();
+        assert_eq!(ids, ["first", "middle", "last"]);
+        let last = &xml[leaves[2].start..leaves[2].end];
+        assert_eq!(get_attribute(last, "from").as_deref(), Some("-20,70"));
+        assert_eq!(get_attribute(last, "to").as_deref(), Some("240,70"));
+        for changed in [
+            xml.replace("coordorigin=\"10,20\"", "coordorigin=\"0,0\""),
+            xml.replace("coordsize=\"100,200\"", "coordsize=\"200,200\""),
+            xml.replace("alt=\"\"", "alt=\"label\""),
+            xml.replace("left:10", "rotation:90;left:10"),
+            xml.replace("left:-5", "z-index:1;left:-5"),
+            xml.replace("alt=\"\"", "filled=\"t\" alt=\"\""),
+        ] {
+            assert!(vml_group_leaves(&changed).is_none());
+        }
+    }
+
+    #[test]
+    fn canvas_hit_testing_requires_exact_nonvisual_structure_and_type() {
+        let xml = r##"<v:shape type="#_x0000_t75" style="position:absolute;width:100;height:80;visibility:visible"><v:fill o:detectmouseclick="t"/><v:path o:connecttype="none"/></v:shape>"##;
+        assert!(vml_canvas_hit_test_shape(xml, (0.0, 0.0), (100.0, 80.0)));
+        for changed in [
+            xml.replace("<v:shape ", "<v:shape filled=\"t\" "),
+            xml.replace("width:100", "width:101"),
+            xml.replace("<v:fill ", "<v:fill color=\"red\" "),
+            xml.replace("</v:shape>", "<v:imagedata r:id=\"image\"/></v:shape>"),
+        ] {
+            assert!(!vml_canvas_hit_test_shape(
+                &changed,
+                (0.0, 0.0),
+                (100.0, 80.0)
+            ));
+        }
+        let definition = rectangular_bitmap_type();
+        assert!(vml_declares_unpainted_bitmap(definition));
+        assert!(!vml_declares_unpainted_bitmap(xml));
+        assert!(!vml_declares_unpainted_bitmap(&format!(
+            "{definition}{}",
+            definition.replace("stroked=\"f\"", "stroked=\"t\"")
+        )));
+    }
+
+    #[test]
+    fn nonvisual_properties_and_bitmap_formats_are_bounded() {
+        assert!(vml_editing_lock(
+            r#"<o:lock v:ext="edit" aspectratio="f"/>"#
+        ));
+        assert!(!vml_editing_lock(
+            r#"<o:lock v:ext="view" aspectratio="f"/>"#
+        ));
+        assert!(!vml_editing_lock(r#"<o:lock v:ext="edit" rotation="t"/>"#));
+        assert!(vml_no_wrap(r#"<w10:wrap type="none"/>"#));
+        assert!(!vml_no_wrap(r#"<w10:wrap type="none" anchorx="page"/>"#));
+        assert!(!vml_no_wrap(r#"<w10:wrap type="square"/>"#));
+        assert!(vml_browser_bitmap_src(
+            "data:image/png;base64,AA==",
+            None,
+            None
+        ));
+        assert!(vml_browser_bitmap_src(
+            "data:image/svg+xml;charset=utf-8,%3Csvg",
+            None,
+            None
+        ));
+        assert!(!vml_browser_bitmap_src(
+            "data:image/x-emf;base64,AA==",
+            None,
+            None
+        ));
+        assert!(!vml_browser_bitmap_src(
+            "data:image/svg+xml;charset=utf-8,%3Csvg",
+            Some("media/vector.emf"),
+            Some("image/svg+xml")
+        ));
+        assert!(!vml_browser_bitmap_src(
+            "data:image/png;base64,AA==",
+            None,
+            Some("image/x-wmf")
+        ));
+    }
+
+    #[test]
+    fn default_rectangle_stroke_enables_the_metafile_guard_before_leaf_rendering() {
+        use crate::{package::OoxmlPart, parse::empty_style_sheet};
+        use std::{cell::RefCell, collections::HashMap};
+        let xml = r##"<w:pict><v:group style="width:100pt;height:100pt" coordsize="100,100"><v:shape type="#_x0000_t75" style="position:absolute;left:10;top:10;width:20;height:20"><v:imagedata r:id="rId1"/></v:shape><v:shape type="#_x0000_t75" style="position:absolute;left:40;top:10;width:20;height:20"><v:imagedata r:id="rId1"/></v:shape><v:rect style="position:absolute;left:70;top:70;width:20;height:20"/></v:group></w:pict>"##;
+        let render = |extension: &str, source: &str| {
+            let name = "word/document.xml".to_string();
+            let parts = HashMap::from([(
+                name.clone(),
+                OoxmlPart {
+                    name,
+                    content: source.to_string(),
+                },
+            )]);
+            let target = format!("word/media/image.{extension}");
+            let assets = HashMap::from([(target.clone(), vec![1, 2, 3])]);
+            let context = ParseContext {
+                relationships: HashMap::from([("rId1".to_string(), target)]),
+                content_types: Default::default(),
+                parts: &parts,
+                binary_assets: &assets,
+                style_sheet: empty_style_sheet(),
+                warnings: RefCell::new(Vec::new()),
+            };
+            vml_group_image(source, &context)
+        };
+        assert!(render("png", xml).is_some());
+        assert!(render("emf", xml).is_none());
+        assert!(render(
+            "emf",
+            &xml.replace("<v:rect style=", "<v:rect stroked=\"f\" style=")
+        )
+        .is_some());
+        assert!(render(
+            "emf",
+            &xml.replace("<v:rect style=", "<v:rect strokeweight=\"1px\" style=")
+        )
+        .is_some());
+        let conflicting = xml.replace(
+            "<v:group ",
+            "<v:shapetype id=\"_x0000_t75\" path=\"m0,0l1,1xe\"/><v:group ",
+        );
+        assert!(render("png", &conflicting).is_none());
+    }
+
+    fn inline_group_package(
+        style_suffix: &str,
+        metadata: &str,
+        expanded: bool,
+    ) -> crate::OoxmlPackage {
+        use base64::Engine;
+        let lock = if expanded {
+            r#"<o:lock v:ext="edit" aspectratio="f"/><w10:wrap type="none"/>"#
+        } else {
+            ""
+        };
+        let document = format!(
+            r##"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:w10="urn:schemas-microsoft-com:office:word"><w:body><w:p><w:r><w:pict>{}<v:group style="width:100pt;height:80pt;mso-position-horizontal-relative:char;mso-position-vertical-relative:line{style_suffix}" coordsize="100,80"><v:shape type="#_x0000_t75" style="position:absolute;left:10;top:10;width:20;height:20"><v:imagedata r:id="rId1"/>{lock}</v:shape><v:shape type="#_x0000_t75" style="position:absolute;left:40;top:10;width:20;height:20"><v:imagedata r:id="rId1"/></v:shape>{metadata}</v:group></w:pict></w:r></w:p><w:sectPr/></w:body></w:document>"##,
+            rectangular_bitmap_type()
+        );
+        let mut package = crate::create_minimal_docx_package(Some(&document));
+        let rel_name = "word/_rels/document.xml.rels".to_string();
+        package.parts.insert(rel_name.clone(), crate::OoxmlPart {
+            name: rel_name,
+            content: r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image.png"/></Relationships>"#.to_string(),
+        });
+        package.binary_assets.insert("word/media/image.png".to_string(),
+            base64::engine::general_purpose::STANDARD
+                .decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==")
+                .unwrap());
+        package
+    }
+
+    fn overflow_group_package(style: &str, geometry: &str, line: &str) -> crate::OoxmlPackage {
+        let mut package = inline_group_package("", "", false);
+        let document = format!(
+            r##"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:w10="urn:schemas-microsoft-com:office:word"><w:body><w:p><w:r><w:pict><v:group style="{style}" {geometry}><v:shape type="#_x0000_t75" style="position:absolute;left:20;top:25;width:30;height:30" stroked="f"><v:imagedata r:id="rId1"/></v:shape>{line}<v:shape type="#_x0000_t202" style="position:absolute;left:65;top:20;width:150;height:40" filled="f" stroked="f"><v:textbox inset="0,0,0,0"><w:txbxContent><w:p><w:r><w:t>Upper story</w:t></w:r></w:p></w:txbxContent></v:textbox></v:shape><v:shape type="#_x0000_t202" style="position:absolute;left:145;top:70;width:150;height:40" filled="f" stroked="f"><v:textbox inset="0,0,0,0"><w:txbxContent><w:p><w:r><w:t>Lower story</w:t></w:r></w:p></w:txbxContent></v:textbox></v:shape></v:group></w:pict></w:r></w:p><w:sectPr/></w:body></w:document>"##,
+        );
+        package.parts.get_mut("word/document.xml").unwrap().content = document;
+        package
+    }
+
+    fn first_group_image(package: &crate::OoxmlPackage) -> ImageRunNode {
+        let model = crate::build_doc_model(package);
+        let crate::model::DocNode::Paragraph(paragraph) = &model.nodes[0] else {
+            panic!("paragraph")
+        };
+        let crate::model::ParagraphChildNode::Image(image) = &paragraph.children[0] else {
+            panic!("image")
+        };
+        (**image).clone()
+    }
+
+    fn svg_fragment_count(image: &ImageRunNode, fragment: &str) -> usize {
+        let encoded = svg_data_uri(fragment);
+        image.src.as_ref().unwrap().matches(encoded.split_once(',').unwrap().1).count()
+    }
+
+    #[test]
+    fn inline_overflow_preserves_logical_frame_payload_and_stories() {
+        let package = overflow_group_package("width:270pt;height:105pt", r#"coordorigin="0,0" coordsize="360,140""#,
+            r##"<v:line from="0,120" to="360,120" strokecolor="#3355aa" strokeweight="0.75pt"/>"##);
+        let image = first_group_image(&package);
+        assert_eq!((image.width_px, image.height_px), (Some(360.0), Some(140.0)));
+        assert!(image.floating.is_none());
+        assert_eq!(image.paint_bounds.as_deref(), Some(&ImagePaintBounds {
+            x_px: -0.5, y_px: 0.0, width_px: 361.0, height_px: 140.0,
+            layout_width_px: 360.0, layout_height_px: 140.0,
+        }));
+        assert_eq!(svg_fragment_count(&image, r#"viewBox="-0.5 0 361 140""#), 1);
+        assert_eq!(svg_fragment_count(&image, "data:image/png;base64,"), 1);
+        let stories = image.content_nodes.as_ref().unwrap();
+        assert_eq!(stories.len(), 2);
+        for (story, expected) in stories.iter().zip(["Upper story", "Lower story"]) {
+            let crate::model::DocNode::Paragraph(paragraph) = story else {
+                panic!("story paragraph")
+            };
+            let crate::model::ParagraphChildNode::Text(text) = &paragraph.children[0] else {
+                panic!("story text")
+            };
+            assert_eq!(text.text, expected);
+        }
+        let encoded = serde_json::to_value(&image).unwrap();
+        assert_eq!(encoded["paintBounds"]["xPx"], -0.5);
+        assert_eq!(serde_json::from_value::<ImageRunNode>(encoded).unwrap(), image);
+    }
+
+    #[test]
+    fn inline_overflow_maps_nonzero_coordinate_origin_and_nonunit_scale() {
+        let package = overflow_group_package("width:540pt;height:420pt", r#"coordorigin="10,20" coordsize="360,140""#,
+            r##"<v:line from="10,20" to="370,160" strokecolor="#3355aa" strokeweight="0.75pt"/>"##);
+        let image = first_group_image(&package);
+        assert_eq!((image.width_px, image.height_px), (Some(720.0), Some(560.0)));
+        assert_eq!(image.paint_bounds.as_deref(), Some(&ImagePaintBounds {
+            x_px: -0.5, y_px: -0.5, width_px: 721.0, height_px: 561.0,
+            layout_width_px: 720.0, layout_height_px: 560.0,
+        }));
+        assert_eq!(svg_fragment_count(&image, r#"viewBox="9.75 19.875 360.5 140.25""#), 1);
+        assert_eq!(svg_fragment_count(&image, "data:image/png;base64,"), 1);
+        assert!(image.floating.is_none());
+    }
+
+    #[test]
+    fn floating_overflow_keeps_existing_anchor_and_canvas_contract() {
+        let package = overflow_group_package("position:absolute;left:12px;top:8px;width:270pt;height:105pt", r#"coordsize="360,140""#,
+            r##"<v:line from="0,120" to="360,120" strokecolor="#3355aa" strokeweight="0.75pt"/>"##);
+        let image = first_group_image(&package);
+        assert_eq!((image.width_px, image.height_px), (Some(361.0), Some(140.0)));
+        assert!(image.paint_bounds.is_none());
+        let floating = image.floating.as_ref().unwrap();
+        assert_eq!((floating.x_px, floating.y_px), (Some(11.5), Some(8.0)));
+        assert!(serde_json::to_value(&image).unwrap().get("paintBounds").is_none());
+    }
+
+    #[test]
+    fn in_frame_inline_group_omits_paint_metadata() {
+        let package = overflow_group_package("width:270pt;height:105pt", r#"coordsize="360,140""#,
+            r##"<v:line from="1,120" to="359,120" strokecolor="#3355aa" strokeweight="0.75pt"/>"##);
+        let image = first_group_image(&package);
+        assert_eq!((image.width_px, image.height_px), (Some(360.0), Some(140.0)));
+        assert!(image.paint_bounds.is_none());
+        assert!(image.floating.is_none());
+        assert!(serde_json::to_value(&image).unwrap().get("paintBounds").is_none());
+    }
+
+    #[test]
+    fn inline_reference_normalization_precedes_overflow_mapping_only_in_admitted_domain() {
+        let mut package = overflow_group_package("width:270pt;height:105pt;mso-position-horizontal-relative:char;mso-position-vertical-relative:line", r#"coordsize="360,140""#,
+            r##"<v:line from="0,120" to="360,120" strokecolor="#3355aa" strokeweight="0.75pt"/>"##);
+        let part = package.parts.get_mut("word/document.xml").unwrap();
+        part.content = part.content.replace("</v:group>", "<o:lock v:ext=\"edit\" aspectratio=\"f\"/></v:group>");
+        let image = first_group_image(&package);
+        assert!(image.paint_bounds.is_some());
+        assert!(image.floating.is_none());
+        assert_eq!(svg_fragment_count(&image, "data:image/png;base64,"), 1);
+    }
+
+    #[test]
+    fn single_bitmap_overflow_keeps_inline_frame_and_payload() {
+        let mut package = inline_group_package("", "", false);
+        let document = package.parts.get_mut("word/document.xml").unwrap();
+        let start = document.content.find("<v:group ").unwrap();
+        let end = document.content.find("</v:group>").unwrap() + "</v:group>".len();
+        document.content.replace_range(start..end,
+            r##"<v:group style="width:270pt;height:105pt" coordsize="360,140"><v:shape type="#_x0000_t75" style="position:absolute;left:-0.5;top:0;width:361;height:140" stroked="f"><v:imagedata r:id="rId1"/></v:shape></v:group>"##);
+        let image = first_group_image(&package);
+        assert_eq!((image.width_px, image.height_px), (Some(360.0), Some(140.0)));
+        assert!(image.floating.is_none());
+        assert_eq!(image.paint_bounds.as_deref(), Some(&ImagePaintBounds {
+            x_px: -0.5, y_px: 0.0, width_px: 361.0, height_px: 140.0,
+            layout_width_px: 360.0, layout_height_px: 140.0,
+        }));
+        assert_eq!(svg_fragment_count(&image, "data:image/png;base64,"), 1);
+        assert!(image.content_nodes.is_none());
+        for (find, replace) in [
+            ("left:-0.5;top:0;width:361", "left:0;top:0;width:360"),
+            ("width:270pt;height:105pt", "position:absolute;left:12px;top:8px;width:270pt;height:105pt"),
+        ] {
+            let mut unchanged = package.clone();
+            let document = unchanged.parts.get_mut("word/document.xml").unwrap();
+            document.content = document.content.replace(find, replace);
+            let fallback = first_group_image(&unchanged);
+            assert!(fallback.paint_bounds.is_none());
+            assert_eq!(fallback.content_type.as_deref(), Some("image/png"));
+        }
+        let mut missing_relationship = package.clone();
+        missing_relationship.parts.get_mut("word/_rels/document.xml.rels").unwrap().content =
+            r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"/>"#.to_string();
+        let model = crate::build_doc_model(&missing_relationship);
+        assert_eq!(model.metadata.warnings.iter().filter(|warning| warning.as_str() == "Missing relationship target for rId1").count(), 1);
+        let mut unsupported = package.clone();
+        unsupported.parts.get_mut("word/_rels/document.xml.rels").unwrap().content =
+            unsupported.parts["word/_rels/document.xml.rels"].content.replace("image.png", "image.wmf");
+        let bytes = unsupported.binary_assets.remove("word/media/image.png").unwrap();
+        unsupported.binary_assets.insert("word/media/image.wmf".to_string(), bytes);
+        let fallback = first_group_image(&unsupported);
+        assert!(fallback.paint_bounds.is_none());
+        assert_ne!(fallback.content_type.as_deref(), Some("image/svg+xml"));
+    }
+
+    #[test]
+    fn edited_group_exports_inline_only_without_anchor_data() {
+        use crate::model::{DocNode, ParagraphChildNode};
+        for (style, metadata, expanded, anchored) in [
+            ("", "", true, false),
+            ("", "<w10:anchorlock/>", true, false),
+            (";position:static", "", true, false),
+            (";position:relative", "", true, false),
+            (";position:absolute", "", true, true),
+            (";left:0px;top:0px", "", true, true),
+            (";margin-left:0;margin-top:0", "", true, true),
+            (";mso-position-horizontal:center", "", true, true),
+            (";mso-wrap-style:none", "", true, true),
+            (";z-index:0", "", true, true),
+            (";mso-wrap-distance-left:0px", "", true, true),
+            ("", r#"<w10:wrap type="none"/>"#, true, true),
+            ("", "", false, true),
+        ] {
+            let package = inline_group_package(style, metadata, expanded);
+            let mut model = crate::build_doc_model(&package);
+            let DocNode::Paragraph(paragraph) = &mut model.nodes[0] else {
+                panic!("paragraph")
+            };
+            let ParagraphChildNode::Image(image) = &mut paragraph.children[0] else {
+                panic!("image")
+            };
+            assert_eq!(image.content_type.as_deref(), Some("image/svg+xml"));
+            assert_eq!(image.floating.is_some(), anchored, "{style} {metadata}");
+            let restored_wrap = style.is_empty() && metadata == r#"<w10:wrap type="none"/>"#;
+            if restored_wrap {
+                assert_eq!(
+                    serde_json::to_value(&image.floating).unwrap(),
+                    serde_json::json!({"wrapType": "none"})
+                );
+            }
+            let original_source = image.src.clone();
+            image.width_px = Some(160.0);
+            image.height_px = Some(80.0);
+            assert_eq!(image.src, original_source);
+            paragraph.source_xml = None;
+            let exported = crate::serialize_doc_model(&model, Some(&package));
+            let xml = &exported.parts["word/document.xml"].content;
+            assert_eq!(xml.contains("<wp:anchor "), anchored, "{style} {metadata}");
+            assert_eq!(xml.contains("<wp:inline "), !anchored, "{style} {metadata}");
+            assert!(xml.contains(r#"<wp:extent cx="1524000" cy="762000"/>"#));
+            assert!(exported.binary_assets.values().any(|bytes| {
+                std::str::from_utf8(bytes).is_ok_and(|svg| {
+                    svg.starts_with("<svg") && svg.matches("data:image/png;base64,").count() == 2
+                })
+            }));
+            if restored_wrap {
+                assert!(xml.contains(r#"<wp:positionH relativeFrom="margin">"#));
+                assert!(!xml.contains(r#"<wp:positionH relativeFrom="line">"#));
+                assert!(xml.contains("<wp:wrapNone/>"));
+                let reparsed = crate::build_doc_model(&exported);
+                let DocNode::Paragraph(paragraph) = &reparsed.nodes[0] else {
+                    panic!("paragraph")
+                };
+                let ParagraphChildNode::Image(image) = &paragraph.children[0] else {
+                    panic!("image")
+                };
+                let floating = image.floating.as_ref().unwrap();
+                assert_eq!(floating.horizontal_relative_to.as_deref(), Some("margin"));
+                assert_eq!(floating.wrap_type, Some(ImageWrapType::WrapNone));
+                assert_eq!((image.width_px, image.height_px), (Some(160.0), Some(80.0)));
+            }
+            if !anchored {
+                assert!(!xml.contains("<wp:positionH"));
+                let reparsed = crate::build_doc_model(&exported);
+                let DocNode::Paragraph(paragraph) = &reparsed.nodes[0] else {
+                    panic!("paragraph")
+                };
+                let ParagraphChildNode::Image(image) = &paragraph.children[0] else {
+                    panic!("image")
+                };
+                assert!(image.floating.is_none());
+                assert_eq!((image.width_px, image.height_px), (Some(160.0), Some(80.0)));
+            }
+        }
+    }
+
+    #[test]
+    fn reference_hint_normalization_preserves_every_anchor_field() {
+        let style = parse_css_style_declarations("width:100pt;height:80pt;mso-position-horizontal-relative:char;mso-position-vertical-relative:line");
+        let hints = serde_json::json!({"horizontalRelativeTo":"line","verticalRelativeTo":"line"});
+        let floating: ImageFloating = serde_json::from_value(hints.clone()).unwrap();
+        assert!(vml_inline_reference_hints(&style, false, Some(&floating)));
+        assert!(!vml_inline_reference_hints(&style, true, Some(&floating)));
+        for (field, value) in [
+            ("xPx", serde_json::json!(0)),
+            ("yPx", serde_json::json!(0)),
+            ("horizontalAlign", serde_json::json!("center")),
+            ("verticalAlign", serde_json::json!("center")),
+            ("distLPx", serde_json::json!(0)),
+            ("distRPx", serde_json::json!(0)),
+            ("distTPx", serde_json::json!(0)),
+            ("distBPx", serde_json::json!(0)),
+            ("wrapType", serde_json::json!("none")),
+            ("wrapText", serde_json::json!("bothSides")),
+            ("behindDocument", serde_json::json!(false)),
+            ("zIndex", serde_json::json!(0)),
+        ] {
+            let mut modified = hints.clone();
+            modified[field] = value;
+            let anchor: ImageFloating = serde_json::from_value(modified).unwrap();
+            assert!(
+                !vml_inline_reference_hints(&style, false, Some(&anchor)),
+                "{field}"
+            );
+        }
+    }
+
+    #[test]
+    fn compact_vml_paths_resolve_relative_coordinates() {
+        assert_eq!(
+            vml_svg_path("m10,20r5,-2,-3,4xe").as_deref(),
+            Some("M10 20L15 18L12 22Z")
+        );
+        assert_eq!(
+            vml_svg_path("m10,l,,,20r5,l5,30r10,l15,20,15,xe").as_deref(),
+            Some("M10 0L0 0L0 20L5 20L5 30L15 30L15 20L15 0Z")
+        );
+        assert_eq!(
+            vml_svg_path("m10,20r5,5xr2,3e").as_deref(),
+            Some("M10 20L15 25ZL12 23")
+        );
+        assert_eq!(
+            vml_svg_path("m0,0c10,10,,,25,13e").as_deref(),
+            Some("M0 0C10 10 0 0 25 13")
+        );
+        assert!(vml_svg_path("m0,0r1e").is_none());
+        assert!(vml_svg_path("m0,0r@1,@2e").is_none());
+        assert!(vml_svg_path("m0,0q1,2e").is_none());
+    }
+
+    #[test]
+    fn explicit_vml_paths_keep_their_serialization() {
+        assert_eq!(
+            vml_svg_path("m 1,2 l 3,4 5,6 x e").as_deref(),
+            Some("M1,2L3,4 5,6Z")
+        );
+        assert_eq!(vml_pixels("0"), Some(0.0));
+        assert_eq!(vml_pixels("12.5"), Some(12.5));
+        assert_eq!(vml_pixels("3pt"), Some(4.0));
+    }
 
     #[test]
     fn vml_wrap_element_overrides_style_and_preserves_side() {

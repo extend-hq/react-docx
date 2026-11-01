@@ -453,6 +453,9 @@ const output = serializeDocx(model, pkg);
 - `pageGapBackgroundColor` controls the area between pages and defaults to transparent.
 - The built-in dark page surface uses Tailwind `neutral-950` by default.
 - In read-only dark document mode, the viewer uses an inversion-based night reader path so document content inverts cleanly while images keep their hues.
+- Supported VML bitmap groups retain their artwork and individual textbox stories. Text edits preserve the other stories and artwork through export and reopen.
+- Images can have a paint area that extends beyond their logical layout box. The viewer, thumbnails, clipboard, and serializer preserve those separate bounds.
+- When resized artwork cannot safely reuse its original VML, export rasterizes the current appearance to PNG. Text remains editable in the live document but becomes part of the image in that exported fallback. External applications may round fractional VML coordinates.
 
 ## Workspace Layout
 

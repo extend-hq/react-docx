@@ -1,5 +1,5 @@
 import * as React from "react";
-import type { DocModel } from "@extend-ai/react-docx-doc-model";
+import { resolveImagePaintBounds, type DocModel } from "@extend-ai/react-docx-doc-model";
 import type {
   DocxEditorController,
   DocxEditorViewerMode
@@ -9,8 +9,10 @@ import {
 } from "./layout-diagnostics";
 import type {
   DocxCanvasOptions,
-  DocxLayoutDiagnostics
+  DocxLayoutDiagnostics,
+  DocxLayoutObjectGeometry
 } from "./types";
+import { resolveFormFieldPreviewImageSource } from "../image-render";
 
 interface CanvasDocxEditorViewerProps {
   editor: DocxEditorController;
@@ -30,6 +32,62 @@ const DEFAULT_CANVAS_OPTIONS: Required<DocxCanvasOptions> = {
 
 const PAGE_GAP = 24;
 
+interface LoadedPreview {
+  image: HTMLImageElement;
+  loaded: boolean;
+}
+
+function drawFormField(
+  context: CanvasRenderingContext2D,
+  object: DocxLayoutObjectGeometry,
+  previews: Map<string, LoadedPreview>,
+  readOnly: boolean
+): void {
+  const field = object.formField;
+  if (!field) return;
+  const preview = readOnly ? previews.get(object.id) : undefined;
+  if (preview?.loaded && object.image) {
+    const crop = object.image.crop;
+    const left = crop?.leftFraction ?? 0;
+    const top = crop?.topFraction ?? 0;
+    const visibleWidth = 1 - left - (crop?.rightFraction ?? 0);
+    const visibleHeight = 1 - top - (crop?.bottomFraction ?? 0);
+    if (visibleWidth > 0 && visibleHeight > 0) {
+      const imageWidth = object.width / visibleWidth;
+      const imageHeight = object.height / visibleHeight;
+      const paint = resolveImagePaintBounds(object.image, imageWidth, imageHeight);
+      const hasCrop = left !== 0 || top !== 0 ||
+        (crop?.rightFraction ?? 0) !== 0 || (crop?.bottomFraction ?? 0) !== 0;
+      context.save();
+      try {
+        if (!paint || hasCrop) {
+          context.beginPath();
+          context.rect(object.x, object.y, object.width, object.height);
+          context.clip();
+        }
+        context.globalAlpha = Math.max(0, Math.min(1, object.image.cssOpacity ?? 1));
+        context.filter = object.image.cssFilter ?? "none";
+        context.drawImage(
+          preview.image,
+          object.x - left * imageWidth + (paint?.xPx ?? 0),
+          object.y - top * imageHeight + (paint?.yPx ?? 0),
+          paint?.widthPx ?? imageWidth,
+          paint?.heightPx ?? imageHeight
+        );
+        return;
+      } catch {
+        preview.loaded = false;
+      } finally {
+        context.restore();
+      }
+    }
+  }
+  context.font = `${(field.style?.fontSizePt ?? 12) * 96 / 72}px Calibri, Arial, sans-serif`;
+  context.fillStyle = field.style?.color ? `#${field.style.color.replace(/^#/, "")}` : "#111827";
+  context.textBaseline = "top";
+  context.fillText(field.fallbackText, object.x, object.y, Math.max(1, object.width));
+}
+
 function paragraphPlainTextFromModel(model: DocModel, nodeIndex: number): string {
   const node = model.nodes[nodeIndex];
   if (!node || node.type !== "paragraph") {
@@ -44,7 +102,9 @@ function paragraphPlainTextFromModel(model: DocModel, nodeIndex: number): string
 
       if (child.type === "form-field") {
         if (child.fieldType === "checkbox") {
-          return child.checked ? child.checkedSymbol ?? "☒" : child.uncheckedSymbol ?? "☐";
+          return child.checked ?? child.widget?.checkbox?.defaultChecked
+            ? child.checkedSymbol ?? "☒"
+            : child.uncheckedSymbol ?? "☐";
         }
         return child.value ?? child.placeholder ?? "";
       }
@@ -63,7 +123,9 @@ function drawPage(
   diagnostics: DocxLayoutDiagnostics,
   pageIndex: number,
   selectedNodeIndex: number | undefined,
-  debugLayout: boolean
+  debugLayout: boolean,
+  previews: Map<string, LoadedPreview>,
+  readOnly: boolean
 ): void {
   const page = diagnostics.pages[pageIndex];
   if (!page) {
@@ -74,7 +136,17 @@ function drawPage(
   context.fillStyle = "#ffffff";
   context.fillRect(0, 0, page.width, page.height);
 
+  const fields = page.objects.filter((object) => object.formField).sort(
+    (left, right) => (left.image?.floatingPosition?.zIndex ?? 0) - (right.image?.floatingPosition?.zIndex ?? 0)
+  );
+  for (const object of fields.filter((item) => item.image?.floatingPosition?.behindDocument)) {
+    drawFormField(context, object, previews, readOnly);
+  }
+
   for (const object of page.objects) {
+    if (object.formField) {
+      continue;
+    }
     if (object.kind === "table") {
       context.strokeStyle = "#d1d5db";
       context.lineWidth = 1;
@@ -106,6 +178,7 @@ function drawPage(
     context.textBaseline = "top";
 
     for (const line of lines) {
+      context.font = `${line.fontSizePx ?? baseFontPx}px Calibri, Arial, sans-serif`;
       context.fillText(line.text, line.x, line.y, Math.max(1, line.width));
       if (debugLayout) {
         context.strokeStyle = "rgba(14,165,233,0.4)";
@@ -119,6 +192,9 @@ function drawPage(
       context.strokeRect(object.x, object.y, object.width, object.height);
       context.setLineDash([]);
     }
+  }
+  for (const object of fields.filter((item) => !item.image?.floatingPosition?.behindDocument)) {
+    drawFormField(context, object, previews, readOnly);
   }
 }
 
@@ -146,9 +222,47 @@ export function CanvasDocxEditorViewer({
   const containerRef = React.useRef<HTMLDivElement>(null);
   const textareaRef = React.useRef<HTMLTextAreaElement>(null);
   const pendingInputBufferRef = React.useRef<string>("");
+  const previewsRef = React.useRef<Map<string, LoadedPreview>>(new Map());
+  const [previewVersion, setPreviewVersion] = React.useState(0);
   const [selectedNodeIndex, setSelectedNodeIndex] = React.useState<number | undefined>(
     editor.selection.kind === "paragraph" ? editor.selection.nodeIndex : undefined
   );
+
+  React.useEffect(() => {
+    const entries = new Map<string, LoadedPreview>();
+    previewsRef.current = entries;
+    let active = true;
+    if (isReadOnly) {
+      for (const page of diagnostics.pages) {
+        for (const object of page.objects) {
+          if (!object.image || !object.formField) continue;
+          const src = resolveFormFieldPreviewImageSource(object.image);
+          if (!src) continue;
+          const image = new Image();
+          const entry = { image, loaded: false };
+          entries.set(object.id, entry);
+          image.onload = () => {
+            if (!active) return;
+            entry.loaded = image.naturalWidth > 0 && image.naturalHeight > 0;
+            setPreviewVersion((version) => version + 1);
+          };
+          image.onerror = () => {
+            if (!active) return;
+            entry.loaded = false;
+            setPreviewVersion((version) => version + 1);
+          };
+          image.src = src;
+        }
+      }
+    }
+    return () => {
+      active = false;
+      for (const entry of entries.values()) {
+        entry.image.onload = null;
+        entry.image.onerror = null;
+      }
+    };
+  }, [diagnostics, isReadOnly]);
 
   React.useEffect(() => {
     if (editor.selection.kind === "paragraph") {
@@ -169,10 +283,12 @@ export function CanvasDocxEditorViewer({
         diagnostics,
         pageIndex,
         selectedNodeIndex,
-        options.debugLayout
+        options.debugLayout,
+        previewsRef.current,
+        isReadOnly
       );
     }
-  }, [diagnostics, options.debugLayout, selectedNodeIndex]);
+  }, [diagnostics, options.debugLayout, selectedNodeIndex, previewVersion, isReadOnly]);
 
   const focusInput = React.useCallback((): void => {
     if (isReadOnly) {
@@ -202,7 +318,7 @@ export function CanvasDocxEditorViewer({
         return x >= object.x && x <= object.x + object.width && y >= object.y && y <= object.y + object.height;
       });
 
-      if (!paragraph?.nodeIndex || paragraph.nodeIndex < 0) {
+      if (paragraph?.nodeIndex === undefined || paragraph.nodeIndex < 0) {
         return undefined;
       }
 
@@ -295,6 +411,9 @@ export function CanvasDocxEditorViewer({
       <textarea
         ref={textareaRef}
         aria-label="Canvas editor hidden input"
+        aria-hidden={isReadOnly || undefined}
+        tabIndex={isReadOnly ? -1 : undefined}
+        readOnly={isReadOnly}
         value={selectedNodeIndex !== undefined ? paragraphPlainTextFromModel(editor.model, selectedNodeIndex) : ""}
         onChange={() => undefined}
         onInput={onHiddenInputBeforeInput}
@@ -340,6 +459,56 @@ export function CanvasDocxEditorViewer({
             }}
             onPointerDown={(event) => onCanvasPointerDown(event, pageIndex)}
           />
+          {page.objects.filter((object) => object.formField).map((object) => {
+            const field = object.formField!;
+            const editable = !isReadOnly && !field.disabled && object.formFieldLocation !== undefined;
+            const toggle = (): void => {
+              if (!editable || !object.formFieldLocation) return;
+              editor.selectFormField(object.formFieldLocation);
+              editor.toggleFormCheckbox(object.formFieldLocation);
+            };
+            return (
+              <span
+                key={object.id}
+                role="checkbox"
+                aria-label={field.label}
+                aria-checked={field.checked}
+                aria-readonly={!editable}
+                aria-disabled={field.disabled || undefined}
+                tabIndex={editable ? 0 : undefined}
+                data-docx-form-field="true"
+                data-docx-form-field-type="checkbox"
+                data-docx-form-field-child-index={field.childIndex}
+                onPointerDown={(event) => event.stopPropagation()}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  toggle();
+                }}
+                onKeyDown={(event) => {
+                  if (editable && (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z") {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    if (event.shiftKey) editor.redo();
+                    else editor.undo();
+                    return;
+                  }
+                  if (event.key !== " " && event.key !== "Enter") return;
+                  event.preventDefault();
+                  event.stopPropagation();
+                  toggle();
+                }}
+                style={{
+                  position: "absolute",
+                  left: object.x,
+                  top: object.y,
+                  width: object.width,
+                  height: object.height,
+                  cursor: editable ? "pointer" : undefined,
+                  zIndex: object.image?.floatingPosition?.zIndex
+                }}
+              />
+            );
+          })}
         </div>
       ))}
 

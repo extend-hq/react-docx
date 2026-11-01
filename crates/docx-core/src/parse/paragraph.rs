@@ -1,23 +1,26 @@
 use crate::model::{
     FormFieldCheckboxSizeMode, FormFieldCheckboxWidgetSettings, FormFieldDropdownWidgetSettings,
     FormFieldOption, FormFieldRunNode, FormFieldRunNodeType, FormFieldSourceKind,
+    FormFieldSourcePreview,
     FormFieldTextWidgetSettings, FormFieldType, FormFieldWidgetSettings, NoteReference,
     NoteReferenceKind, ParagraphChildNode, ParagraphNode, ParagraphNodeType,
     ParagraphSourceTextPatch, ParagraphSourceTextPatchRun, SharedTextStyle, TextRunNode,
     TextRunNodeType, TextStyle,
 };
 use crate::parse::context::ParseContext;
-use crate::parse::images::parse_run_image_tokens;
+use crate::parse::images::{parse_run_image_block, parse_run_image_tokens};
 use crate::parse::re;
 use crate::parse::style::parse_run_style_in_table;
 use crate::parse::util::{
     active_xml as prefer_alternate_content_choice, decode_hex_code_point, decode_xml_attribute,
+    is_windows_metafile_content_type,
     normalize_legacy_form_display_value, on_off_value_to_boolean, parse_on_off_tag_value,
-    parse_relationships_from_parts, strip_text_box_content,
+    parse_relationships_from_parts, strip_text_box_content, svg_data_uri,
 };
 use crate::xml::{
-    decode_xml_entities, extract_balanced_tag_blocks, extract_balanced_tag_ranges, get_attribute,
-    parse_integer_attribute, parse_on_off_attribute,
+    decode_xml_entities, extract_balanced_tag_blocks, extract_balanced_tag_ranges,
+    extract_direct_child_tag_ranges, get_attribute, get_attribute_ref, parse_integer_attribute,
+    parse_on_off_attribute,
 };
 
 #[derive(Clone, Debug)]
@@ -652,7 +655,7 @@ fn hyperlink_href_from_tag(
     context: &ParseContext<'_, impl std::borrow::Borrow<super::context::ParsedStyleSheet>>,
 ) -> Option<String> {
     let relationship_id = get_attribute(hyperlink_tag, "r:id");
-    let anchor = get_attribute(hyperlink_tag, "w:anchor");
+    let anchor = get_attribute_ref(hyperlink_tag, "w:anchor").map(decode_xml_entities);
     let relationship_target = relationship_id
         .as_deref()
         .and_then(|id| context.relationships.get(id).cloned());
@@ -969,6 +972,84 @@ pub fn parse_run_active_x_checkbox_field(
     parse_run_active_x_checkbox_field_shared(run_xml, context, style.map(Into::into), link)
 }
 
+fn parse_active_x_source_preview(
+    run_xml: &str,
+    control_start: usize,
+    control_tag: &str,
+    relationship_id: &str,
+    checked: bool,
+    context: &ParseContext<'_, impl std::borrow::Borrow<super::context::ParsedStyleSheet>>,
+) -> Option<Box<FormFieldSourcePreview>> {
+    let shape_id = decode_xml_entities(&get_attribute(control_tag, "w:shapeid")?);
+    if shape_id.is_empty() {
+        return None;
+    }
+    let object = extract_balanced_tag_ranges(run_xml, "w:object")
+        .into_iter()
+        .find(|range| range.start < control_start && control_start < range.end)?;
+    let object_xml = &run_xml[object.start..object.end];
+    let mut matches = extract_direct_child_tag_ranges(object_xml)
+        .into_iter()
+        .filter(|range| range.tag_name.eq_ignore_ascii_case("v:shape"))
+        .filter(|range| {
+            let shape_xml = &object_xml[range.start..range.end];
+            let Some(tag_end) = crate::xml::tag_token_end(shape_xml, 1) else {
+                return false;
+            };
+            get_attribute(&shape_xml[..tag_end], "id")
+                .is_some_and(|id| decode_xml_entities(&id) == shape_id)
+        });
+    let matched = matches.next()?;
+    if matches.next().is_some() {
+        return None;
+    }
+    let shape_xml = &object_xml[matched.start..matched.end];
+    let children = extract_direct_child_tag_ranges(shape_xml);
+    let mut image_data = children
+        .iter()
+        .filter(|range| range.tag_name.eq_ignore_ascii_case("v:imagedata"));
+    let data_range = image_data.next()?;
+    if image_data.next().is_some()
+        || children.iter().any(|range| {
+            range.tag_name.eq_ignore_ascii_case("v:group")
+                || range.tag_name.eq_ignore_ascii_case("v:shape")
+                || range.tag_name.eq_ignore_ascii_case("v:textbox")
+        })
+    {
+        return None;
+    }
+    let image_relationship =
+        get_attribute(&shape_xml[data_range.start..data_range.end], "r:id")?;
+    let part_name = context.relationships.get(&image_relationship)?;
+    if context.binary_assets.get(part_name)?.is_empty() {
+        return None;
+    }
+    let mut image = parse_run_image_block(shape_xml, context)?;
+    if is_windows_metafile_content_type(image.content_type.as_deref(), image.part_name.as_deref())
+        && !matches!(image.content_type.as_deref(), Some("image/svg+xml" | "image/png"))
+    {
+        let svg = crate::wmf::wmf_bitmap_preview_to_svg(image.data.as_deref()?)?;
+        image.src = Some(svg_data_uri(&svg));
+        image.content_type = Some("image/svg+xml".to_owned());
+    }
+    if image.part_name.as_deref() != Some(part_name.as_str())
+        || image.data.as_ref().is_none_or(Vec::is_empty)
+        || image.src.as_deref().is_none_or(str::is_empty)
+        || image
+            .content_type
+            .as_deref()
+            .is_none_or(|content_type| !content_type.starts_with("image/"))
+    {
+        return None;
+    }
+    Some(Box::new(FormFieldSourcePreview {
+        relationship_id: relationship_id.to_owned(),
+        shape_id,
+        checked,
+        image: Box::new(image),
+    }))
+}
+
 fn parse_run_active_x_checkbox_field_shared(
     run_xml: &str,
     context: &ParseContext<'_, impl std::borrow::Borrow<super::context::ParsedStyleSheet>>,
@@ -980,9 +1061,9 @@ fn parse_run_active_x_checkbox_field_shared(
     {
         return None;
     }
-    let control_tag = re::get(r"(?i)<w:control\b[^>]*/?>")
-        .and_then(|re| re.find(run_xml))
-        .map(|m| m.as_str().to_string())?;
+    let control = re::get(r"(?i)<w:control\b[^>]*/?>")
+        .and_then(|re| re.find(run_xml))?;
+    let control_tag = control.as_str();
     let control_relationship_id = get_attribute(&control_tag, "r:id")?;
     let active_x_part_name = context.relationships.get(&control_relationship_id)?.clone();
     let active_x_xml = context.parts.get(&active_x_part_name)?.content.clone();
@@ -1005,6 +1086,15 @@ fn parse_run_active_x_checkbox_field_shared(
         .and_then(|re| re.captures(&markup))
         .and_then(|c| c.get(1))
         .map(|m| m.as_str().trim().to_string());
+    let checked = re::get(r"(?i)\bchecked\b").is_some_and(|re| re.is_match(&markup));
+    let source_preview = parse_active_x_source_preview(
+        run_xml,
+        control.start(),
+        control_tag,
+        &control_relationship_id,
+        checked,
+        context,
+    );
     Some(FormFieldRunNode {
         r#type: FormFieldRunNodeType::FormField,
         field_type: FormFieldType::Checkbox,
@@ -1013,7 +1103,7 @@ fn parse_run_active_x_checkbox_field_shared(
         tag: None,
         title: None,
         placeholder: None,
-        checked: Some(re::get(r"(?i)\bchecked\b").is_some_and(|re| re.is_match(&markup))),
+        checked: Some(checked),
         value: None,
         options: None,
         widget: Some(FormFieldWidgetSettings {
@@ -1029,6 +1119,7 @@ fn parse_run_active_x_checkbox_field_shared(
         style,
         link,
         source_xml: Some(run_xml.to_string()),
+        source_preview,
     })
 }
 
@@ -1186,6 +1277,7 @@ fn parse_legacy_form_field_from_range(
                 style,
                 link,
                 source_xml: field_xml,
+                source_preview: None,
             });
         }
         FormFieldType::Dropdown => {
@@ -1269,6 +1361,7 @@ fn parse_legacy_form_field_from_range(
                 style,
                 link,
                 source_xml: field_xml,
+                source_preview: None,
             });
         }
         FormFieldType::Text => {
@@ -1354,6 +1447,7 @@ fn parse_legacy_form_field_from_range(
                 style,
                 link,
                 source_xml: field_xml,
+                source_preview: None,
             });
         }
         FormFieldType::Date => None,
@@ -1438,6 +1532,131 @@ fn parse_legacy_paragraph_form_field_tokens(
     tokens
 }
 
+fn trimmed_sdt_dropdown_style(
+    runs: &[String],
+    content_text: &str,
+    fallback: Option<SharedTextStyle>,
+    context: &ParseContext<'_, impl std::borrow::Borrow<super::context::ParsedStyleSheet>>,
+    paragraph_style_id: Option<&str>,
+    table_run_style: Option<&TextStyle>,
+) -> Option<SharedTextStyle> {
+    let Some(first_run) = runs.first() else {
+        return fallback;
+    };
+    let first_text = parse_run_text(first_run);
+    if !first_text.trim().is_empty() || content_text.trim().is_empty() {
+        return fallback;
+    }
+
+    let retained_start = content_text.len() - content_text.trim_start().len();
+    let retained_end = content_text.trim_end().len();
+    let mut cursor = 0;
+    let mut retained_styles = Vec::new();
+    for (index, run) in runs.iter().enumerate() {
+        let text = if index == 0 {
+            std::borrow::Cow::Borrowed(first_text.as_str())
+        } else {
+            std::borrow::Cow::Owned(parse_run_text(run))
+        };
+        if !content_text
+            .get(cursor..)
+            .is_some_and(|remaining| remaining.starts_with(text.as_ref()))
+        {
+            return fallback;
+        }
+        let end = cursor + text.len();
+        if !text.is_empty() && cursor < retained_end && end > retained_start {
+            retained_styles.push(parse_run_style_in_table(
+                run,
+                context,
+                paragraph_style_id,
+                table_run_style,
+            ));
+        }
+        cursor = end;
+    }
+    if cursor != content_text.len() || retained_styles.is_empty() {
+        return fallback;
+    }
+
+    let Some(seed) = fallback
+        .as_ref()
+        .or_else(|| retained_styles.iter().flatten().next())
+    else {
+        return None;
+    };
+    let mut recovered = (**seed).clone();
+    let mut changed = false;
+    let mut has_any = false;
+    macro_rules! recover_common_properties {
+        ($($property:ident),+ $(,)?) => {
+            $(
+                let previous = fallback.as_ref().and_then(|style| style.$property.clone());
+                let common = retained_styles[0].as_ref().and_then(|style| style.$property.as_ref());
+                let value = if retained_styles.iter().skip(1).all(|style| {
+                    style.as_ref().and_then(|style| style.$property.as_ref()) == common
+                }) {
+                    common.cloned()
+                } else {
+                    previous.clone()
+                };
+                changed |= value != previous;
+                has_any |= value.is_some();
+                recovered.$property = value;
+            )+
+        };
+    }
+    // A single field style can only adopt properties shared by all retained text.
+    recover_common_properties!(
+        bold,
+        italic,
+        underline,
+        strike,
+        all_caps,
+        small_caps,
+        color,
+        highlight,
+        background_color,
+        font_size_pt,
+        font_size_cs_pt,
+        font_family,
+        source_font_family,
+        font_family_ascii,
+        font_family_h_ansi,
+        font_family_east_asia,
+        font_family_cs,
+        font_theme_ascii,
+        font_theme_h_ansi,
+        font_theme_east_asia,
+        font_theme_cs,
+        resolved_font_family_ascii,
+        resolved_font_family_h_ansi,
+        resolved_font_family_east_asia,
+        resolved_font_family_cs,
+        font_hint,
+        language,
+        language_east_asia,
+        language_bidi,
+        right_to_left,
+        complex_script,
+        character_spacing_twips,
+        character_scale_percent,
+        source_character_scale,
+        kerning_min_font_size_pt,
+        ligatures,
+        contextual_alternates,
+        vertical_align,
+        run_border,
+    );
+    if !changed {
+        fallback
+    } else if has_any {
+        Some(recovered.into())
+    } else {
+        None
+    }
+}
+
 fn parse_form_field_from_sdt_xml(
     sdt_xml: &str,
     context: &ParseContext<'_, impl std::borrow::Borrow<super::context::ParsedStyleSheet>>,
@@ -1497,10 +1716,8 @@ fn parse_form_field_from_sdt_xml(
         .and_then(|tag| get_attribute(tag, "w:val"))
         .as_deref()
         .and_then(|value| decode_xml_attribute(Some(&value)));
-    let first_run_xml = extract_balanced_tag_blocks(&sdt_content_xml, "w:r")
-        .into_iter()
-        .next();
-    let style = first_run_xml.as_deref().and_then(|xml| {
+    let content_runs = extract_balanced_tag_blocks(&sdt_content_xml, "w:r");
+    let style = content_runs.first().and_then(|xml| {
         parse_run_style_in_table(xml, context, paragraph_style_id, table_run_style)
     });
     let content_text = parse_run_text(&sdt_content_xml);
@@ -1563,12 +1780,21 @@ fn parse_form_field_from_sdt_xml(
             style,
             link,
             source_xml: Some(sdt_xml.to_string()),
+            source_preview: None,
         });
     }
 
     if re::get(r"(?i)<w:(?:dropDownList|comboBox)\b")
         .is_some_and(|re| re.is_match(&sdt_properties_xml))
     {
+        let style = trimmed_sdt_dropdown_style(
+            &content_runs,
+            &content_text,
+            style,
+            context,
+            paragraph_style_id,
+            table_run_style,
+        );
         let mut options = Vec::new();
         if let Some(re) = re::get(r"(?i)<w:listItem\b[^>]*/?>") {
             for mat in re.find_iter(&sdt_properties_xml) {
@@ -1628,6 +1854,7 @@ fn parse_form_field_from_sdt_xml(
             style,
             link,
             source_xml: Some(sdt_xml.to_string()),
+            source_preview: None,
         });
     }
 
@@ -1663,6 +1890,7 @@ fn parse_form_field_from_sdt_xml(
             style,
             link,
             source_xml: Some(sdt_xml.to_string()),
+            source_preview: None,
         });
     }
 
@@ -1684,6 +1912,7 @@ fn parse_form_field_from_sdt_xml(
             style,
             link,
             source_xml: Some(sdt_xml.to_string()),
+            source_preview: None,
         });
     }
 

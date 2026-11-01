@@ -1,4 +1,4 @@
-use crate::model::ParagraphAlignment;
+use crate::model::{ImagePaintBounds, ParagraphAlignment};
 use crate::parse::context::ParseContext;
 use crate::parse::re;
 use crate::parse::style::parse_text_style_from_xml;
@@ -21,6 +21,7 @@ pub struct ParsedTextBoxImage {
     pub src: String,
     pub width_px: f64,
     pub height_px: f64,
+    pub paint_bounds: Option<Box<ImagePaintBounds>>,
 }
 
 #[derive(Clone, Debug)]
@@ -62,6 +63,7 @@ pub fn parse_text_box_paragraphs(
                     src: image.src?,
                     width_px: image.width_px.unwrap_or(96.0).max(1.0),
                     height_px: image.height_px.unwrap_or(96.0).max(1.0),
+                    paint_bounds: image.paint_bounds,
                 })
             })
             .collect::<Vec<_>>();
@@ -232,13 +234,13 @@ fn render_text_box_svg_impl(
     let max_text_width = (safe_width - horizontal_inset * 2.0).max(20.0);
     let total_text_height: f64 = line_heights.iter().map(|h| *h as f64).sum();
     let available_height = (safe_height - top_inset - bottom_inset).max(0.0);
-    let vertical_scale = if total_text_height > available_height && total_text_height > 0.0 {
+    let mut vertical_scale = if total_text_height > available_height && total_text_height > 0.0 {
         (available_height / total_text_height).clamp(0.25, 1.0)
     } else {
         1.0
     };
     let scaled_text_height = total_text_height * vertical_scale;
-    let start_offset_y = match layout.and_then(|l| l.vertical_anchor.as_deref()) {
+    let mut start_offset_y = match layout.and_then(|l| l.vertical_anchor.as_deref()) {
         Some("center") => {
             top_inset
                 + ((available_height - scaled_text_height) / 2.0)
@@ -250,7 +252,29 @@ fn render_text_box_svg_impl(
             .round(),
         _ => top_inset.round(),
     };
+    let baseline_limit = safe_height - 4.0;
+    let mut recovered_fit = false;
+    if bounded && total_text_height > 0.0 {
+        let mut baseline = start_offset_y;
+        let omits_painted_content = paragraphs.iter().zip(&line_heights).any(|(paragraph, height)| {
+            baseline += *height as f64 * vertical_scale;
+            baseline > baseline_limit && (!paragraph.text.is_empty() || !paragraph.images.is_empty())
+        });
+        let fitted_height = (safe_height - top_inset - bottom_inset.max(4.0)).max(0.0);
+        let fitted_scale = (fitted_height / total_text_height).min(1.0);
+        if omits_painted_content && fitted_scale >= 0.25 {
+            vertical_scale = fitted_scale;
+            let fitted_text_height = total_text_height * vertical_scale;
+            start_offset_y = match layout.and_then(|l| l.vertical_anchor.as_deref()) {
+                Some("center") => top_inset + ((fitted_height - fitted_text_height) / 2.0).max(0.0).round(),
+                Some("bottom") => (safe_height - bottom_inset.max(4.0) - fitted_text_height).max(top_inset).round(),
+                _ => top_inset.round(),
+            };
+            recovered_fit = true;
+        }
+    }
     let mut cursor_y = start_offset_y;
+    let mut unscaled_cursor_y = 0_i64;
     let mut lines = Vec::new();
     for (paragraph_index, paragraph) in paragraphs.iter().enumerate() {
         let font_size_pt = paragraph
@@ -286,8 +310,13 @@ fn render_text_box_svg_impl(
             .unwrap_or(((fitted_font_size_px * 1.24).round().max(8.0)) as i64)
             as f64
             * vertical_scale;
-        cursor_y += line_height;
-        if cursor_y > safe_height - 4.0 {
+        if recovered_fit {
+            unscaled_cursor_y += line_heights[paragraph_index];
+            cursor_y = (start_offset_y + unscaled_cursor_y as f64 * vertical_scale).min(baseline_limit);
+        } else {
+            cursor_y += line_height;
+        }
+        if cursor_y > baseline_limit {
             break;
         }
         let text_align = paragraph.align.unwrap_or(ParagraphAlignment::Left);
@@ -347,10 +376,23 @@ fn render_text_box_svg_impl(
                 let scale = width / image.width_px.max(1.0);
                 let height = (image.height_px * scale).min(line_height).max(1.0);
                 let image_y = (cursor_y - height).max(0.0);
-                lines.push(format!(
-                    r#"<image href="{}" x="{image_x:.0}" y="{image_y:.0}" width="{width:.0}" height="{height:.0}" preserveAspectRatio="xMidYMid meet"/>"#,
-                    escape_xml_text(&image.src),
-                ));
+                if let Some(paint) = image.paint_bounds.as_ref() {
+                    let scale_x = width / paint.layout_width_px;
+                    let scale_y = height / paint.layout_height_px;
+                    let paint_x = image_x + paint.x_px * scale_x;
+                    let paint_y = image_y + paint.y_px * scale_y;
+                    let paint_width = paint.width_px * scale_x;
+                    let paint_height = paint.height_px * scale_y;
+                    lines.push(format!(
+                        r#"<image href="{}" x="{paint_x}" y="{paint_y}" width="{paint_width}" height="{paint_height}" preserveAspectRatio="none"/>"#,
+                        escape_xml_text(&image.src),
+                    ));
+                } else {
+                    lines.push(format!(
+                        r#"<image href="{}" x="{image_x:.0}" y="{image_y:.0}" width="{width:.0}" height="{height:.0}" preserveAspectRatio="xMidYMid meet"/>"#,
+                        escape_xml_text(&image.src),
+                    ));
+                }
                 image_x += width;
             }
         }
@@ -556,11 +598,11 @@ pub fn render_standalone_word_shape_svg(
     height_px: Option<f64>,
     context: &ParseContext<'_, impl std::borrow::Borrow<super::context::ParsedStyleSheet>>,
 ) -> Option<String> {
-    if let Some(group_xml) = extract_balanced_tag_blocks(run_xml, "wpg:wgp")
+    if let Some(group_xml) = crate::xml::extract_balanced_tag_slices(run_xml, "wpg:wgp")
         .into_iter()
         .next()
     {
-        let group_transform_xml = extract_balanced_tag_blocks(&group_xml, "a:xfrm")
+        let group_transform_xml = crate::xml::extract_balanced_tag_slices(&group_xml, "a:xfrm")
             .into_iter()
             .next()
             .unwrap_or_default();
@@ -602,11 +644,11 @@ pub fn render_standalone_word_shape_svg(
                 }
                 continue;
             }
-            let shape_properties_xml = extract_balanced_tag_blocks(&shape_xml, "wps:spPr")
+            let shape_properties_xml = crate::xml::extract_balanced_tag_slices(&shape_xml, "wps:spPr")
                 .into_iter()
                 .next()
                 .unwrap_or_default();
-            let transform_xml = extract_balanced_tag_blocks(&shape_properties_xml, "a:xfrm")
+            let transform_xml = crate::xml::extract_balanced_tag_slices(&shape_properties_xml, "a:xfrm")
                 .into_iter()
                 .next()
                 .unwrap_or_default();
@@ -634,15 +676,30 @@ pub fn render_standalone_word_shape_svg(
                 "prst",
             )
             .map(|value| value.trim().to_string());
-            let style_xml = extract_balanced_tag_blocks(&shape_xml, "wps:style")
+            let style_xml = crate::xml::extract_balanced_tag_slices(&shape_xml, "wps:style")
                 .into_iter()
                 .next()
                 .unwrap_or_default();
-            let fill = drawing_shape_fill_markup(
-                &format!("{shape_properties_xml}{style_xml}"),
-                &context.styles().theme_colors,
-                &format!("group-fill-{shape_index}"),
-            );
+            let fill = drawing
+                .bitmap_fill_supported
+                .then(|| {
+                    drawing_tile_fill_markup(
+                        &shape_properties_xml,
+                        &transform_xml,
+                        shape_width,
+                        shape_height,
+                        context,
+                        &format!("group-bitmap-{shape_index}"),
+                    )
+                })
+                .flatten()
+                .unwrap_or_else(|| {
+                    drawing_shape_fill_markup(
+                        &format!("{shape_properties_xml}{style_xml}"),
+                        &context.styles().theme_colors,
+                        &format!("group-fill-{shape_index}"),
+                    )
+                });
             let stroke = drawing_shape_stroke_markup(
                 &format!("{shape_properties_xml}{style_xml}"),
                 &context.styles().theme_colors,
@@ -732,19 +789,19 @@ pub fn render_standalone_word_shape_svg(
         }
     }
 
-    let shape_xml = extract_balanced_tag_blocks(run_xml, "wps:wsp")
+    let shape_xml = crate::xml::extract_balanced_tag_slices(run_xml, "wps:wsp")
         .into_iter()
         .next()?;
     if re::get(r"(?i)<w:txbxContent\b").is_some_and(|re| re.is_match(&shape_xml)) {
         return None;
     }
-    let shape_properties_xml = extract_balanced_tag_blocks(&shape_xml, "wps:spPr")
+    let shape_properties_xml = crate::xml::extract_balanced_tag_slices(&shape_xml, "wps:spPr")
         .into_iter()
         .next()?;
     let safe_width = clamp_i64(js_round(width_px.unwrap_or(320.0)), 1, 2400);
     let safe_height = clamp_i64(js_round(height_px.unwrap_or(240.0)), 1, 2400);
     let rotation_degrees = get_attribute(
-        &extract_balanced_tag_blocks(&shape_properties_xml, "a:xfrm")
+        &crate::xml::extract_balanced_tag_slices(&shape_properties_xml, "a:xfrm")
             .into_iter()
             .next()
             .unwrap_or_default(),
@@ -755,7 +812,7 @@ pub fn render_standalone_word_shape_svg(
     .map(|value| value / 60000.0);
     let mut rotation_layout =
         svg_rotation_layout(rotation_degrees, safe_width as f64, safe_height as f64);
-    let transform_xml = extract_balanced_tag_blocks(&shape_properties_xml, "a:xfrm")
+    let transform_xml = crate::xml::extract_balanced_tag_slices(&shape_properties_xml, "a:xfrm")
         .into_iter()
         .next()
         .unwrap_or_default();
@@ -783,10 +840,31 @@ pub fn render_standalone_word_shape_svg(
         "prst",
     )
     .map(|value| value.trim().to_string());
-    let style_xml = extract_balanced_tag_blocks(&shape_xml, "wps:style")
+    let style_xml = crate::xml::extract_balanced_tag_slices(&shape_xml, "wps:style")
         .into_iter()
         .next()
         .unwrap_or_default();
+    if let Some(bitmap) = render_stretched_bitmap_shape_svg(
+        &shape_properties_xml,
+        &style_xml,
+        safe_width,
+        safe_height,
+        &rotation_layout.transform_attribute,
+        context,
+    ) {
+        return Some(format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="{}" height="{}" viewBox="0 0 {} {}"{}>{bitmap}</svg>"#,
+            rotation_layout.view_box_width_px,
+            rotation_layout.view_box_height_px,
+            rotation_layout.view_box_width_px,
+            rotation_layout.view_box_height_px,
+            if rotation_layout.preserve_aspect_ratio_none {
+                r#" preserveAspectRatio="none""#
+            } else {
+                ""
+            },
+        ));
+    }
     let fill = drawing_shape_fill_markup(
         &format!("{shape_properties_xml}{style_xml}"),
         &context.styles().theme_colors,
@@ -1552,7 +1630,7 @@ fn drawing_shape_resolved_path_data(
     width_px: i64,
     height_px: i64,
 ) -> Option<String> {
-    let path_xml = extract_balanced_tag_blocks(shape_properties_xml, "a:path")
+    let path_xml = crate::xml::extract_balanced_tag_slices(shape_properties_xml, "a:path")
         .into_iter()
         .next()?;
     let direct_path_data = drawing_shape_path_data(&path_xml, width_px, height_px);
@@ -1992,5 +2070,790 @@ mod shape_fill_scope_tests {
             }
         }
         assert!(matches!(drawing_shape_fill_scope("<a:lnTo/>"), std::borrow::Cow::Borrowed(_)));
+    }
+}
+
+fn png_tile_extent(data: &[u8], dpi: u32) -> Option<(f64, f64)> {
+    if data.get(..8)? != b"\x89PNG\r\n\x1a\n" || data.get(12..16)? != b"IHDR" {
+        return None;
+    }
+    let read = |offset| {
+        Some(u32::from_be_bytes(
+            data.get(offset..offset + 4)?.try_into().ok()?,
+        ))
+    };
+    if read(8)? != 13 {
+        return None;
+    }
+    let width = read(16)? as f64;
+    let height = read(20)? as f64;
+    if width == 0.0 || height == 0.0 {
+        return None;
+    }
+    let mut density = (96.0, 96.0);
+    let mut offset = 8_usize;
+    while offset < data.len() {
+        let length = read(offset)? as usize;
+        let end = offset.checked_add(length)?.checked_add(12)?;
+        if end > data.len() {
+            return None;
+        }
+        let kind = data.get(offset + 4..offset + 8)?;
+        if kind == b"pHYs" && length == 9 && data[offset + 16] == 1 {
+            let x = read(offset + 8)?;
+            let y = read(offset + 12)?;
+            if x > 0 && y > 0 {
+                density = (x as f64 * 0.0254, y as f64 * 0.0254);
+            }
+        }
+        if kind == b"IDAT" || kind == b"IEND" {
+            break;
+        }
+        offset = end;
+    }
+    if dpi != 0 {
+        density = (dpi as f64, dpi as f64);
+    }
+    Some((width * 96.0 / density.0, height * 96.0 / density.1))
+}
+
+fn drawing_tile_fill_markup(
+    properties: &str,
+    transform: &str,
+    width: i64,
+    height: i64,
+    context: &ParseContext<'_, impl std::borrow::Borrow<super::context::ParsedStyleSheet>>,
+    id: &str,
+) -> Option<ShapeFillMarkup> {
+    if !properties.contains("a:tile") {
+        return None;
+    }
+    let children = crate::xml::extract_direct_child_tag_ranges(properties);
+    let mut fills = children.iter().filter(|child| {
+        matches!(
+            child.tag_name.as_str(),
+            "a:blipFill" | "a:solidFill" | "a:gradFill" | "a:pattFill" | "a:grpFill" | "a:noFill"
+        )
+    });
+    let fill = fills.next()?;
+    if fill.tag_name != "a:blipFill"
+        || fills.next().is_some()
+        || children
+            .iter()
+            .any(|child| matches!(child.tag_name.as_str(), "a:effectLst" | "a:effectDag"))
+    {
+        return None;
+    }
+    let fill = &properties[fill.start..fill.end];
+    if get_attribute(fill, "rotWithShape")
+        .is_some_and(|value| matches!(value.as_str(), "0" | "false"))
+    {
+        let opening = transform.get(..crate::xml::tag_token_end(transform, 0)?)?;
+        if ["rot", "flipH", "flipV"].iter().any(|name| {
+            get_attribute(opening, name).is_some_and(|value| !matches!(value.trim(), "0" | "false"))
+        }) {
+            return None;
+        }
+    }
+    let fill_children = crate::xml::extract_direct_child_tag_ranges(fill);
+    if fill_children
+        .iter()
+        .any(|child| !matches!(child.tag_name.as_str(), "a:blip" | "a:srcRect" | "a:tile"))
+    {
+        return None;
+    }
+    for name in ["a:blip", "a:tile"] {
+        if fill_children
+            .iter()
+            .filter(|child| child.tag_name == name)
+            .count()
+            != 1
+        {
+            return None;
+        }
+    }
+    if fill_children
+        .iter()
+        .filter(|child| child.tag_name == "a:srcRect")
+        .count()
+        > 1
+    {
+        return None;
+    }
+    let blip = crate::xml::direct_child_tag(fill, "a:blip")?;
+    let tile = crate::xml::direct_child_tag(fill, "a:tile")?;
+    if !crate::xml::extract_direct_child_tag_ranges(blip).is_empty()
+        || !crate::xml::extract_direct_child_tag_ranges(tile).is_empty()
+        || get_attribute(blip, "r:link").is_some()
+    {
+        return None;
+    }
+    let relationship = get_attribute(blip, "r:embed")?;
+    let part = context.relationships.get(&relationship)?;
+    let data = context.binary_assets.get(part)?;
+    if content_type_for_part(part, &context.content_types)?.as_str() != "image/png" {
+        return None;
+    }
+    let dpi = get_attribute(fill, "dpi")
+        .map(|value| value.parse::<u32>())
+        .transpose()
+        .ok()?
+        .unwrap_or(0);
+    let (natural_width, natural_height) = png_tile_extent(data, dpi)?;
+    let percentage = |tag: &str, name: &str, default: f64| -> Option<f64> {
+        let Some(value) = get_attribute(tag, name) else {
+            return Some(default);
+        };
+        let value = value.trim();
+        let parsed = if let Some(percent) = value.strip_suffix('%') {
+            percent.parse::<f64>().ok()? / 100.0
+        } else {
+            value.parse::<i32>().ok()? as f64 / 100_000.0
+        };
+        parsed.is_finite().then_some(parsed)
+    };
+    let source_rect = crate::xml::direct_child_tag(fill, "a:srcRect").unwrap_or("");
+    let left = percentage(source_rect, "l", 0.0)?;
+    let top = percentage(source_rect, "t", 0.0)?;
+    let right = percentage(source_rect, "r", 0.0)?;
+    let bottom = percentage(source_rect, "b", 0.0)?;
+    let image_width = natural_width * percentage(tile, "sx", 1.0)?;
+    let image_height = natural_height * percentage(tile, "sy", 1.0)?;
+    let tile_width = image_width * (1.0 - left - right);
+    let tile_height = image_height * (1.0 - top - bottom);
+    if ![image_width, image_height, tile_width, tile_height]
+        .into_iter()
+        .all(|value| value.is_finite() && value > 0.0)
+    {
+        return None;
+    }
+    let alignment = get_attribute(tile, "algn").unwrap_or_else(|| "tl".into());
+    let (horizontal, vertical) = match alignment.as_str() {
+        "tl" => (0.0, 0.0),
+        "t" => (0.5, 0.0),
+        "tr" => (1.0, 0.0),
+        "l" => (0.0, 0.5),
+        "ctr" => (0.5, 0.5),
+        "r" => (1.0, 0.5),
+        "bl" => (0.0, 1.0),
+        "b" => (0.5, 1.0),
+        "br" => (1.0, 1.0),
+        _ => return None,
+    };
+    let offset = |name| -> Option<f64> {
+        Some(
+            get_attribute(tile, name)
+                .map(|value| value.parse::<i64>())
+                .transpose()
+                .ok()?
+                .unwrap_or(0) as f64
+                / 9525.0,
+        )
+    };
+    let x = (width as f64 - tile_width) * horizontal + offset("tx")?;
+    let y = (height as f64 - tile_height) * vertical + offset("ty")?;
+    let flip = get_attribute(tile, "flip").unwrap_or_else(|| "none".into());
+    let (flip_x, flip_y) = match flip.as_str() {
+        "none" => (false, false),
+        "x" => (true, false),
+        "y" => (false, true),
+        "xy" => (true, true),
+        _ => return None,
+    };
+    let pattern_width = tile_width * if flip_x { 2.0 } else { 1.0 };
+    let pattern_height = tile_height * if flip_y { 2.0 } else { 1.0 };
+    let mut mirrors = String::new();
+    if flip_x {
+        mirrors.push_str(&format!(
+            r##"<use href="#{id}-tile" transform="translate({} 0) scale(-1 1)"/>"##,
+            format_js_number(pattern_width)
+        ));
+    }
+    if flip_y {
+        mirrors.push_str(&format!(
+            r##"<use href="#{id}-tile" transform="translate(0 {}) scale(1 -1)"/>"##,
+            format_js_number(pattern_height)
+        ));
+    }
+    if flip_x && flip_y {
+        mirrors.push_str(&format!(
+            r##"<use href="#{id}-tile" transform="translate({} {}) scale(-1 -1)"/>"##,
+            format_js_number(pattern_width),
+            format_js_number(pattern_height)
+        ));
+    }
+    let src = super::util::base64_data_uri("image/png", data);
+    Some(ShapeFillMarkup {
+        fill_attribute: format!(r#"fill="url(#{id})""#),
+        defs: vec![format!(
+            r#"<defs><pattern id="{id}" patternUnits="userSpaceOnUse" x="{}" y="{}" width="{}" height="{}"><svg id="{id}-tile" width="{}" height="{}" overflow="hidden"><image href="{src}" x="{}" y="{}" width="{}" height="{}" preserveAspectRatio="none"/></svg>{mirrors}</pattern></defs>"#,
+            format_js_number(x),
+            format_js_number(y),
+            format_js_number(pattern_width),
+            format_js_number(pattern_height),
+            format_js_number(tile_width),
+            format_js_number(tile_height),
+            format_js_number(-left * image_width),
+            format_js_number(-top * image_height),
+            format_js_number(image_width),
+            format_js_number(image_height)
+        )],
+    })
+}
+
+#[cfg(test)]
+mod tiled_bitmap_tests {
+    use super::*;
+    use crate::parse::empty_style_sheet;
+    use std::{cell::RefCell, collections::HashMap};
+
+    fn png() -> Vec<u8> {
+        let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec();
+        bytes.extend_from_slice(&13_u32.to_be_bytes());
+        bytes.extend_from_slice(b"IHDR");
+        bytes.extend_from_slice(&8_u32.to_be_bytes());
+        bytes.extend_from_slice(&8_u32.to_be_bytes());
+        bytes.extend_from_slice(&[8, 2, 0, 0, 0, 0, 0, 0, 0]);
+        bytes
+    }
+
+    fn render(
+        fill_attributes: &str,
+        source: &str,
+        tile: &str,
+        transform: &str,
+    ) -> Option<ShapeFillMarkup> {
+        let properties = format!(
+            r#"<wps:spPr><a:custGeom/><a:blipFill {fill_attributes}><a:blip r:embed="rId1"/><a:srcRect {source}/><a:tile {tile}/></a:blipFill></wps:spPr>"#
+        );
+        let parts = HashMap::new();
+        let assets = HashMap::from([("word/media/image.png".into(), png())]);
+        let context = ParseContext {
+            parts: &parts,
+            binary_assets: &assets,
+            relationships: HashMap::from([("rId1".into(), "word/media/image.png".into())]),
+            content_types: Default::default(),
+            style_sheet: empty_style_sheet(),
+            warnings: RefCell::new(Vec::new()),
+        };
+        drawing_tile_fill_markup(&properties, transform, 200, 100, &context, "tile-fill")
+    }
+
+    #[test]
+    fn tiled_fills_preserve_native_extent_and_pattern_reference() {
+        let fill = render(r#"rotWithShape="0""#, "", "", "<a:xfrm/>").unwrap();
+        assert_eq!(fill.fill_attribute, "fill=\"url(#tile-fill)\"");
+        assert!(fill.defs[0]
+            .contains("patternUnits=\"userSpaceOnUse\" x=\"0\" y=\"0\" width=\"8\" height=\"8\""));
+        assert_eq!(fill.defs[0].matches("<image ").count(), 1);
+        assert!(fill.defs[0].contains("data:image/png;base64,"));
+    }
+
+    #[test]
+    fn cropped_tiles_apply_scale_alignment_and_physical_offsets() {
+        let fill = render(
+            "",
+            r#"l="25000" r="25%""#,
+            r#"sx="50000" sy="200%" algn="ctr" tx="9525" ty="19050""#,
+            "<a:xfrm/>",
+        )
+        .unwrap();
+        assert!(fill.defs[0].contains("x=\"100\" y=\"44\" width=\"2\" height=\"16\""));
+        assert!(fill.defs[0].contains("x=\"-1\" y=\"0\" width=\"4\" height=\"16\""));
+    }
+
+    #[test]
+    fn mirrored_tiles_reuse_one_payload_and_reject_invalid_geometry() {
+        let fill = render("", "", r#"flip="xy""#, "<a:xfrm/>").unwrap();
+        assert_eq!(fill.defs[0].matches("<image ").count(), 1);
+        assert_eq!(fill.defs[0].matches("<use ").count(), 3);
+        assert!(fill.defs[0].contains("width=\"16\" height=\"16\""));
+        assert!(render("", "", r#"sx="0""#, "<a:xfrm/>").is_none());
+        assert!(render("", r#"l="50000" r="50000""#, "", "<a:xfrm/>").is_none());
+        assert!(render(r#"rotWithShape="0""#, "", "", r#"<a:xfrm rot="60000"/>"#).is_none());
+    }
+
+    #[test]
+    fn png_extent_uses_declared_density_and_checks_chunk_bounds() {
+        let mut bytes = png();
+        assert_eq!(png_tile_extent(&bytes, 192), Some((4.0, 4.0)));
+        bytes.extend_from_slice(&9_u32.to_be_bytes());
+        bytes.extend_from_slice(b"pHYs");
+        bytes.extend_from_slice(&1000_u32.to_be_bytes());
+        bytes.extend_from_slice(&2000_u32.to_be_bytes());
+        bytes.extend_from_slice(&[1, 0, 0, 0, 0]);
+        let (width, height) = png_tile_extent(&bytes, 0).unwrap();
+        assert!((width - 8.0 * 96.0 / 25.4).abs() < 1e-9);
+        assert!((height - 8.0 * 96.0 / 50.8).abs() < 1e-9);
+        bytes.pop();
+        assert!(png_tile_extent(&bytes, 0).is_none());
+        assert!(png_tile_extent(b"invalid", 0).is_none());
+    }
+}
+
+fn bitmap_blip_extensions_are_nonvisual(blip: &str) -> bool {
+    let children = crate::xml::extract_direct_child_tag_ranges(blip);
+    children.iter().all(|child| {
+        if child.tag_name != "a:extLst" {
+            return false;
+        }
+        let list = &blip[child.start..child.end];
+        crate::xml::extract_direct_child_tag_ranges(list)
+            .iter()
+            .all(|child| {
+                let extension = &list[child.start..child.end];
+                if child.tag_name != "a:ext"
+                    || get_attribute(extension, "uri").as_deref()
+                        != Some("{28A0092B-C50C-407E-A947-70E740481C1C}")
+                {
+                    return false;
+                }
+                let values = crate::xml::extract_direct_child_tag_ranges(extension);
+                values.len() == 1 && values[0].tag_name == "a14:useLocalDpi" && {
+                    let value = &extension[values[0].start..values[0].end];
+                    get_attribute(value, "val")
+                        .is_some_and(|value| matches!(value.as_str(), "0" | "1" | "false" | "true"))
+                        && crate::xml::extract_direct_child_tag_ranges(value).is_empty()
+                }
+            })
+    })
+}
+
+fn bitmap_rectangle_is_uncropped(rectangle: &str) -> bool {
+    crate::xml::extract_direct_child_tag_ranges(rectangle).is_empty()
+        && ["l", "t", "r", "b"].iter().all(|name| {
+            get_attribute(rectangle, name).is_none_or(|value| {
+                value
+                    .trim()
+                    .strip_suffix('%')
+                    .unwrap_or(value.trim())
+                    .parse::<f64>()
+                    .ok()
+                    == Some(0.0)
+            })
+        })
+}
+
+fn render_stretched_bitmap_shape_svg(
+    properties: &str,
+    style: &str,
+    width: i64,
+    height: i64,
+    transform_attribute: &str,
+    context: &ParseContext<'_, impl std::borrow::Borrow<super::context::ParsedStyleSheet>>,
+) -> Option<String> {
+    if !properties.contains("a:blipFill") || width <= 0 || height <= 0 {
+        return None;
+    }
+    let explicit_effects = crate::xml::direct_child_tag(properties, "a:effectLst")
+        .or_else(|| crate::xml::direct_child_tag(properties, "a:effectDag"));
+    if explicit_effects.is_none()
+        && crate::xml::direct_child_tag(style, "a:effectRef").is_some_and(|effect| {
+            get_attribute(effect, "idx").and_then(|value| value.parse::<u32>().ok()) != Some(0)
+        })
+    {
+        return None;
+    }
+    let geometry = crate::xml::direct_child_tag(properties, "a:prstGeom")?;
+    let preset = get_attribute(geometry, "prst")?;
+    if !matches!(preset.as_str(), "rect" | "roundRect" | "ellipse") {
+        return None;
+    }
+    let children = crate::xml::extract_direct_child_tag_ranges(properties);
+    if children.iter().any(|child| {
+        matches!(
+            child.tag_name.as_str(),
+            "a:custGeom" | "a:scene3d" | "a:sp3d"
+        ) || (matches!(child.tag_name.as_str(), "a:effectLst" | "a:effectDag")
+            && !crate::xml::extract_direct_child_tag_ranges(&properties[child.start..child.end])
+                .is_empty())
+    }) {
+        return None;
+    }
+    let mut fills = children.iter().filter(|child| {
+        matches!(
+            child.tag_name.as_str(),
+            "a:blipFill" | "a:solidFill" | "a:gradFill" | "a:pattFill" | "a:grpFill" | "a:noFill"
+        )
+    });
+    let fill = fills.next()?;
+    if fill.tag_name != "a:blipFill" || fills.next().is_some() {
+        return None;
+    }
+    let fill = &properties[fill.start..fill.end];
+    match get_attribute(fill, "rotWithShape").as_deref() {
+        None | Some("1" | "true") => {}
+        Some("0" | "false") => {
+            if !transform_attribute.is_empty() {
+                return None;
+            }
+        }
+        _ => return None,
+    }
+    let children = crate::xml::extract_direct_child_tag_ranges(fill);
+    if children.iter().any(|child| {
+        !matches!(
+            child.tag_name.as_str(),
+            "a:blip" | "a:srcRect" | "a:stretch"
+        )
+    }) || ["a:blip", "a:stretch"].iter().any(|name| {
+        children
+            .iter()
+            .filter(|child| child.tag_name == *name)
+            .count()
+            != 1
+    }) || children
+        .iter()
+        .filter(|child| child.tag_name == "a:srcRect")
+        .count()
+        > 1
+    {
+        return None;
+    }
+    if let Some(rectangle) = crate::xml::direct_child_tag(fill, "a:srcRect") {
+        if !bitmap_rectangle_is_uncropped(rectangle) {
+            return None;
+        }
+    }
+    let blip = crate::xml::direct_child_tag(fill, "a:blip")?;
+    if get_attribute(blip, "r:link").is_some() || !bitmap_blip_extensions_are_nonvisual(blip) {
+        return None;
+    }
+    let stretch = crate::xml::direct_child_tag(fill, "a:stretch")?;
+    let rectangles = crate::xml::extract_direct_child_tag_ranges(stretch);
+    if rectangles.len() != 1
+        || rectangles[0].tag_name != "a:fillRect"
+        || !bitmap_rectangle_is_uncropped(&stretch[rectangles[0].start..rectangles[0].end])
+    {
+        return None;
+    }
+    let relationship = get_attribute(blip, "r:embed")?;
+    let part = context.relationships.get(&relationship)?;
+    let data = context.binary_assets.get(part)?;
+    if data.is_empty() {
+        return None;
+    }
+    let mime = content_type_for_part(part, &context.content_types)?;
+    if !matches!(
+        mime.as_str(),
+        "image/png" | "image/jpeg" | "image/gif" | "image/webp" | "image/bmp"
+    ) {
+        return None;
+    }
+    let mut radius = 0.0;
+    if preset == "roundRect" {
+        let mut adjustment = 16667.0;
+        if let Some(adjustments) = crate::xml::direct_child_tag(geometry, "a:avLst") {
+            let guides = crate::xml::extract_direct_child_tag_ranges(adjustments);
+            if guides.len() > 1 {
+                return None;
+            }
+            if let Some(guide) = guides.first() {
+                let guide_xml = &adjustments[guide.start..guide.end];
+                if guide.tag_name != "a:gd"
+                    || get_attribute(guide_xml, "name").as_deref() != Some("adj")
+                {
+                    return None;
+                }
+                let formula = get_attribute(guide_xml, "fmla")?;
+                let mut parts = formula.split_ascii_whitespace();
+                if parts.next() != Some("val") {
+                    return None;
+                }
+                adjustment = parts.next()?.parse::<f64>().ok()?;
+                if !adjustment.is_finite() || parts.next().is_some() {
+                    return None;
+                }
+            }
+        }
+        radius = width.min(height) as f64 * adjustment.clamp(0.0, 50000.0) / 100000.0;
+    }
+    let stroke = drawing_shape_stroke_markup(
+        &format!("{properties}{style}"),
+        &context.styles().theme_colors,
+    );
+    let attributes = format!(r#"fill="url(#shape-bitmap-fill)" {stroke}{transform_attribute}"#);
+    let shape = if preset == "ellipse" {
+        let rx = format_js_number(width as f64 / 2.0);
+        let ry = format_js_number(height as f64 / 2.0);
+        format!(r#"<ellipse cx="{rx}" cy="{ry}" rx="{rx}" ry="{ry}" {attributes}/>"#)
+    } else {
+        let rounding = if preset == "roundRect" {
+            let radius = format_js_number(radius);
+            format!(r#" rx="{radius}" ry="{radius}""#)
+        } else {
+            String::new()
+        };
+        format!(r#"<rect x="0" y="0" width="{width}" height="{height}"{rounding} {attributes}/>"#)
+    };
+    let src = super::util::base64_data_uri(&mime, data);
+    Some(format!(
+        r#"<defs><pattern id="shape-bitmap-fill" patternUnits="userSpaceOnUse" width="{width}" height="{height}"><image href="{src}" width="{width}" height="{height}" preserveAspectRatio="none"/></pattern></defs>{shape}"#
+    ))
+}
+
+#[cfg(test)]
+mod stretched_bitmap_tests {
+    use super::*;
+    use crate::parse::empty_style_sheet;
+    use std::{cell::RefCell, collections::HashMap};
+
+    fn render_with_style(geometry: &str, fill: &str, style: &str) -> Option<String> {
+        let parts = HashMap::new();
+        let assets = HashMap::from([("word/media/image.png".into(), vec![1, 2, 3])]);
+        let context = ParseContext {
+            parts: &parts,
+            binary_assets: &assets,
+            relationships: HashMap::from([("rId1".into(), "word/media/image.png".into())]),
+            content_types: Default::default(),
+            style_sheet: empty_style_sheet(),
+            warnings: RefCell::new(Vec::new()),
+        };
+        render_stretched_bitmap_shape_svg(
+            &format!("<wps:spPr>{geometry}{fill}<a:ln><a:noFill/></a:ln></wps:spPr>"),
+            style,
+            80,
+            50,
+            "",
+            &context,
+        )
+    }
+
+    fn render(geometry: &str, fill: &str) -> Option<String> {
+        render_with_style(geometry, fill, "")
+    }
+
+    const FILL: &str =
+        r#"<a:blipFill><a:blip r:embed="rId1"/><a:stretch><a:fillRect/></a:stretch></a:blipFill>"#;
+
+    #[test]
+    fn stretched_fills_clip_to_requested_preset_geometry() {
+        let ellipse = render(
+            r#"<a:prstGeom prst="ellipse"><a:avLst/></a:prstGeom>"#,
+            FILL,
+        )
+        .unwrap();
+        assert!(ellipse.contains(
+            r#"<ellipse cx="40" cy="25" rx="40" ry="25" fill="url(#shape-bitmap-fill)""#
+        ));
+        assert_eq!(ellipse.matches("<image ").count(), 1);
+        assert!(ellipse.contains("data:image/png;base64,AQID"));
+        let rounded = render(r#"<a:prstGeom prst="roundRect"><a:avLst><a:gd name="adj" fmla="val 10000"/></a:avLst></a:prstGeom>"#, FILL).unwrap();
+        assert!(rounded.contains(r#"width="80" height="50" rx="5" ry="5""#));
+        let square = render(r#"<a:prstGeom prst="rect"><a:avLst/></a:prstGeom>"#, FILL).unwrap();
+        assert!(square.contains(
+            r#"<rect x="0" y="0" width="80" height="50" fill="url(#shape-bitmap-fill)""#
+        ));
+    }
+
+    #[test]
+    fn rounded_bitmap_adjustments_follow_preset_bounds() {
+        for (value, radius) in [("-1", "0"), ("100000", "25")] {
+            let geometry = format!(
+                r#"<a:prstGeom prst="roundRect"><a:avLst><a:gd name="adj" fmla="val {value}"/></a:avLst></a:prstGeom>"#
+            );
+            assert!(render(&geometry, FILL)
+                .unwrap()
+                .contains(&format!(r#"rx="{radius}" ry="{radius}""#)));
+        }
+        assert!(render(r#"<a:prstGeom prst="roundRect"><a:avLst><a:gd name="adj" fmla="val NaN"/></a:avLst></a:prstGeom>"#, FILL).is_none());
+    }
+
+    #[test]
+    fn bitmap_stretch_accepts_density_extensions_and_rejects_image_effects() {
+        let geometry = r#"<a:prstGeom prst="rect"><a:avLst/></a:prstGeom>"#;
+        let fill = r#"<a:blipFill dpi="0" rotWithShape="1"><a:blip r:embed="rId1"><a:extLst><a:ext uri="{28A0092B-C50C-407E-A947-70E740481C1C}"><a14:useLocalDpi val="0"/></a:ext></a:extLst></a:blip><a:srcRect/><a:stretch><a:fillRect/></a:stretch></a:blipFill>"#;
+        assert!(render(geometry, fill).is_some());
+        assert!(render(
+            geometry,
+            &fill.replace("<a:srcRect/>", "<a:srcRect l=\"10000\"/>")
+        )
+        .is_none());
+        assert!(render(
+            geometry,
+            &fill.replace("<a:fillRect/>", "<a:fillRect r=\"10000\"/>")
+        )
+        .is_none());
+        assert!(render(
+            geometry,
+            &fill.replace("</a:blip>", "<a:grayscl/></a:blip>")
+        )
+        .is_none());
+        assert!(render(geometry, &fill.replace("a14:useLocalDpi", "a14:unknown")).is_none());
+        assert!(render(geometry, &fill.replace("r:embed", "r:link")).is_none());
+        assert!(render(geometry, &format!("{FILL}<a:solidFill/>")).is_none());
+    }
+    #[test]
+    fn bitmap_stretch_respects_effect_overrides() {
+        let geometry = r#"<a:prstGeom prst="rect"><a:avLst/></a:prstGeom>"#;
+        let style = r#"<wps:style><a:effectRef idx="1"/></wps:style>"#;
+        assert!(render_with_style(geometry, FILL, style).is_none());
+        assert!(render_with_style(geometry, FILL, &style.replace("1", "0")).is_some());
+        assert!(render_with_style(geometry, &format!("{FILL}<a:effectLst/>"), style).is_some());
+        assert!(render_with_style(
+            geometry,
+            &format!("{FILL}<a:effectLst><a:blur rad=\"1\"/></a:effectLst>"),
+            style
+        )
+        .is_none());
+    }
+}
+
+#[cfg(test)]
+mod textbox_fit_tests {
+    use super::*;
+
+    fn paragraphs() -> Vec<ParsedTextBoxParagraph> {
+        ["First line", "Middle line", "Final line"].into_iter().map(|text| ParsedTextBoxParagraph {
+            text: text.to_owned(), style: None, align: None, images: Vec::new(),
+        }).collect()
+    }
+
+    fn text_nodes(svg: &str) -> Vec<String> {
+        let document = roxmltree::Document::parse(svg).unwrap();
+        document.descendants().filter(|node| node.has_tag_name(("http://www.w3.org/2000/svg", "text")))
+            .map(|node| node.text().unwrap_or_default().to_owned()).collect()
+    }
+
+    #[test]
+    fn fitted_multiline_content_is_not_truncated() {
+        let svg = render_bounded_text_box_svg(&paragraphs(), 190.0, 40.0, None);
+        assert_eq!(text_nodes(&svg), vec!["First line", "Middle line", "Final line"], "{svg}");
+    }
+
+    #[test]
+    fn unconstrained_multiline_content_remains_complete() {
+        let svg = render_bounded_text_box_svg(&paragraphs(), 190.0, 140.0, None);
+        assert_eq!(text_nodes(&svg), vec!["First line", "Middle line", "Final line"]);
+    }
+
+    fn layout(bottom: f64, anchor: &str) -> ParsedTextBoxLayout {
+        ParsedTextBoxLayout {
+            padding_left_px: Some(6.0), padding_top_px: Some(2.0),
+            padding_right_px: Some(6.0), padding_bottom_px: Some(bottom),
+            vertical_anchor: Some(anchor.to_owned()),
+        }
+    }
+
+    fn baselines(svg: &str) -> Vec<f64> {
+        let document = roxmltree::Document::parse(svg).unwrap();
+        document.descendants().filter(|node| node.has_tag_name(("http://www.w3.org/2000/svg", "text")))
+            .map(|node| node.attribute("y").unwrap().parse().unwrap()).collect()
+    }
+
+    #[test]
+    fn fitted_content_respects_all_vertical_anchors() {
+        for anchor in ["top", "center", "bottom"] {
+            let svg = render_bounded_text_box_svg(&paragraphs(), 190.0, 40.0, Some(&layout(2.0, anchor)));
+            assert_eq!(text_nodes(&svg).len(), 3, "{anchor}: {svg}");
+            let ys = baselines(&svg);
+            assert!(ys.windows(2).all(|pair| pair[0] < pair[1]));
+            assert!(ys.iter().all(|y| *y >= 0.0 && *y <= 36.0));
+        }
+    }
+
+    #[test]
+    fn fitted_content_respects_bottom_insets() {
+        for bottom in [0.0_f64, 2.0, 4.0, 8.0] {
+            let svg = render_bounded_text_box_svg(&paragraphs(), 190.0, 40.0, Some(&layout(bottom, "top")));
+            assert_eq!(text_nodes(&svg).len(), 3, "{bottom}: {svg}");
+            assert!(baselines(&svg).iter().all(|y| *y <= 40.0 - bottom.max(4.0)));
+        }
+    }
+
+    #[test]
+    fn fitted_content_retains_text_style() {
+        let mut content = paragraphs();
+        content[2].style = Some(serde_json::from_value(serde_json::json!({
+            "bold": true, "italic": true, "color": "#234567"
+        })).unwrap());
+        let svg = render_bounded_text_box_svg(&content, 190.0, 40.0, None);
+        let document = roxmltree::Document::parse(&svg).unwrap();
+        let last = document.descendants().find(|node| node.is_element() && node.text() == Some("Final line")).unwrap();
+        assert_eq!(last.attribute("font-weight"), Some("700"));
+        assert_eq!(last.attribute("font-style"), Some("italic"));
+        assert_eq!(last.attribute("fill"), Some("#234567"));
+    }
+
+    #[test]
+    fn fitted_content_retains_final_image_payload_and_frame() {
+        let mut content = paragraphs();
+        content[2].text.clear();
+        let source = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==";
+        content[2].images.push(ParsedTextBoxImage { src: source.to_owned(), width_px: 10.0, height_px: 10.0, paint_bounds: None });
+        let svg = render_bounded_text_box_svg(&content, 190.0, 40.0, None);
+        let document = roxmltree::Document::parse(&svg).unwrap();
+        let image = document.descendants().find(|node| node.has_tag_name(("http://www.w3.org/2000/svg", "image"))).unwrap();
+        assert_eq!(image.attribute("href"), Some(source));
+        let y: f64 = image.attribute("y").unwrap().parse().unwrap();
+        let height: f64 = image.attribute("height").unwrap().parse().unwrap();
+        assert!(y >= 0.0 && y + height <= 40.0);
+    }
+
+    #[test]
+    fn overflow_of_empty_paragraphs_keeps_svg_unchanged() {
+        let mut content = paragraphs();
+        content[1].text.clear(); content[2].text.clear();
+        let svg = render_bounded_text_box_svg(&content, 190.0, 40.0, None);
+        assert_eq!(svg, "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"190\" height=\"40\" viewBox=\"0 0 190 40\">\n    <rect x=\"0\" y=\"0\" width=\"190\" height=\"40\" fill=\"none\"/>\n    <text xml:space=\"preserve\" x=\"6\" y=\"14\" text-anchor=\"start\" font-size=\"10\" fill=\"#111111\" font-family=\"Calibri, Arial, sans-serif\" font-weight=\"400\" font-style=\"normal\">First line</text>\n  </svg>");
+    }
+
+    #[test]
+    fn dense_tiny_frames_remain_an_explicit_limit() {
+        let svg = render_bounded_text_box_svg(&paragraphs(), 190.0, 4.0, None);
+        assert!(text_nodes(&svg).is_empty());
+    }
+
+}
+
+#[cfg(test)]
+mod image_paint_bounds_tests {
+    use super::*;
+
+    fn paragraph(paint_bounds: Option<Box<ImagePaintBounds>>) -> ParsedTextBoxParagraph {
+        ParsedTextBoxParagraph {
+            text: String::new(), style: None, align: None,
+            images: vec![
+                ParsedTextBoxImage {
+                    src: "data:image/svg+xml,%3Csvg%2F%3E".into(),
+                    width_px: 100.0, height_px: 20.0, paint_bounds,
+                },
+                ParsedTextBoxImage {
+                    src: "data:image/svg+xml,%3Csvg%2F%3E".into(),
+                    width_px: 20.0, height_px: 20.0, paint_bounds: None,
+                },
+            ],
+        }
+    }
+
+    fn rects(svg: &str) -> Vec<[f64; 4]> {
+        let document = roxmltree::Document::parse(svg).unwrap();
+        document.descendants()
+            .filter(|node| node.has_tag_name(("http://www.w3.org/2000/svg", "image")))
+            .map(|node| ["x", "y", "width", "height"].map(|name| node.attribute(name).unwrap().parse().unwrap()))
+            .collect()
+    }
+
+    #[test]
+    fn nested_paint_offsets_and_extents_scale_without_changing_logical_advance() {
+        for width in [220.0, 70.0] {
+            let layout = ParsedTextBoxLayout {
+                padding_left_px: Some(10.0), padding_top_px: Some(10.0),
+                padding_right_px: Some(10.0), padding_bottom_px: Some(10.0),
+                vertical_anchor: None,
+            };
+            let plain = render_bounded_text_box_svg(&[paragraph(None)], width, 100.0, Some(&layout));
+            let painted = render_bounded_text_box_svg(&[paragraph(Some(Box::new(ImagePaintBounds {
+                x_px: -0.5, y_px: -2.0, width_px: 101.0, height_px: 24.0,
+                layout_width_px: 100.0, layout_height_px: 20.0,
+            })))], width, 100.0, Some(&layout));
+            let original = rects(&plain);
+            let actual = rects(&painted);
+            let sx = original[0][2] / 100.0;
+            let sy = original[0][3] / 20.0;
+            assert_eq!(actual[0], [original[0][0] - 0.5 * sx, original[0][1] - 2.0 * sy, 101.0 * sx, 24.0 * sy]);
+            assert_eq!(actual[1], original[1]);
+            assert!(painted.contains("preserveAspectRatio=\"none\""));
+        }
     }
 }

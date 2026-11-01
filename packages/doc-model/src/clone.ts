@@ -2,7 +2,9 @@ import type {
   DocModel,
   DocNode,
   FooterSection,
+  FormFieldSourcePreview,
   HeaderSection,
+  ImageRunNode,
   NumberingDefinitionSet,
   ParagraphBorderSet,
   ParagraphBorderStyle,
@@ -145,6 +147,23 @@ export function cloneTableNode(table: TableNode): TableNode {
   return cloneTable(table);
 }
 
+function cloneImageRun(image: ImageRunNode): ImageRunNode {
+  return {
+    ...image,
+    contentNodes: image.contentNodes?.map(cloneDocNode),
+    data: image.data ? new Uint8Array(image.data) : undefined,
+    crop: image.crop ? { ...image.crop } : undefined,
+    paintBounds: image.paintBounds ? { ...image.paintBounds } : undefined,
+    floating: image.floating ? { ...image.floating } : undefined,
+  };
+}
+
+export function cloneFormFieldSourcePreview(
+  preview?: FormFieldSourcePreview
+): FormFieldSourcePreview | undefined {
+  return preview ? { ...preview, image: cloneImageRun(preview.image) } : undefined;
+}
+
 function cloneParagraph(paragraph: ParagraphNode): ParagraphNode {
   return {
     type: "paragraph",
@@ -240,6 +259,7 @@ function cloneParagraph(paragraph: ParagraphNode): ParagraphNode {
           style: child.style ? { ...child.style } : undefined,
           link: child.link,
           sourceXml: child.sourceXml,
+          sourcePreview: cloneFormFieldSourcePreview(child.sourcePreview),
         };
       }
 
@@ -258,6 +278,7 @@ function cloneParagraph(paragraph: ParagraphNode): ParagraphNode {
         data: child.data ? new Uint8Array(child.data) : undefined,
         sourceXml: child.sourceXml,
         crop: child.crop ? { ...child.crop } : undefined,
+        paintBounds: child.paintBounds ? { ...child.paintBounds } : undefined,
         cssFilter: child.cssFilter,
         cssOpacity: child.cssOpacity,
         floating: child.floating ? { ...child.floating } : undefined,

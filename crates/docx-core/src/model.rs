@@ -432,10 +432,23 @@ pub struct ImageFloating {
     pub z_index: Option<i64>,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImagePaintBounds {
+    pub x_px: f64,
+    pub y_px: f64,
+    pub width_px: f64,
+    pub height_px: f64,
+    pub layout_width_px: f64,
+    pub layout_height_px: f64,
+}
+
 /// Mirrors TypeScript `ImageRunNode`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ImageRunNode {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paint_bounds: Option<Box<ImagePaintBounds>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub math_ml: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -576,6 +589,15 @@ pub struct FormFieldWidgetSettings {
     pub dropdown: Option<FormFieldDropdownWidgetSettings>,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FormFieldSourcePreview {
+    pub relationship_id: String,
+    pub shape_id: String,
+    pub checked: bool,
+    pub image: Box<ImageRunNode>,
+}
+
 /// Mirrors TypeScript `FormFieldRunNode`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -611,6 +633,8 @@ pub struct FormFieldRunNode {
     pub link: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_xml: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_preview: Option<Box<FormFieldSourcePreview>>,
 }
 
 /// Discriminator for `FormFieldRunNode`.
