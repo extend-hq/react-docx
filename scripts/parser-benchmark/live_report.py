@@ -19,19 +19,29 @@ from expanded_report import LABELS, body_mean, features, latency, legacy_update,
 from frontier_report import CHART_METRICS
 
 
+def file_stamp(path):
+    try:
+        stat = path.stat()
+        return (stat.st_dev, stat.st_ino, stat.st_mode, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+    except OSError:
+        return None
+
+
 class Reader:
     def __init__(self):
         self.values = {}
 
     def read(self, path, default=None):
         try:
-            stat = path.stat()
-            stamp = (stat.st_mtime_ns, stat.st_size)
+            stamp = file_stamp(path)
+            if stamp is None:
+                return default
             previous = self.values.get(path)
             if previous and previous[0] == stamp:
                 return previous[1]
             value = json.loads(path.read_text())
-            self.values[path] = (stamp, value)
+            if file_stamp(path) == stamp:
+                self.values[path] = (stamp, value)
             return value
         except (OSError, ValueError):
             return default
@@ -73,6 +83,8 @@ class Publisher:
         self.site = site.resolve()
         self.expanded = self.run / 'expanded'
         self.reader = Reader()
+        self.record_cache = {}
+        self.measurement_cache = None
         self.presentation_sha256 = None
         self.config = self.reader.read(self.run / 'report-config.json', {}) or {}
         self.corpus = self.run / self.config.get('corpus_directory', 'corpus-1k')
@@ -111,23 +123,34 @@ class Publisher:
         if not environment or environment.get('binary_sha256') != self.binary_hash or environment.get('manifest_sha256') != self.manifest_hash:
             return rows, ignored
         engines = ENGINES + (['docx-core-baseline'] if phase == 'timing' else [])
-        for engine in engines:
-            for path in (self.expanded / phase / engine).glob('*.json'):
-                row = self.reader.read(path)
-                if not row:
-                    continue
-                identity = row.get('cache_identity', {})
-                expected_hash = self.baseline_hash if engine == 'docx-core-baseline' else self.binary_hash
-                if (row.get('id') not in self.ids or row.get('engine') != engine
-                        or identity.get('input_sha256') != row['id']
-                        or identity.get('binary_sha256') != expected_hash
-                        or identity.get('scorer_sha256') != environment.get('scorer_sha256')
-                        or identity.get('phase') != phase
-                        or (phase == 'timing' and identity.get('repeats') != environment.get('repeats'))):
-                    ignored += 1
-                    continue
-                rows.append(row)
-        return rows, ignored
+        sources = tuple((engine, path, file_stamp(path)) for engine in engines
+                        for path in (self.expanded / phase / engine).glob('*.json'))
+        previous = self.record_cache.get(phase)
+        if previous and previous[0] is environment and previous[1] == sources:
+            return previous[2]
+        cacheable = True
+        for engine, path, _ in sources:
+            row = self.reader.read(path)
+            if not row:
+                cacheable = False
+                continue
+            identity = row.get('cache_identity', {})
+            expected_hash = self.baseline_hash if engine == 'docx-core-baseline' else self.binary_hash
+            if (row.get('id') not in self.ids or row.get('engine') != engine
+                    or identity.get('input_sha256') != row['id']
+                    or identity.get('binary_sha256') != expected_hash
+                    or identity.get('scorer_sha256') != environment.get('scorer_sha256')
+                    or identity.get('phase') != phase
+                    or (phase == 'timing' and identity.get('repeats') != environment.get('repeats'))):
+                ignored += 1
+                continue
+            rows.append(row)
+        result = rows, ignored
+        if cacheable:
+            self.record_cache[phase] = environment, sources, result
+        else:
+            self.record_cache.pop(phase, None)
+        return result
 
     def dimension(self, key):
         if key not in self.dimensions:
@@ -434,8 +457,8 @@ class Publisher:
         value = self.reader.read(self.run / 'feedback-loop/latest.json', {}) or {}
         if not value:
             return None
-        result = {key: value[key] for key in ['label', 'status', 'scope', 'rounds', 'count', 'build_seconds', 'error', 'decision'] if key in value}
-        result['records'] = [{key: row[key] for key in ['ordinal', 'status', 'medians', 'speedup', 'candidate_to_oxide', 'full_output_parity', 'seconds', 'verdict', 'process_cpu_speedup', 'process_cpu_per_parse_ms', 'process_cpu_scope'] if key in row}
+        result = {key: value[key] for key in ['label', 'status', 'scope', 'rounds', 'count', 'build_seconds', 'error', 'decision', 'counter_scope'] if key in value}
+        result['records'] = [{key: row[key] for key in ['ordinal', 'status', 'medians', 'speedup', 'candidate_to_oxide', 'full_output_parity', 'seconds', 'verdict', 'process_cpu_speedup', 'process_cpu_per_parse_ms', 'process_cpu_scope', 'instructions_ratio', 'cycles_ratio'] if key in row}
                              for row in value.get('records', [])]
         result['receipt_url'] = 'current/feedback-loop/latest.json'
         result['history'] = []
@@ -629,6 +652,7 @@ class Publisher:
                                       'latency_ms': {engine: timings[key, engine]['medians']['total_ms']
                                                      for engine in ENGINES}} for key in sorted(timed)],
                           'metric_definitions': CHART_METRICS,
+                          'cohort_comparison': self.cohort_comparison(timings, scores, binary_hash),
                           'baseline': {'documents': len(paired), 'attempted': len(baseline_rows),
                                        'statuses': dict(collections.Counter(row['status'] for row in baseline_rows)),
                                        'median_paired_speedup': statistics.median(a / b for a, b in zip(before, after)),
@@ -644,7 +668,8 @@ class Publisher:
                           'snapshot_url': 'current/' + str(directory.relative_to(self.run)) + '/report-latency.json'}
             snapshot_path = directory / 'report-latency.json'
             saved = self.reader.read(snapshot_path, {}) or {}
-            if saved.get('scope') != comparison['scope']:
+            if (saved.get('scope') != comparison['scope']
+                    or saved.get('cohort_comparison') != comparison['cohort_comparison']):
                 write_json(snapshot_path, comparison)
         return {'binary_sha256': binary_hash, 'baseline_sha256': baseline_hash,
                 'status': decision.get('status', 'validating'), 'expected_documents': len(self.ids),
@@ -668,7 +693,7 @@ class Publisher:
         result = self.candidate_live(recent)
         return result if result and result['accuracy_complete'] and result['timing_complete'] else None
 
-    def cohort_comparison(self, timings, scores):
+    def cohort_comparison(self, timings, scores, binary_hash=None):
         groups = collections.defaultdict(set)
         for key, entry in self.entries.items():
             if entry.get('cohort'):
@@ -684,13 +709,17 @@ class Publisher:
                                    'p95_ms': percentile(values, .95) if values else None,
                                    'scored': len(completed), 'features': features(completed)}
             result.append({'name': label, 'documents': len(keys), 'common_timing': len(common), 'engines': engines})
-        return {'binary_sha256': self.binary_hash, 'groups': result}
+        return {'binary_sha256': binary_hash or self.binary_hash, 'groups': result}
 
-    def build(self):
-        timing_env = self.reader.read(self.expanded / 'timing-environment.json', {}) or {}
-        accuracy_env = self.reader.read(self.expanded / 'accuracy-environment.json', {}) or {}
+    def measurement(self, timing_env, accuracy_env):
         timings, ignored_timing = self.records('timing', timing_env)
         scores, ignored_accuracy = self.records('accuracy', accuracy_env)
+        inputs = timings, scores, timing_env, accuracy_env
+        snapshot_path = self.run / 'measured-latency.json'
+        previous = self.measurement_cache
+        if (previous and all(before is after for before, after in zip(previous[0], inputs))
+                and previous[1] == file_stamp(snapshot_path)):
+            return previous[2]
         by_timing = {(row['id'], row['engine']): row for row in timings}
         by_score = {(row['id'], row['engine']): row for row in scores}
         common = {key for key in self.ids if all(latency([by_timing.get((key, engine), {})]) for engine in ENGINES)}
@@ -736,15 +765,33 @@ class Publisher:
                   'expected': old_score['expected'], 'url': 'saved-report.html'} if old_score else None
         env = (timing_env if timing_env.get('binary_sha256') == self.binary_hash else
                accuracy_env if accuracy_env.get('binary_sha256') == self.binary_hash else {})
-        sampling = self.reader.read(self.corpus / 'sampling.json', {}) or {}
-        corpus = {key: value for key, value in sampling.items() if isinstance(value, (str, int, float, bool, type(None)))}
-        optional = self.optional_results(env.get('scorer_sha256'))
-        live = self.progress(timings, scores)
-        live['ignored_stale_records'] = ignored_timing + ignored_accuracy
         points = [{'ordinal': self.ordinals[key], 'metrics': self.dimension(key),
                    'latency_ms': {engine: by_timing[(key, engine)]['medians']['total_ms'] for engine in ENGINES}}
                   for key in sorted(common)]
         measured = self.latency_comparison(summaries, points, common, baseline, timing_env, timings)
+        result = {'timings': timings, 'scores': scores, 'ignored': ignored_timing + ignored_accuracy,
+                  'common': common, 'quality_common': quality_common, 'summaries': summaries,
+                  'quality': quality, 'baseline': baseline, 'labels': labels,
+                  'legacy_labels': legacy_labels, 'legacy': legacy, 'env': env,
+                  'points': points, 'measured': measured,
+                  'timing_timeline': timing_timeline(by_timing, common, timing_env.get('input_ids', []), ENGINES),
+                  'cohort_comparison': self.cohort_comparison(by_timing, by_score)}
+        self.measurement_cache = inputs, file_stamp(snapshot_path), result
+        return result
+
+    def build(self):
+        timing_env = self.reader.read(self.expanded / 'timing-environment.json', {}) or {}
+        accuracy_env = self.reader.read(self.expanded / 'accuracy-environment.json', {}) or {}
+        measurement = self.measurement(timing_env, accuracy_env)
+        timings, scores, common = (measurement[key] for key in ['timings', 'scores', 'common'])
+        quality_common, summaries, quality = (measurement[key] for key in ['quality_common', 'summaries', 'quality'])
+        baseline, labels, legacy_labels = (measurement[key] for key in ['baseline', 'labels', 'legacy_labels'])
+        legacy, env, points, measured = (measurement[key] for key in ['legacy', 'env', 'points', 'measured'])
+        sampling = self.reader.read(self.corpus / 'sampling.json', {}) or {}
+        corpus = {key: value for key, value in sampling.items() if isinstance(value, (str, int, float, bool, type(None)))}
+        optional = self.optional_results(env.get('scorer_sha256'))
+        live = self.progress(timings, scores)
+        live['ignored_stale_records'] = measurement['ignored']
         candidate_live = self.candidate_live()
         recent_candidate = self.completed_candidate_live()
         for candidate in [recent_candidate, candidate_live]:
@@ -774,9 +821,9 @@ class Publisher:
                 'legacy_quality_labels': legacy_labels,
                 'candidate_live': candidate_live,
                 'recent_candidate': recent_candidate,
-                'timing_timeline': timing_timeline(by_timing, common, timing_env.get('input_ids', []), ENGINES),
+                'timing_timeline': measurement['timing_timeline'],
                 'baseline': baseline, 'charts': {'metric_definitions': CHART_METRICS, 'points': points},
-                'cohort_comparison': self.cohort_comparison(by_timing, by_score),
+                'cohort_comparison': measured.get('cohort_comparison', measurement['cohort_comparison']),
                 'latency_comparison': measured, 'latency_snapshot': dict(measured['scope']),
                 'feature_backlog': self.feature_backlog(),
                 'experimental_tuning': self.experimental_tuning(),

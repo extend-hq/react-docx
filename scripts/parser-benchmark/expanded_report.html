@@ -48,7 +48,7 @@
 <section id="cohort-comparison" hidden aria-labelledby="cohort-comparison-title">
 <h2 id="cohort-comparison-title">Original and additional inputs</h2>
 <p id="cohort-comparison-scope" class="subtle"></p>
-<div class="scroll"><table><thead><tr><th>Cohort / parser</th><th>Shared timing inputs</th><th>Median</th><th>p95</th><th>Scored inputs</th><th>Image occurrences</th><th>Explicit bold</th><th>Horizontal spans</th><th>Table text</th></tr></thead><tbody id="cohort-comparison-rows"></tbody></table></div>
+<div class="scroll"><table><thead><tr><th>Cohort / parser</th><th>Shared timing inputs</th><th>Median</th><th>p95</th><th>Scored inputs</th><th>Image occurrences (payload matched)</th><th>Explicit bold</th><th>Horizontal spans</th><th>Table text</th></tr></thead><tbody id="cohort-comparison-rows"></tbody></table></div>
 </section>
 <header>
 <div class="eyebrow">docx-core · Expanded corpus · Native parser comparison</div>
@@ -94,11 +94,11 @@
 </section>
 <section id="feedback-section" aria-labelledby="feedback-title">
 <p class="eyebrow">EXPERIMENTAL · DOCUMENT FEEDBACK LOOP</p>
-<h2 id="feedback-title">One document, one measured change</h2>
+<h2 id="feedback-title">Latest optimization experiment</h2>
 <p id="feedback-status"></p>
 <p id="feedback-scope" class="subtle"></p>
-<div class="scroll"><table><thead><tr><th>Document</th><th>Core before</th><th>Core trial</th><th>office_oxide</th><th>Paired speedup</th><th>CPU diagnostic</th><th>Full output parity</th><th>Loop time</th><th>Assessment</th></tr></thead><tbody id="feedback-table"></tbody></table></div>
-<p class="subtle">Each row uses the same input for every parser. Core timings use a faster compilation profile on both sides. Trial results do not replace the accepted corpus measurements; output parity preserves existing recall but does not establish missing-feature support.</p>
+<details><summary>Per-document timings and validation</summary><div class="scroll"><table><thead><tr><th>Document</th><th>Core before</th><th>Core trial</th><th>office_oxide</th><th>Paired speedup</th><th>CPU diagnostic</th><th>Full output parity</th><th>Loop time</th><th>Assessment</th></tr></thead><tbody id="feedback-table"></tbody></table></div></details>
+<p class="subtle">Each row uses the same input for every parser. Trial results do not replace the full-corpus measurements. Exact output parity preserves existing recall but does not establish support for missing features.</p>
 <a id="feedback-receipt">Live experiment receipt</a>
 <details><summary>Experiment history and decisions</summary><ul id="feedback-history"></ul></details>
 </section>
@@ -339,7 +339,7 @@ const integer=value=>finite(value)?value.toLocaleString():'Unavailable';
 const ms=value=>finite(value)?n(value)+' ms':'Unavailable';
 function row(cells,className=''){const tr=document.createElement('tr');tr.className=className;for(const value of cells){const td=document.createElement('td');td.textContent=value;tr.append(td);}return tr;}
 function renderCohorts(){
- const comparison=data.cohort_comparison,section=el('cohort-comparison');
+ const comparison=latencySnapshot?.cohort_comparison||data.cohort_comparison,section=el('cohort-comparison');
  if(!comparison?.groups?.length){section.hidden=true;return;}
  section.hidden=false;
  set('cohort-comparison-scope',`Fresh measurements from the expanded run, build ${comparison.binary_sha256.slice(0,12)}. Timing uses inputs shared by all four parsers within each cohort. Recall includes all completed scores, including parser failures; unmeasured inputs remain pending.`);
@@ -409,9 +409,10 @@ function renderImageAudit(){
 }
 function renderFeedbackLoop(){
  const loop=data.feedback_loop;if(!loop){el('feedback-section').remove();return;}
- set('feedback-status',`${loop.label} · ${loop.status} · ${loop.records.filter(r=>r.status==='passed').length} / ${loop.count} documents · ${loop.rounds} interleaved rounds${finite(loop.build_seconds)?` · build ${n(loop.build_seconds,1)} s`:''}${loop.error?` · ${loop.error}`:''}`);
- set('feedback-scope',(loop.scope||'')+' CPU ratios include startup and destruction and help diagnose scheduling noise; they are not wall-clock latency.'+(loop.decision?' '+loop.decision:''));
- for(const item of loop.records){const m=item.medians||{};el('feedback-table').append(row([`Document ${item.ordinal}`,finite(m.baseline?.total_ms)?n(m.baseline.total_ms)+' ms':'Pending',finite(m.candidate?.total_ms)?n(m.candidate.total_ms)+' ms':'Pending',finite(m.office_oxide?.total_ms)?n(m.office_oxide.total_ms)+' ms':'Pending',finite(item.speedup)?n(item.speedup,3)+'×':'Pending',finite(item.process_cpu_speedup)?n(item.process_cpu_speedup,3)+'×':'—',item.full_output_parity===true?'Exact match':item.full_output_parity===false?'Failed':'Checking',finite(item.seconds)?n(item.seconds,1)+' s':'Running',item.verdict||'Pending']));}
+ set('feedback-status',`${loop.label} · ${loop.status} · ${loop.records.filter(r=>r.status==='passed').length} / ${loop.count} documents · ${loop.rounds} interleaved ${loop.rounds===1?'round':'rounds'}${finite(loop.build_seconds)?` · build ${n(loop.build_seconds,1)} s`:''}${loop.error?` · ${loop.error}`:''}`);
+ set('feedback-scope',(loop.scope||'')+' '+(loop.counter_scope||'CPU ratios include startup and destruction and help diagnose scheduling noise; they are not wall-clock latency.')+(loop.decision?' '+loop.decision:''));
+ const missingMeasurement=['running','waiting','pending'].includes(loop.status)?'Pending':'Not measured';
+ for(const item of loop.records){const m=item.medians||{};el('feedback-table').append(row([`Document ${item.ordinal}`,finite(m.baseline?.total_ms)?n(m.baseline.total_ms)+' ms':missingMeasurement,finite(m.candidate?.total_ms)?n(m.candidate.total_ms)+' ms':missingMeasurement,finite(m.office_oxide?.total_ms)?n(m.office_oxide.total_ms)+' ms':missingMeasurement,finite(item.speedup)?n(item.speedup,3)+'×':missingMeasurement,finite(item.instructions_ratio)&&finite(item.cycles_ratio)?`${n(100*(item.instructions_ratio-1),1)}% instructions · ${n(100*(item.cycles_ratio-1),1)}% cycles`:finite(item.process_cpu_speedup)?n(item.process_cpu_speedup,3)+'×':'—',item.full_output_parity===true?'Exact match':item.full_output_parity===false?'Failed':'Checking',finite(item.seconds)?n(item.seconds,1)+' s':'Running',item.verdict||'Pending']));}
  el('feedback-receipt').href=loop.receipt_url;
  for(const item of loop.history||[]){const li=document.createElement('li'),link=document.createElement('a');link.href=item.url;link.textContent=item.label;li.append(link,document.createTextNode(` · ${item.status} · ${item.documents} documents · ${item.decision}`));el('feedback-history').append(li);}
 }
@@ -593,9 +594,11 @@ const leaders={};for(const metric of ['median_ms','p95_ms']){const available=eng
 set('scope',`${data.scope.cohort_name} · ${integer(data.scope.attempted)} planned inputs · ${integer(data.scope.quality_common)} current common quality inputs · displayed latency: ${integer(comparison.fixed_common)} common inputs`);
 set('headline',leaders.median_ms?`Current feature recall is shown alongside the latest measured latency comparison. ${leaders.median_ms} has the lowest measured median, and ${leaders.p95_ms} the lowest measured p95 on the labeled latency cohort.`:'Feature recall is available below; the first shared latency measurement is pending.');
 set('comparison-scope',`${latencyScope.repeats??latencySnapshot?.repeats??data.scope.repeats} warm samples per input in the displayed latency snapshot. Comparison charts use successful warm timings shared by every parser.`);
-set('latency-build-notice',latencyScopeText+(latencyIsCandidate?' This is the latest complete candidate timing. Accepted-build feature scores remain labeled separately while validation finishes.':latencyIsPrior?' A newer build is being evaluated. These latency values remain from the identified earlier build and are not presented as measurements of the current quality results.':latencySource==='current_partial'?' This timing cohort is still growing; partial-run rankings can change.':''));
+set('latency-build-notice',latencyScopeText+(latencyIsCandidate?(latencyScope.validation_status==='validated_not_promoted'?' This completed experiment was not promoted. Accepted-build feature scores remain labeled separately.':' This is the latest complete candidate timing. Accepted-build feature scores remain labeled separately while validation finishes.'):latencyIsPrior?' A newer build is being evaluated. These latency values remain from the identified earlier build and are not presented as measurements of the current quality results.':latencySource==='current_partial'?' This timing cohort is still growing; partial-run rankings can change.':''));
 set('ecdf-build-scope',latencyScopeText);set('scatter-build-scope',latencyScopeText);
-const core=comparison.engines['docx-core'];set('target-status',leaders.median_ms?`docx-core: ${ms(core.median_ms)} median · ${ms(core.p95_ms)} p95. ${leaders.median_ms==='docx-core'&&leaders.p95_ms==='docx-core'?'It leads both measured latency metrics in this bounded comparison.':'The target of leading both median and p95 has not been reached.'}`:'A common latency comparison is unavailable.');
+const core=comparison.engines['docx-core'],goalOxide=comparison.engines.office_oxide;
+const goalAvailable=finite(goalOxide?.median_ms)&&finite(goalOxide?.p95_ms),goalMet=goalAvailable&&finite(core?.median_ms)&&finite(core?.p95_ms)&&core.median_ms<=goalOxide.median_ms/5&&core.p95_ms<=goalOxide.p95_ms/5;
+set('target-status',leaders.median_ms?`docx-core: ${ms(core.median_ms)} median · ${ms(core.p95_ms)} p95. ${goalAvailable?`5× target: ≤ ${n(goalOxide.median_ms/5,3)} ms median and ≤ ${n(goalOxide.p95_ms/5,3)} ms p95. ${goalMet?'Measured latency meets this target on the displayed cohort.':'The target has not been reached on this cohort.'}`:'The 5× target is waiting for comparable office_oxide measurements.'}`:'A common latency comparison is unavailable.');
 const oxideAll=comparison.engines.office_oxide;if(finite(oxideAll?.all_median_ms)&&finite(oxideAll?.all_p95_ms)){set('all-corpus-latency',`Across all ${integer(oxideAll.attempted)} attempted documents in this latency snapshot, office_oxide parsed ${integer(oxideAll.success)} successfully: ${ms(oxideAll.all_median_ms)} median and ${ms(oxideAll.all_p95_ms)} p95 per document. These full-corpus figures are separate from the ${integer(comparison.fixed_common)}-input common-success charts.`);}else el('all-corpus-latency').remove();
 for(const engine of engines){const value=comparison.engines[engine];el('speed-table').append(row([engine,ms(value.median_ms),ms(value.p95_ms),ms(value.all_median_ms),ms(value.all_p95_ms),data.live?`${value.success}/${value.timed_attempted??0} completed; ${value.attempted} planned`:`${value.success}/${value.attempted}`,Object.entries(value.statuses).map(([key,count])=>`${key}: ${count}`).join(' · ')||(data.live?'Pending':'Unavailable'),Object.entries(data.summaries[engine].accuracy_statuses||{}).map(([key,count])=>`${key}: ${count}`).join(' · ')||'Unavailable'],engine==='docx-core'?'core':''));}
 const measuredBaseline=latencySnapshot?latencySnapshot.baseline:data.baseline;if(measuredBaseline){const value=measuredBaseline;set('baseline-summary',`${integer(value.documents)} inputs were successfully timed with both docx-core builds.${finite(value.attempted)?` The baseline attempted ${integer(value.attempted)} inputs.`:''}${value.statuses?` Baseline outcomes: ${Object.entries(value.statuses).map(([status,count])=>`${status}: ${count}`).join(' · ')}.`:''}`);el('baseline-table').append(row([integer(value.documents),n(value.median_paired_speedup)+'×',ms(value.baseline_median_ms),ms(value.candidate_median_ms),ms(value.baseline_p95_ms),ms(value.candidate_p95_ms)]));}else el('baseline-section').remove();
@@ -619,7 +622,7 @@ set('provenance-json',JSON.stringify({provenance:data.provenance,corpus:data.cor
 for(const [key,url]of Object.entries(data.receipt_links||{})){const link=el('receipt-'+key);if(link&&url){link.href=url;link.hidden=false;}}
 set('footer',`Generated ${data.generated_at} · Native build SHA-256 ${data.provenance.binary_sha256}`);
 initializeSupplementalEvidence();renderFeatureBacklog();renderFeedbackLoop();renderSingleTrace();renderImageAudit();renderInstructionAnalysis();renderNormalizationOptimization();renderTableOptimization();renderExperimentalTuning();initializeExperimentalMemory();
-for(const id of ['feedback-section','single-trace-section','instruction-analysis-section','normalization-optimization-section','table-optimization-section','tuning-section','memory-section']){const section=el(id);if(section)el('experiment-history-content').append(section);}
+for(const id of ['single-trace-section','instruction-analysis-section','normalization-optimization-section','table-optimization-section','tuning-section','memory-section']){const section=el(id);if(section)el('experiment-history-content').append(section);}
 for(const scroll of document.querySelectorAll('.chart-scroll')){const hint=document.createElement('p');hint.className='chart-scroll-hint';hint.textContent='Scroll horizontally to see the full chart.';scroll.after(hint);}
 addLegend('ecdf-legend');el('ecdf-scale').addEventListener('change',renderEcdf);
 for(const id of ['scatter-x','scatter-y','scatter-x-scale','scatter-y-scale'])el(id).addEventListener('change',renderScatter);
@@ -638,8 +641,36 @@ if(state){if(state.focus){const active=el(state.focus);if(active)active.focus({p
 reportApp(initialData);
 window.addEventListener('resize',()=>{if(dashboardData)renderDashboard(dashboardData);for(const tooltip of reportRoot.querySelectorAll('.chart-tooltip'))tooltip.style.display='none';});
 if(initialData.live&&/^https?:$/.test(location.protocol)){
- let previous=measurementSignature(initialData),busy=false;
- async function refresh(){if(busy)return;busy=true;try{const response=await fetch(new URL('live-data.json',location.href),{cache:'no-store'});if(!response.ok)throw new Error(`HTTP ${response.status}`);const next=await response.json();if(!next.scope||!next.summaries||!next.charts||!Array.isArray(next.engines))throw new Error('Incomplete report payload');if(next.presentation_sha256&&next.presentation_sha256!==initialData.presentation_sha256){location.reload();return;}const serialized=measurementSignature(next);if(serialized!==previous){const state=captureState();reportApp(next,state);previous=serialized;}else{renderDashboard(next);renderLive(next.live);renderCandidate(next.candidate_live);renderCompletedCandidate(next.recent_candidate);}}catch(error){const detail=document.getElementById('live-detail');if(detail)detail.textContent='The next update is temporarily unavailable. Showing the last received measurements; retrying automatically.';}finally{busy=false;}}
+ let previous=measurementSignature(initialData),publisherVersion=null,busy=false;
+ async function refresh(){
+  if(busy)return;
+  busy=true;
+  try{
+   let version=null;
+   try{
+    const statusResponse=await fetch(new URL('publisher-status.json',location.href),{cache:'no-store'});
+    if(statusResponse.ok){
+     const status=await statusResponse.json();
+     if(Number.isInteger(status.pid)&&typeof status.updated_at==='string'&&status.updated_at){
+      version=`${status.pid}:${status.updated_at}`;
+     }
+    }
+   }catch{}
+   if(version!==null&&version===publisherVersion)return;
+   const response=await fetch(new URL('live-data.json',location.href),{cache:'no-store'});
+   if(!response.ok)throw new Error(`HTTP ${response.status}`);
+   const next=await response.json();
+   if(!next.scope||!next.summaries||!next.charts||!Array.isArray(next.engines))throw new Error('Incomplete report payload');
+   if(next.presentation_sha256&&next.presentation_sha256!==initialData.presentation_sha256){location.reload();return;}
+   const serialized=measurementSignature(next);
+   if(serialized!==previous){const state=captureState();reportApp(next,state);previous=serialized;}
+   else{renderDashboard(next);renderLive(next.live);renderCandidate(next.candidate_live);renderCompletedCandidate(next.recent_candidate);}
+   publisherVersion=version;
+  }catch(error){
+   const detail=document.getElementById('live-detail');
+   if(detail)detail.textContent='The next update is temporarily unavailable. Showing the last received measurements; retrying automatically.';
+  }finally{busy=false;}
+ }
  refresh();setInterval(refresh,5000);
 }
 })();
