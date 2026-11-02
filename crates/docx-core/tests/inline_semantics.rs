@@ -117,6 +117,80 @@ fn paragraph_mark_capitalization_edits_replace_source_properties() {
 }
 
 #[test]
+fn hyperlink_anchors_decode_xml_entities_once() {
+    for (encoded, decoded) in [
+        ("plain_é", "plain_é"),
+        ("named_&amp;_&lt;_&gt;_&quot;_&apos;", "named_&_<_>_\"_'"),
+        ("numeric_&#38;_&#x1F600;", "numeric_&_😀"),
+        ("literal_&amp;amp;_&#38;lt;_&amp;#38;", "literal_&amp;_&lt;_&#38;"),
+    ] {
+        let body = format!(
+            r#"<w:p><w:bookmarkStart w:id="0" w:name="{encoded}"/><w:r><w:t>Target</w:t></w:r><w:bookmarkEnd w:id="0"/></w:p><w:p><w:hyperlink w:anchor="{encoded}"><w:r><w:t>Jump</w:t></w:r></w:hyperlink></w:p>"#
+        );
+        let source = package(&body, "");
+        let mut model = build_doc_model(&source);
+        let DocNode::Paragraph(paragraph) = &mut model.nodes[1] else {
+            panic!()
+        };
+        let ParagraphChildNode::Text(run) = &paragraph.children[0] else {
+            panic!()
+        };
+        let expected = format!("#{decoded}");
+        assert_eq!(run.link.as_deref(), Some(expected.as_str()));
+        paragraph.source_xml = None;
+        let reparsed = build_doc_model(&serialize_doc_model(&model, Some(&source)));
+        let DocNode::Paragraph(paragraph) = &reparsed.nodes[1] else {
+            panic!()
+        };
+        let ParagraphChildNode::Text(run) = &paragraph.children[0] else {
+            panic!()
+        };
+        assert_eq!(run.link.as_deref(), Some(expected.as_str()));
+    }
+}
+
+#[test]
+fn hyperlink_anchors_preserve_decoded_edge_whitespace() {
+    let source = package(
+        r#"<w:p><w:bookmarkStart w:id="0" w:name="&#32;A&#32;"/><w:r><w:t>Target</w:t></w:r><w:bookmarkEnd w:id="0"/></w:p><w:p><w:hyperlink w:anchor="&#32;A&#32;"><w:r><w:t>Jump</w:t></w:r></w:hyperlink></w:p>"#,
+        "",
+    );
+    let model = build_doc_model(&source);
+    let DocNode::Paragraph(paragraph) = &model.nodes[1] else {
+        panic!()
+    };
+    let ParagraphChildNode::Text(run) = &paragraph.children[0] else {
+        panic!()
+    };
+    assert_eq!(run.link.as_deref(), Some("# A "));
+}
+
+#[test]
+fn hyperlink_anchors_replace_only_the_external_fragment() {
+    let mut source = package(
+        r#"<w:p><w:hyperlink r:id="link"><w:r><w:t>Original</w:t></w:r></w:hyperlink><w:hyperlink r:id="link" w:anchor="new&amp;section&#38;literal&amp;amp;"><w:r><w:t>Replaced</w:t></w:r></w:hyperlink></w:p>"#,
+        "",
+    );
+    source.parts.get_mut("word/_rels/document.xml.rels").unwrap().content =
+        r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="link" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://example.org/doc?first=1&amp;literal=&amp;amp;#old" TargetMode="External"/></Relationships>"#.into();
+    let model = build_doc_model(&source);
+    let DocNode::Paragraph(paragraph) = &model.nodes[0] else {
+        panic!()
+    };
+    let links: Vec<_> = paragraph.children.iter().filter_map(|child| {
+        if let ParagraphChildNode::Text(run) = child {
+            run.link.as_deref()
+        } else {
+            None
+        }
+    }).collect();
+    assert_eq!(links, vec![
+        "https://example.org/doc?first=1&literal=&amp;#old",
+        "https://example.org/doc?first=1&literal=&amp;#new&section&literal&amp;",
+    ]);
+}
+
+#[test]
 fn hyperlink_fields_keep_nested_scopes_and_concatenate_instructions() {
     let source = package(
         r#"<w:p><w:hyperlink r:id="link" w:anchor="new"><w:r><w:t>A</w:t></w:r></w:hyperlink><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText>HYPER</w:instrText></w:r><w:r><w:instrText>LINK \l bookmark</w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>B</w:t></w:r><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText>HYPERLINK "https://example.org/inner"</w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>C</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r><w:r><w:t>D</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r><w:r><w:t>E</w:t></w:r></w:p>"#,

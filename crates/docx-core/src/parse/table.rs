@@ -1236,6 +1236,20 @@ fn normalize_conflicting_table_grid(
         }
     }
 
+    let reduces_merged_span = rows
+        .iter()
+        .flat_map(|row| &row.cells)
+        .zip(&resolved_spans)
+        .any(|(cell, &resolved_span)| {
+            let source_span = span_of(cell);
+            source_span > 1 && resolved_span < source_span as i64
+        });
+    if reduces_merged_span {
+        if let Some(widths) = resolve_repeated_unmerged_grid(&grid, rows) {
+            return (widths, None);
+        }
+    }
+
     let mut resolved_spans = resolved_spans.into_iter();
     for row in rows.iter_mut() {
         for cell in &mut row.cells {
@@ -1268,6 +1282,113 @@ fn normalize_conflicting_table_grid(
         merged.windows(2).map(|pair| pair[1] - pair[0]).collect(),
         None,
     )
+}
+
+/// Repeated complete rows can establish shared columns independently of a
+/// spanning cell's undersized preferred width. Keep their measured widths
+/// without turning that preference into a shorter logical span.
+fn resolve_repeated_unmerged_grid(grid: &[i64], rows: &[TableRowNode]) -> Option<Vec<i64>> {
+    if grid.is_empty() || grid.iter().any(|&width| width <= 0) {
+        return None;
+    }
+    let measured_width = |cell: &TableCellNode| -> Option<i64> {
+        let style = cell.style.as_ref()?;
+        if !matches!(
+            style.preferred_width.as_ref(),
+            Some(crate::model::TablePreferredWidth::Dxa { .. })
+        ) {
+            return None;
+        }
+        style.width_twips.filter(|&width| width > 0)
+    };
+    let mut anchored_widths: Option<Vec<i64>> = None;
+    let mut independent_rows = 0usize;
+    for row in rows {
+        if row.style.as_ref().is_some_and(|style| {
+            style.grid_before.unwrap_or(0) != 0 || style.grid_after.unwrap_or(0) != 0
+        }) {
+            return None;
+        }
+        if row.cells.len() != grid.len() {
+            continue;
+        }
+        let widths = row.cells.iter().map(|cell| {
+            let style = cell.style.as_ref()?;
+            if style.grid_span.unwrap_or(1) != 1
+                || style.row_span.is_some()
+                || style.v_merge_continuation.unwrap_or(false)
+            {
+                return None;
+            }
+            measured_width(cell)
+        });
+        match &anchored_widths {
+            Some(anchored) => {
+                let agrees = widths
+                    .zip(anchored)
+                    .try_fold(true, |same, (width, &expected)| {
+                        width.map(|actual| same && actual == expected)
+                    });
+                match agrees {
+                    Some(true) => {}
+                    Some(false) => return None,
+                    None => continue,
+                }
+            }
+            None => {
+                let Some(widths) = widths.collect() else {
+                    continue;
+                };
+                anchored_widths = Some(widths);
+            }
+        }
+        independent_rows += 1;
+    }
+    if independent_rows < 2 {
+        return None;
+    }
+    let anchored_widths = anchored_widths?;
+    let mut preceding_merges = Vec::new();
+    let mut next_merges = Vec::new();
+    for row in rows {
+        if row.cells.is_empty() {
+            return None;
+        }
+        next_merges.clear();
+        let mut start = 0usize;
+        for cell in &row.cells {
+            let style = cell.style.as_ref()?;
+            let span = usize::try_from(style.grid_span.unwrap_or(1)).ok()?;
+            if span == 0 {
+                return None;
+            }
+            let end = start.checked_add(span)?;
+            let columns = anchored_widths.get(start..end)?;
+            if style.v_merge_continuation.unwrap_or(false) {
+                if preceding_merges.binary_search(&(start, end)).is_err() {
+                    return None;
+                }
+                next_merges.push((start, end));
+            } else {
+                if style.row_span.is_some_and(|span| span > 0) {
+                    next_merges.push((start, end));
+                }
+                let expected = columns
+                    .iter()
+                    .try_fold(0i64, |total, &width| total.checked_add(width))?;
+                let actual = measured_width(cell)?;
+                if actual > expected || (span == 1 && actual != expected) {
+                    return None;
+                }
+            }
+            start = end;
+        }
+        if start != grid.len() {
+            return None;
+        }
+        std::mem::swap(&mut preceding_merges, &mut next_merges);
+    }
+    Some(anchored_widths)
 }
 
 /// Resolve fully anchored cell preferences on the shared logical columns.

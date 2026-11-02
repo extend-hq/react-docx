@@ -23,8 +23,7 @@ use super::DocFile;
 
 const W_NS: &str = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
 const R_NS: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
-const WP_NS: &str =
-    "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing";
+const WP_NS: &str = "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing";
 const A_NS: &str = "http://schemas.openxmlformats.org/drawingml/2006/main";
 const PIC_NS: &str = "http://schemas.openxmlformats.org/drawingml/2006/picture";
 
@@ -101,6 +100,7 @@ enum FieldState {
     #[default]
     None,
     Instruction,
+    ReplacedInstruction,
     Result,
 }
 
@@ -126,7 +126,13 @@ pub struct DocBuilder<'a> {
     endnote_refs: Vec<u32>,
     footnote_ranges: Vec<(u32, u32)>,
     endnote_ranges: Vec<(u32, u32)>,
+    comments: Vec<super::comments::Comment>,
+    field_instructions: HashMap<u32, String>,
+    phonetic_results: HashMap<u32, String>,
+    spanning_links: Vec<super::fields::LinkRange>,
+    bookmarks: std::collections::BTreeMap<u32, String>,
     text_boxes_by_anchor: HashMap<u32, Vec<TextBoxSpec>>,
+    images_by_anchor: HashMap<u32, Vec<super::images::FloatingImage>>,
     warnings: Vec<String>,
     f_facing_pages: bool,
     default_tab: u16,
@@ -158,10 +164,14 @@ impl<'a> DocBuilder<'a> {
             .map(FontTable::parse)
             .unwrap_or_else(FontTable::empty);
         let lists = ListTables::parse(
-            doc.fib.table_slice(&doc.table, fcidx::PLF_LST),
+            doc.fib
+                .fc_lcb(fcidx::PLF_LST)
+                .filter(|(_, size)| *size != 0)
+                .and_then(|(offset, _)| doc.table.get(offset as usize..)),
             doc.fib.table_slice(&doc.table, fcidx::PLF_LFO),
         );
 
+        let field_text = super::fields::field_text(doc);
         let mut builder = DocBuilder {
             doc,
             styles,
@@ -176,7 +186,13 @@ impl<'a> DocBuilder<'a> {
             endnote_refs: Vec::new(),
             footnote_ranges: Vec::new(),
             endnote_ranges: Vec::new(),
+            comments: super::comments::parse(doc),
+            field_instructions: field_text.instructions,
+            phonetic_results: field_text.phonetic_results,
+            spanning_links: super::fields::spanning_links(doc),
+            bookmarks: super::fields::bookmarks(doc),
             text_boxes_by_anchor: HashMap::new(),
+            images_by_anchor: HashMap::new(),
             warnings: Vec::new(),
             f_facing_pages: false,
             default_tab: 720,
@@ -193,13 +209,24 @@ impl<'a> DocBuilder<'a> {
         builder.load_notes();
         builder.load_dop();
         builder.load_text_boxes();
+        for image in super::images::floating_images(doc) {
+            builder
+                .images_by_anchor
+                .entry(image.anchor.anchor_cp)
+                .or_default()
+                .push(image);
+        }
         builder
     }
 
     // ----- table/property loading -----
 
     fn load_char_runs(&mut self) {
-        let Some(plc) = self.doc.fib.table_slice(&self.doc.table, fcidx::PLCF_BTE_CHPX) else {
+        let Some(plc) = self
+            .doc
+            .fib
+            .table_slice(&self.doc.table, fcidx::PLCF_BTE_CHPX)
+        else {
             return;
         };
         let bins = fkp::parse_bin_table(plc);
@@ -249,11 +276,43 @@ impl<'a> DocBuilder<'a> {
             let index = (prm >> 1) as usize;
             return self.doc.pieces.grpprls.get(index).cloned();
         }
-        None // compact single-sprm PRM form: not decoded
+        let opcode: u16 = match (prm >> 1) & 0x7F {
+            0x05 => 0x2461,
+            0x07 => 0x2405,
+            0x08 => 0x2406,
+            0x09 => 0x2407,
+            0x0C => 0x260A,
+            0x18 => 0x2416,
+            0x19 => 0x2417,
+            0x33 => 0x2431,
+            0x41 => 0x0800,
+            0x42 => 0x0801,
+            0x43 => 0x0802,
+            0x47 => 0x0806,
+            0x4B => 0x080A,
+            0x4D => 0x2A0C,
+            0x4E => 0x0858,
+            0x55..=0x5C => 0x0835 + ((prm >> 1) & 0x7F) - 0x55,
+            0x5E => 0x2A3E,
+            0x62 => 0x2A42,
+            0x68 => 0x2A48,
+            0x73 => 0x2A53,
+            0x74 => 0x0854,
+            0x75 => 0x0855,
+            0x76 => 0x0856,
+            0x78 => 0x2640,
+            _ => return None,
+        };
+        let [low, high] = opcode.to_le_bytes();
+        Some(vec![low, high, (prm >> 8) as u8])
     }
 
     fn load_papx_bins(&mut self) {
-        if let Some(plc) = self.doc.fib.table_slice(&self.doc.table, fcidx::PLCF_BTE_PAPX) {
+        if let Some(plc) = self
+            .doc
+            .fib
+            .table_slice(&self.doc.table, fcidx::PLCF_BTE_PAPX)
+        {
             self.papx_bins = fkp::parse_bin_table(plc);
         }
     }
@@ -263,15 +322,13 @@ impl<'a> DocBuilder<'a> {
             .papx_bins
             .iter()
             .find(|(start, end, _)| fc >= *start && fc < *end)
-            .map(|(_, _, page)| *page)
-            .or_else(|| self.papx_bins.last().map(|(_, _, page)| *page))?;
+            .map(|(_, _, page)| *page)?;
         let runs = self
             .papx_pages
             .entry(page)
             .or_insert_with(|| fkp::parse_papx_fkp(&self.doc.word, page));
         runs.iter()
             .find(|run| fc >= run.fc_start && fc < run.fc_end)
-            .or_else(|| runs.last())
             .cloned()
     }
 
@@ -364,22 +421,34 @@ impl<'a> DocBuilder<'a> {
         };
 
         self.footnote_refs = parse_ref_plc(
-            self.doc.fib.table_slice(&self.doc.table, fcidx::PLCFFND_REF),
+            self.doc
+                .fib
+                .table_slice(&self.doc.table, fcidx::PLCFFND_REF),
             2,
         );
         self.endnote_refs = parse_ref_plc(
-            self.doc.fib.table_slice(&self.doc.table, fcidx::PLCFEND_REF),
+            self.doc
+                .fib
+                .table_slice(&self.doc.table, fcidx::PLCFEND_REF),
             2,
         );
 
         let ftn_base = self.doc.fib.ccp.ftn_start();
-        let ftn_cps = parse_txt_plc(self.doc.fib.table_slice(&self.doc.table, fcidx::PLCFFND_TXT));
+        let ftn_cps = parse_txt_plc(
+            self.doc
+                .fib
+                .table_slice(&self.doc.table, fcidx::PLCFFND_TXT),
+        );
         for window in ftn_cps.windows(2).take(self.footnote_refs.len()) {
             self.footnote_ranges
                 .push((ftn_base + window[0], ftn_base + window[1]));
         }
         let edn_base = self.doc.fib.ccp.edn_start();
-        let edn_cps = parse_txt_plc(self.doc.fib.table_slice(&self.doc.table, fcidx::PLCFEND_TXT));
+        let edn_cps = parse_txt_plc(
+            self.doc
+                .fib
+                .table_slice(&self.doc.table, fcidx::PLCFEND_TXT),
+        );
         for window in edn_cps.windows(2).take(self.endnote_refs.len()) {
             self.endnote_ranges
                 .push((edn_base + window[0], edn_base + window[1]));
@@ -391,10 +460,7 @@ impl<'a> DocBuilder<'a> {
             if let Some(&flags) = dop.first() {
                 self.f_facing_pages = flags & 0x01 != 0;
             }
-            if let Some(tab) = dop
-                .get(8..10)
-                .map(|b| u16::from_le_bytes([b[0], b[1]]))
-            {
+            if let Some(tab) = dop.get(8..10).map(|b| u16::from_le_bytes([b[0], b[1]])) {
                 if (36..=2880).contains(&tab) {
                     self.default_tab = tab;
                 }
@@ -422,9 +488,15 @@ impl<'a> DocBuilder<'a> {
 
     /// Splits `[cp_start, cp_end)` into paragraphs at paragraph marks (0x0D),
     /// cell/row marks (0x07) and section marks (0x0C at a section boundary).
-    fn build_paragraphs(&mut self, cp_start: u32, cp_end: u32, context: &NoteContext) -> Vec<ParaOut> {
+    fn build_paragraphs(
+        &mut self,
+        cp_start: u32,
+        cp_end: u32,
+        context: &NoteContext,
+    ) -> Vec<ParaOut> {
         let text = self.doc.text(cp_start, cp_end);
         let mut paragraphs = Vec::new();
+        let mut fields = Vec::new();
         let mut para_start = cp_start;
         for (index, &unit) in text.iter().enumerate() {
             let cp = cp_start + index as u32;
@@ -432,12 +504,18 @@ impl<'a> DocBuilder<'a> {
                 || unit == 0x07
                 || (unit == 0x0C && self.section_ends.contains(&(cp + 1)));
             if is_end {
-                paragraphs.push(self.build_paragraph(para_start, cp + 1, unit, context));
+                paragraphs.push(self.build_paragraph(
+                    para_start,
+                    cp + 1,
+                    unit,
+                    context,
+                    &mut fields,
+                ));
                 para_start = cp + 1;
             }
         }
         if para_start < cp_end {
-            paragraphs.push(self.build_paragraph(para_start, cp_end, 0x0D, context));
+            paragraphs.push(self.build_paragraph(para_start, cp_end, 0x0D, context, &mut fields));
         }
         paragraphs
     }
@@ -448,6 +526,7 @@ impl<'a> DocBuilder<'a> {
         cp_end: u32,
         mark_char: u16,
         context: &NoteContext,
+        fields: &mut Vec<FieldState>,
     ) -> ParaOut {
         // Paragraph properties live at the paragraph mark's FC.
         let mark_cp = cp_end.saturating_sub(1);
@@ -477,7 +556,10 @@ impl<'a> DocBuilder<'a> {
             0
         };
 
-        let runs_xml = self.build_runs(cp_start, mark_cp, pap.istd, context);
+        let mut runs_xml = self.build_runs(cp_start, mark_cp, pap.istd, context, fields);
+        if let Some(markers) = self.bookmarks.get(&mark_cp) {
+            runs_xml.push_str(markers);
+        }
 
         // Paragraph-mark formatting (empty-paragraph strut height).
         let mark_rpr = {
@@ -493,10 +575,9 @@ impl<'a> DocBuilder<'a> {
             let base_toggles = self.styles.run_toggle_base(pap.istd, char_istd);
             let mut chp = Chp::default();
             chp.apply_chpx(&grpprl, &base_toggles);
-            chp.to_rpr_xml(
-                &|istd| self.styles.style_id(istd),
-                &|ftc| self.fonts.name(ftc),
-            )
+            chp.to_rpr_xml(&|istd| self.styles.style_id(istd), &|ftc| {
+                self.fonts.name(ftc)
+            })
         };
 
         ParaOut {
@@ -519,12 +600,12 @@ impl<'a> DocBuilder<'a> {
         cp_end: u32,
         para_istd: u16,
         context: &NoteContext,
+        fields: &mut Vec<FieldState>,
     ) -> String {
         let mut xml = String::new();
         if cp_start >= cp_end {
             return xml;
         }
-        let mut field_state = FieldState::None;
 
         // Collect runs intersecting the range; fall back to one unformatted run.
         let mut intervals: Vec<(u32, u32, Vec<u8>)> = self
@@ -560,18 +641,65 @@ impl<'a> DocBuilder<'a> {
             complete.push((covered, cp_end, Vec::new()));
         }
 
+        let mut linked = Vec::new();
         for (start, end, grpprl) in complete {
+            let mut boundaries = vec![start, end];
+            for link in &self.spanning_links {
+                boundaries.extend(
+                    [link.start, link.end]
+                        .into_iter()
+                        .filter(|cp| *cp > start && *cp < end),
+                );
+            }
+            boundaries.sort_unstable();
+            boundaries.dedup();
+            for pair in boundaries.windows(2) {
+                let instruction = self
+                    .spanning_links
+                    .iter()
+                    .find(|link| pair[0] >= link.start && pair[1] <= link.end)
+                    .map(|link| link.instruction.clone());
+                linked.push((pair[0], pair[1], grpprl.clone(), instruction));
+            }
+        }
+        for (start, end, grpprl, instruction) in linked {
+            if let Some(instruction) = &instruction {
+                xml.push_str(&format!(
+                    r#"<w:fldSimple w:instr="{}">"#,
+                    escape_xml(instruction)
+                ));
+            }
             let char_istd = super::sprm::iterate(&grpprl)
                 .find(|sprm| sprm.opcode == 0x4A30)
                 .map(|sprm| sprm.u16_operand());
             let base_toggles = self.styles.run_toggle_base(para_istd, char_istd);
             let mut chp = Chp::default();
             chp.apply_chpx(&grpprl, &base_toggles);
-            let rpr = chp.to_rpr_xml(
-                &|istd| self.styles.style_id(istd),
-                &|ftc| self.fonts.name(ftc),
-            );
-            self.emit_run_content(&mut xml, start, end, &chp, &rpr, &mut field_state, context);
+            let rpr = chp.to_rpr_xml(&|istd| self.styles.style_id(istd), &|ftc| {
+                self.fonts.name(ftc)
+            });
+            if chp.deleted {
+                let mut deleted = String::new();
+                let mut deleted_fields = fields.clone();
+                self.emit_run_content(
+                    &mut deleted,
+                    start,
+                    end,
+                    &chp,
+                    &rpr,
+                    &mut deleted_fields,
+                    context,
+                );
+                let deleted = deleted
+                    .replace("<w:t ", "<w:delText ")
+                    .replace("</w:t>", "</w:delText>");
+                xml.push_str(&format!(r#"<w:del w:id="{start}">{deleted}</w:del>"#));
+            } else {
+                self.emit_run_content(&mut xml, start, end, &chp, &rpr, fields, context);
+            }
+            if instruction.is_some() {
+                xml.push_str("</w:fldSimple>");
+            }
         }
         xml
     }
@@ -584,51 +712,114 @@ impl<'a> DocBuilder<'a> {
         cp_end: u32,
         chp: &Chp,
         rpr: &str,
-        field_state: &mut FieldState,
+        fields: &mut Vec<FieldState>,
         context: &NoteContext,
     ) {
         let text = self.doc.text(cp_start, cp_end);
         let mut buffer = String::new();
 
-        let flush =
-            |buffer: &mut String, xml: &mut String, state: FieldState, rpr: &str| {
-                if buffer.is_empty() {
-                    return;
-                }
-                let escaped = escape_xml(buffer);
-                let body = if state == FieldState::Instruction {
-                    format!(r#"<w:instrText xml:space="preserve">{escaped}</w:instrText>"#)
-                } else {
-                    format!(r#"<w:t xml:space="preserve">{escaped}</w:t>"#)
-                };
-                xml.push_str(&format!("<w:r>{rpr}{body}</w:r>"));
-                buffer.clear();
+        let flush = |buffer: &mut String, xml: &mut String, state: FieldState, rpr: &str| {
+            if buffer.is_empty() {
+                return;
+            }
+            let escaped = escape_xml(buffer);
+            let body = if state == FieldState::Instruction {
+                format!(r#"<w:instrText xml:space="preserve">{escaped}</w:instrText>"#)
+            } else {
+                format!(r#"<w:t xml:space="preserve">{escaped}</w:t>"#)
             };
+            xml.push_str(&format!("<w:r>{rpr}{body}</w:r>"));
+            buffer.clear();
+        };
         let single = |xml: &mut String, rpr: &str, inner: &str| {
             xml.push_str(&format!("<w:r>{rpr}{inner}</w:r>"));
         };
 
         for (index, &unit) in text.iter().enumerate() {
             let cp = cp_start + index as u32;
+            if let Some(markers) = self.bookmarks.get(&cp) {
+                flush(
+                    &mut buffer,
+                    xml,
+                    fields.last().copied().unwrap_or_default(),
+                    rpr,
+                );
+                xml.push_str(markers);
+            }
+            if fields.last() == Some(&FieldState::ReplacedInstruction)
+                && !matches!(unit, 0x13 | 0x14 | 0x15)
+            {
+                continue;
+            }
             match unit {
+                0x05 => {
+                    flush(
+                        &mut buffer,
+                        xml,
+                        fields.last().copied().unwrap_or_default(),
+                        rpr,
+                    );
+                    if let Some(index) = self
+                        .comments
+                        .iter()
+                        .position(|comment| comment.reference_cp == cp)
+                    {
+                        single(
+                            xml,
+                            rpr,
+                            &format!(r#"<w:commentReference w:id="{index}"/>"#),
+                        );
+                    }
+                }
                 0x09 => {
-                    flush(&mut buffer, xml, *field_state, rpr);
+                    flush(
+                        &mut buffer,
+                        xml,
+                        fields.last().copied().unwrap_or_default(),
+                        rpr,
+                    );
                     single(xml, rpr, "<w:tab/>");
                 }
                 0x0B => {
-                    flush(&mut buffer, xml, *field_state, rpr);
+                    flush(
+                        &mut buffer,
+                        xml,
+                        fields.last().copied().unwrap_or_default(),
+                        rpr,
+                    );
                     single(xml, rpr, "<w:br/>");
                 }
                 0x0C => {
-                    flush(&mut buffer, xml, *field_state, rpr);
+                    flush(
+                        &mut buffer,
+                        xml,
+                        fields.last().copied().unwrap_or_default(),
+                        rpr,
+                    );
                     single(xml, rpr, r#"<w:br w:type="page"/>"#);
                 }
                 0x0E => {
-                    flush(&mut buffer, xml, *field_state, rpr);
+                    flush(
+                        &mut buffer,
+                        xml,
+                        fields.last().copied().unwrap_or_default(),
+                        rpr,
+                    );
                     single(xml, rpr, r#"<w:br w:type="column"/>"#);
                 }
                 0x08 => {
-                    flush(&mut buffer, xml, *field_state, rpr);
+                    flush(
+                        &mut buffer,
+                        xml,
+                        fields.last().copied().unwrap_or_default(),
+                        rpr,
+                    );
+                    if let Some(images) = self.images_by_anchor.remove(&cp) {
+                        for image in images {
+                            let drawing = self.register_floating_image(image);
+                            single(xml, rpr, &drawing);
+                        }
+                    }
                     if let Some(specs) = self.text_boxes_by_anchor.remove(&cp) {
                         for spec in specs {
                             let shape = self.build_text_box_shape(&spec);
@@ -637,25 +828,69 @@ impl<'a> DocBuilder<'a> {
                     }
                 }
                 0x13 => {
-                    flush(&mut buffer, xml, *field_state, rpr);
+                    flush(
+                        &mut buffer,
+                        xml,
+                        fields.last().copied().unwrap_or_default(),
+                        rpr,
+                    );
                     single(xml, rpr, r#"<w:fldChar w:fldCharType="begin"/>"#);
-                    *field_state = FieldState::Instruction;
+                    if let Some(instruction) = self.field_instructions.get(&cp) {
+                        single(
+                            xml,
+                            rpr,
+                            &format!(
+                                r#"<w:instrText xml:space="preserve">{}</w:instrText>"#,
+                                escape_xml(instruction)
+                            ),
+                        );
+                        fields.push(FieldState::ReplacedInstruction);
+                    } else {
+                        fields.push(FieldState::Instruction);
+                    }
                 }
                 0x14 => {
-                    flush(&mut buffer, xml, *field_state, rpr);
+                    flush(
+                        &mut buffer,
+                        xml,
+                        fields.last().copied().unwrap_or_default(),
+                        rpr,
+                    );
                     single(xml, rpr, r#"<w:fldChar w:fldCharType="separate"/>"#);
-                    *field_state = FieldState::Result;
+                    if let Some(state) = fields.last_mut() {
+                        *state = FieldState::Result;
+                    }
                 }
                 0x15 => {
-                    flush(&mut buffer, xml, *field_state, rpr);
+                    flush(
+                        &mut buffer,
+                        xml,
+                        fields.last().copied().unwrap_or_default(),
+                        rpr,
+                    );
+                    if fields.last() == Some(&FieldState::Instruction) {
+                        if let Some(text) = self.phonetic_results.get(&cp) {
+                            single(xml, rpr, r#"<w:fldChar w:fldCharType="separate"/>"#);
+                            single(
+                                xml,
+                                rpr,
+                                &format!(r#"<w:t xml:space="preserve">{}</w:t>"#, escape_xml(text)),
+                            );
+                        }
+                    }
                     single(xml, rpr, r#"<w:fldChar w:fldCharType="end"/>"#);
-                    *field_state = FieldState::None;
+                    fields.pop();
                 }
                 0x1E => buffer.push('\u{2011}'),
                 0x1F => buffer.push('\u{00AD}'),
                 0x01 if chp.f_spec => {
-                    flush(&mut buffer, xml, *field_state, rpr);
-                    if !chp.f_obj && !chp.f_ole2 {
+                    flush(
+                        &mut buffer,
+                        xml,
+                        fields.last().copied().unwrap_or_default(),
+                        rpr,
+                    );
+                    if !chp.f_obj && !chp.f_ole2 && !chp.f_data {
                         if let Some(location) = chp.pic_location {
                             if let Some(image) = extract_image(&self.doc.data, location) {
                                 let drawing = self.register_image(image);
@@ -665,7 +900,12 @@ impl<'a> DocBuilder<'a> {
                     }
                 }
                 0x02 if chp.f_spec => {
-                    flush(&mut buffer, xml, *field_state, rpr);
+                    flush(
+                        &mut buffer,
+                        xml,
+                        fields.last().copied().unwrap_or_default(),
+                        rpr,
+                    );
                     match context {
                         NoteContext::Body => {
                             if let Some(position) =
@@ -691,12 +931,14 @@ impl<'a> DocBuilder<'a> {
                     }
                 }
                 0x28 if chp.f_spec => {
-                    flush(&mut buffer, xml, *field_state, rpr);
+                    flush(
+                        &mut buffer,
+                        xml,
+                        fields.last().copied().unwrap_or_default(),
+                        rpr,
+                    );
                     if let Some((ftc, xchar)) = chp.symbol {
-                        let font = self
-                            .fonts
-                            .name(ftc)
-                            .unwrap_or_else(|| "Symbol".to_string());
+                        let font = self.fonts.name(ftc).unwrap_or_else(|| "Symbol".to_string());
                         single(
                             xml,
                             rpr,
@@ -708,18 +950,28 @@ impl<'a> DocBuilder<'a> {
                     }
                 }
                 0x00..=0x1F => {} // other control chars: dropped
+                0xD800..=0xDBFF
+                    if text
+                        .get(index + 1)
+                        .is_some_and(|u| (0xDC00..=0xDFFF).contains(u)) =>
+                {
+                    buffer.push_str(&String::from_utf16_lossy(&text[index..index + 2]));
+                }
+                0xDC00..=0xDFFF if index > 0 && (0xD800..=0xDBFF).contains(&text[index - 1]) => {}
                 _ => buffer.push_str(&String::from_utf16_lossy(&[unit])),
             }
         }
-        flush(&mut buffer, xml, *field_state, rpr);
+        flush(
+            &mut buffer,
+            xml,
+            fields.last().copied().unwrap_or_default(),
+            rpr,
+        );
     }
 
     fn build_text_box_shape(&mut self, spec: &TextBoxSpec) -> String {
-        let paragraphs = self.build_paragraphs(
-            spec.text_cp_start,
-            spec.text_cp_end,
-            &NoteContext::Body,
-        );
+        let paragraphs =
+            self.build_paragraphs(spec.text_cp_start, spec.text_cp_end, &NoteContext::Body);
         let body = self.assemble_blocks(&paragraphs);
         let horizontal_relative = match spec.horizontal_relative {
             0 => "margin",
@@ -780,6 +1032,62 @@ impl<'a> DocBuilder<'a> {
         )
     }
 
+    fn register_floating_image(&mut self, image: super::images::FloatingImage) -> String {
+        let anchor = image.anchor;
+        let mut drawing = self.register_image(image.image);
+        if image.tiled {
+            drawing = drawing.replace("<a:stretch><a:fillRect/></a:stretch>", "<a:tile/>");
+        }
+        let horizontal = match anchor.horizontal_relative {
+            0 => "margin",
+            1 => "page",
+            2 => "column",
+            _ => "character",
+        };
+        let vertical = match anchor.vertical_relative {
+            0 => "margin",
+            1 => "page",
+            2 => "paragraph",
+            _ => "line",
+        };
+        let position = format!(
+            r#"<wp:anchor distT="0" distB="0" distL="0" distR="0" simplePos="0" relativeHeight="{}" behindDoc="{}" locked="0" layoutInCell="1" allowOverlap="1"><wp:simplePos x="0" y="0"/><wp:positionH relativeFrom="{horizontal}"><wp:posOffset>{}</wp:posOffset></wp:positionH><wp:positionV relativeFrom="{vertical}"><wp:posOffset>{}</wp:posOffset></wp:positionV>"#,
+            anchor.shape_id,
+            u8::from(anchor.behind_text),
+            i64::from(anchor.left) * 635,
+            i64::from(anchor.top) * 635
+        );
+        let side = match anchor.wrap_side {
+            1 => "left",
+            2 => "right",
+            3 => "largest",
+            _ => "bothSides",
+        };
+        let wrap = match anchor.wrap {
+            1 => "<wp:wrapTopAndBottom/>".to_string(),
+            3 => "<wp:wrapNone/>".to_string(),
+            _ => format!(r#"<wp:wrapSquare wrapText="{side}"/>"#),
+        };
+        drawing
+            .replace(
+                r#"<wp:inline distT="0" distB="0" distL="0" distR="0">"#,
+                &position,
+            )
+            .replace("<wp:docPr", &format!("{wrap}<wp:docPr"))
+            .replace("</wp:inline>", "</wp:anchor>")
+    }
+
+    fn finalize_story_images(&mut self, xml: Option<String>, part: &str) -> Option<String> {
+        let xml = xml?;
+        let mut rels = RelSet::default();
+        let xml = self.finalize_image_rels(xml, &mut rels);
+        if !rels.rels.is_empty() {
+            self.parts
+                .insert(format!("word/_rels/{part}.rels"), rels.to_xml());
+        }
+        Some(xml)
+    }
+
     /// Replaces image rel placeholders in `xml` with real rel ids registered
     /// in `rels` (targets are relative to word/).
     fn finalize_image_rels(&self, xml: String, rels: &mut RelSet) -> String {
@@ -791,9 +1099,7 @@ impl<'a> DocBuilder<'a> {
                 let target = self
                     .media
                     .keys()
-                    .find(|name| {
-                        name.starts_with(&format!("word/media/image{index}."))
-                    })
+                    .find(|name| name.starts_with(&format!("word/media/image{index}.")))
                     .map(|name| name.trim_start_matches("word/").to_string())
                     .unwrap_or_else(|| format!("media/image{index}.png"));
                 let rel_id = rels.add(REL_TYPE_IMAGE, &target);
@@ -830,7 +1136,9 @@ impl<'a> DocBuilder<'a> {
     }
 
     fn paragraph_xml(&self, para: &ParaOut) -> String {
-        let mut ppr_inner = para.pap.to_ppr_inner_xml(&|istd| self.styles.style_id(istd));
+        let mut ppr_inner = para
+            .pap
+            .to_ppr_inner_xml(&|istd| self.styles.style_id(istd));
         ppr_inner.push_str(&para.mark_rpr);
         if let Some(sect_index) = para.sect_index {
             ppr_inner.push_str(&self.sect_pr_xml(sect_index));
@@ -844,11 +1152,7 @@ impl<'a> DocBuilder<'a> {
 
     /// Builds one table at `level` from the head of `paragraphs`. Returns the
     /// XML, paragraph count consumed and any section indices that ended inside.
-    fn assemble_table(
-        &self,
-        paragraphs: &[ParaOut],
-        level: u32,
-    ) -> (String, usize, Vec<usize>) {
+    fn assemble_table(&self, paragraphs: &[ParaOut], level: u32) -> (String, usize, Vec<usize>) {
         struct Row<'p> {
             cells: Vec<Vec<&'p ParaOut>>,
             tap: Tap,
@@ -900,7 +1204,9 @@ impl<'a> DocBuilder<'a> {
                 }
                 current.push(para);
                 index += 1;
-                if para.effective_itap == level && para.mark_char == 0x07 && para.is_row_end_level == 0
+                if para.effective_itap == level
+                    && (para.mark_char == 0x07 || para.pap.f_inner_table_cell)
+                    && para.is_row_end_level == 0
                 {
                     cells.push(std::mem::take(&mut current));
                 }
@@ -939,7 +1245,14 @@ impl<'a> DocBuilder<'a> {
         if ind != 0 {
             xml.push_str(&format!(r#"<w:tblInd w:w="{ind}" w:type="dxa"/>"#));
         }
-        let border_tags = ["w:top", "w:left", "w:bottom", "w:right", "w:insideH", "w:insideV"];
+        let border_tags = [
+            "w:top",
+            "w:left",
+            "w:bottom",
+            "w:right",
+            "w:insideH",
+            "w:insideV",
+        ];
         if first_tap.table_borders.iter().any(Option::is_some) {
             xml.push_str("<w:tblBorders>");
             for (tag, border) in border_tags.iter().zip(first_tap.table_borders.iter()) {
@@ -992,7 +1305,10 @@ impl<'a> DocBuilder<'a> {
             while cell_index < cell_count {
                 let tc = row.tap.cells.get(cell_index);
                 // Horizontally merged continuation cells fold into the first.
-                if tc.map(|tc| tc.f_merged && !tc.f_first_merged).unwrap_or(false) {
+                if tc
+                    .map(|tc| tc.f_merged && !tc.f_first_merged)
+                    .unwrap_or(false)
+                {
                     cell_index += 1;
                     continue;
                 }
@@ -1009,10 +1325,7 @@ impl<'a> DocBuilder<'a> {
                 let mut tc_pr = String::new();
                 if let Some(tc) = tc {
                     let width = span_right - tc.boundary_left;
-                    tc_pr.push_str(&format!(
-                        r#"<w:tcW w:w="{}" w:type="dxa"/>"#,
-                        width.max(0)
-                    ));
+                    tc_pr.push_str(&format!(r#"<w:tcW w:w="{}" w:type="dxa"/>"#, width.max(0)));
                     let grid_span = boundaries
                         .iter()
                         .filter(|b| **b > tc.boundary_left && **b < span_right)
@@ -1190,8 +1503,7 @@ impl<'a> DocBuilder<'a> {
                         self.footer_count += 1;
                         format!("word/footer{}.xml", self.footer_count)
                     };
-                    let paragraphs =
-                        self.build_paragraphs(cp_start, cp_end, &NoteContext::Body);
+                    let paragraphs = self.build_paragraphs(cp_start, cp_end, &NoteContext::Body);
                     let body = self.assemble_blocks(&paragraphs);
                     let root_tag = if is_header { "w:hdr" } else { "w:ftr" };
                     let mut part_rels = RelSet::default();
@@ -1201,10 +1513,8 @@ impl<'a> DocBuilder<'a> {
                     );
                     self.parts.insert(part_name.clone(), part_xml);
                     if !part_rels.rels.is_empty() {
-                        let rel_part = format!(
-                            "word/_rels/{}.rels",
-                            part_name.trim_start_matches("word/")
-                        );
+                        let rel_part =
+                            format!("word/_rels/{}.rels", part_name.trim_start_matches("word/"));
                         self.parts.insert(rel_part, part_rels.to_xml());
                     }
                     Some((part_name, ref_type.to_string(), is_header))
@@ -1214,16 +1524,16 @@ impl<'a> DocBuilder<'a> {
 
                 if let Some((part_name, ref_type, is_header)) = &entry {
                     let target = part_name.trim_start_matches("word/");
-                    let rel_id = format!(
-                        "rIdHdrFtr{}_{}",
-                        sect_index,
-                        kind_index
-                    );
+                    let rel_id = format!("rIdHdrFtr{}_{}", sect_index, kind_index);
                     rels_to_add.push((
                         rel_id.clone(),
                         format!(
                             r#"<Relationship Id="{rel_id}" Type="{}" Target="{target}"/>"#,
-                            if *is_header { REL_TYPE_HEADER } else { REL_TYPE_FOOTER }
+                            if *is_header {
+                                REL_TYPE_HEADER
+                            } else {
+                                REL_TYPE_FOOTER
+                            }
                         ),
                     ));
                     let tag = if *is_header {
@@ -1231,9 +1541,7 @@ impl<'a> DocBuilder<'a> {
                     } else {
                         "w:footerReference"
                     };
-                    refs_xml.push_str(&format!(
-                        r#"<{tag} w:type="{ref_type}" r:id="{rel_id}"/>"#
-                    ));
+                    refs_xml.push_str(&format!(r#"<{tag} w:type="{ref_type}" r:id="{rel_id}"/>"#));
                 }
                 previous_refs[kind_index] = entry;
             }
@@ -1244,6 +1552,28 @@ impl<'a> DocBuilder<'a> {
     }
 
     // ----- notes -----
+
+    fn build_comments_part(&mut self) -> Option<String> {
+        if self.comments.is_empty() {
+            return None;
+        }
+        let mut xml =
+            format!(r#"<w:comments xmlns:w="{W_NS}" xmlns:r="{R_NS}" xmlns:wp="{WP_NS}">"#);
+        for index in 0..self.comments.len() {
+            let comment = &self.comments[index];
+            let attrs = format!(
+                r#"w:id="{index}" w:author="{}" w:initials="{}""#,
+                escape_xml(&comment.author),
+                escape_xml(&comment.initials)
+            );
+            let (start, end) = (comment.text_start, comment.text_end);
+            let paragraphs = self.build_paragraphs(start, end, &NoteContext::Body);
+            let body = self.assemble_blocks(&paragraphs);
+            xml.push_str(&format!("<w:comment {attrs}>{body}</w:comment>"));
+        }
+        xml.push_str("</w:comments>");
+        Some(xml)
+    }
 
     fn build_notes_part(
         &mut self,
@@ -1325,10 +1655,20 @@ impl<'a> DocBuilder<'a> {
             "w:endnoteRef",
             NoteContext::Endnote,
         );
+        let comments_xml = self.build_comments_part();
+        let footnotes_xml = self.finalize_story_images(footnotes_xml, "footnotes.xml");
+        let endnotes_xml = self.finalize_story_images(endnotes_xml, "endnotes.xml");
+        let comments_xml = self.finalize_story_images(comments_xml, "comments.xml");
 
         // Fixed rels.
         document_rels.add(REL_TYPE_STYLES, "styles.xml");
         document_rels.add(REL_TYPE_SETTINGS, "settings.xml");
+        if comments_xml.is_some() {
+            document_rels.add(
+                "http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments",
+                "comments.xml",
+            );
+        }
         let numbering_xml = self.lists.to_numbering_xml(&self.fonts);
         if numbering_xml.is_some() {
             document_rels.add(REL_TYPE_NUMBERING, "numbering.xml");
@@ -1346,8 +1686,8 @@ impl<'a> DocBuilder<'a> {
             for (_, rel_xml) in &header_rels {
                 spliced.push_str(rel_xml);
             }
-            document_rels_xml =
-                document_rels_xml.replace("</Relationships>", &format!("{spliced}</Relationships>"));
+            document_rels_xml = document_rels_xml
+                .replace("</Relationships>", &format!("{spliced}</Relationships>"));
         }
 
         let settings_xml = format!(
@@ -1372,6 +1712,8 @@ impl<'a> DocBuilder<'a> {
                 "jpeg" => "image/jpeg",
                 "bmp" => "image/bmp",
                 "tiff" => "image/tiff",
+                "emf" => "image/x-emf",
+                "wmf" => "image/x-wmf",
                 _ => continue,
             };
             content_types.push_str(&format!(
@@ -1411,6 +1753,12 @@ impl<'a> DocBuilder<'a> {
             add_override(
                 "word/endnotes.xml",
                 "application/vnd.openxmlformats-officedocument.wordprocessingml.endnotes+xml",
+            );
+        }
+        if comments_xml.is_some() {
+            add_override(
+                "word/comments.xml",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml",
             );
         }
         for index in 1..=self.header_count {
@@ -1455,17 +1803,14 @@ impl<'a> DocBuilder<'a> {
         if let Some(endnotes) = endnotes_xml {
             insert("word/endnotes.xml", endnotes);
         }
+        if let Some(comments) = comments_xml {
+            insert("word/comments.xml", comments);
+        }
         for (name, content) in self.parts.drain() {
             if name.starts_with("__sect_refs_") {
                 continue;
             }
-            parts.insert(
-                name.clone(),
-                OoxmlPart {
-                    name,
-                    content,
-                },
-            );
+            parts.insert(name.clone(), OoxmlPart { name, content });
         }
 
         let mut unanchored: Vec<(u32, u32)> = self

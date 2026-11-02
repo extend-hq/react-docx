@@ -1,6 +1,6 @@
-import type { DocModel } from "@extend-ai/react-docx-doc-model";
+import type { DocModel, ImageRunNode } from "@extend-ai/react-docx-doc-model";
 import type { OoxmlPackage } from "@extend-ai/react-docx-ooxml-core";
-import { mapsToWasmPackage, wasmModelToDocumentXml, wasmSerializeDocx } from "@extend-ai/react-docx-wasm";
+import { wasmCanPreserveImagePaintSource, mapsToWasmPackage, wasmModelToDocumentXml, wasmSerializeDocx } from "@extend-ai/react-docx-wasm";
 import { prepareModelForSerialization } from "./prepare-model";
 
 export async function modelToDocumentXml(
@@ -30,4 +30,14 @@ export async function serializeDocx(
   basePackage?: OoxmlPackage
 ): Promise<ArrayBuffer> {
   return wasmSerializeDocx(prepareModelForSerialization(model), basePackage ? mapsToWasmPackage(basePackage) : undefined);
+}
+
+export async function canPreserveImagePaintSource(
+  image: ImageRunNode,
+  basePackage?: OoxmlPackage,
+  ownerPartName?: string
+): Promise<boolean> {
+  return wasmCanPreserveImagePaintSource(
+    image, basePackage ? mapsToWasmPackage(basePackage) : undefined, ownerPartName
+  );
 }

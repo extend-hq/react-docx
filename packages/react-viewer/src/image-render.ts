@@ -30,6 +30,7 @@ const EMF_DATA_URI_PREFIXES = ["data:image/emf", "data:image/x-emf"];
 const WMF_DATA_URI_PREFIXES = ["data:image/wmf", "data:image/x-wmf"];
 const UTIF = UTIFModule as unknown as UtifModule;
 const convertedTiffSrcCache = new Map<string, string | undefined>();
+const formFieldPreviewSrcCache = new WeakMap<ImageRenderSource, string>();
 
 function normalizeImageContentType(image: ImageRenderSource): string | undefined {
   return image.contentType?.trim().toLowerCase();
@@ -250,6 +251,26 @@ export function resolveRenderableImageSource(image: ImageRenderSource): string |
 
   convertedTiffSrcCache.set(src, converted);
   return converted;
+}
+
+export function resolveFormFieldPreviewImageSource(image: ImageRenderSource): string | undefined {
+  const source = normalizeImageSrc(image);
+  if (source) {
+    const sourceType = /^data:(image\/[^;,]+)/i.exec(source)?.[1];
+    return resolveRenderableImageSource(sourceType ? { ...image, contentType: sourceType } : image);
+  }
+  if (!image.data?.length || !/^image\/[a-z0-9.+-]+$/i.test(image.contentType ?? "")) {
+    return undefined;
+  }
+  let src = formFieldPreviewSrcCache.get(image);
+  if (!src) {
+    const bytes = image.data instanceof Uint8Array ? image.data : new Uint8Array(image.data);
+    const base64 = bytesToBase64(bytes);
+    if (!base64) return undefined;
+    src = `data:${image.contentType};base64,${base64}`;
+    formFieldPreviewSrcCache.set(image, src);
+  }
+  return resolveRenderableImageSource({ ...image, src });
 }
 
 export function subscribeRenderableImageSourceUpdates(listener: () => void): () => void {

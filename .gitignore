@@ -62,3 +62,4 @@ packages/wasm/src/generated/docx_wasm_bg.wasm
 *.trace/
 *.trace
 tests/local/
+apps/playground/public/build-info.json

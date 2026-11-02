@@ -2,6 +2,7 @@ import type { InitInput, InitOutput } from "./generated/docx_wasm.js";
 import wasmInit, {
   build_doc_model_from_bytes,
   build_doc_model_from_package,
+  can_preserve_image_paint_source_wasm,
   extract_document_blocks_wasm,
   extract_document_blocks_with_options_wasm,
   inspect_document_source_wasm,
@@ -210,6 +211,17 @@ export async function wasmBuildDocModelFromBytes(bytes: ArrayBuffer | Uint8Array
     model: unknown;
     timings: { parseMs: number; buildModelMs: number };
   };
+}
+
+export async function wasmCanPreserveImagePaintSource(
+  image: unknown,
+  basePackage?: WasmOoxmlPackage,
+  ownerPartName?: string
+): Promise<boolean> {
+  await initWasm();
+  return can_preserve_image_paint_source_wasm(
+    docModelToWasmJson(image), basePackage ?? undefined, ownerPartName
+  );
 }
 
 export async function wasmSerializeDocx(

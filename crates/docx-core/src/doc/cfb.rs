@@ -2,7 +2,7 @@
 //! Legacy .doc files store their streams (`WordDocument`, `0Table`/`1Table`, `Data`)
 //! inside this container format.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 pub const CFB_SIGNATURE: [u8; 8] = [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
 
@@ -14,7 +14,7 @@ const OBJECT_TYPE_ROOT: u8 = 5;
 const MAX_CHAIN_SECTORS: usize = 1 << 22;
 
 pub struct CompoundFile {
-    streams: HashMap<String, Vec<u8>>,
+    streams: HashMap<String, Result<Vec<u8>, String>>,
 }
 
 struct DirEntry {
@@ -93,12 +93,13 @@ impl CompoundFile {
             .find(|entry| entry.object_type == OBJECT_TYPE_ROOT)
             .ok_or_else(|| "CFB: missing root directory entry".to_string())?;
 
-        let mini_stream = read_chain(bytes, sector_size, &fat, root.start_sector)?;
-        let mini_fat = read_sector_table(bytes, sector_size, &fat, mini_fat_start)?;
+        let mini_stream =
+            read_sized_chain(bytes, sector_size, &fat, root.start_sector, Some(root.size));
+        let mini_fat = read_sector_table(bytes, sector_size, &fat, mini_fat_start);
 
         let mut streams = HashMap::new();
         let mut visited = vec![false; entries.len()];
-        let mut stack = vec![entries[0].child];
+        let mut stack = vec![root.child];
         while let Some(index) = stack.pop() {
             let index = index as usize;
             if index >= entries.len() || visited[index] {
@@ -108,37 +109,59 @@ impl CompoundFile {
             let entry = &entries[index];
             stack.push(entry.left);
             stack.push(entry.right);
-            stack.push(entry.child);
 
             if entry.object_type != OBJECT_TYPE_STREAM {
                 continue;
             }
 
             let data = if entry.size < mini_cutoff {
-                read_mini_chain(&mini_stream, &mini_fat, entry.start_sector, entry.size)?
-            } else {
-                let mut data = read_chain(bytes, sector_size, &fat, entry.start_sector)?;
-                if (entry.size as usize) <= data.len() {
-                    data.truncate(entry.size as usize);
+                match (&mini_stream, &mini_fat) {
+                    (Ok(stream), Ok(fat)) => {
+                        read_mini_chain(stream, fat, entry.start_sector, entry.size)
+                    }
+                    (Err(error), _) | (_, Err(error)) => Err(error.clone()),
                 }
-                data
+            } else {
+                read_sized_chain(
+                    bytes,
+                    sector_size,
+                    &fat,
+                    entry.start_sector,
+                    Some(entry.size),
+                )
             };
-            streams.entry(entry.name.clone()).or_insert(data);
+            streams
+                .entry(entry.name.to_ascii_lowercase())
+                .or_insert(data);
         }
 
         Ok(CompoundFile { streams })
     }
 
     pub fn stream(&self, name: &str) -> Option<&[u8]> {
-        self.streams.get(name).map(|data| data.as_slice())
+        self.try_stream(name).ok().flatten()
+    }
+
+    pub fn try_stream(&self, name: &str) -> Result<Option<&[u8]>, String> {
+        self.streams
+            .get(&name.to_ascii_lowercase())
+            .map(|data| data.as_ref().map(Vec::as_slice).map_err(Clone::clone))
+            .transpose()
     }
 }
 
 fn build_fat(bytes: &[u8], sector_size: usize, difat_start: u32) -> Result<Vec<u32>, String> {
     let entries_per_sector = sector_size / 4;
+    let fat_count = read_u32(bytes, 44)? as usize;
+    if fat_count > bytes.len() / sector_size {
+        return Err("CFB: FAT size exceeds container".to_string());
+    }
     let mut fat_sectors = Vec::new();
 
     for index in 0..109 {
+        if fat_sectors.len() == fat_count {
+            break;
+        }
         let sector = read_u32(bytes, 76 + index * 4)?;
         if sector != SECT_FREE && sector != SECT_END_OF_CHAIN {
             fat_sectors.push(sector);
@@ -147,19 +170,28 @@ fn build_fat(bytes: &[u8], sector_size: usize, difat_start: u32) -> Result<Vec<u
 
     let mut difat_sector = difat_start;
     let mut difat_guard = 0usize;
-    while difat_sector != SECT_END_OF_CHAIN && difat_sector != SECT_FREE {
+    while fat_sectors.len() < fat_count
+        && difat_sector != SECT_END_OF_CHAIN
+        && difat_sector != SECT_FREE
+    {
         difat_guard += 1;
         if difat_guard > MAX_CHAIN_SECTORS {
             return Err("CFB: DIFAT chain too long".to_string());
         }
         let offset = sector_offset(difat_sector, sector_size);
         for index in 0..entries_per_sector - 1 {
+            if fat_sectors.len() == fat_count {
+                break;
+            }
             let sector = read_u32(bytes, offset + index * 4)?;
             if sector != SECT_FREE && sector != SECT_END_OF_CHAIN {
                 fat_sectors.push(sector);
             }
         }
         difat_sector = read_u32(bytes, offset + (entries_per_sector - 1) * 4)?;
+    }
+    if fat_sectors.len() != fat_count {
+        return Err("CFB: incomplete FAT sector list".to_string());
     }
 
     let mut fat = Vec::with_capacity(fat_sectors.len() * entries_per_sector);
@@ -182,16 +214,33 @@ fn read_chain(
     fat: &[u32],
     start_sector: u32,
 ) -> Result<Vec<u8>, String> {
+    read_sized_chain(bytes, sector_size, fat, start_sector, None)
+}
+
+fn read_sized_chain(
+    bytes: &[u8],
+    sector_size: usize,
+    fat: &[u32],
+    start_sector: u32,
+    size: Option<u64>,
+) -> Result<Vec<u8>, String> {
+    let limit = size.map(|size| usize::try_from(size).unwrap_or(usize::MAX));
+    if limit.is_some_and(|size| size > bytes.len()) {
+        return Err("CFB: stream size exceeds container".to_string());
+    }
     let mut data = Vec::new();
     let mut sector = start_sector;
-    let mut guard = 0usize;
+    let mut visited = HashSet::new();
     while sector != SECT_END_OF_CHAIN && sector != SECT_FREE {
-        guard += 1;
-        if guard > MAX_CHAIN_SECTORS {
+        if limit == Some(data.len()) {
+            break;
+        }
+        if !visited.insert(sector) || visited.len() > MAX_CHAIN_SECTORS {
             return Err("CFB: sector chain too long (cycle?)".to_string());
         }
         let offset = sector_offset(sector, sector_size);
-        let end = offset + sector_size;
+        let remaining = limit.map(|size| size - data.len()).unwrap_or(sector_size);
+        let end = offset + sector_size.min(remaining);
         if end > bytes.len() {
             return Err("CFB: sector chain points past end of file".to_string());
         }
@@ -199,6 +248,9 @@ fn read_chain(
         sector = *fat
             .get(sector as usize)
             .ok_or_else(|| "CFB: sector index outside FAT".to_string())?;
+    }
+    if limit.is_some_and(|size| size != data.len()) {
+        return Err("CFB: stream chain shorter than declared size".to_string());
     }
     Ok(data)
 }
@@ -226,16 +278,22 @@ fn read_mini_chain(
     size: u64,
 ) -> Result<Vec<u8>, String> {
     const MINI_SECTOR_SIZE: usize = 64;
-    let mut data = Vec::with_capacity(size as usize);
+    let size = usize::try_from(size).map_err(|_| "CFB: mini stream size overflow".to_string())?;
+    if size > mini_stream.len() {
+        return Err("CFB: mini stream size exceeds root stream".to_string());
+    }
+    let mut data = Vec::with_capacity(size);
     let mut sector = start_sector;
-    let mut guard = 0usize;
+    let mut visited = HashSet::new();
     while sector != SECT_END_OF_CHAIN && sector != SECT_FREE {
-        guard += 1;
-        if guard > MAX_CHAIN_SECTORS {
+        if data.len() == size {
+            break;
+        }
+        if !visited.insert(sector) || visited.len() > MAX_CHAIN_SECTORS {
             return Err("CFB: mini sector chain too long (cycle?)".to_string());
         }
         let offset = sector as usize * MINI_SECTOR_SIZE;
-        let end = offset + MINI_SECTOR_SIZE;
+        let end = offset + MINI_SECTOR_SIZE.min(size - data.len());
         if end > mini_stream.len() {
             return Err("CFB: mini sector outside mini stream".to_string());
         }
@@ -244,7 +302,9 @@ fn read_mini_chain(
             .get(sector as usize)
             .ok_or_else(|| "CFB: mini sector index outside mini FAT".to_string())?;
     }
-    data.truncate(size as usize);
+    if data.len() != size {
+        return Err("CFB: mini chain shorter than declared size".to_string());
+    }
     Ok(data)
 }
 
@@ -286,11 +346,7 @@ pub(crate) mod tests {
         let mut sectors: Vec<[u8; SECTOR]> = Vec::new();
         let mut fat: Vec<u32> = Vec::new();
 
-        fn append_data(
-            sectors: &mut Vec<[u8; SECTOR]>,
-            fat: &mut Vec<u32>,
-            data: &[u8],
-        ) -> u32 {
+        fn append_data(sectors: &mut Vec<[u8; SECTOR]>, fat: &mut Vec<u32>, data: &[u8]) -> u32 {
             let start = sectors.len() as u32;
             let count = data.len().div_ceil(SECTOR).max(1);
             for index in 0..count {
@@ -334,7 +390,10 @@ pub(crate) mod tests {
         }
 
         let mini_stream_start = append_data(&mut sectors, &mut fat, &mini_stream);
-        let mini_fat_bytes: Vec<u8> = mini_fat.iter().flat_map(|value| value.to_le_bytes()).collect();
+        let mini_fat_bytes: Vec<u8> = mini_fat
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect();
         let mini_fat_start = append_data(&mut sectors, &mut fat, &mini_fat_bytes);
 
         for (index, (_, data)) in streams.iter().enumerate() {
@@ -416,7 +475,10 @@ pub(crate) mod tests {
         while fat_full.len() * 4 % SECTOR != 0 {
             fat_full.push(SECT_FREE);
         }
-        let fat_bytes: Vec<u8> = fat_full.iter().flat_map(|value| value.to_le_bytes()).collect();
+        let fat_bytes: Vec<u8> = fat_full
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect();
         for chunk in fat_bytes.chunks(SECTOR) {
             let mut sector = [0u8; SECTOR];
             sector[..chunk.len()].copy_from_slice(chunk);
@@ -462,13 +524,20 @@ pub(crate) mod tests {
     fn reads_mini_stream_entries() {
         let file = build_cfb(&[("WordDocument", b"hello mini stream".as_slice())]);
         let cfb = CompoundFile::parse(&file).expect("parse cfb");
-        assert_eq!(cfb.stream("WordDocument").expect("stream"), b"hello mini stream");
+        assert_eq!(
+            cfb.stream("WordDocument").expect("stream"),
+            b"hello mini stream"
+        );
+        assert_eq!(cfb.stream("WORDDOCUMENT"), cfb.stream("worddocument"));
     }
 
     #[test]
     fn reads_regular_fat_entries() {
         let big: Vec<u8> = (0..10_000u32).map(|value| (value % 251) as u8).collect();
-        let file = build_cfb(&[("WordDocument", big.as_slice()), ("1Table", b"table data".as_slice())]);
+        let file = build_cfb(&[
+            ("WordDocument", big.as_slice()),
+            ("1Table", b"table data".as_slice()),
+        ]);
         let cfb = CompoundFile::parse(&file).expect("parse cfb");
         assert_eq!(cfb.stream("WordDocument").expect("stream"), big.as_slice());
         assert_eq!(cfb.stream("1Table").expect("table"), b"table data");

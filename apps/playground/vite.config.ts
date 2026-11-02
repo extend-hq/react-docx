@@ -1,10 +1,12 @@
 import path from "path";
+import { existsSync, readFileSync } from "node:fs";
 import tailwindcss from "@tailwindcss/vite";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tsconfigPaths from "vite-tsconfig-paths";
 
 const workspaceRoot = path.resolve(__dirname, "../..");
+const buildInfoPath = path.resolve(__dirname, "public/build-info.json");
 const workspaceSourceAliases = {
   "@extend-ai/react-docx": path.resolve(workspaceRoot, "packages/react-viewer/src/index.tsx"),
   "@extend-ai/react-docx-doc-model": path.resolve(workspaceRoot, "packages/doc-model/src/index.ts"),
@@ -17,6 +19,9 @@ const workspaceSourceAliases = {
 };
 
 export default defineConfig({
+  define: {
+    __DOCX_BUILD__: existsSync(buildInfoPath) ? readFileSync(buildInfoPath, "utf8") : "null",
+  },
   build: {
     rollupOptions: {
       input: {

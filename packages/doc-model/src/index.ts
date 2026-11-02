@@ -10,6 +10,7 @@ import { normalizeDocModel } from "./normalize";
 import type { DocModel } from "./types";
 
 export * from "./types";
+export { resolveImagePaintBounds, type ImagePaintRect } from "./image-paint";
 export * from "./blocks";
 export { resolveTableGridSkipCount, tableGridColumnBound, tableRowGridSkipCount } from "./table-grid";
 export {
@@ -25,7 +26,8 @@ export {
   collectDuplicateDocModelBlockIds,
   ensureDocModelBlockIds
 } from "./block-id";
-export { cloneDocModel, cloneParagraphMarkFormatting, cloneParagraphNode, cloneTableNode } from "./clone";
+export { cloneDocModel, cloneFormFieldSourcePreview, cloneParagraphMarkFormatting, cloneParagraphNode, cloneTableNode } from "./clone";
+export { invalidateFormFieldSource, resolveFormFieldSourcePreview } from "./form-field";
 export { deepFreezeDocModel } from "./freeze";
 export { normalizeDocModel } from "./normalize";
 

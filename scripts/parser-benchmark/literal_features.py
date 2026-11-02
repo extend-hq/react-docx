@@ -56,7 +56,7 @@ def literal_anchors(reference, actual, with_value=False):
             'unit': 'one-to-one literal-content subsequence anchor' + (' and exact span value' if with_value else '')}
 
 
-def score_literal_features(path, reference, actual):
+def score_literal_features(path, reference, actual, native_model=None):
     source = source_body(path)
     paragraphs = []
     found = 0
@@ -85,4 +85,14 @@ def score_literal_features(path, reference, actual):
         if original in reference.get('features', {}):
             result[key] = literal_anchors(reference['features'][original],
                                            actual.get('features', {}).get(original, []), span)
+    if native_model is not None:
+        from semantic_audit import audit, model_body
+        model = model_body(native_model)
+        checked = audit(source, model)
+        for name, key in [('hyperlink_target_characters', 'hyperlink_target_characters_at_literal_offsets'),
+                          ('explicit_italic_characters', 'explicit_italic_characters_at_literal_offsets')]:
+            value = checked[key]
+            flag = 'link' if name.startswith('hyperlink') else 'italic'
+            result[name] = {**value, 'found': sum(bool(v) for p in model['paragraphs'] for v in p['flags'][flag]),
+                            'unit': 'explicit source markup at ordered literal character offsets; inherited styles and field links are outside reference scope'}
     return result

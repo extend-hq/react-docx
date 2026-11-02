@@ -53,18 +53,18 @@ pub(super) struct ParsedTextBoxes {
 }
 
 #[derive(Clone, Copy, Debug)]
-struct Spa {
-    shape_id: u32,
-    anchor_cp: u32,
-    left: i32,
-    top: i32,
-    right: i32,
-    bottom: i32,
-    horizontal_relative: u8,
-    vertical_relative: u8,
-    wrap: u8,
-    wrap_side: u8,
-    behind_text: bool,
+pub(super) struct Spa {
+    pub shape_id: u32,
+    pub anchor_cp: u32,
+    pub left: i32,
+    pub top: i32,
+    pub right: i32,
+    pub bottom: i32,
+    pub horizontal_relative: u8,
+    pub vertical_relative: u8,
+    pub wrap: u8,
+    pub wrap_side: u8,
+    pub behind_text: bool,
 }
 
 fn read_u16(bytes: &[u8], offset: usize) -> Option<u16> {
@@ -87,7 +87,11 @@ fn plc_count(bytes: &[u8], data_size: usize) -> Option<usize> {
     (payload % record_width == 0).then_some(payload / record_width)
 }
 
-fn parse_spas(bytes: &[u8], anchor_base: u32, anchor_len: u32) -> Result<Vec<Spa>, String> {
+pub(super) fn parse_spas(
+    bytes: &[u8],
+    anchor_base: u32,
+    anchor_len: u32,
+) -> Result<Vec<Spa>, String> {
     let count = plc_count(bytes, SPA_SIZE)
         .ok_or_else(|| format!("invalid PlcfSpa length {}", bytes.len()))?;
     let records_offset = (count + 1)
@@ -97,8 +101,8 @@ fn parse_spas(bytes: &[u8], anchor_base: u32, anchor_len: u32) -> Result<Vec<Spa
     let mut previous_cp = 0u32;
 
     for index in 0..count {
-        let relative_cp = read_u32(bytes, index * 4)
-            .ok_or_else(|| "truncated PlcfSpa CP array".to_string())?;
+        let relative_cp =
+            read_u32(bytes, index * 4).ok_or_else(|| "truncated PlcfSpa CP array".to_string())?;
         if index > 0 && relative_cp < previous_cp {
             return Err("descending PlcfSpa CP entries".to_string());
         }
@@ -109,8 +113,8 @@ fn parse_spas(bytes: &[u8], anchor_base: u32, anchor_len: u32) -> Result<Vec<Spa
         let offset = records_offset
             .checked_add(index * SPA_SIZE)
             .ok_or_else(|| "PlcfSpa record offset overflow".to_string())?;
-        let flags = read_u16(bytes, offset + 20)
-            .ok_or_else(|| "truncated SPA record".to_string())?;
+        let flags =
+            read_u16(bytes, offset + 20).ok_or_else(|| "truncated SPA record".to_string())?;
         spas.push(Spa {
             shape_id: read_u32(bytes, offset)
                 .ok_or_else(|| "truncated SPA shape identifier".to_string())?,
@@ -133,9 +137,7 @@ fn parse_spas(bytes: &[u8], anchor_base: u32, anchor_len: u32) -> Result<Vec<Spa
     Ok(spas)
 }
 
-/// True when a range has text Word would display. Field instructions are not
-/// visible; only field results and ordinary text count. This avoids turning
-/// OLE/chart field stories into empty synthetic text boxes.
+/// Retains visible text and picture placeholders while excluding field instructions.
 fn contains_visible_text(doc: &DocFile, cp_start: u32, cp_end: u32) -> bool {
     #[derive(Clone, Copy, PartialEq, Eq)]
     enum FieldPhase {
@@ -151,6 +153,7 @@ fn contains_visible_text(doc: &DocFile, cp_start: u32, cp_end: u32) -> bool {
             0x14 if phase == FieldPhase::Instruction => phase = FieldPhase::Result,
             0x15 => phase = FieldPhase::Outside,
             _ if phase == FieldPhase::Instruction => {}
+            0x01 => return true,
             0x20 | 0x09 | 0x0A | 0x0D | 0x00..=0x08 | 0x0B..=0x1F => {}
             _ => return true,
         }
@@ -209,11 +212,9 @@ pub(super) fn parse_text_boxes(doc: &DocFile, story: TextBoxStory) -> ParsedText
         }
     };
     let mut spas_by_id: HashMap<u32, VecDeque<Spa>> = HashMap::new();
+    let grouped_anchors = super::images::shape_anchors(doc, story == TextBoxStory::Header);
     for spa in spas {
-        spas_by_id
-            .entry(spa.shape_id)
-            .or_default()
-            .push_back(spa);
+        spas_by_id.entry(spa.shape_id).or_default().push_back(spa);
     }
 
     let Some(record_count) = plc_count(txbx_plc, FTXBXS_SIZE) else {
@@ -278,6 +279,7 @@ pub(super) fn parse_text_boxes(doc: &DocFile, story: TextBoxStory) -> ParsedText
         let Some(spa) = spas_by_id
             .get_mut(&shape_id)
             .and_then(|matches| matches.pop_front())
+            .or_else(|| grouped_anchors.get(&shape_id).copied())
         else {
             parsed.warnings.push(format!(
                 "Legacy DOC {} textbox shape {shape_id} has visible text but no matching anchor",
@@ -337,7 +339,9 @@ pub(super) fn parse_text_boxes(doc: &DocFile, story: TextBoxStory) -> ParsedText
         });
     }
 
-    parsed.specs.sort_by_key(|spec| (spec.anchor_cp, spec.shape_id));
+    parsed
+        .specs
+        .sort_by_key(|spec| (spec.anchor_cp, spec.shape_id));
     parsed
 }
 
@@ -347,7 +351,10 @@ mod tests {
 
     #[test]
     fn validates_generic_plc_lengths() {
-        assert_eq!(plc_count(&vec![0; (2 + 1) * 4 + 2 * SPA_SIZE], SPA_SIZE), Some(2));
+        assert_eq!(
+            plc_count(&vec![0; (2 + 1) * 4 + 2 * SPA_SIZE], SPA_SIZE),
+            Some(2)
+        );
         assert_eq!(plc_count(&vec![0; 5], SPA_SIZE), None);
     }
 
@@ -369,7 +376,10 @@ mod tests {
         let spa = spas[0];
         assert_eq!(spa.shape_id, 2051);
         assert_eq!(spa.anchor_cp, 13);
-        assert_eq!((spa.left, spa.top, spa.right, spa.bottom), (-1203, -900, 9957, 13860));
+        assert_eq!(
+            (spa.left, spa.top, spa.right, spa.bottom),
+            (-1203, -900, 9957, 13860)
+        );
         assert_eq!(spa.horizontal_relative, 2);
         assert_eq!(spa.vertical_relative, 2);
         assert_eq!(spa.wrap, 3);

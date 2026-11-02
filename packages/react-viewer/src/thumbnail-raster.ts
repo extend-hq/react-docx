@@ -14,6 +14,7 @@
  *   per target canvas instead of fanning out `Promise.all` storms.
  */
 
+import { resolveImagePaintBounds, type ImageRunNode } from "@extend-ai/react-docx-doc-model";
 import { registerFontMetricCache } from "./font-metrics";
 
 /** Marks editor chrome that must never appear in rasterized thumbnails. */
@@ -83,6 +84,7 @@ export interface DocxPageThumbnailImageSnapshot {
   yPx: number;
   widthPx: number;
   heightPx: number;
+  paintBounds?: ImageRunNode["paintBounds"];
   /** Renderable image source (data URI or URL) drawn into the thumbnail. */
   src: string;
   /** Painted if the image cannot be decoded/drawn (falls back to a box). */
@@ -641,7 +643,14 @@ function drawDirectThumbnailImage(
   const heightPx = Math.max(1, Math.round(image.heightPx));
   if (decoded && decoded.naturalWidth > 0 && decoded.naturalHeight > 0) {
     try {
-      context.drawImage(decoded, xPx, yPx, widthPx, heightPx);
+      const paint = resolveImagePaintBounds(image);
+      context.drawImage(
+        decoded,
+        paint ? image.xPx + paint.xPx : xPx,
+        paint ? image.yPx + paint.yPx : yPx,
+        paint?.widthPx ?? widthPx,
+        paint?.heightPx ?? heightPx
+      );
       return;
     } catch {
       // Drawing can throw for sources the decoder accepted but the canvas

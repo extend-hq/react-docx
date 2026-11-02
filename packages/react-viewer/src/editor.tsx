@@ -1,4 +1,13 @@
+import { isWordFileName, wordDownloadFormat, wordDownloadName } from "./word-formats";
+import { prepareImagePaintBoundsForExport } from "./image-paint-export";
+import { PaintBoundsImage } from "./paint-bounds-image";
+import { VmlCompositeStorySurface } from "./vml-composite-story-surface";
+import { editVmlCompositeStory, mapVmlCompositeStories } from "./vml-composite-stories";
+import { TextBoxContentSurface, type TextBoxDraftReader } from "./textbox-content-surface";
+import { hasSvgPictureLayer, svgPictureTextContents } from "./svg-picture-layer";
 import { mathContent } from "./math-content";
+import { ReadOnlyCheckbox, formFieldAccessibleName, type FormFieldPreviewPresentation } from "./form-field-preview";
+import { bookmarkNamesFromXml, bookmarkTargetForName } from "./bookmark-names";
 import { documentWithPhysicalTableGrids, physicalTableView } from "./table-grid-view";
 import { prepareModelForTableStructuralEdit, type NestedTablePathStep } from "./table-grid-edit";
 import { commitTableGridResize, type TableGridResizeGeometry, type TableGridResizeTarget } from "./table-grid-resize";
@@ -30,6 +39,9 @@ import { useVirtualizer, useWindowVirtualizer } from "@tanstack/react-virtual";
 import {
   allocateBlockId,
   cloneDocModel,
+  cloneFormFieldSourcePreview,
+  invalidateFormFieldSource,
+  resolveFormFieldSourcePreview,
   cloneParagraphMarkFormatting,
   collectDuplicateDocModelBlockIds,
   ensureDocModelBlockIds,
@@ -243,7 +255,9 @@ export type DocxHeadingStyleMap = Partial<
   Record<HeadingLevel, CssProperties<string | number>>
 >;
 
-const DEFAULT_WORD_HEADING_STYLES: Record<HeadingLevel, React.CSSProperties> = {
+const DEFAULT_WORD_HEADING_STYLES: Partial<
+  Record<HeadingLevel, React.CSSProperties>
+> = {
   1: {
     fontFamily: '"Calibri Light", Calibri, sans-serif',
     fontSize: "16pt",
@@ -282,9 +296,8 @@ const DEFAULT_WORD_HEADING_STYLES: Record<HeadingLevel, React.CSSProperties> = {
   },
 };
 
-const DEFAULT_WORD_HEADING_RUN_STYLES: Record<
-  HeadingLevel,
-  NonNullable<ParagraphStyleDefinition["runStyle"]>
+const DEFAULT_WORD_HEADING_RUN_STYLES: Partial<
+  Record<HeadingLevel, NonNullable<ParagraphStyleDefinition["runStyle"]>>
 > = {
   1: {
     fontFamily: "Calibri Light",
@@ -414,7 +427,6 @@ const LAST_RENDERED_PAGE_BREAK_XML_PATTERN =
 const PAGE_BREAK_BEFORE_XML_PATTERN = /<w:pageBreakBefore\b[^>]*\/?>/i;
 const SECTION_PROPERTIES_XML_PATTERN = /<w:sectPr\b[\s\S]*?<\/w:sectPr>/i;
 const SECTION_TYPE_XML_PATTERN = /<w:type\b[^>]*w:val="([^"]+)"/i;
-const BOOKMARK_START_XML_PATTERN = /<w:bookmarkStart\b[^>]*w:name="([^"]+)"/gi;
 const FOOTNOTE_REFERENCE_XML_PATTERN =
   /<w:footnoteReference\b[^>]*w:id="(-?\d+)"/gi;
 const ENDNOTE_REFERENCE_XML_PATTERN =
@@ -626,13 +638,13 @@ function headingLevelFromStyleLabel(value?: string): HeadingLevel | undefined {
     return undefined;
   }
 
-  const match = value.match(/(?:^|[\s_-])(?:heading|h)\s*([1-6])(?:$|[\s_-])/i);
+  const match = value.match(/(?:^|[\s_-])(?:heading|h)\s*([1-9])(?:$|[\s_-])/i);
   if (!match?.[1]) {
     return undefined;
   }
 
   const parsed = Number(match[1]);
-  return parsed >= 1 && parsed <= 6 ? (parsed as HeadingLevel) : undefined;
+  return parsed >= 1 && parsed <= 9 ? (parsed as HeadingLevel) : undefined;
 }
 
 function resolveParagraphStyleHeadingLevel(
@@ -644,7 +656,7 @@ function resolveParagraphStyleHeadingLevel(
   if (
     Number.isFinite(styleDefinition.headingLevel) &&
     (styleDefinition.headingLevel as number) >= 1 &&
-    (styleDefinition.headingLevel as number) <= 6
+    (styleDefinition.headingLevel as number) <= 9
   ) {
     return styleDefinition.headingLevel as HeadingLevel;
   }
@@ -4409,6 +4421,7 @@ export interface UseDocxEditorOptions {
 export interface DocxEditorController {
   model: DocModel;
   documentLoadNonce: number;
+  historyRevision: number;
   fileName: string;
   status: string;
   importError?: Error;
@@ -4447,7 +4460,7 @@ export interface DocxEditorController {
   canUndo: boolean;
   canRedo: boolean;
   registerPendingExportModelTransformer: (
-    transformer?: (model: DocModel) => DocModel
+    transformer?: (model: DocModel, documentLoadNonce: number) => DocModel
   ) => void;
   setStatus: (value: string | ((previous: string) => string)) => void;
   setDocumentTheme: (theme: DocxDocumentTheme) => void;
@@ -4538,7 +4551,7 @@ export interface DocxEditorController {
     widthPx: number,
     heightPx: number
   ) => void;
-  setSyntheticTextBoxText: (location: DocxImageLocation, text: string) => void;
+  setSyntheticTextBoxText: (location: DocxImageLocation, text: string, storyIndex?: number) => boolean;
   setImageWrapMode: (
     location: DocxImageLocation,
     mode: DocxImageWrapMode,
@@ -5874,19 +5887,26 @@ function tableCellHasImage(nodeContent: TableCellContentNode[]): boolean {
   return false;
 }
 
+function paragraphChildImage(child: ParagraphNode["children"][number]): ImageRunNode | undefined {
+  return child.type === "image" ? child
+    : child.type === "form-field" ? resolveFormFieldSourcePreview(child)
+    : undefined;
+}
+
 function paragraphHasImage(paragraph: ParagraphNode): boolean {
-  return paragraph.children.some((child) => child.type === "image");
+  return paragraph.children.some((child) => Boolean(paragraphChildImage(child)));
 }
 
 function paragraphHasInFlowImage(paragraph: ParagraphNode): boolean {
   return paragraph.children.some((child) => {
-    if (child.type !== "image") {
+    const image = paragraphChildImage(child);
+    if (!image) {
       return false;
     }
 
     return (
-      !shouldRenderAbsoluteFloatingImage(child) &&
-      !shouldRenderWrappedFloatingImage(child)
+      !shouldRenderAbsoluteFloatingImage(image) &&
+      !shouldRenderWrappedFloatingImage(image)
     );
   });
 }
@@ -6061,10 +6081,10 @@ function paragraphNeedsPageWidthAnchorHost(paragraph: ParagraphNode): boolean {
 }
 
 function paragraphHasAbsoluteFloatingImage(paragraph: ParagraphNode): boolean {
-  return paragraph.children.some(
-    (child) =>
-      child.type === "image" && shouldRenderAbsoluteFloatingImage(child)
-  );
+  return paragraph.children.some((child) => {
+    const image = paragraphChildImage(child);
+    return image ? shouldRenderAbsoluteFloatingImage(image) : false;
+  });
 }
 
 function collectHeadingTextColorByLevel(
@@ -10095,19 +10115,7 @@ function nodeHasSubstantiveContentForPagination(
 }
 
 function paragraphBookmarkNames(paragraph: ParagraphNode): string[] {
-  const sourceXml = paragraph.sourceXml ?? "";
-  if (!sourceXml) {
-    return [];
-  }
-
-  const names = [
-    ...sourceXml.matchAll(new RegExp(BOOKMARK_START_XML_PATTERN.source, "gi")),
-  ]
-    .map((match) => match[1]?.trim())
-    .filter((name): name is string =>
-      Boolean(name && name.length > 0 && name !== "_GoBack")
-    );
-  return [...new Set(names)];
+  return bookmarkNamesFromXml(paragraph.sourceXml ?? "");
 }
 
 const paragraphNoteReferences = new WeakMap<
@@ -12021,16 +12029,17 @@ function estimateWrappedLineCountForParagraph(
   };
 
   for (const child of paragraph.children) {
-    if (child.type === "image") {
+    const image = paragraphChildImage(child);
+    if (image) {
       if (
-        shouldRenderAbsoluteFloatingImage(child) ||
-        shouldRenderWrappedFloatingImage(child)
+        shouldRenderAbsoluteFloatingImage(image) ||
+        shouldRenderWrappedFloatingImage(image)
       ) {
         continue;
       }
       const inlineImageWidthPx = Math.max(
         1,
-        Math.round(child.widthPx ?? child.heightPx ?? 24)
+        Math.round(image.widthPx ?? image.heightPx ?? 24)
       );
       hasVisibleContent = true;
       if (
@@ -12047,6 +12056,7 @@ function estimateWrappedLineCountForParagraph(
       continue;
     }
 
+    if (child.type === "image") continue;
     const text =
       child.type === "text" ? child.text : formFieldDisplayValue(child);
     if (!text) {
@@ -12631,28 +12641,30 @@ function estimateParagraphHeightPx(
     absoluteFloatingAnchorOnlyParagraph &&
     paragraphIsSectionBreakAnchorCarryover(paragraph);
   const inlineImageHeightPx = paragraph.children.reduce((largest, child) => {
-    if (child.type !== "image") {
+    const image = paragraphChildImage(child);
+    if (!image) {
       return largest;
     }
     if (
-      shouldRenderAbsoluteFloatingImage(child) ||
-      shouldRenderWrappedFloatingImage(child)
+      shouldRenderAbsoluteFloatingImage(image) ||
+      shouldRenderWrappedFloatingImage(image)
     ) {
       return largest;
     }
 
-    return Math.max(largest, child.heightPx ?? 0);
+    return Math.max(largest, image.heightPx ?? 0);
   }, 0);
   const wrappedFloatingImageHeightPx = excludeWrappedFloatingImageFootprint
     ? 0
     : paragraph.children.reduce((largest, child) => {
-        if (child.type !== "image") {
+        const image = paragraphChildImage(child);
+        if (!image) {
           return largest;
         }
 
         return Math.max(
           largest,
-          estimateWrappedFloatingImageFootprintPx(paragraph, child)
+          estimateWrappedFloatingImageFootprintPx(paragraph, image)
         );
       }, 0);
   const emptyParagraphHeightPx = paragraphIsEffectivelyEmpty(paragraph)
@@ -18307,33 +18319,30 @@ function isPageOrMarginAnchoredWrappedFloatingImage(
 function paragraphNeedsPageAnchoredAbsolutePositioningContext(
   paragraph: ParagraphNode
 ): boolean {
-  return paragraph.children.some(
-    (child) =>
-      child.type === "image" &&
-      (isPageOrMarginAnchoredAbsoluteFloatingImage(child) ||
-        isPageOrMarginAnchoredWrappedFloatingImage(child))
-  );
+  return paragraph.children.some((child) => {
+    const image = paragraphChildImage(child);
+    return image ? isPageOrMarginAnchoredAbsoluteFloatingImage(image) ||
+      isPageOrMarginAnchoredWrappedFloatingImage(image) : false;
+  });
 }
 
 function paragraphNeedsLocalAbsolutePositioningContext(
   paragraph: ParagraphNode
 ): boolean {
-  return paragraph.children.some(
-    (child) =>
-      child.type === "image" &&
-      shouldRenderAbsoluteFloatingImage(child) &&
-      !isPageOrMarginAnchoredAbsoluteFloatingImage(child)
-  );
+  return paragraph.children.some((child) => {
+    const image = paragraphChildImage(child);
+    return image ? shouldRenderAbsoluteFloatingImage(image) &&
+      !isPageOrMarginAnchoredAbsoluteFloatingImage(image) : false;
+  });
 }
 
 function paragraphHasPageAnchoredAbsoluteFloatingImage(
   paragraph: ParagraphNode
 ): boolean {
-  return paragraph.children.some(
-    (child) =>
-      child.type === "image" &&
-      isPageOrMarginAnchoredAbsoluteFloatingImage(child)
-  );
+  return paragraph.children.some((child) => {
+    const image = paragraphChildImage(child);
+    return image ? isPageOrMarginAnchoredAbsoluteFloatingImage(image) : false;
+  });
 }
 
 function paragraphHasPageAnchoredForegroundAbsoluteFloatingImage(
@@ -19036,7 +19045,7 @@ function paragraphBlockStyle(
   const applyWordLikeHeadingFallback = !paragraph.sourceXml;
   const hasSoftLineBreak = paragraphText(paragraph).includes("\n");
   const headingStyle =
-    headingLevel && headingLevel >= 1 && headingLevel <= 6
+    headingLevel && headingLevel >= 1 && headingLevel <= 9
       ? headingStyles?.[headingLevel] ??
         (applyWordLikeHeadingFallback
           ? DEFAULT_WORD_HEADING_STYLES[headingLevel]
@@ -20484,6 +20493,16 @@ function resolveSyntheticTextBoxParagraphs(
   });
 }
 
+function scaledVmlText(text: string, style: React.CSSProperties, scale: number, key: number): React.ReactElement {
+  const spacing = typeof style.letterSpacing === "string" ? /^([+-]?[\d.]+)(pt|px)$/.exec(style.letterSpacing) : undefined;
+  return <span key={key} style={{ display: "inline-block", verticalAlign: "baseline" }}><span
+    data-docx-vml-text-scale={scale}
+    style={{ ...style, display: "inline-block", whiteSpace: "pre", maxWidth: "none",
+      letterSpacing: spacing ? `${Number(spacing[1]) / scale}${spacing[2]}` : style.letterSpacing,
+      transform: `scaleX(${scale})`, transformOrigin: "left center" }}
+  >{text}</span></span>;
+}
+
 function syntheticTextBoxForegroundZIndex(image: ImageRunNode): number {
   const normalizedZIndex = Number.isFinite(image.floating?.zIndex)
     ? Math.max(
@@ -20505,9 +20524,16 @@ function syntheticTextBoxSvg(
   pageNumber?: number,
   totalPages?: number,
   pageNumberFormat?: string,
-  resolveStyleRefFieldValue?: (target: string) => string | undefined
+  resolveStyleRefFieldValue?: (target: string) => string | undefined,
+  preserveUneditedVmlComposite = false,
+  allowTextOverflow = false
 ): string | undefined {
   if (!image.syntheticTextBox || !image.sourceXml) {
+    return undefined;
+  }
+
+  if (mapVmlCompositeStories(image) ||
+      (preserveUneditedVmlComposite && hasUneditedVmlPictureComposite(image))) {
     return undefined;
   }
 
@@ -20540,8 +20566,10 @@ function syntheticTextBoxSvg(
 
   for (const paragraph of paragraphs) {
     const nextCursorY = cursorY + paragraph.lineHeightPx;
-    const clampedBaselineY = Math.min(nextCursorY, Math.max(1, safeHeight - 1));
-    if (nextCursorY > safeHeight + 1 && textBlocks.length > 0) {
+    const clampedBaselineY = allowTextOverflow
+      ? nextCursorY
+      : Math.min(nextCursorY, Math.max(1, safeHeight - 1));
+    if (!allowTextOverflow && nextCursorY > safeHeight + 1 && textBlocks.length > 0) {
       break;
     }
     cursorY = nextCursorY;
@@ -20674,6 +20702,79 @@ function syntheticTextBoxSvg(
       ""
     )}</svg>`
   );
+}
+
+const vmlSourceParagraphTexts = new WeakMap<
+  ImageRunNode,
+  { sourceXml: string; texts: string[] }
+>();
+
+function vmlParagraphHasUniformPaint(paragraph: ParagraphNode): boolean {
+  let signature: string | undefined;
+  for (const child of paragraph.children) {
+    if (child.type !== "text" || child.link || child.noteReference) return false;
+    if (!child.text) continue;
+    const style = child.style;
+    if (style && (
+      style.allCaps || style.smallCaps || style.highlight || style.backgroundColor ||
+      style.verticalAlign || style.runBorder || style.rightToLeft || style.complexScript ||
+      (style.characterSpacingTwips !== undefined && style.characterSpacingTwips !== 0) ||
+      (style.characterScalePercent !== undefined && style.characterScalePercent !== 100) ||
+      style.kerningMinFontSizePt !== undefined || style.ligatures !== undefined ||
+      style.contextualAlternates !== undefined
+    )) return false;
+    const nextSignature = JSON.stringify(Object.entries(style ?? {})
+      .filter(([key]) => key !== "language" && key !== "languageEastAsia" && key !== "languageBidi")
+      .sort(([left], [right]) => left.localeCompare(right)));
+    if (signature !== undefined && signature !== nextSignature) return false;
+    signature = nextSignature;
+  }
+  return true;
+}
+
+function hasUneditedVmlPictureComposite(image: ImageRunNode): boolean {
+  const sourceXml = image.sourceXml;
+  if (
+    !image.syntheticTextBox || image.textBoxText !== undefined || !sourceXml || !image.contentNodes ||
+    !/<v:group\b/i.test(sourceXml) || !/<v:imagedata\b/i.test(sourceXml) ||
+    /<w:(?:instrText|fldSimple)\b/i.test(sourceXml) || !hasSvgPictureLayer(image)
+  ) {
+    return false;
+  }
+  const textBoxes = balancedTagXmlBlocks(sourceXml, "w:txbxContent");
+  if (textBoxes.some((xml) => /<w:(?:tbl|drawing|pict|object|hyperlink|sdt|rStyle|fldChar|tab|br|sym|footnoteReference|endnoteReference|commentReference)\b/i.test(xml))) {
+    return false;
+  }
+  if (image.contentNodes) {
+    if (image.contentNodes.some((node) => node.type !== "paragraph" ||
+      !vmlParagraphHasUniformPaint(node))) {
+      return false;
+    }
+    let cached = vmlSourceParagraphTexts.get(image);
+    if (cached?.sourceXml !== sourceXml) {
+      cached = {
+        sourceXml,
+        texts: textBoxes.flatMap((xml) => balancedTagXmlBlocks(xml, "w:p").map((paragraphXml) =>
+          syntheticTextBoxParagraphsFromRunXml(`<w:txbxContent>${paragraphXml}</w:txbxContent>`)
+            .flatMap((paragraph) => paragraph.segments).map((segment) => segment.text).join(""))),
+      };
+      vmlSourceParagraphTexts.set(image, cached);
+    }
+    const currentTexts = image.contentNodes.map((node) => node.type === "paragraph"
+      ? node.children.map((child) => child.type === "text" ? child.text : "").join("")
+      : "");
+    if (currentTexts.length !== cached.texts.length ||
+      currentTexts.some((text, index) => text !== cached.texts[index])) {
+      return false;
+    }
+    const paintedTexts = svgPictureTextContents(image)?.map(decodeXmlText);
+    const visibleTexts = currentTexts.filter((text) => text.length > 0);
+    if (!paintedTexts || paintedTexts.length !== visibleTexts.length ||
+      paintedTexts.some((text, index) => text !== visibleTexts[index])) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function syntheticTextBoxContainsPictureLayer(
@@ -21813,7 +21914,105 @@ function normalizeDateInputValue(value?: string): string | undefined {
   return parsed.toISOString().slice(0, 10);
 }
 
+function formFieldPreviewPresentation(
+  image: ImageRunNode | undefined,
+  options: {
+    withinHeaderFooter?: boolean;
+    containerWidthPx?: number;
+    pageOrigin?: {
+      left: number;
+      top: number;
+      marginLeft?: number;
+      marginTop?: number;
+      columnLeft?: number;
+      columnTop?: number;
+      pageWidth?: number;
+    };
+    paragraphOriginLeftPx?: number;
+    paragraphOriginTopPx?: number;
+    horizontalCorrectionPx?: number;
+    imageFilter?: string;
+    resolveZoomScale?: (element: HTMLElement | null) => number;
+  } = {}
+): FormFieldPreviewPresentation | undefined {
+  if (!image) return undefined;
+  const origin = options.pageOrigin;
+  const forceAbsolute = options.withinHeaderFooter === true &&
+    (isPageOrMarginAnchoredWrappedFloatingImage(image) || isSectionFixedPositionFloatingImage(image));
+  const wrapped = !forceAbsolute && shouldRenderWrappedFloatingImage(image);
+  const absolute = forceAbsolute || shouldRenderAbsoluteFloatingImage(image);
+  let { widthPx, heightPx } = image;
+  ({ widthPx, heightPx } = resolvePageSpanningAbsoluteFloatingDimensions(image, widthPx, heightPx, origin));
+  const floatingStyle = wrapped
+    ? wrappedFloatingImageStyle(image, {
+        containerWidthPx: options.containerWidthPx ?? origin?.pageWidth,
+        deltaX: options.horizontalCorrectionPx ?? 0,
+        allowNegativeOffsets: true,
+      })
+    : absolute
+    ? absoluteFloatingImageStyle(image, {
+        useMeasuredMixedPageOrigins: true,
+        pageOriginLeft: origin?.left,
+        pageOriginTop: origin?.top,
+        marginOriginLeft: origin?.marginLeft,
+        marginOriginTop: origin?.marginTop,
+        columnOriginLeft: origin?.columnLeft,
+        columnOriginTop: origin?.columnTop,
+        paragraphOriginLeft: options.paragraphOriginLeftPx,
+        paragraphOriginTop: options.paragraphOriginTopPx,
+        deltaX: options.horizontalCorrectionPx ?? 0,
+      })
+    : undefined;
+  const crop = imageCropLayout(image, widthPx, heightPx);
+  return {
+    frameStyle: {
+      display: "inline-block",
+      position: absolute ? "absolute" : "relative",
+      verticalAlign: "middle",
+      width: widthPx,
+      height: heightPx,
+      ...floatingStyle,
+    },
+    imageLayoutWidthPx: crop?.imageWidthPx ?? widthPx,
+    imageLayoutHeightPx: crop?.imageHeightPx ?? heightPx,
+    imageStyle: {
+      width: crop?.imageWidthPx ?? widthPx,
+      height: crop?.imageHeightPx ?? heightPx,
+      filter: appendCssFilters(image.cssFilter, options.imageFilter),
+      opacity: image.cssOpacity,
+      ...resolveImageRenderTransformStyle(image, {
+        frameWidthPx: crop?.frameWidthPx ?? widthPx,
+        frameHeightPx: crop?.frameHeightPx ?? heightPx,
+        baseTransform: crop ? `translate(${-crop.offsetXPx}px, ${-crop.offsetYPx}px)` : undefined,
+      }),
+    },
+    clipStyle: crop ? {
+      display: "block",
+      overflow: "clip",
+      width: crop.frameWidthPx,
+      height: crop.frameHeightPx,
+    } : undefined,
+    frameRef: absolute ? (element) => {
+      if (!element) return;
+      const surface = element.closest<HTMLElement>("[data-docx-page-surface='true']");
+      const scale = options.resolveZoomScale?.(element) ?? (
+        surface && surface.offsetWidth > 0
+          ? surface.getBoundingClientRect().width / surface.offsetWidth
+          : resolveEffectiveZoomScale(element)
+      );
+      applyMixedAbsoluteFloatingImageOrigin(element, image, {
+        marginsPx: {
+          left: (origin?.marginLeft ?? origin?.left ?? 0) - (origin?.left ?? 0),
+          top: (origin?.marginTop ?? origin?.top ?? 0) - (origin?.top ?? 0),
+        },
+      }, scale, forceAbsolute);
+    } : undefined,
+    inlineAdvancePx: wrapped || absolute ? 0 : widthPx ?? heightPx ?? 16,
+  };
+}
+
 interface ParagraphRunRenderOptions {
+  preserveUneditedVmlComposite?: boolean;
   showTrackedChanges?: boolean;
   showCommentHighlights?: boolean;
   numberingDefinitions?: NumberingDefinitionSet;
@@ -22305,6 +22504,56 @@ function renderParagraphRuns(
       const text = textOverride ?? textValue;
       const annotationAttributes =
         currentAnnotationAttributes(trackedInlineChange);
+      if (child.fieldType === "checkbox") {
+        const preview = resolveFormFieldSourcePreview(child);
+        const presentation = formFieldPreviewPresentation(preview, {
+          withinHeaderFooter: options?.withinHeaderFooter,
+          pageOrigin: floatingPageOriginPx,
+          paragraphOriginLeftPx: options?.paragraphOriginLeftPx,
+          paragraphOriginTopPx: options?.paragraphOriginTopPx,
+          horizontalCorrectionPx: preview && usesExternalHorizontalAnchorOrigin(preview)
+            ? floatingAnchorOriginCorrectionXPx : 0,
+          imageFilter: options?.imageFilterSuffix,
+        });
+        const content = (
+          <ReadOnlyCheckbox
+            key={key}
+            field={child}
+            childIndex={childIndex}
+            sourceId={paragraph.blockId ? `${paragraph.blockId}/child/${childIndex}` : undefined}
+            attributes={annotationAttributes}
+            presentation={presentation}
+            style={{
+              ...trackedInlineStyle(
+                runStyleToCss(child.style, documentTheme, text, paragraphBaseFontSizePx(paragraph) * 72 / 96, typography),
+                trackedInlineChange
+              ),
+              ...currentCommentHighlightStyle(),
+            }}
+            fallback={scriptFontTextContent(text, child.style, key, paragraphBaseFontSizePx(paragraph) * 72 / 96, typography)}
+          />
+        );
+        const linkHref = child.link;
+        target.push(linkHref ? (
+          <a
+            key={key}
+            href={linkHref}
+            target={linkHref.startsWith("#") ? undefined : "_blank"}
+            rel={linkHref.startsWith("#") ? undefined : "noreferrer noopener"}
+            style={trackedLinkStyle(child.style, trackedInlineChange, text)}
+            onClick={(event) => {
+              if (linkHref.startsWith("#") && onInternalLinkClick) {
+                event.preventDefault();
+                event.stopPropagation();
+                onInternalLinkClick(linkHref.slice(1));
+              }
+            }}
+          >{content}</a>
+        ) : content);
+        if (presentation) trackInlineAdvance(presentation.inlineAdvancePx ?? 0);
+        else trackTextAdvance(text, child.style);
+        return;
+      }
       if (child.link) {
         const linkHref = child.link;
         const isInternalLink = linkHref.startsWith("#");
@@ -22534,7 +22783,8 @@ function renderParagraphRuns(
           pageNumber,
           totalPages,
           options?.pageNumberFormat,
-          options?.resolveStyleRefFieldValue
+          options?.resolveStyleRefFieldValue,
+          options?.preserveUneditedVmlComposite === true
         ) ?? resolveRenderableImageSource(child);
 
       if (!child.src) {
@@ -22684,7 +22934,10 @@ function renderParagraphRuns(
                 onPointerDown={onSectionImagePointerDown}
                 onClick={onSectionImageClick}
               >
-                <img
+                <PaintBoundsImage
+                  image={child}
+                  widthPx={cropLayout.imageWidthPx}
+                  heightPx={cropLayout.imageHeightPx}
                   src={renderableImageSrc}
                   alt={child.alt ?? "DOCX image"}
                   draggable={false}
@@ -22702,9 +22955,12 @@ function renderParagraphRuns(
           }
 
           return (
-            <img
+            <PaintBoundsImage
+              image={child}
+              widthPx={widthPx}
+              heightPx={heightPx}
               key={key}
-              ref={registerSectionFloatingOrigin}
+              frameRef={registerSectionFloatingOrigin}
               data-docx-source-id={child.blockId ?? (paragraph.blockId ? `${paragraph.blockId}/child/${childIndex}` : undefined)}
               data-docx-header-footer-overlay={isHeaderFooterOverlay || undefined}
               src={renderableImageSrc}
@@ -26899,6 +27155,7 @@ function cloneFormFieldRun(field: FormFieldRunNode): FormFieldRunNode {
     style: cloneTextStyle(field.style),
     link: field.link,
     sourceXml: field.sourceXml,
+    sourcePreview: cloneFormFieldSourcePreview(field.sourcePreview),
   };
 }
 
@@ -29960,6 +30217,76 @@ function updateSectionImageFloatingAtLocation(
   return changed ? next : model;
 }
 
+function projectSyntheticTextBoxText(
+  current: DocModel,
+  location: DocxImageLocation,
+  text: string,
+  storyIndex?: number
+): DocModel | undefined {
+  const next = cloneDocModel(current);
+  const { paragraph, tableNode } = getParagraphAtLocation(
+    next,
+    imageLocationToParagraphLocation(location)
+  );
+  if (!paragraph) {
+    return undefined;
+  }
+
+  const child = paragraph.children[location.childIndex];
+  if (!child || child.type !== "image" || !child.syntheticTextBox) {
+    return undefined;
+  }
+
+  const normalizedText = text.replace(/\r\n?/g, "\n");
+  const composite = mapVmlCompositeStories(child, true);
+  if (composite) {
+    const previousText = storyIndex === undefined
+      ? child.textBoxText
+      : composite.stories[storyIndex]?.text;
+    if (previousText === normalizedText) return current;
+    const edited = editVmlCompositeStory(
+      child,
+      normalizedText,
+      (story) => syntheticTextBoxSvg(
+        story, undefined, undefined, undefined, undefined, false, true
+      ),
+      storyIndex,
+      true
+    );
+    if (!edited) return undefined;
+    paragraph.children[location.childIndex] = edited;
+    paragraph.sourceXml = undefined;
+    if (tableNode) tableNode.sourceXml = undefined;
+    return next;
+  }
+  if (storyIndex !== undefined) return undefined;
+  if (child.textBoxText === normalizedText) return current;
+
+  child.textBoxText = normalizedText;
+  const previousContent = child.contentNodes;
+  child.contentNodes = normalizedText.split("\n").map((line, index) => {
+    const previous = previousContent?.[index];
+    return { type: "paragraph", blockId: previous?.blockId ?? (child.blockId ? `${child.blockId}/content/${index}` : undefined),
+      style: previous?.type === "paragraph" ? previous.style : undefined,
+      children: [{ type: "text", text: line, style: previous?.type === "paragraph" ? previous.children.find(run => run.type === "text")?.style : undefined }] };
+  });
+  const renderedSource = syntheticTextBoxSvg(
+    child, undefined, undefined, undefined, undefined
+  );
+  if (renderedSource) {
+    child.src = renderedSource;
+    child.data = undefined;
+    child.partName = undefined;
+    child.contentType = "image/svg+xml";
+  }
+  paragraph.sourceXml = undefined;
+  if (tableNode) {
+    tableNode.sourceXml = undefined;
+  }
+
+  return next;
+}
+
 export function useDocxEditor(
   options: UseDocxEditorOptions = {}
 ): DocxEditorController {
@@ -30084,6 +30411,7 @@ export function useDocxEditor(
     OoxmlPackage | undefined
   >(options.document?.package);
   const [documentLoadNonce, setDocumentLoadNonce] = React.useState<number>(0);
+  const [historyRevision, setHistoryRevision] = React.useState(0);
   const documentLoadNonceRef = React.useRef(0);
   const advanceDocumentLoadNonce = React.useCallback((): void => {
     documentLoadNonceRef.current += 1;
@@ -30546,7 +30874,7 @@ export function useDocxEditor(
   const canUndo = history.past.length > 0;
   const canRedo = history.future.length > 0;
   const pendingExportModelTransformerRef = React.useRef<
-    ((model: DocModel) => DocModel) | undefined
+    ((model: DocModel, documentLoadNonce: number) => DocModel) | undefined
   >(undefined);
   const setDocumentTheme = React.useCallback(
     (theme: DocxDocumentTheme): void => {
@@ -30573,7 +30901,7 @@ export function useDocxEditor(
     setShowCommentsState((current) => !current);
   }, []);
   const registerPendingExportModelTransformer = React.useCallback(
-    (transformer?: (model: DocModel) => DocModel): void => {
+    (transformer?: (model: DocModel, documentLoadNonce: number) => DocModel): void => {
       pendingExportModelTransformerRef.current = transformer;
     },
     []
@@ -31116,10 +31444,10 @@ export function useDocxEditor(
       activeImportAbortControllerRef.current = undefined;
       embeddedFontLoadNonceRef.current += 1;
 
-      if (!/\.docx?$/i.test(file.name)) {
+      if (!isWordFileName(file.name)) {
         replaceDocumentWithImportError(
           file.name,
-          new Error("Only .docx and .doc files are supported")
+          new Error("Supported Word formats are .doc, .dot, .docx, .dotx, .docm, and .dotm.")
         );
         return;
       }
@@ -31245,29 +31573,33 @@ export function useDocxEditor(
   }, [advanceDocumentLoadNonce, unloadEmbeddedFonts]);
 
   const getDocxBytes = React.useCallback(async (): Promise<ArrayBuffer> => {
-    const sourceModel = modelRef.current;
-    const transformedModel = pendingExportModelTransformerRef.current
-      ? pendingExportModelTransformerRef.current(sourceModel)
-      : sourceModel;
+    const sourceModel = canonicalEditorStateRef.current.model;
+    let transformedModel: DocModel;
+    try {
+      transformedModel = pendingExportModelTransformerRef.current
+        ? pendingExportModelTransformerRef.current(sourceModel, documentLoadNonceRef.current)
+        : sourceModel;
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Could not apply pending changes for export.");
+      throw error;
+    }
     if (transformedModel !== sourceModel) {
-      setModel(transformedModel);
+      dispatchEditorTransaction(() => ({ model: transformedModel }));
     }
 
-    return serializeDocx(transformedModel, basePackage);
-  }, [basePackage]);
+    const exportModel = await prepareImagePaintBoundsForExport(transformedModel, basePackage);
+    return serializeDocx(exportModel, basePackage);
+  }, [basePackage, dispatchEditorTransaction]);
 
   const exportDocx = React.useCallback(async (): Promise<void> => {
     const output = await getDocxBytes();
-    const blob = new Blob([output], {
-      type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    });
+    const format = wordDownloadFormat(basePackage?.parts.get("[Content_Types].xml")?.content);
+    const blob = new Blob([output], { type: format.mime });
 
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;
-    anchor.download = /\.docx?$/i.test(fileName)
-      ? fileName.replace(/\.docx?$/i, "") + "-edited.docx"
-      : "edited.docx";
+    anchor.download = wordDownloadName(fileName, format.extension);
     anchor.style.display = "none";
     document.body.append(anchor);
     anchor.click();
@@ -31276,8 +31608,8 @@ export function useDocxEditor(
       URL.revokeObjectURL(url);
     }, 1000);
 
-    setStatus("Exported DOCX");
-  }, [fileName, getDocxBytes]);
+    setStatus(`Exported ${format.extension.toUpperCase()}`);
+  }, [basePackage, fileName, getDocxBytes]);
 
   const undo = React.useCallback((): void => {
     textCommitBurstRef.current = undefined;
@@ -31289,6 +31621,7 @@ export function useDocxEditor(
       return;
     }
 
+    setHistoryRevision((revision) => revision + 1);
     suppressSelectionResetRef.current = true;
     modelRef.current = next.model;
     selectionRef.current = next.selection;
@@ -31315,6 +31648,7 @@ export function useDocxEditor(
       return;
     }
 
+    setHistoryRevision((revision) => revision + 1);
     suppressSelectionResetRef.current = true;
     modelRef.current = next.model;
     selectionRef.current = next.selection;
@@ -32448,11 +32782,10 @@ export function useDocxEditor(
         }
 
         const updated = updater(cloneFormFieldRun(child));
-        paragraph.children[location.childIndex] = {
+        paragraph.children[location.childIndex] = invalidateFormFieldSource({
           ...updated,
           type: "form-field",
-          sourceXml: undefined,
-        };
+        });
         paragraph.sourceXml = undefined;
         if (tableNode) {
           tableNode.sourceXml = undefined;
@@ -33705,53 +34038,14 @@ export function useDocxEditor(
   );
 
   const setSyntheticTextBoxText = React.useCallback(
-    (location: DocxImageLocation, text: string): void => {
+    (location: DocxImageLocation, text: string, storyIndex?: number): boolean => {
+      let accepted = false;
       applyModelChange((current) => {
-        const next = cloneDocModel(current);
-        const { paragraph, tableNode } = getParagraphAtLocation(
-          next,
-          imageLocationToParagraphLocation(location)
-        );
-        if (!paragraph) {
-          return current;
-        }
-
-        const child = paragraph.children[location.childIndex];
-        if (!child || child.type !== "image" || !child.syntheticTextBox) {
-          return current;
-        }
-
-        const normalizedText = text.replace(/\r\n?/g, "\n");
-        if (child.textBoxText === normalizedText) {
-          return current;
-        }
-
-        child.textBoxText = normalizedText;
-        const previousContent = child.contentNodes;
-        child.contentNodes = normalizedText.split("\n").map((line, index) => {
-          const previous = previousContent?.[index];
-          return { type: "paragraph", blockId: previous?.blockId ?? (child.blockId ? `${child.blockId}/content/${index}` : undefined),
-            style: previous?.type === "paragraph" ? previous.style : undefined,
-            children: [{ type: "text", text: line, style: previous?.type === "paragraph" ? previous.children.find(run => run.type === "text")?.style : undefined }] };
-        });
-        child.src =
-          syntheticTextBoxSvg(
-            {
-              ...child,
-              textBoxText: normalizedText,
-            },
-            undefined,
-            undefined,
-            undefined,
-            undefined
-          ) ?? child.src;
-        paragraph.sourceXml = undefined;
-        if (tableNode) {
-          tableNode.sourceXml = undefined;
-        }
-
-        return next;
+        const next = projectSyntheticTextBoxText(current, location, text, storyIndex);
+        accepted = next !== undefined;
+        return next ?? current;
       }, "Edited text box");
+      return accepted;
     },
     [applyModelChange]
   );
@@ -35325,6 +35619,7 @@ export function useDocxEditor(
   const controller: DocxEditorController = {
     model,
     documentLoadNonce,
+    historyRevision,
     fileName,
     status,
     importError,
@@ -35758,7 +36053,7 @@ function docxThumbnailFallbackHeadingRunStyle(
   paragraph: ParagraphNode
 ): TextRunNode["style"] | undefined {
   const headingLevel = paragraph.style?.headingLevel;
-  return headingLevel && headingLevel >= 1 && headingLevel <= 6
+  return headingLevel && headingLevel >= 1 && headingLevel <= 9
     ? DEFAULT_WORD_HEADING_RUN_STYLES[headingLevel]
     : undefined;
 }
@@ -35942,6 +36237,7 @@ function buildDocxThumbnailParagraphElements(params: {
           widthPx: elementWidthPx,
           heightPx: elementHeightPx,
           src: renderableSrc,
+          paintBounds: imageRun.paintBounds ? { ...imageRun.paintBounds } : undefined,
         });
       } else {
         elements.push({
@@ -37865,6 +38161,9 @@ function renderHeaderNode(
       Boolean(tableCellEditScope?.handlers) &&
       Boolean(tableCellEditScope?.isEditable) &&
       Number.isFinite(tableCellParagraphIndex);
+    paragraphRunOptions.preserveUneditedVmlComposite =
+      !isSectionEditable && !isTableCellParagraphEditable &&
+      imageInteraction?.isReadOnly !== false;
     const renderedParagraphRuns = renderParagraphRuns(
       paragraphNode,
       paragraphKeyPrefix,
@@ -38986,6 +39285,23 @@ export function DocxEditorViewer({
     ]
   );
   const viewerRootRef = React.useRef<HTMLDivElement>(null);
+  const textBoxDraftsRef = React.useRef(new Map<symbol, {
+    location: DocxImageLocation;
+    storyIndex: number | undefined;
+    blockId: string | undefined;
+    documentLoadNonce: number;
+    read: TextBoxDraftReader;
+  }>());
+  const registerTextBoxDraft = React.useCallback((
+    location: DocxImageLocation,
+    storyIndex: number | undefined,
+    blockId: string | undefined,
+    read: TextBoxDraftReader
+  ): (() => void) => {
+    const token = Symbol();
+    textBoxDraftsRef.current.set(token, { location, storyIndex, blockId, documentLoadNonce: editor.documentLoadNonce, read });
+    return () => { textBoxDraftsRef.current.delete(token); };
+  }, [editor.documentLoadNonce]);
   const tableCellDraftsRef = React.useRef<Map<string, string>>(new Map());
   const plainParagraphHtmlCacheRef = React.useRef(
     new WeakMap<ParagraphNode, { context: unknown[]; html: string }>()
@@ -42911,12 +43227,10 @@ export function DocxEditorViewer({
 
   const scrollToBookmark = React.useCallback(
     (bookmarkName: string): boolean => {
-      const normalized = bookmarkName.trim();
-      if (!normalized) {
-        return false;
-      }
-
-      const targetNodeIndex = bookmarkTargetNodeIndexByName.get(normalized);
+      const targetNodeIndex = bookmarkTargetForName(
+        bookmarkTargetNodeIndexByName,
+        bookmarkName
+      );
       if (targetNodeIndex === undefined) {
         return false;
       }
@@ -50218,11 +50532,13 @@ export function DocxEditorViewer({
   }
 
   React.useEffect(() => {
-    const flushPendingDraftsForExport = (currentModel: DocModel): DocModel => {
+    const flushPendingDraftsForExport = (currentModel: DocModel, documentLoadNonce: number): DocModel => {
+      if (documentLoadNonce !== editor.documentLoadNonce) return currentModel;
       if (
         tableCellDraftsRef.current.size === 0 &&
         tableCellParagraphDraftsRef.current.size === 0 &&
-        sectionParagraphDraftsRef.current.size === 0
+        sectionParagraphDraftsRef.current.size === 0 &&
+        textBoxDraftsRef.current.size === 0
       ) {
         return currentModel;
       }
@@ -50364,6 +50680,28 @@ export function DocxEditorViewer({
         );
       });
 
+      const acceptedTextBoxDrafts: Array<ReturnType<TextBoxDraftReader>> = [];
+      let preserveFocusedTextBoxSelection = false;
+      textBoxDraftsRef.current.forEach(({ location, storyIndex, blockId, documentLoadNonce: draftGeneration, read }) => {
+        const draft = read();
+        if (!draft) return;
+        const target = getParagraphAtLocation(nextModel, imageLocationToParagraphLocation(location))
+          .paragraph?.children[location.childIndex];
+        const projected = draftGeneration === documentLoadNonce && target?.type === "image" && blockId !== undefined && target.blockId === blockId
+          ? projectSyntheticTextBoxText(nextModel, location, draft.text, storyIndex)
+          : undefined;
+        if (!projected) {
+          draft.settle(false);
+          throw new Error("Could not apply text box changes for export.");
+        }
+        if (projected !== nextModel && draft.ownsSelection) {
+          preserveFocusedTextBoxSelection = true;
+        }
+        nextModel = projected;
+        acceptedTextBoxDrafts.push(draft);
+      });
+      acceptedTextBoxDrafts.forEach((draft) => draft?.settle(true));
+
       consumedTableDraftKeys.forEach((draftKey) => {
         tableCellDraftsRef.current.delete(draftKey);
       });
@@ -50374,6 +50712,9 @@ export function DocxEditorViewer({
         sectionParagraphDraftsRef.current.delete(draftKey);
       });
 
+      if (preserveFocusedTextBoxSelection && nextModel !== currentModel) {
+        editor.suppressNextDomSelectionRestore();
+      }
       return nextModel;
     };
 
@@ -53912,7 +54253,8 @@ export function DocxEditorViewer({
                 undefined,
                 undefined,
                 undefined,
-                undefined
+                undefined,
+                isReadOnly
               ) ?? resolveRenderableImageSource(run.image);
             if (!renderableImageSrc) {
               return undefined;
@@ -55578,6 +55920,7 @@ export function DocxEditorViewer({
         commentsEnabled &&
         /commentRange|commentReference/i.test(paragraph.sourceXml ?? "");
       if (
+        (isReadOnly || !paragraphHasFormField(paragraph)) &&
         (trackedChangesEnabled ||
           useSpecialTabLayout ||
           paragraphHasCommentAnchors) &&
@@ -55594,6 +55937,7 @@ export function DocxEditorViewer({
           undefined,
           undefined,
           {
+            preserveUneditedVmlComposite: isReadOnly,
             showTrackedChanges: trackedChangesEnabled,
             showCommentHighlights: commentsEnabled,
             numberingDefinitions: editor.model.metadata.numberingDefinitions,
@@ -55608,7 +55952,7 @@ export function DocxEditorViewer({
         (location.kind === "table-cell"
           ? tableCellParagraphLineHeightPx(paragraph, paragraphGridPitchPx, disableGridSnap)
           : estimateParagraphLineHeightPx(paragraph, paragraphGridPitchPx, disableGridSnap));
-      const manualDualWrappedLayout = !numberingLabel
+      const manualDualWrappedLayout = !numberingLabel && !paragraphHasFormField(paragraph)
         ? resolveParagraphDualWrappedTextLayout(
             paragraph,
             paragraphRenderTextWidthPx,
@@ -55671,7 +56015,8 @@ export function DocxEditorViewer({
                     undefined,
                     undefined,
                     undefined,
-                    undefined
+                    undefined,
+                    isReadOnly
                   ) ?? resolveRenderableImageSource(run.image);
                 if (!renderableImageSrc) {
                   return undefined;
@@ -55830,7 +56175,8 @@ export function DocxEditorViewer({
               undefined,
               undefined,
               undefined,
-              undefined
+              undefined,
+              isReadOnly
             ) ?? resolveRenderableImageSource(manualImage);
           const showsUnsupportedFallback =
             imageUsesPlaceholderFallback(manualImage) ||
@@ -55935,7 +56281,10 @@ export function DocxEditorViewer({
                           display: "block",
                         }}
                       >
-                        <img
+                        <PaintBoundsImage
+                          image={manualImage}
+                          widthPx={cropLayout.imageWidthPx}
+                          heightPx={cropLayout.imageHeightPx}
                           src={renderableImageSrc}
                           alt={manualImage.alt ?? "DOCX image"}
                           draggable={false}
@@ -55955,7 +56304,10 @@ export function DocxEditorViewer({
                   }
 
                   return (
-                    <img
+                    <PaintBoundsImage
+                      image={manualImage}
+                      widthPx={widthPx}
+                      heightPx={heightPx}
                       src={renderableImageSrc}
                       alt={manualImage.alt ?? "DOCX image"}
                       draggable={false}
@@ -56144,7 +56496,8 @@ export function DocxEditorViewer({
               undefined,
               undefined,
               undefined,
-              undefined
+              undefined,
+              isReadOnly
             ) ?? resolveRenderableImageSource(manualImage);
           const showsUnsupportedFallback =
             imageUsesPlaceholderFallback(manualImage) ||
@@ -56396,7 +56749,8 @@ export function DocxEditorViewer({
               undefined,
               undefined,
               undefined,
-              undefined
+              undefined,
+              isReadOnly
             ) ?? resolveRenderableImageSource(manualImage);
           const showsUnsupportedFallback =
             imageUsesPlaceholderFallback(manualImage) ||
@@ -56857,17 +57211,33 @@ export function DocxEditorViewer({
               }
             : {};
 
+          const mappedVmlComposite = mapVmlCompositeStories(child, true);
+          const supportsVmlTextLayers =
+            Number.isFinite(child.widthPx) && (child.widthPx ?? 0) > 0 &&
+            Number.isFinite(child.heightPx) && (child.heightPx ?? 0) > 0 &&
+            !imageCropLayout(child, widthPx, heightPx) &&
+            !parseDrawingImageTransformFromSourceXml(child.sourceXml) &&
+            !isLikelyFullPageCoverImage;
+          const coherentVmlComposite = mappedVmlComposite?.richText && !supportsVmlTextLayers
+            ? mapVmlCompositeStories(child) : mappedVmlComposite;
+          const editableVmlComposite =
+            coherentVmlComposite?.overlaySafe &&
+            supportsVmlTextLayers
+              ? coherentVmlComposite
+              : undefined;
           const renderableImageSrc =
-            syntheticTextBoxSvg(
+            coherentVmlComposite ? child.src : syntheticTextBoxSvg(
               child,
               undefined,
               undefined,
               undefined,
-              undefined
+              undefined,
+              isReadOnly
             ) ?? resolveRenderableImageSource(child);
           const isLiveSyntheticTextBox =
-            child.syntheticTextBox &&
-            !syntheticTextBoxContainsPictureLayer(child, false);
+            !coherentVmlComposite && child.syntheticTextBox &&
+            !syntheticTextBoxContainsPictureLayer(child, false) &&
+            !(isReadOnly && (coherentVmlComposite || hasUneditedVmlPictureComposite(child)));
           const hasStructuredTextBoxContent =
             child.textBoxText === undefined &&
             child.contentNodes?.some(
@@ -56888,7 +57258,8 @@ export function DocxEditorViewer({
             imageUsesPlaceholderFallback(child) ||
             (child.src && !renderableImageSrc);
           const liftLiveSyntheticTextBoxAboveArtwork =
-            isLiveSyntheticTextBox && child.floating?.behindDocument === true;
+            (isLiveSyntheticTextBox || (editableVmlComposite && !isReadOnly)) &&
+            child.floating?.behindDocument === true;
           const isBehindTextAbsoluteImage =
             isAbsoluteFloatingImage &&
             child.floating?.behindDocument === true &&
@@ -57000,8 +57371,9 @@ export function DocxEditorViewer({
                 ...(liftLiveSyntheticTextBoxAboveArtwork
                   ? { zIndex: syntheticTextBoxForegroundZIndex(child) }
                   : undefined),
-                ...(isBehindTextAbsoluteImage ||
-                behavesAsDecorativeBehindTextBackground
+                ...((isBehindTextAbsoluteImage ||
+                behavesAsDecorativeBehindTextBackground) &&
+                !(editableVmlComposite && !isReadOnly)
                   ? { pointerEvents: "none", userSelect: "none" }
                   : undefined),
               }}
@@ -57058,8 +57430,78 @@ export function DocxEditorViewer({
                 );
               }}
             >
-              {isLiveSyntheticTextBox ? (
-                <div
+              {editableVmlComposite && child.src ? (
+                <VmlCompositeStorySurface
+                  key={`${editor.documentLoadNonce}:${child.blockId ?? runKey}`}
+                  resetRevision={editor.historyRevision}
+                  mapping={editableVmlComposite}
+                  paintBounds={child.paintBounds}
+                  src={child.src}
+                  alt={child.alt ?? "DOCX image"}
+                  widthPx={child.widthPx!}
+                  heightPx={child.heightPx!}
+                  displayWidthPx={widthPx ?? child.widthPx!}
+                  displayHeightPx={heightPx ?? child.heightPx!}
+                  readOnly={isReadOnly}
+                  visualStyle={{
+                    filter: appendCssFilters(child.cssFilter, documentContentFilter),
+                    opacity: child.cssOpacity,
+                  }}
+                  onSelect={() => setSelectedImage(imageLocation)}
+                  onStoryCommit={(storyIndex, text) =>
+                    editor.setSyntheticTextBoxText(imageLocation, text, storyIndex)
+                  }
+                  registerStoryDraft={(storyIndex, reader) => registerTextBoxDraft(imageLocation, storyIndex, child.blockId, reader)}
+                  renderStory={(story) => resolveSyntheticTextBoxParagraphs({
+                    ...child,
+                    sourceXml: story.sourceXml,
+                    contentNodes: [...story.paragraphs],
+                    textBoxText: undefined,
+                    widthPx: story.framePx.width,
+                    heightPx: story.framePx.height,
+                    paintBounds: undefined,
+                  }).map((paragraph, paragraphIndex) => (
+                    <div
+                      key={`${runKey}-story-${story.index}-paragraph-${paragraphIndex}`}
+                      data-docx-source-id={paragraph.sourceId ?? story.paragraphs[paragraphIndex]?.blockId}
+                      data-docx-source-kind="paragraph"
+                      style={{
+                        minHeight: Math.max(1, paragraph.lineHeightPx),
+                        lineHeight: `${Math.max(1, paragraph.lineHeightPx)}px`,
+                        textAlign: paragraph.align ?? "left",
+                        whiteSpace: "pre-wrap",
+                      }}
+                    >
+                      {paragraph.segments.map((segment, segmentIndex) => (
+                        <span
+                          key={segmentIndex}
+                          data-docx-vml-run-index={segmentIndex}
+                          style={segment.style ? runStyleToCss(
+                            segment.style, documentContentTheme,
+                            undefined, undefined, typography
+                          ) : undefined}
+                        >
+                          {segment.style?.characterScalePercent !== undefined && segment.style.characterScalePercent !== 100
+                            ? segment.text.split(/(\s+)/u).filter(Boolean).map((text, index) => scaledVmlText(
+                                text,
+                                runStyleToCss(segment.style, documentContentTheme, text, undefined, typography),
+                                segment.style!.characterScalePercent! / 100,
+                                index
+                              ))
+                            : segment.text}
+                        </span>
+                      ))}
+                    </div>
+                  ))}
+                />
+              ) : isLiveSyntheticTextBox ? (
+                <TextBoxContentSurface
+                  key={`${editor.documentLoadNonce}:${child.blockId ?? runKey}`}
+                  resetRevision={editor.historyRevision}
+                  value={syntheticTextBoxParagraphs?.length
+                    ? syntheticTextBoxParagraphs.map((paragraph) => paragraph.segments.map((segment) => segment.text).join("")).join("\n")
+                    : syntheticTextBoxText}
+                  structured={hasStructuredTextBoxContent}
                   data-docx-textbox-editor="true"
                   contentEditable={!isReadOnly && !hasStructuredTextBoxContent}
                   suppressContentEditableWarning
@@ -57088,15 +57530,8 @@ export function DocxEditorViewer({
                       setSelectedImage(imageLocation);
                     }
                   }}
-                  onBlur={(event) => {
-                    if (isReadOnly || hasStructuredTextBoxContent) {
-                      return;
-                    }
-                    editor.setSyntheticTextBoxText(
-                      imageLocation,
-                      event.currentTarget.innerText
-                    );
-                  }}
+                  onTextCommit={(text) => editor.setSyntheticTextBoxText(imageLocation, text)}
+                  registerPendingDraft={(reader) => registerTextBoxDraft(imageLocation, undefined, child.blockId, reader)}
                   style={{
                     width: widthPx ? `${widthPx}px` : undefined,
                     height: heightPx ? `${heightPx}px` : undefined,
@@ -57163,7 +57598,7 @@ export function DocxEditorViewer({
                         )
                       )
                     : syntheticTextBoxText}
-                </div>
+                </TextBoxContentSurface>
               ) : renderableImageSrc && !showsUnsupportedFallback ? (
                 (() => {
                   const cropLayout = imageCropLayout(child, widthPx, heightPx);
@@ -57215,7 +57650,10 @@ export function DocxEditorViewer({
                           display: "block",
                         }}
                       >
-                        <img
+                        <PaintBoundsImage
+                          image={child}
+                          widthPx={imageShouldFillFrame ? widthPx : cropLayout.imageWidthPx}
+                          heightPx={imageShouldFillFrame ? heightPx : cropLayout.imageHeightPx}
                           src={renderableImageSrc}
                           alt={child.alt ?? "DOCX image"}
                           draggable={
@@ -57264,7 +57702,10 @@ export function DocxEditorViewer({
                   }
 
                   return (
-                    <img
+                    <PaintBoundsImage
+                      image={child}
+                      widthPx={widthPx}
+                      heightPx={heightPx}
                       src={renderableImageSrc}
                       alt={child.alt ?? "DOCX image"}
                       draggable={
@@ -57546,6 +57987,30 @@ export function DocxEditorViewer({
         } else if (child.type === "form-field") {
           if (isReadOnly) {
             const value = formFieldDisplayValue(child) || "\u00a0";
+            if (child.fieldType === "checkbox") {
+              const presentation = formFieldPreviewPresentation(resolveFormFieldSourcePreview(child), {
+                containerWidthPx: paragraphRenderTextWidthPx,
+                pageOrigin: interactiveBodyFloatingPageOriginPx,
+                paragraphOriginLeftPx: bodyParagraphOriginLeftPx,
+                paragraphOriginTopPx: bodyParagraphOriginTopPx,
+                imageFilter: documentContentFilter,
+                resolveZoomScale: resolveViewerMeasurementZoomScale,
+              });
+              nodes.push(
+                <ReadOnlyCheckbox
+                  key={runKey}
+                  field={child}
+                  childIndex={childIndex}
+                  sourceId={paragraph.blockId ? `${paragraph.blockId}/child/${childIndex}` : undefined}
+                  presentation={presentation}
+                  style={runStyleToCss(child.style, documentContentTheme, value, paragraphBaseFontSizePx(paragraph) * 72 / 96, typography)}
+                  fallback={scriptFontTextContent(value, child.style, runKey, paragraphBaseFontSizePx(paragraph) * 72 / 96, typography)}
+                />
+              );
+              if (presentation) trackInlineAdvance(presentation.inlineAdvancePx ?? 0);
+              else trackTextAdvance(value, child.style);
+              return;
+            }
             nodes.push(
               <span
                 key={runKey}
@@ -57553,9 +58018,6 @@ export function DocxEditorViewer({
                 data-docx-form-field="true"
                 data-docx-form-field-child-index={childIndex}
                 data-docx-form-field-type={child.fieldType}
-                role={child.fieldType === "checkbox" ? "checkbox" : undefined}
-                aria-checked={child.fieldType === "checkbox" ? Boolean(child.checked ?? child.widget?.checkbox?.defaultChecked) : undefined}
-                aria-readonly={child.fieldType === "checkbox" ? true : undefined}
                 style={runStyleToCss(child.style, documentContentTheme, value, paragraphBaseFontSizePx(paragraph) * 72 / 96, typography)}
               >
                 {scriptFontTextContent(value, child.style, runKey, paragraphBaseFontSizePx(paragraph) * 72 / 96, typography)}
@@ -57632,7 +58094,8 @@ export function DocxEditorViewer({
                 data-docx-form-field-child-index={childIndex}
                 data-docx-form-field-type="checkbox"
                 role="checkbox"
-                aria-checked={Boolean(child.checked)}
+                aria-label={formFieldAccessibleName(child)}
+                aria-checked={Boolean(child.checked ?? child.widget?.checkbox?.defaultChecked)}
                 tabIndex={isReadOnly ? -1 : 0}
                 onMouseDown={(event) => {
                   event.preventDefault();
@@ -58105,7 +58568,7 @@ export function DocxEditorViewer({
   const extractDroppedDocxFile = React.useCallback(
     (dataTransfer: DataTransfer | null): File | undefined => {
       return Array.from(dataTransfer?.files ?? []).find((candidate) =>
-        /\.docx?$/i.test(candidate.name)
+        isWordFileName(candidate.name)
       );
     },
     []
@@ -64410,12 +64873,13 @@ export function DocxEditorViewer({
             },
             pageNumberValue,
             totalPagesForFieldResolution,
-            { ...runRenderOptions, defaultTabStopTwips: editor.model.metadata.defaultTabStopTwips }, typography
+            { ...runRenderOptions, preserveUneditedVmlComposite: isReadOnly, defaultTabStopTwips: editor.model.metadata.defaultTabStopTwips }, typography
           )}
         </span>
       ));
     },
     [
+      isReadOnly,
       documentContentTheme,
       editor.model.metadata.defaultTabStopTwips,
       endnoteDisplayIndexById,
@@ -64572,7 +65036,7 @@ export function DocxEditorViewer({
             fontWeight: 500,
           }}
         >
-          Drop .docx anywhere to replace current document
+          Drop a Word document anywhere to replace current document
         </div>
       ) : null}
       {editor.importError ? (

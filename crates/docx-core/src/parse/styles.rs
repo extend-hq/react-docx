@@ -100,7 +100,7 @@ pub fn normalize_heading_level(value: Option<&str>) -> Option<HeadingLevel> {
                 .get(cursor)
                 .and_then(|byte| (*byte as char).to_digit(10))
             {
-                if (1..=6).contains(&digit) {
+                if (1..=9).contains(&digit) {
                     return match digit {
                         1 => Some(HeadingLevel::One),
                         2 => Some(HeadingLevel::Two),
@@ -108,6 +108,9 @@ pub fn normalize_heading_level(value: Option<&str>) -> Option<HeadingLevel> {
                         4 => Some(HeadingLevel::Four),
                         5 => Some(HeadingLevel::Five),
                         6 => Some(HeadingLevel::Six),
+                        7 => Some(HeadingLevel::Seven),
+                        8 => Some(HeadingLevel::Eight),
+                        9 => Some(HeadingLevel::Nine),
                         _ => None,
                     };
                 }
@@ -1939,6 +1942,9 @@ pub(crate) fn parse_heading_level_from_outline(xml: &str) -> Option<Option<Headi
         4 => Some(HeadingLevel::Four),
         5 => Some(HeadingLevel::Five),
         6 => Some(HeadingLevel::Six),
+        7 => Some(HeadingLevel::Seven),
+        8 => Some(HeadingLevel::Eight),
+        9 => Some(HeadingLevel::Nine),
         _ => None,
     })
 }

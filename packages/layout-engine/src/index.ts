@@ -2,12 +2,14 @@ import type {
   DocModel,
   FormFieldRunNode,
   HeadingLevel,
+  ImageRunNode,
   ParagraphAlignment,
   ParagraphNode,
   TableCellContentNode,
   TableNode,
   TextStyle
 } from "@extend-ai/react-docx-doc-model";
+import { resolveFormFieldSourcePreview } from "@extend-ai/react-docx-doc-model";
 
 export * from "./line-metrics";
 export * from "./paragraph-breaks";
@@ -23,12 +25,22 @@ export interface LayoutOptions {
   tableCellPadding?: number;
 }
 
+export interface LayoutFormField {
+  checked: boolean;
+  label: string;
+  fallbackText: string;
+  childIndex: number;
+  style?: TextStyle;
+  disabled?: boolean;
+}
+
 export interface LayoutTextRun {
   kind: "text";
   id: string;
   text: string;
   style?: TextStyle;
   link?: string;
+  formField?: LayoutFormField;
 }
 
 export interface LayoutImageRun {
@@ -41,6 +53,12 @@ export interface LayoutImageRun {
   contentType?: string;
   data?: Uint8Array;
   floating?: boolean;
+  floatingPosition?: ImageRunNode["floating"];
+  crop?: ImageRunNode["crop"];
+  paintBounds?: ImageRunNode["paintBounds"];
+  cssFilter?: string;
+  cssOpacity?: number;
+  formField?: LayoutFormField;
 }
 
 export type LayoutRun = LayoutTextRun | LayoutImageRun;
@@ -55,6 +73,7 @@ export interface LayoutParagraphBlock {
   y: number;
   width: number;
   height: number;
+  formFieldParagraphIndex?: number;
 }
 
 export interface LayoutTableCell {
@@ -154,7 +173,9 @@ function spacingForBlock(baseSpacing: number, headingLevel?: HeadingLevel): numb
 function formFieldDisplayText(field: FormFieldRunNode): string {
   switch (field.fieldType) {
     case "checkbox":
-      return field.checked ? field.checkedSymbol ?? "☒" : field.uncheckedSymbol ?? "☐";
+      return field.checked ?? field.widget?.checkbox?.defaultChecked
+        ? field.checkedSymbol ?? "☒"
+        : field.uncheckedSymbol ?? "☐";
     case "dropdown":
     case "date":
     case "text":
@@ -183,12 +204,45 @@ function paragraphToLayout(
     }
 
     if (child.type === "form-field") {
+      const fallbackText = formFieldDisplayText(child);
+      const preview = resolveFormFieldSourcePreview(child);
+      const formField: LayoutFormField | undefined = child.fieldType === "checkbox"
+        ? {
+            checked: Boolean(child.checked ?? child.widget?.checkbox?.defaultChecked),
+            label: child.title || child.widget?.name || child.tag || preview?.alt || "Checkbox",
+            fallbackText,
+            childIndex: runIndex,
+            style: child.style,
+            disabled: child.widget?.enabled === false
+          }
+        : undefined;
+      if (preview) {
+        const defaultSize = (child.widget?.checkbox?.sizePt ?? child.style?.fontSizePt ?? 12) * 96 / 72;
+        return {
+          kind: "image",
+          id: `${idPrefix}-run-${runIndex}`,
+          src: preview.src,
+          alt: preview.alt,
+          widthPx: preview.widthPx ?? defaultSize,
+          heightPx: preview.heightPx ?? defaultSize,
+          contentType: preview.contentType,
+          data: preview.data ? new Uint8Array(preview.data) : undefined,
+          floating: Boolean(preview.floating),
+          floatingPosition: preview.floating ? { ...preview.floating } : undefined,
+          crop: preview.crop ? { ...preview.crop } : undefined,
+          paintBounds: preview.paintBounds ? { ...preview.paintBounds } : undefined,
+          cssFilter: preview.cssFilter,
+          cssOpacity: preview.cssOpacity,
+          formField
+        };
+      }
       return {
         kind: "text",
         id: `${idPrefix}-run-${runIndex}`,
-        text: formFieldDisplayText(child),
+        text: fallbackText,
         style: child.style,
-        link: child.link
+        link: child.link,
+        formField
       };
     }
 
@@ -201,7 +255,8 @@ function paragraphToLayout(
       heightPx: child.heightPx,
       contentType: child.contentType,
       data: child.data ? new Uint8Array(child.data) : undefined,
-      floating: Boolean(child.floating)
+      floating: Boolean(child.floating),
+      paintBounds: child.paintBounds ? { ...child.paintBounds } : undefined
     };
   });
 
@@ -269,16 +324,18 @@ function tableToLayout(
       const cellWidth = baseCellWidth * colSpan;
       const cellParagraphs = paragraphsForTableCellNodes(cell.nodes);
 
-      const paragraphBlocks = cellParagraphs.map((paragraph, paragraphIndex) =>
-        paragraphToLayout(
+      const directParagraphs = cell.nodes.filter((node) => node.type === "paragraph");
+      const paragraphBlocks = cellParagraphs.map((paragraph, paragraphIndex) => ({
+        ...paragraphToLayout(
           paragraph,
           `${idPrefix}-r${rowIndex}-c${cellIndex}-p${paragraphIndex}`,
           x + columnCursor * baseCellWidth,
           y,
           cellWidth,
           options.minLineHeight
-        )
-      );
+        ),
+        formFieldParagraphIndex: directParagraphs.indexOf(paragraph)
+      }));
 
       const paragraphsHeight = paragraphBlocks.reduce((sum, block) => sum + block.height, 0);
       rowHeight = Math.max(rowHeight, paragraphsHeight + options.tableCellPadding * 2);

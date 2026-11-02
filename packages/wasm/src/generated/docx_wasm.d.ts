@@ -5,6 +5,8 @@ export function build_doc_model_from_bytes(bytes: Uint8Array): any;
 
 export function build_doc_model_from_package(_package: any): string;
 
+export function can_preserve_image_paint_source_wasm(image: any, base_package?: any | null, owner_part_name?: string | null): boolean;
+
 export function extract_document_blocks_wasm(model_json: string): string;
 
 export function extract_document_blocks_with_options_wasm(model_json: string, options_json: string): string;
@@ -29,6 +31,7 @@ export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly build_doc_model_from_bytes: (a: number, b: number, c: number) => void;
     readonly build_doc_model_from_package: (a: number, b: number) => void;
+    readonly can_preserve_image_paint_source_wasm: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly extract_document_blocks_wasm: (a: number, b: number, c: number) => void;
     readonly extract_document_blocks_with_options_wasm: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly inspect_document_source_wasm: (a: number, b: number, c: number) => void;

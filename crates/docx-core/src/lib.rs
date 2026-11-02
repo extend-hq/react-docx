@@ -7,6 +7,7 @@ pub mod serialize;
 pub mod source_graph;
 pub mod structured;
 pub mod table_grid;
+mod wmf;
 pub mod xml;
 mod xml_index;
 pub mod zip;
@@ -36,7 +37,10 @@ pub fn parse_document_blocks_with_options(
         options,
     ))
 }
-pub use serialize::{model_to_document_xml, serialize_doc_model, serialize_docx};
+pub use serialize::{
+    can_preserve_image_paint_source, model_to_document_xml, serialize_doc_model, serialize_docx,
+    try_serialize_doc_model, validate_image_paint_bounds,
+};
 pub use zip::{create_minimal_docx_package, package_to_bytes, parse_docx};
 
 /// Parses either a DOCX (OOXML zip) or a legacy Word 97-2003 binary `.doc`

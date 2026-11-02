@@ -14,9 +14,13 @@ import type {
 import {
   allocateBlockId,
   cloneDocModel,
+  cloneFormFieldSourcePreview,
   cloneParagraphMarkFormatting,
   cloneParagraphNode,
   cloneTableNode,
+  invalidateFormFieldSource,
+  resolveFormFieldSourcePreview,
+  resolveImagePaintBounds,
 } from "@extend-ai/react-docx-doc-model";
 
 export {
@@ -184,6 +188,7 @@ function cloneFormFieldRun(run: FormFieldRunNode): FormFieldRunNode {
     style: run.style ? { ...run.style } : undefined,
     link: run.link,
     sourceXml: run.sourceXml,
+    sourcePreview: cloneFormFieldSourcePreview(run.sourcePreview),
   };
 }
 
@@ -198,6 +203,7 @@ function cloneImageRun(run: ImageRunNode): ImageRunNode {
     alt: run.alt,
     widthPx: run.widthPx,
     heightPx: run.heightPx,
+    paintBounds: run.paintBounds ? { ...run.paintBounds } : undefined,
     partName: run.partName,
     contentType: run.contentType,
     data: run.data ? new Uint8Array(run.data) : undefined,
@@ -209,6 +215,31 @@ function cloneImageRun(run: ImageRunNode): ImageRunNode {
     syntheticTextBox: run.syntheticTextBox,
     textBoxText: run.textBoxText,
   };
+}
+
+function cloneImageRunForClipboard(run: ImageRunNode): ImageRunNode {
+  const copy = cloneImageRun(run);
+  const clearImageIds = (image: ImageRunNode): void => {
+    delete image.blockId;
+    image.contentNodes?.forEach(clearNodeIds);
+  };
+  const clearNodeIds = (node: TableCellContentNode): void => {
+    delete node.blockId;
+    if (node.type === "paragraph") {
+      for (const child of node.children) {
+        if (child.type === "image") clearImageIds(child);
+        if (child.type === "form-field" && child.sourcePreview) {
+          clearImageIds(child.sourcePreview.image);
+        }
+      }
+    } else {
+      for (const row of node.rows) {
+        for (const cell of row.cells) cell.nodes.forEach(clearNodeIds);
+      }
+    }
+  };
+  clearImageIds(copy);
+  return copy;
 }
 
 function cloneParagraphChildRun(
@@ -1639,6 +1670,8 @@ export function serializeParagraphsForClipboard(
             }
           : run.type === "form-field"
           ? cloneFormFieldRun(run)
+          : run.paintBounds !== undefined
+          ? cloneImageRunForClipboard(run)
           : {
               type: "image" as const,
               src: run.src,
@@ -1653,7 +1686,8 @@ export function serializeParagraphsForClipboard(
               textBoxText: run.textBoxText,
             }
       ),
-    }))
+    })),
+    (_key, value: unknown) => value instanceof Uint8Array ? Array.from(value) : value
   );
 }
 
@@ -1678,6 +1712,7 @@ export function parseParagraphsFromClipboard(
       }
 
       const children: ParagraphNode["children"] = [];
+      let sourcePreviewEdited = false;
       for (const run of value.children) {
         if (!run || typeof run !== "object") {
           continue;
@@ -1694,6 +1729,11 @@ export function parseParagraphsFromClipboard(
         }
 
         if (run.type === "image") {
+          if (run.paintBounds !== undefined) {
+            if (!resolveImagePaintBounds(run)) return undefined;
+            children.push(cloneImageRunForClipboard(run));
+            continue;
+          }
           children.push({
             type: "image",
             src: run.src,
@@ -1813,7 +1853,7 @@ export function parseParagraphsFromClipboard(
                 }
               : undefined;
 
-          children.push({
+          const field: FormFieldRunNode = {
             type: "form-field",
             fieldType: run.fieldType,
             sourceKind:
@@ -1841,7 +1881,24 @@ export function parseParagraphsFromClipboard(
             link: typeof run.link === "string" ? run.link : undefined,
             sourceXml:
               typeof run.sourceXml === "string" ? run.sourceXml : undefined,
-          });
+            sourcePreview: run.sourcePreview,
+          };
+          if (field.sourcePreview) {
+            if (resolveFormFieldSourcePreview(field)) {
+              children.push({ ...field, sourcePreview: cloneFormFieldSourcePreview(field.sourcePreview) });
+            } else {
+              const stateChanged = typeof field.sourcePreview.checked === "boolean" && (
+                field.fieldType !== "checkbox" ||
+                field.sourcePreview.checked !== Boolean(field.checked ?? field.widget?.checkbox?.defaultChecked)
+              );
+              sourcePreviewEdited ||= stateChanged;
+              children.push(stateChanged
+                ? invalidateFormFieldSource(field)
+                : { ...field, sourcePreview: undefined });
+            }
+          } else {
+            children.push(field);
+          }
         }
       }
 
@@ -1865,7 +1922,7 @@ export function parseParagraphsFromClipboard(
             ? value.paragraphMarkDeleted
             : undefined,
         sourceXml:
-          typeof value.sourceXml === "string" ? value.sourceXml : undefined,
+          !sourcePreviewEdited && typeof value.sourceXml === "string" ? value.sourceXml : undefined,
         children: children.length > 0 ? children : [{ type: "text", text: "" }],
       });
     }

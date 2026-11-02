@@ -85,6 +85,43 @@ pub enum ParagraphInline {
     },
 }
 
+struct FormFieldSemanticDetails<'a>(&'a FormFieldRunNode);
+
+impl Serialize for FormFieldSemanticDetails<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeMap;
+        let field = self.0;
+        let mut map = serializer.serialize_map(None)?;
+        map.serialize_entry("type", &field.r#type)?;
+        map.serialize_entry("fieldType", &field.field_type)?;
+        macro_rules! optional {
+            ($name:literal, $value:expr) => {
+                if let Some(value) = $value.as_ref() {
+                    map.serialize_entry($name, value)?;
+                }
+            };
+        }
+        optional!("sourceKind", field.source_kind);
+        optional!("id", field.id);
+        optional!("tag", field.tag);
+        optional!("title", field.title);
+        optional!("placeholder", field.placeholder);
+        optional!("checked", field.checked);
+        optional!("value", field.value);
+        optional!("options", field.options);
+        optional!("widget", field.widget);
+        optional!("checkedSymbol", field.checked_symbol);
+        optional!("uncheckedSymbol", field.unchecked_symbol);
+        optional!("style", field.style);
+        optional!("link", field.link);
+        optional!("sourceXml", field.source_xml);
+        map.end()
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ParagraphDetails {
@@ -524,11 +561,16 @@ impl Extractor {
                         end: text_offset,
                         text: value.clone(),
                     });
+                    let details = if field.source_preview.is_some() {
+                        json!({"type":"key_value_details", "kind":"form_field", "field":FormFieldSemanticDetails(field)})
+                    } else {
+                        json!({"type":"key_value_details", "kind":"form_field", "field":field})
+                    };
                     children.push(self.block(
                         child_id,
                         BlockType::KeyValue,
                         value,
-                        json!({"type":"key_value_details", "kind":"form_field", "field":field}),
+                        details,
                         Vec::new(),
                         Some(id),
                     ));
@@ -565,6 +607,12 @@ impl Extractor {
                             .join("\n")
                     };
                     let mut details = json!({"kind":image.semantic_kind.as_deref().unwrap_or(if image.synthetic_text_box == Some(true) {"text_box"} else {"image"}), "mathMl":image.math_ml, "asset":image.part_name, "alt":image.alt, "contentType":image.content_type, "width":image.width_px, "height":image.height_px, "floating":image.floating});
+                    if let Some(paint_bounds) = image.paint_bounds.as_ref() {
+                        details
+                            .as_object_mut()
+                            .unwrap()
+                            .insert("paintBounds".into(), json!(paint_bounds));
+                    }
                     if let Some(url) = image_url(image) {
                         details
                             .as_object_mut()

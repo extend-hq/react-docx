@@ -1,7 +1,7 @@
 import * as React from "react";
 import { flushSync } from "react-dom";
 import type { Root } from "react-dom/client";
-import type { DocModel } from "@extend-ai/react-docx-doc-model";
+import type { DocModel, HeadingLevel, ImageRunNode } from "@extend-ai/react-docx-doc-model";
 import {
   layoutDocument,
   type LayoutBlock,
@@ -15,7 +15,9 @@ import { importDocxBuffer } from "./docx-import";
 import type { ParsedDocxDocument } from "./parsed-docx";
 import {
   buildDocumentPageNodeSegments,
+  absoluteFloatingImageStyle,
   resolveDocxPageThumbnailResolution,
+  wrappedFloatingImageStyle,
   type DocxPageThumbnailBounds,
   type DocxThumbnailScheduling,
 } from "./editor";
@@ -31,6 +33,7 @@ import {
 } from "./section-layout";
 import {
   imageUsesPlaceholderFallback,
+  resolveFormFieldPreviewImageSource,
   resolveRenderableImageSource,
   unsupportedImageFallbackLabel,
 } from "./image-render";
@@ -155,7 +158,7 @@ function resolveHighlightColor(value?: string): string | undefined {
   return HIGHLIGHT_TO_CSS[normalized] ?? normalized;
 }
 
-function headingFontSize(level?: 1 | 2 | 3 | 4 | 5 | 6): string | undefined {
+function headingFontSize(level?: HeadingLevel): string | undefined {
   if (!level) {
     return undefined;
   }
@@ -316,8 +319,139 @@ function linkRunTextStyle(run: LayoutRun): React.CSSProperties {
   };
 }
 
-function renderParagraphRuns(block: LayoutParagraphBlock): React.JSX.Element[] {
+interface LayoutPageFrame {
+  width: number;
+  height: number;
+  left: number;
+  right: number;
+  top: number;
+  bottom: number;
+}
+
+function LayoutCheckbox({
+  run,
+  block,
+  page,
+}: {
+  run: LayoutRun;
+  block: LayoutParagraphBlock;
+  page: LayoutPageFrame;
+}): React.JSX.Element | null {
+  const field = run.formField;
+  const [failedSource, setFailedSource] = React.useState<string>();
+  if (!field) return null;
+  const image = run.kind === "image" ? run : undefined;
+  const source = image ? resolveFormFieldPreviewImageSource(image) : undefined;
+  const showPreview = Boolean(source && source !== failedSource);
+  const floating = image?.floatingPosition;
+  const wraps = floating && floating.wrapType && floating.wrapType !== "none"
+    && floating.behindDocument !== true;
+  const alignmentOffset = (align: string | undefined, extent: number, size: number): number | undefined => {
+    if (align === "center") return (extent - size) / 2;
+    if (align === "right" || align === "bottom" || align === "outside") return extent - size;
+    if (align === "left" || align === "top" || align === "inside") return 0;
+    return undefined;
+  };
+  const horizontalExtent = floating?.horizontalRelativeTo === "page"
+    ? page.width
+    : floating?.horizontalRelativeTo === "margin" ? page.width - page.left - page.right : block.width;
+  const verticalExtent = floating?.verticalRelativeTo === "page"
+    ? page.height
+    : floating?.verticalRelativeTo === "margin" ? page.height - page.top - page.bottom : block.height;
+  const previewImage: ImageRunNode | undefined = image
+    ? { ...image, type: "image", floating: floating && !wraps ? {
+        ...floating,
+        xPx: floating.xPx ?? alignmentOffset(floating.horizontalAlign, horizontalExtent, image.widthPx ?? 0),
+        yPx: floating.yPx ?? alignmentOffset(floating.verticalAlign, verticalExtent, image.heightPx ?? 0),
+      } : floating }
+    : undefined;
+  const placement = previewImage && floating
+    ? wraps
+      ? wrappedFloatingImageStyle(previewImage, {
+          containerWidthPx: block.width,
+          allowNegativeOffsets: true,
+        })
+      : absoluteFloatingImageStyle(previewImage, {
+          pageOriginLeft: -block.x,
+          pageOriginTop: -block.y,
+          marginOriginLeft: page.left - block.x,
+          marginOriginRight: page.right,
+          marginOriginTop: page.top - block.y,
+          columnOriginLeft: 0,
+          columnOriginTop: page.top - block.y,
+          paragraphOriginLeft: 0,
+          paragraphOriginTop: 0,
+        })
+    : undefined;
+  const crop = image?.crop;
+  const fraction = (value: number | undefined): number => Number.isFinite(value) ? value as number : 0;
+  const left = fraction(crop?.leftFraction);
+  const top = fraction(crop?.topFraction);
+  const horizontal = 1 - left - fraction(crop?.rightFraction);
+  const vertical = 1 - top - fraction(crop?.bottomFraction);
+  const cropped = Boolean(crop && horizontal > 0 && vertical > 0);
+  const imageWidth = image?.widthPx !== undefined && cropped
+    ? image.widthPx / horizontal : image?.widthPx;
+  const imageHeight = image?.heightPx !== undefined && cropped
+    ? image.heightPx / vertical : image?.heightPx;
+  const textStyle = runTextStyle({
+    kind: "text",
+    id: run.id,
+    text: field.fallbackText,
+    style: field.style,
+  });
+
+  return (
+    <span
+      role="checkbox"
+      aria-checked={field.checked}
+      aria-readonly="true"
+      aria-label={field.label}
+      data-docx-form-field="true"
+      data-docx-form-field-type="checkbox"
+      data-docx-form-field-child-index={field.childIndex}
+      data-docx-source-preview={showPreview ? "true" : undefined}
+      style={{
+        ...textStyle,
+        ...(image ? {
+          display: "inline-block",
+          width: image.widthPx,
+          height: image.heightPx,
+          verticalAlign: "middle",
+          lineHeight: `${image.heightPx ?? 16}px`,
+          textAlign: "center",
+        } : undefined),
+        ...placement,
+      }}
+    >
+      {showPreview ? (
+        <span aria-hidden="true" style={{ display: "block", width: "100%", height: "100%", overflow: "hidden" }}>
+          <img
+            src={source}
+            alt=""
+            draggable={false}
+            onError={() => setFailedSource(source)}
+            style={{
+              display: "block",
+              width: imageWidth,
+              height: imageHeight,
+              maxWidth: "none",
+              filter: image?.cssFilter,
+              opacity: image?.cssOpacity,
+              transform: cropped ? `translate(${-left * (imageWidth ?? 0)}px, ${-top * (imageHeight ?? 0)}px)` : undefined,
+            }}
+          />
+        </span>
+      ) : <span aria-hidden="true">{field.fallbackText}</span>}
+    </span>
+  );
+}
+
+function renderParagraphRuns(block: LayoutParagraphBlock, page: LayoutPageFrame): React.JSX.Element[] {
   return block.runs.map((run) => {
+    if (run.formField) {
+      return <LayoutCheckbox key={run.id} run={run} block={block} page={page} />;
+    }
     if (run.kind === "image") {
       const renderableImageSrc = resolveRenderableImageSource(run);
       if (!run.src) {
@@ -416,7 +550,7 @@ function renderParagraphRuns(block: LayoutParagraphBlock): React.JSX.Element[] {
   });
 }
 
-function renderTable(block: LayoutTableBlock): React.JSX.Element {
+function renderTable(block: LayoutTableBlock, page: LayoutPageFrame): React.JSX.Element {
   return (
     <table
       style={{
@@ -448,13 +582,14 @@ function renderTable(block: LayoutTableBlock): React.JSX.Element {
                   <p
                     key={paragraph.id}
                     style={{
+                      position: "relative",
                       margin: 0,
                       textAlign: paragraph.align,
                       fontWeight: paragraph.headingLevel ? 700 : undefined,
                       fontSize: headingFontSize(paragraph.headingLevel),
                     }}
                   >
-                    {renderParagraphRuns(paragraph)}
+                    {renderParagraphRuns(paragraph, page)}
                   </p>
                 ))}
               </td>
@@ -472,15 +607,16 @@ const containerStyle: React.CSSProperties = {
   gap: 16,
 };
 
-function renderBlock(block: LayoutBlock): React.JSX.Element {
+function renderBlock(block: LayoutBlock, page: LayoutPageFrame): React.JSX.Element {
   if (block.kind === "table") {
-    return <React.Fragment key={block.id}>{renderTable(block)}</React.Fragment>;
+    return <React.Fragment key={block.id}>{renderTable(block, page)}</React.Fragment>;
   }
 
   return (
     <p
       key={block.id}
       style={{
+        position: "relative",
         margin: 0,
         minHeight: block.height,
         textAlign: block.align,
@@ -488,7 +624,7 @@ function renderBlock(block: LayoutBlock): React.JSX.Element {
         fontSize: headingFontSize(block.headingLevel),
       }}
     >
-      {renderParagraphRuns(block)}
+      {renderParagraphRuns(block, page)}
     </p>
   );
 }
@@ -630,7 +766,14 @@ export function ReactDocxViewer({
               alignContent: "start",
             }}
           >
-            {page.blocks.map(renderBlock)}
+            {page.blocks.map((block) => renderBlock(block, {
+              width: pageWidth,
+              height: pageHeight,
+              left: pagePadding,
+              right: pagePadding,
+              top: pagePadding,
+              bottom: pagePadding,
+            }))}
           </section>
         )
       )}
@@ -864,7 +1007,11 @@ export function createDocxThumbnailRenderer(
             alignContent: "start",
           }}
         >
-          {resolvedPage.page.blocks.map(renderBlock)}
+          {resolvedPage.page.blocks.map((block) => renderBlock(block, {
+            width: layout.pageWidthPx,
+            height: layout.pageHeightPx,
+            ...layout.marginsPx,
+          }))}
         </section>
       );
     });

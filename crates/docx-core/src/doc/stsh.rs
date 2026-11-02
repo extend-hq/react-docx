@@ -156,19 +156,21 @@ impl StyleSheet {
         let Some(Some(style)) = self.styles.get(istd) else {
             return ToggleSet::default();
         };
-        let mut toggles = if style.istd_base != ISTD_NIL && (style.istd_base as usize) < self.styles.len()
-        {
-            self.resolve_toggles_for(style.istd_base as usize, resolved, depth + 1)
-        } else {
-            ToggleSet::default()
-        };
+        let mut toggles =
+            if style.istd_base != ISTD_NIL && (style.istd_base as usize) < self.styles.len() {
+                self.resolve_toggles_for(style.istd_base as usize, resolved, depth + 1)
+            } else {
+                ToggleSet::default()
+            };
         toggles.apply_style_grpprl(&style.chpx);
         resolved[istd] = Some(toggles);
         toggles
     }
 
     pub fn style(&self, istd: u16) -> Option<&StyleDef> {
-        self.styles.get(istd as usize).and_then(|slot| slot.as_ref())
+        self.styles
+            .get(istd as usize)
+            .and_then(|slot| slot.as_ref())
     }
 
     pub fn style_id(&self, istd: u16) -> Option<String> {
@@ -181,12 +183,13 @@ impl StyleSheet {
             .unwrap_or_default()
     }
 
-    /// Effective toggle base for a run: paragraph style overlaid with the
-    /// character style named in the run's CHPX (if any).
+    /// Toggle operands refer to the current character style, or to the
+    /// paragraph style when no character style is applied.
     pub fn run_toggle_base(&self, para_istd: u16, char_istd: Option<u16>) -> ToggleSet {
         let para = self.toggles(para_istd);
         match char_istd {
-            Some(istd) => para.overlay(&self.toggles(istd)),
+            Some(istd) if self.style(istd).is_some() => self.toggles(istd),
+            Some(_) => para,
             None => para,
         }
     }
@@ -442,7 +445,15 @@ mod tests {
         let stds = vec![
             build_std(0, STK_PARAGRAPH, ISTD_NIL, 0, "Normal", &[], &[]),
             Vec::new(),
-            build_std(65, STK_CHARACTER, ISTD_NIL, 2, "Default Paragraph Font", &[], &[]),
+            build_std(
+                65,
+                STK_CHARACTER,
+                ISTD_NIL,
+                2,
+                "Default Paragraph Font",
+                &[],
+                &[],
+            ),
         ];
         // Manually splice an empty (cbStd == 0) slot.
         let mut stsh = build_stsh(&[stds[0].clone()]);

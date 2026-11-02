@@ -78,7 +78,7 @@ pub fn to_model_alignment(raw: Option<&str>) -> Option<ParagraphAlignment> {
 
 pub fn normalize_heading_level(value: Option<&str>) -> Option<crate::model::HeadingLevel> {
     let value = value?;
-    let caps = re::get(r"(?i)heading\s*([1-6])")?.captures(value)?;
+    let caps = re::get(r"(?i)heading\s*([1-9])")?.captures(value)?;
     let level: i64 = caps.get(1)?.as_str().parse().ok()?;
     match level {
         1 => Some(crate::model::HeadingLevel::One),
@@ -87,6 +87,9 @@ pub fn normalize_heading_level(value: Option<&str>) -> Option<crate::model::Head
         4 => Some(crate::model::HeadingLevel::Four),
         5 => Some(crate::model::HeadingLevel::Five),
         6 => Some(crate::model::HeadingLevel::Six),
+        7 => Some(crate::model::HeadingLevel::Seven),
+        8 => Some(crate::model::HeadingLevel::Eight),
+        9 => Some(crate::model::HeadingLevel::Nine),
         _ => None,
     }
 }
@@ -117,6 +120,10 @@ pub(crate) fn active_xml(xml: &str) -> std::borrow::Cow<'_, str> {
         return std::borrow::Cow::Owned(output);
     }
 
+    if let Some(output) = balanced_active_xml(xml) {
+        return std::borrow::Cow::Owned(output);
+    }
+
     if let Some(output) = scan_active_xml(xml) {
         return output;
     }
@@ -136,6 +143,36 @@ pub(crate) fn active_xml(xml: &str) -> std::borrow::Cow<'_, str> {
             .replace(&without_open, "")
             .to_string()
     })
+}
+
+fn balanced_active_xml(xml: &str) -> Option<String> {
+    let mut active = xml.to_string();
+    loop {
+        let ranges = crate::xml::extract_balanced_tag_ranges(&active, "mc:AlternateContent");
+        if ranges.is_empty() {
+            return Some(active);
+        }
+        let mut output = String::with_capacity(active.len());
+        let mut cursor = 0;
+        for range in ranges {
+            let alternate = &active[range.start..range.end];
+            let branch = crate::xml::direct_child_tag(alternate, "mc:Choice")
+                .or_else(|| crate::xml::direct_child_tag(alternate, "mc:Fallback"))?;
+            let begin = crate::xml::tag_token_end(branch, 0)?;
+            let end = branch.rfind("</")?;
+            if begin > end {
+                return None;
+            }
+            output.push_str(&active[cursor..range.start]);
+            output.push_str(&branch[begin..end]);
+            cursor = range.end;
+        }
+        output.push_str(&active[cursor..]);
+        if output.len() >= active.len() {
+            return None;
+        }
+        active = output;
+    }
 }
 
 fn scan_active_xml(xml: &str) -> Option<std::borrow::Cow<'_, str>> {

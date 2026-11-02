@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use docx_core::{
     build_doc_model, model_to_document_xml, package_to_bytes, parse_document_bytes,
-    serialize_doc_model, DocModel, OoxmlPackage, OoxmlPart,
+    try_serialize_doc_model, DocModel, ImageRunNode, OoxmlPackage, OoxmlPart,
 };
 use js_sys::{Array, Object, Reflect};
 use wasm_bindgen::prelude::*;
@@ -59,6 +59,37 @@ fn value_to_doc_model(value: &JsValue) -> Result<DocModel, JsValue> {
         .as_string()
         .ok_or_else(|| JsValue::from_str("Model JSON must be a string"))?;
     doc_model_from_json(&json_str)
+}
+
+fn value_to_image_run(value: &JsValue) -> Result<ImageRunNode, JsValue> {
+    let json_str = if let Some(json_str) = value.as_string() {
+        json_str
+    } else {
+        js_sys::JSON::stringify(value)
+            .map_err(|error| JsValue::from_str(&format!("Failed to stringify image: {error:?}")))?
+            .as_string()
+            .ok_or_else(|| JsValue::from_str("Image JSON must be a string"))?
+    };
+    serde_json::from_str(&json_str)
+        .map_err(|error| JsValue::from_str(&format!("Invalid ImageRunNode JSON: {error}")))
+}
+
+#[wasm_bindgen]
+pub fn can_preserve_image_paint_source_wasm(
+    image: &JsValue,
+    base_package: Option<JsValue>,
+    owner_part_name: Option<String>,
+) -> Result<bool, JsValue> {
+    let image = value_to_image_run(image)?;
+    let base = match base_package {
+        Some(value) => Some(value_to_ooxml_package(&value)?),
+        None => None,
+    };
+    let owner = owner_part_name.unwrap_or_else(|| match base.as_ref() {
+        Some(package) => docx_core::main_document_part_name(package),
+        None => docx_core::main_document_part_name(&docx_core::create_minimal_docx_package(None)),
+    });
+    Ok(docx_core::can_preserve_image_paint_source(&image, base.as_ref(), &owner))
 }
 
 fn js_bytes_to_vec(value: &JsValue, key: &str) -> Result<Vec<u8>, JsValue> {
@@ -248,8 +279,9 @@ pub fn serialize_docx_wasm(
         Some(value) => Some(value_to_ooxml_package(&value)?),
         None => None,
     };
-    package_to_bytes(&serialize_doc_model(&doc_model, base.as_ref()))
-        .map_err(|error| JsValue::from_str(&error))
+    let package = try_serialize_doc_model(&doc_model, base.as_ref())
+        .map_err(|error| JsValue::from_str(&error))?;
+    package_to_bytes(&package).map_err(|error| JsValue::from_str(&error))
 }
 
 #[wasm_bindgen]
@@ -264,8 +296,9 @@ pub fn serialize_docx_from_json_wasm(
         Some(value) => Some(value_to_ooxml_package(&value)?),
         None => None,
     };
-    package_to_bytes(&serialize_doc_model(&doc_model, base.as_ref()))
-        .map_err(|error| JsValue::from_str(&error))
+    let package = try_serialize_doc_model(&doc_model, base.as_ref())
+        .map_err(|error| JsValue::from_str(&error))?;
+    package_to_bytes(&package).map_err(|error| JsValue::from_str(&error))
 }
 
 #[wasm_bindgen]
@@ -280,6 +313,8 @@ pub fn model_to_document_xml_wasm(
         Some(value) => Some(value_to_ooxml_package(&value)?),
         None => None,
     };
+    docx_core::validate_image_paint_bounds(&doc_model, base.as_ref())
+        .map_err(|error| JsValue::from_str(&error))?;
     Ok(model_to_document_xml(&doc_model, base.as_ref()))
 }
 
@@ -295,6 +330,8 @@ pub fn model_to_document_xml_from_json_wasm(
         Some(value) => Some(value_to_ooxml_package(&value)?),
         None => None,
     };
+    docx_core::validate_image_paint_bounds(&doc_model, base.as_ref())
+        .map_err(|error| JsValue::from_str(&error))?;
     Ok(model_to_document_xml(&doc_model, base.as_ref()))
 }
 
