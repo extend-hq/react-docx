@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "pnpm --filter @extend-ai/react-docx build && vite",
-    "build": "pnpm --filter @extend-ai/react-docx build && tsc -p tsconfig.json --noEmit && vite build",
+    "build": "node ../../scripts/build-playground.mjs",
+    "build:app": "pnpm --filter @extend-ai/react-docx build && tsc -p tsconfig.json --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },

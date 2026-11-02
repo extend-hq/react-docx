@@ -1013,7 +1013,16 @@ fn simple_rect_bitmap_fill(shape_properties_xml: &str) -> Option<RectBitmapFill>
         return None;
     }
     let fill_xml = &shape_properties_xml[fills[0].start..fills[0].end];
-    let fill_children = crate::xml::extract_direct_child_tag_ranges(fill_xml);
+    let mut fill_children = crate::xml::extract_direct_child_tag_ranges(fill_xml);
+    if fill_children.iter().filter(|child| child.tag_name == "a:srcRect").count() > 1 {
+        return None;
+    }
+    for child in fill_children.iter().filter(|child| child.tag_name == "a:srcRect") {
+        if !bitmap_rectangle_is_uncropped(&fill_xml[child.start..child.end]) {
+            return None;
+        }
+    }
+    fill_children.retain(|child| child.tag_name != "a:srcRect");
     if fill_children.len() != 2
         || fill_children[0].tag_name != "a:blip"
         || fill_children[1].tag_name != "a:stretch"
@@ -2434,6 +2443,30 @@ fn bitmap_rectangle_is_uncropped(rectangle: &str) -> bool {
         })
 }
 
+fn bitmap_rectangle_offsets(rectangle: &str) -> Option<[f64; 4]> {
+    if !crate::xml::extract_direct_child_tag_ranges(rectangle).is_empty() {
+        return None;
+    }
+    let mut offsets = [0.0; 4];
+    for (index, name) in ["l", "t", "r", "b"].into_iter().enumerate() {
+        if let Some(value) = get_attribute(rectangle, name) {
+            let value = value.trim();
+            offsets[index] = if let Some(percent) = value.strip_suffix('%') {
+                percent.parse::<f64>().ok()? / 100.0
+            } else {
+                value.parse::<i32>().ok()? as f64 / 100000.0
+            };
+        }
+    }
+    if offsets.iter().any(|value| !value.is_finite())
+        || 1.0 - offsets[0] - offsets[2] <= 0.0
+        || 1.0 - offsets[1] - offsets[3] <= 0.0
+    {
+        return None;
+    }
+    Some(offsets)
+}
+
 fn render_stretched_bitmap_shape_svg(
     properties: &str,
     style: &str,
@@ -2510,11 +2543,8 @@ fn render_stretched_bitmap_shape_svg(
     {
         return None;
     }
-    if let Some(rectangle) = crate::xml::direct_child_tag(fill, "a:srcRect") {
-        if !bitmap_rectangle_is_uncropped(rectangle) {
-            return None;
-        }
-    }
+    let crop = crate::xml::direct_child_tag(fill, "a:srcRect")
+        .map(bitmap_rectangle_offsets).unwrap_or(Some([0.0; 4]))?;
     let blip = crate::xml::direct_child_tag(fill, "a:blip")?;
     if get_attribute(blip, "r:link").is_some() || !bitmap_blip_extensions_are_nonvisual(blip) {
         return None;
@@ -2523,10 +2553,10 @@ fn render_stretched_bitmap_shape_svg(
     let rectangles = crate::xml::extract_direct_child_tag_ranges(stretch);
     if rectangles.len() != 1
         || rectangles[0].tag_name != "a:fillRect"
-        || !bitmap_rectangle_is_uncropped(&stretch[rectangles[0].start..rectangles[0].end])
     {
         return None;
     }
+    let offsets = bitmap_rectangle_offsets(&stretch[rectangles[0].start..rectangles[0].end])?;
     let relationship = get_attribute(blip, "r:embed")?;
     let part = context.relationships.get(&relationship)?;
     let data = context.binary_assets.get(part)?;
@@ -2587,8 +2617,14 @@ fn render_stretched_bitmap_shape_svg(
         format!(r#"<rect x="0" y="0" width="{width}" height="{height}"{rounding} {attributes}/>"#)
     };
     let src = super::util::base64_data_uri(&mime, data);
+    let image_width = width as f64 * (1.0 - offsets[0] - offsets[2]) / (1.0 - crop[0] - crop[2]);
+    let image_height = height as f64 * (1.0 - offsets[1] - offsets[3]) / (1.0 - crop[1] - crop[3]);
+    let x = format_js_number(width as f64 * offsets[0] - image_width * crop[0]);
+    let y = format_js_number(height as f64 * offsets[1] - image_height * crop[1]);
+    let image_width = format_js_number(image_width);
+    let image_height = format_js_number(image_height);
     Some(format!(
-        r#"<defs><pattern id="shape-bitmap-fill" patternUnits="userSpaceOnUse" width="{width}" height="{height}"><image href="{src}" width="{width}" height="{height}" preserveAspectRatio="none"/></pattern></defs>{shape}"#
+        r#"<defs><pattern id="shape-bitmap-fill" patternUnits="userSpaceOnUse" width="{width}" height="{height}" overflow="hidden"><image href="{src}" x="{x}" y="{y}" width="{image_width}" height="{image_height}" preserveAspectRatio="none"/></pattern></defs>{shape}"#
     ))
 }
 
@@ -2668,12 +2704,12 @@ mod stretched_bitmap_tests {
             geometry,
             &fill.replace("<a:srcRect/>", "<a:srcRect l=\"10000\"/>")
         )
-        .is_none());
+        .unwrap().contains(r#"x="-8.88888888888889""#));
         assert!(render(
             geometry,
             &fill.replace("<a:fillRect/>", "<a:fillRect r=\"10000\"/>")
         )
-        .is_none());
+        .unwrap().contains(r#"width="72" height="50""#));
         assert!(render(
             geometry,
             &fill.replace("</a:blip>", "<a:grayscl/></a:blip>")

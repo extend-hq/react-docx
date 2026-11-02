@@ -21,6 +21,8 @@ pub mod fcidx {
     pub const STSHF: usize = 1;
     pub const PLCFFND_REF: usize = 2;
     pub const PLCFFND_TXT: usize = 3;
+    pub const PLCFAND_REF: usize = 4;
+    pub const PLCFAND_TXT: usize = 5;
     pub const PLCF_SED: usize = 6;
     pub const PLCF_HDD: usize = 11;
     pub const PLCF_BTE_CHPX: usize = 12;
@@ -29,6 +31,7 @@ pub mod fcidx {
     pub const PLCF_FLD_MOM: usize = 16;
     pub const DOP: usize = 31;
     pub const CLX: usize = 33;
+    pub const GRP_XST_ATN_OWNERS: usize = 36;
     pub const PLCF_SPA_MOM: usize = 40;
     pub const PLCF_SPA_HDR: usize = 41;
     pub const PLCFEND_REF: usize = 46;
@@ -91,11 +94,9 @@ impl CcpCounts {
 
     /// CP at which the main-textbox subdocument starts.
     pub fn txbx_start(&self) -> u32 {
-        [
-            self.text, self.ftn, self.hdd, self.mcr, self.atn, self.edn,
-        ]
-        .into_iter()
-        .fold(0u32, u32::saturating_add)
+        [self.text, self.ftn, self.hdd, self.mcr, self.atn, self.edn]
+            .into_iter()
+            .fold(0u32, u32::saturating_add)
     }
 
     /// CP at which the header-textbox subdocument starts.

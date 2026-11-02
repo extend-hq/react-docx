@@ -55,6 +55,9 @@
 <h1>More documents. Clearer tradeoffs.</h1>
 <p class="lede" id="headline"></p>
 <p class="subtle" id="scope"></p>
+<p class="subtle"><a href="word-formats-20261102.html">Word formats: DOC, DOT, DOCX, DOTX, DOCM, and DOTM comparison</a></p>
+<p class="subtle"><a href="word-formats-expanded-20261102.html">Expanded Word comparison: 257 downloaded originals, including 203 DOC inputs</a></p>
+<p class="subtle"><a href="word-formats-fixed-20261102.html">Updated Word parser: fixes, before/after scores, and fresh latency on 257 originals</a></p>
 </header>
 <main>
 <section aria-labelledby="comparison-title">
@@ -409,7 +412,7 @@ function renderImageAudit(){
 }
 function renderFeedbackLoop(){
  const loop=data.feedback_loop;if(!loop){el('feedback-section').remove();return;}
- set('feedback-status',`${loop.label} · ${loop.status} · ${loop.records.filter(r=>r.status==='passed').length} / ${loop.count} documents · ${loop.rounds} interleaved ${loop.rounds===1?'round':'rounds'}${finite(loop.build_seconds)?` · build ${n(loop.build_seconds,1)} s`:''}${loop.error?` · ${loop.error}`:''}`);
+ set('feedback-status',`${loop.label} · ${loop.status} · ${loop.records.filter(r=>['passed','failed','complete'].includes(r.status)).length} / ${loop.count} documents measured · ${loop.rounds} interleaved ${loop.rounds===1?'round':'rounds'}${finite(loop.build_seconds)?` · build ${n(loop.build_seconds,1)} s`:''}${loop.error?` · ${loop.error}`:''}`);
  set('feedback-scope',(loop.scope||'')+' '+(loop.counter_scope||'CPU ratios include startup and destruction and help diagnose scheduling noise; they are not wall-clock latency.')+(loop.decision?' '+loop.decision:''));
  const missingMeasurement=['running','waiting','pending'].includes(loop.status)?'Pending':'Not measured';
  for(const item of loop.records){const m=item.medians||{};el('feedback-table').append(row([`Document ${item.ordinal}`,finite(m.baseline?.total_ms)?n(m.baseline.total_ms)+' ms':missingMeasurement,finite(m.candidate?.total_ms)?n(m.candidate.total_ms)+' ms':missingMeasurement,finite(m.office_oxide?.total_ms)?n(m.office_oxide.total_ms)+' ms':missingMeasurement,finite(item.speedup)?n(item.speedup,3)+'×':missingMeasurement,finite(item.instructions_ratio)&&finite(item.cycles_ratio)?`${n(100*(item.instructions_ratio-1),1)}% instructions · ${n(100*(item.cycles_ratio-1),1)}% cycles`:finite(item.process_cpu_speedup)?n(item.process_cpu_speedup,3)+'×':'—',item.full_output_parity===true?'Exact match':item.full_output_parity===false?'Failed':'Checking',finite(item.seconds)?n(item.seconds,1)+' s':'Running',item.verdict||'Pending']));}

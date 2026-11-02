@@ -1,9 +1,7 @@
 //! Character properties (CHP): accumulated from style defaults plus CHPX sprm
 //! deltas, then emitted as OOXML `<w:rPr>` direct formatting.
 
-use super::fmt::{
-    colorref_to_hex, escape_xml, ico_to_hex, ico_to_highlight, kul_to_val, Shading,
-};
+use super::fmt::{colorref_to_hex, escape_xml, ico_to_hex, ico_to_highlight, kul_to_val, Shading};
 use super::sprm::{self, Sprm};
 
 pub const TOGGLE_COUNT: usize = 10;
@@ -104,6 +102,7 @@ pub struct Chp {
     pub highlight: Option<u8>,
     pub shd: Option<Shading>,
     pub f_spec: bool,
+    pub deleted: bool,
     pub f_obj: bool,
     pub f_ole2: bool,
     pub f_data: bool,
@@ -113,8 +112,8 @@ pub struct Chp {
 
 impl Chp {
     /// Applies a CHPX grpprl. `base_toggles` carries the values the style sheet
-    /// produces for this run (paragraph style overlaid with any character
-    /// style), needed for the 0x81 "invert style value" toggle operand.
+    /// produces for the current character or paragraph style, needed for
+    /// style-relative toggle operands.
     pub fn apply_chpx(&mut self, grpprl: &[u8], base_toggles: &ToggleSet) {
         for sprm in sprm::iterate(grpprl) {
             self.apply_sprm(&sprm, base_toggles);
@@ -127,13 +126,14 @@ impl Chp {
             match sprm.byte() {
                 0 => self.toggles[toggle as usize] = Some(false),
                 1 => self.toggles[toggle as usize] = Some(true),
-                0x80 => self.toggles[toggle as usize] = None,
+                0x80 => self.toggles[toggle as usize] = Some(style_value),
                 0x81 => self.toggles[toggle as usize] = Some(!style_value),
                 _ => {}
             }
             return;
         }
         match sprm.opcode {
+            0x0800 => self.deleted = matches!(sprm.byte(), 1 | 0x81),
             0x4A30 => self.istd = Some(sprm.u16_operand()),
             0x2A53 => self.dstrike = Some(sprm.byte() == 1),
             0x2A3E => self.kul = Some(sprm.byte()),
@@ -165,6 +165,7 @@ impl Chp {
                     let ftc = u16::from_le_bytes([sprm.operand[0], sprm.operand[1]]);
                     let xchar = u16::from_le_bytes([sprm.operand[2], sprm.operand[3]]);
                     self.symbol = Some((ftc, xchar));
+                    self.f_spec = true;
                 }
             }
             _ => {}
@@ -261,9 +262,7 @@ impl Chp {
             inner.push_str(&format!(r#"<w:position w:val="{pos}"/>"#));
         }
         if let Some(hps) = self.hps {
-            inner.push_str(&format!(
-                r#"<w:sz w:val="{hps}"/><w:szCs w:val="{hps}"/>"#
-            ));
+            inner.push_str(&format!(r#"<w:sz w:val="{hps}"/><w:szCs w:val="{hps}"/>"#));
         }
         if let Some(ico) = self.highlight {
             if let Some(name) = ico_to_highlight(ico) {
@@ -327,11 +326,14 @@ mod tests {
     }
 
     #[test]
-    fn toggle_as_style_emits_nothing() {
+    fn toggle_as_style_emits_resolved_value() {
         let grpprl: Vec<u8> = vec![0x35, 0x08, 0x80];
         let mut chp = Chp::default();
         chp.apply_chpx(&grpprl, &ToggleSet::default());
-        assert_eq!(chp.toggles[Toggle::Bold as usize], None);
-        assert_eq!(chp.to_rpr_xml(&|_| None, &|_| None), "");
+        assert_eq!(chp.toggles[Toggle::Bold as usize], Some(false));
+        assert_eq!(
+            chp.to_rpr_xml(&|_| None, &|_| None),
+            r#"<w:rPr><w:b w:val="0"/></w:rPr>"#
+        );
     }
 }

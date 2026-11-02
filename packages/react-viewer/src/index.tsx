@@ -1,7 +1,7 @@
 import * as React from "react";
 import { flushSync } from "react-dom";
 import type { Root } from "react-dom/client";
-import type { DocModel, ImageRunNode } from "@extend-ai/react-docx-doc-model";
+import type { DocModel, HeadingLevel, ImageRunNode } from "@extend-ai/react-docx-doc-model";
 import {
   layoutDocument,
   type LayoutBlock,
@@ -158,7 +158,7 @@ function resolveHighlightColor(value?: string): string | undefined {
   return HIGHLIGHT_TO_CSS[normalized] ?? normalized;
 }
 
-function headingFontSize(level?: 1 | 2 | 3 | 4 | 5 | 6): string | undefined {
+function headingFontSize(level?: HeadingLevel): string | undefined {
   if (!level) {
     return undefined;
   }

@@ -50,6 +50,9 @@ pub enum HeadingLevel {
     Four = 4,
     Five = 5,
     Six = 6,
+    Seven = 7,
+    Eight = 8,
+    Nine = 9,
 }
 
 impl<'de> Deserialize<'de> for HeadingLevel {
@@ -65,6 +68,9 @@ impl<'de> Deserialize<'de> for HeadingLevel {
             4 => Ok(HeadingLevel::Four),
             5 => Ok(HeadingLevel::Five),
             6 => Ok(HeadingLevel::Six),
+            7 => Ok(HeadingLevel::Seven),
+            8 => Ok(HeadingLevel::Eight),
+            9 => Ok(HeadingLevel::Nine),
             _ => Err(serde::de::Error::custom(format!(
                 "invalid heading level {value}"
             ))),

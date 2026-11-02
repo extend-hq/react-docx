@@ -177,6 +177,10 @@ impl ListTables {
 
         let mut pos = 4 + count * LFO_SIZE;
         for (lsid, clfolvl) in headers {
+            if read_u32(bytes, pos).is_none() {
+                break;
+            }
+            pos += 4;
             let mut levels = Vec::with_capacity(clfolvl);
             for _ in 0..clfolvl {
                 let Some(start_at) = read_u32(bytes, pos) else {
@@ -292,7 +296,11 @@ fn level_xml(ilvl: u8, level: &ListLevel, fonts: &FontTable) -> String {
     if level.ixch_follow != 0 {
         xml.push_str(&format!(
             r#"<w:suff w:val="{}"/>"#,
-            if level.ixch_follow == 1 { "space" } else { "nothing" }
+            if level.ixch_follow == 1 {
+                "space"
+            } else {
+                "nothing"
+            }
         ));
     }
 
@@ -375,6 +383,7 @@ mod tests {
         let mut lfo = vec![0u8; 16];
         lfo[..4].copy_from_slice(&500u32.to_le_bytes());
         plf_lfo.extend_from_slice(&lfo);
+        plf_lfo.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
 
         let tables = ListTables::parse(Some(&plf_lst), Some(&plf_lfo));
         assert_eq!(tables.lists.len(), 1);

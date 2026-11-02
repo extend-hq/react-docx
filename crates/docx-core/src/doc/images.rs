@@ -54,6 +54,11 @@ pub fn extract_image(data_stream: &[u8], fc: u32) -> Option<InlineImage> {
         return None;
     }
 
+    let payload = if mm == 0x66 {
+        payload.get(1 + usize::from(*payload.first()?)..)?
+    } else {
+        payload
+    };
     let (bytes, extension, content_type) = find_blip(payload, 0)?;
     Some(InlineImage {
         bytes,
@@ -87,7 +92,8 @@ fn find_blip(bytes: &[u8], depth: usize) -> Option<(Vec<u8>, &'static str, &'sta
         } else if rec_type == 0xF007 {
             // OfficeArtFBSE: 36-byte header, embedded blip may follow.
             if rec_len > 36 {
-                let body = bytes.get(body_start + 36..(body_start + rec_len).min(bytes.len()))?;
+                let name_len = usize::from(*bytes.get(body_start + 33)?);
+                let body = bytes.get(body_start + 36 + name_len..body_start + rec_len)?;
                 if let Some(result) = find_blip(body, depth + 1) {
                     return Some(result);
                 }
@@ -135,7 +141,34 @@ fn decode_blip(
             let dib = body.get(data_start..)?;
             Some((dib_to_bmp(dib)?, "bmp", "image/bmp"))
         }
-        // EMF/WMF/PICT (0xF01A-0xF01C) are not browser-renderable; skip.
+        0xF01A | 0xF01B => {
+            let base_instance = if rec_type == 0xF01A { 0x3D4 } else { 0x216 };
+            let offset = if instance == base_instance + 1 {
+                32
+            } else {
+                16
+            };
+            let size = read_u32(body, offset)? as usize;
+            if size > 64 * 1024 * 1024 {
+                return None;
+            }
+            let saved = read_u32(body, offset + 28)? as usize;
+            let data = body.get(offset + 34..offset + 34 + saved)?;
+            let data = match *body.get(offset + 32)? {
+                0 => miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(data, size).ok()?,
+                0xFE => data.to_vec(),
+                _ => return None,
+            };
+            if data.len() != size {
+                return None;
+            }
+            let (extension, mime) = if rec_type == 0xF01A {
+                ("emf", "image/x-emf")
+            } else {
+                ("wmf", "image/x-wmf")
+            };
+            Some((data, extension, mime))
+        }
         _ => None,
     }
 }
@@ -163,6 +196,266 @@ fn dib_to_bmp(dib: &[u8]) -> Option<Vec<u8>> {
     bmp.extend_from_slice(&(pixel_offset as u32).to_le_bytes());
     bmp.extend_from_slice(dib);
     Some(bmp)
+}
+
+pub(super) struct FloatingImage {
+    pub anchor: super::textboxes::Spa,
+    pub image: InlineImage,
+    pub tiled: bool,
+}
+
+type Blip = (Vec<u8>, &'static str, &'static str);
+
+fn records(mut bytes: &[u8]) -> impl Iterator<Item = (u16, u16, &[u8])> {
+    std::iter::from_fn(move || {
+        let header = read_u16(bytes, 0)?;
+        let kind = read_u16(bytes, 2)?;
+        let len = read_u32(bytes, 4)? as usize;
+        let body = bytes.get(8..8usize.checked_add(len)?)?;
+        bytes = &bytes[8 + len..];
+        Some((header, kind, body))
+    })
+}
+
+fn bstore(bytes: &[u8], word: &[u8], depth: usize, blips: &mut Vec<Option<Blip>>) {
+    if depth > 16 {
+        return;
+    }
+    for (header, kind, body) in records(bytes) {
+        if kind == 0xF007 {
+            let image = body
+                .get(33)
+                .and_then(|name_len| find_blip(body.get(36 + usize::from(*name_len)..)?, 0))
+                .or_else(|| {
+                    let offset = read_u32(body, 28)? as usize;
+                    let (header, kind, body) = records(word.get(offset..)?).next()?;
+                    decode_blip(kind, header >> 4, body)
+                });
+            blips.push(image);
+        } else if header & 15 == 15 {
+            bstore(body, word, depth + 1, blips);
+        }
+    }
+}
+
+fn picture_shapes(
+    bytes: &[u8],
+    depth: usize,
+    pictures: &mut std::collections::HashMap<u32, (usize, bool)>,
+) {
+    if depth > 16 {
+        return;
+    }
+    for (header, kind, body) in records(bytes) {
+        if kind == 0xF004 {
+            let mut id = None;
+            let mut pib = None;
+            let mut fill = None;
+            let mut fill_type = 0;
+            for (header, kind, data) in records(body) {
+                match kind {
+                    0xF00A => id = read_u32(data, 0),
+                    0xF00B | 0xF121 | 0xF122 => {
+                        for property in data.chunks_exact(6).take((header >> 4) as usize) {
+                            let op = read_u16(property, 0).unwrap_or(0);
+                            if op & 0xBFFF == 0x0104 {
+                                pib = read_u32(property, 2).and_then(|v| v.checked_sub(1));
+                            } else if op & 0xBFFF == 0x0186 {
+                                fill = read_u32(property, 2).and_then(|v| v.checked_sub(1));
+                            } else if op == 0x0180 {
+                                fill_type = read_u32(property, 2).unwrap_or(0);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if let (Some(id), Some((index, tiled))) = (
+                id,
+                pib.map(|p| (p, false))
+                    .or_else(|| fill.map(|p| (p, matches!(fill_type, 1 | 2)))),
+            ) {
+                pictures.insert(id, (index as usize, tiled));
+            }
+        } else if header & 15 == 15 {
+            picture_shapes(body, depth + 1, pictures);
+        }
+    }
+}
+
+fn shape_anchor(
+    bytes: &[u8],
+    parent: Option<(super::textboxes::Spa, [i32; 4])>,
+    anchors: &mut std::collections::HashMap<u32, super::textboxes::Spa>,
+) -> Option<super::textboxes::Spa> {
+    let id = records(bytes)
+        .find(|r| r.1 == 0xF00A)
+        .and_then(|r| read_u32(r.2, 0))?;
+    if let Some(anchor) = anchors.get(&id) {
+        return Some(*anchor);
+    }
+    let (mut anchor, bounds) = parent?;
+    let child = records(bytes).find(|r| r.1 == 0xF00F)?.2;
+    let rect: Vec<i32> = child
+        .chunks_exact(4)
+        .take(4)
+        .map(|b| i32::from_le_bytes(b.try_into().unwrap()))
+        .collect();
+    if rect.len() != 4 {
+        return None;
+    }
+    let map = |value: i32, origin: i32, end: i32, target: i32, target_end: i32| -> Option<i32> {
+        let extent = i64::from(end) - i64::from(origin);
+        if extent == 0 {
+            return None;
+        }
+        let delta = (i128::from(value) - i128::from(origin))
+            * (i128::from(target_end) - i128::from(target));
+        i32::try_from(i128::from(target) + delta / i128::from(extent)).ok()
+    };
+    let left = map(rect[0], bounds[0], bounds[2], anchor.left, anchor.right)?;
+    let right = map(rect[2], bounds[0], bounds[2], anchor.left, anchor.right)?;
+    let top = map(rect[1], bounds[1], bounds[3], anchor.top, anchor.bottom)?;
+    let bottom = map(rect[3], bounds[1], bounds[3], anchor.top, anchor.bottom)?;
+    anchor.shape_id = id;
+    anchor.left = left;
+    anchor.right = right;
+    anchor.top = top;
+    anchor.bottom = bottom;
+    anchors.insert(id, anchor);
+    Some(anchor)
+}
+
+fn group_anchors(
+    bytes: &[u8],
+    depth: usize,
+    parent: Option<(super::textboxes::Spa, [i32; 4])>,
+    anchors: &mut std::collections::HashMap<u32, super::textboxes::Spa>,
+) {
+    if depth > 16 {
+        return;
+    }
+    for (header, kind, body) in records(bytes) {
+        if kind == 0xF003 {
+            let group = records(body).find(|r| r.1 == 0xF004).map(|r| r.2);
+            let frame = group.and_then(|group| {
+                let anchor = shape_anchor(group, parent, anchors)?;
+                let bounds = records(group).find(|r| r.1 == 0xF009)?.2;
+                let mut rect = [0i32; 4];
+                for (index, value) in rect.iter_mut().enumerate() {
+                    *value = read_u32(bounds, index * 4)? as i32;
+                }
+                Some((anchor, rect))
+            });
+            group_anchors(body, depth + 1, frame, anchors);
+        } else if kind == 0xF004 {
+            shape_anchor(body, parent, anchors);
+        } else if header & 15 == 15 {
+            group_anchors(body, depth + 1, parent, anchors);
+        }
+    }
+}
+
+pub(super) fn shape_anchors(
+    doc: &super::DocFile,
+    header: bool,
+) -> std::collections::HashMap<u32, super::textboxes::Spa> {
+    use super::fib::fcidx;
+    let (index, base, len) = if header {
+        (
+            fcidx::PLCF_SPA_HDR,
+            doc.fib.ccp.hdd_start(),
+            doc.fib.ccp.hdd,
+        )
+    } else {
+        (fcidx::PLCF_SPA_MOM, 0, doc.fib.ccp.text)
+    };
+    let spas = doc
+        .fib
+        .table_slice(&doc.table, index)
+        .and_then(|plc| super::textboxes::parse_spas(plc, base, len).ok())
+        .unwrap_or_default();
+    let mut anchors = spas.into_iter().map(|spa| (spa.shape_id, spa)).collect();
+    let Some(data) = doc.fib.table_slice(&doc.table, fcidx::DGG_INFO) else {
+        return anchors;
+    };
+    let Some((_, _, global)) = records(data).next() else {
+        return anchors;
+    };
+    let mut cursor = 8 + global.len();
+    while let Some(&story) = data.get(cursor) {
+        cursor += 1;
+        let Some((_, kind, drawing)) = records(&data[cursor..]).next() else {
+            break;
+        };
+        cursor += 8 + drawing.len();
+        if kind != 0xF002 {
+            break;
+        }
+        if story == u8::from(header) {
+            group_anchors(drawing, 0, None, &mut anchors);
+        }
+    }
+    anchors
+}
+
+pub(super) fn floating_images(doc: &super::DocFile) -> Vec<FloatingImage> {
+    use super::fib::fcidx;
+    let Some(data) = doc.fib.table_slice(&doc.table, fcidx::DGG_INFO) else {
+        return Vec::new();
+    };
+    let Some((_, kind, global)) = records(data).next() else {
+        return Vec::new();
+    };
+    if kind != 0xF000 {
+        return Vec::new();
+    }
+    let mut blips = Vec::new();
+    bstore(global, &doc.word, 0, &mut blips);
+    let mut cursor = 8 + global.len();
+    let mut images = Vec::new();
+    while let Some(&story) = data.get(cursor) {
+        cursor += 1;
+        let Some((_, kind, drawing)) = records(&data[cursor..]).next() else {
+            break;
+        };
+        cursor += 8 + drawing.len();
+        if kind != 0xF002 {
+            break;
+        }
+        if story > 1 {
+            continue;
+        }
+        let anchors = shape_anchors(doc, story == 1);
+        let mut pictures = std::collections::HashMap::new();
+        picture_shapes(drawing, 0, &mut pictures);
+        for anchor in anchors.into_values() {
+            let Some(&(index, tiled)) = pictures.get(&anchor.shape_id) else {
+                continue;
+            };
+            let Some(Some((bytes, extension, content_type))) = blips.get(index) else {
+                continue;
+            };
+            let width = i64::from(anchor.right) - i64::from(anchor.left);
+            let height = i64::from(anchor.bottom) - i64::from(anchor.top);
+            if width <= 0 || height <= 0 {
+                continue;
+            }
+            images.push(FloatingImage {
+                anchor,
+                tiled,
+                image: InlineImage {
+                    bytes: bytes.clone(),
+                    extension,
+                    content_type,
+                    width_emu: width as u64 * 635,
+                    height_emu: height as u64 * 635,
+                },
+            });
+        }
+    }
+    images.sort_by_key(|image| (image.anchor.anchor_cp, image.anchor.shape_id));
+    images
 }
 
 #[cfg(test)]

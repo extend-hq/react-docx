@@ -269,13 +269,21 @@ impl Pap {
                 spacing.push_str(&format!(r#" w:before="{before}""#));
             }
             if let Some(automatic) = self.before_auto {
-                spacing.push_str(if automatic { r#" w:beforeAutospacing="1""# } else { r#" w:beforeAutospacing="0""# });
+                spacing.push_str(if automatic {
+                    r#" w:beforeAutospacing="1""#
+                } else {
+                    r#" w:beforeAutospacing="0""#
+                });
             }
             if let Some(after) = self.dya_after {
                 spacing.push_str(&format!(r#" w:after="{after}""#));
             }
             if let Some(automatic) = self.after_auto {
-                spacing.push_str(if automatic { r#" w:afterAutospacing="1""# } else { r#" w:afterAutospacing="0""# });
+                spacing.push_str(if automatic {
+                    r#" w:afterAutospacing="1""#
+                } else {
+                    r#" w:afterAutospacing="0""#
+                });
             }
             if let Some(lspd) = self.lspd {
                 let (line, rule) = if lspd.f_mult {
@@ -344,6 +352,11 @@ impl Pap {
         if ilfo == 0 || ilfo == 0xF801 {
             return Some(r#"<w:numPr><w:numId w:val="0"/></w:numPr>"#.to_string());
         }
+        let ilfo = if ilfo >= 0xF802 {
+            ilfo.wrapping_neg()
+        } else {
+            ilfo
+        };
         let ilvl = self.ilvl.unwrap_or(0);
         Some(format!(
             r#"<w:numPr><w:ilvl w:val="{ilvl}"/><w:numId w:val="{ilfo}"/></w:numPr>"#
@@ -371,7 +384,9 @@ mod tests {
 
     #[test]
     fn automatic_spacing_preserves_explicit_false_and_absence() {
-        assert!(!Pap::default().to_ppr_inner_xml(&|_| None).contains("Autospacing"));
+        assert!(!Pap::default()
+            .to_ppr_inner_xml(&|_| None)
+            .contains("Autospacing"));
         let mut pap = Pap::default();
         for value in [1u8, 0u8] {
             pap.apply_papx(&[0x5B, 0x24, value, 0x5C, 0x24, value]);

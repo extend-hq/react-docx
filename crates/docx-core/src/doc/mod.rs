@@ -8,7 +8,9 @@
 pub mod build;
 pub mod cfb;
 pub mod chp;
+mod comments;
 pub mod fib;
+mod fields;
 pub mod fkp;
 pub mod fmt;
 pub mod fonts;
@@ -42,22 +44,22 @@ impl DocFile {
     pub fn open(bytes: &[u8]) -> Result<DocFile, String> {
         let compound = CompoundFile::parse(bytes)?;
         let word = compound
-            .stream("WordDocument")
+            .try_stream("WordDocument")?
             .ok_or_else(|| "Invalid .doc: missing WordDocument stream".to_string())?
             .to_vec();
         let fib = Fib::parse(&word)?;
-        let table = compound
-            .stream(fib.table_stream_name())
-            .or_else(|| {
-                // Tolerate files where only the other table stream exists.
-                compound
-                    .stream("1Table")
-                    .or_else(|| compound.stream("0Table"))
-            })
-            .ok_or_else(|| "Invalid .doc: missing Table stream".to_string())?
-            .to_vec();
+        let table = match compound.try_stream(fib.table_stream_name())? {
+            Some(table) => Some(table),
+            None => compound.try_stream(if fib.f_which_tbl_stm {
+                "0Table"
+            } else {
+                "1Table"
+            })?,
+        }
+        .ok_or_else(|| "Invalid .doc: missing Table stream".to_string())?
+        .to_vec();
         let data = compound
-            .stream("Data")
+            .try_stream("Data")?
             .map(|s| s.to_vec())
             .unwrap_or_default();
 

@@ -254,7 +254,9 @@ export type DocxHeadingStyleMap = Partial<
   Record<HeadingLevel, CssProperties<string | number>>
 >;
 
-const DEFAULT_WORD_HEADING_STYLES: Record<HeadingLevel, React.CSSProperties> = {
+const DEFAULT_WORD_HEADING_STYLES: Partial<
+  Record<HeadingLevel, React.CSSProperties>
+> = {
   1: {
     fontFamily: '"Calibri Light", Calibri, sans-serif',
     fontSize: "16pt",
@@ -293,9 +295,8 @@ const DEFAULT_WORD_HEADING_STYLES: Record<HeadingLevel, React.CSSProperties> = {
   },
 };
 
-const DEFAULT_WORD_HEADING_RUN_STYLES: Record<
-  HeadingLevel,
-  NonNullable<ParagraphStyleDefinition["runStyle"]>
+const DEFAULT_WORD_HEADING_RUN_STYLES: Partial<
+  Record<HeadingLevel, NonNullable<ParagraphStyleDefinition["runStyle"]>>
 > = {
   1: {
     fontFamily: "Calibri Light",
@@ -636,13 +637,13 @@ function headingLevelFromStyleLabel(value?: string): HeadingLevel | undefined {
     return undefined;
   }
 
-  const match = value.match(/(?:^|[\s_-])(?:heading|h)\s*([1-6])(?:$|[\s_-])/i);
+  const match = value.match(/(?:^|[\s_-])(?:heading|h)\s*([1-9])(?:$|[\s_-])/i);
   if (!match?.[1]) {
     return undefined;
   }
 
   const parsed = Number(match[1]);
-  return parsed >= 1 && parsed <= 6 ? (parsed as HeadingLevel) : undefined;
+  return parsed >= 1 && parsed <= 9 ? (parsed as HeadingLevel) : undefined;
 }
 
 function resolveParagraphStyleHeadingLevel(
@@ -654,7 +655,7 @@ function resolveParagraphStyleHeadingLevel(
   if (
     Number.isFinite(styleDefinition.headingLevel) &&
     (styleDefinition.headingLevel as number) >= 1 &&
-    (styleDefinition.headingLevel as number) <= 6
+    (styleDefinition.headingLevel as number) <= 9
   ) {
     return styleDefinition.headingLevel as HeadingLevel;
   }
@@ -19041,7 +19042,7 @@ function paragraphBlockStyle(
   const applyWordLikeHeadingFallback = !paragraph.sourceXml;
   const hasSoftLineBreak = paragraphText(paragraph).includes("\n");
   const headingStyle =
-    headingLevel && headingLevel >= 1 && headingLevel <= 6
+    headingLevel && headingLevel >= 1 && headingLevel <= 9
       ? headingStyles?.[headingLevel] ??
         (applyWordLikeHeadingFallback
           ? DEFAULT_WORD_HEADING_STYLES[headingLevel]
@@ -36047,7 +36048,7 @@ function docxThumbnailFallbackHeadingRunStyle(
   paragraph: ParagraphNode
 ): TextRunNode["style"] | undefined {
   const headingLevel = paragraph.style?.headingLevel;
-  return headingLevel && headingLevel >= 1 && headingLevel <= 6
+  return headingLevel && headingLevel >= 1 && headingLevel <= 9
     ? DEFAULT_WORD_HEADING_RUN_STYLES[headingLevel]
     : undefined;
 }

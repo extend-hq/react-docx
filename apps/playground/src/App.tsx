@@ -337,7 +337,7 @@ type ParagraphStyleOption = {
   name: string;
   isDefault?: boolean;
   align?: "left" | "center" | "right" | "justify";
-  headingLevel?: 1 | 2 | 3 | 4 | 5 | 6;
+  headingLevel?: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
   runStyle?: {
     bold?: boolean;
     italic?: boolean;
@@ -2872,6 +2872,17 @@ function PlaygroundApp(): React.JSX.Element {
           <CardContent className="space-y-3">
             <div className="flex flex-wrap items-center gap-2">
               <div className="ml-auto flex items-center gap-3">
+                {__DOCX_BUILD__ ? (
+                  <a
+                    href="/build-info.json"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-xs text-muted-foreground hover:underline"
+                    title={`Rust source ${__DOCX_BUILD__.rustSourceSha256}; WASM ${__DOCX_BUILD__.wasmSha256}`}
+                  >
+                    Build {__DOCX_BUILD__.gitRevision.slice(0, 7)}{__DOCX_BUILD__.sourceDirty ? " (local)" : ""}
+                  </a>
+                ) : null}
                 <a
                   href="/vanilla.html"
                   className="text-xs font-medium text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
@@ -2917,7 +2928,7 @@ function PlaygroundApp(): React.JSX.Element {
               <input
                 ref={fileInputRef}
                 type="file"
-                accept=".docx,.doc"
+                accept=".docx,.doc,.dot,.dotx,.docm,.dotm"
                 className="hidden"
                 onChange={(event) => void onImport(event)}
               />

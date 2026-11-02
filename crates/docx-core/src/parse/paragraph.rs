@@ -682,6 +682,15 @@ fn hyperlink_href_from_field_instruction(raw_instruction: &str) -> Option<String
         return None;
     }
     let instruction = decode_xml_entities(raw_instruction);
+    if re::get_unchecked(r"(?i)^\s*(?:REF|PAGEREF|NOTEREF)\b").is_match(&instruction) {
+        if !re::get_unchecked(r"(?i)\s\\h(?:\s|$)").is_match(&instruction) {
+            return None;
+        }
+        return re::get_unchecked(r#"(?i)^\s*(?:REF|PAGEREF|NOTEREF)\s+(?:"([^"]+)"|([^\s\\]+))"#)
+            .captures(&instruction)
+            .and_then(|captures| captures.get(1).or_else(|| captures.get(2)))
+            .map(|anchor| format!("#{}", anchor.as_str()));
+    }
     if !re::get_unchecked(r"(?i)^\s*HYPERLINK\b").is_match(&instruction) {
         return None;
     }
@@ -754,7 +763,16 @@ fn paragraph_runs<'a>(
     paragraph_xml: &'a str,
     context: &ParseContext<'_, impl std::borrow::Borrow<super::context::ParsedStyleSheet>>,
 ) -> Vec<RunToken<'a>> {
-    let run_ranges = extract_balanced_tag_ranges(paragraph_xml, "w:r");
+    let mut run_ranges = extract_balanced_tag_ranges(paragraph_xml, "w:r");
+    if super::scan::contains_tag(paragraph_xml, "w:del")
+        || super::scan::contains_tag(paragraph_xml, "w:moveFrom")
+    {
+        let mut deleted = extract_balanced_tag_ranges(paragraph_xml, "w:del");
+        deleted.extend(extract_balanced_tag_ranges(paragraph_xml, "w:moveFrom"));
+        run_ranges.retain(|run| {
+            !deleted.iter().any(|range| run.start >= range.start && run.end <= range.end)
+        });
+    }
     if run_ranges.is_empty() {
         return Vec::new();
     }

@@ -720,6 +720,9 @@ fn heading_level_number(level: HeadingLevel) -> u8 {
         HeadingLevel::Four => 4,
         HeadingLevel::Five => 5,
         HeadingLevel::Six => 6,
+        HeadingLevel::Seven => 7,
+        HeadingLevel::Eight => 8,
+        HeadingLevel::Nine => 9,
     }
 }
 
@@ -968,6 +971,13 @@ fn paragraph_properties_xml(
         fragments.push(format!(
             r#"<w:textAlignment w:val="{}"/>"#,
             paragraph_text_alignment_str(text_alignment)
+        ));
+    }
+
+    if let Some(level) = style.heading_level {
+        fragments.push(format!(
+            r#"<w:outlineLvl w:val="{}"/>"#,
+            heading_level_number(level) - 1
         ));
     }
 

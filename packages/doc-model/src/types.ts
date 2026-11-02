@@ -1,5 +1,5 @@
 export type ParagraphAlignment = "left" | "center" | "right" | "justify";
-export type HeadingLevel = 1 | 2 | 3 | 4 | 5 | 6;
+export type HeadingLevel = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
 
 export interface TextRunBorderStyle {
   type: string;

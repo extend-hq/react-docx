@@ -1,0 +1,11 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "bash ../../scripts/build-playground-vercel.sh",
+  "outputDirectory": "dist",
+  "headers": [
+    {
+      "source": "/build-info.json",
+      "headers": [{ "key": "Cache-Control", "value": "no-store" }]
+    }
+  ]
+}
