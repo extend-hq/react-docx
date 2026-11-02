@@ -21,6 +21,10 @@ def main():
     parser.add_argument('--docx-run', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--images-output', type=Path, default=Path(__file__).resolve().parents[2] / 'docs/readme-assets')
+    parser.add_argument('--label', default='release 0.13.0')
+    parser.add_argument('--asset-prefix', default='docx-core-0.13.0')
+    parser.add_argument('--measured-date', default='2026-11-02')
+    parser.add_argument('--measured-commit', default='9ae335abdc79f7defe5a2843065a3ff13c6e5cea')
     args = parser.parse_args()
     pooled = [r for run in args.runs for r in json.loads((run / 'format-scores.json').read_text())]
     docx = json.loads((args.docx_run / 'format-scores.json').read_text())
@@ -48,8 +52,10 @@ def main():
         }
     args.output.mkdir(parents=True, exist_ok=True)
     args.images_output.mkdir(parents=True, exist_ok=True)
-    receipt = {'release': '0.13.0', 'measured_date': '2026-11-02',
-               'measured_commit': '9ae335abdc79f7defe5a2843065a3ff13c6e5cea',
+    receipt = {'label': args.label, 'measured_date': args.measured_date,
+               'measured_commit': args.measured_commit,
+               'binary_sha256': sorted({json.loads((run / 'format-environment.json').read_text())['binary_sha256']
+                                        for run in [*args.runs, args.docx_run]}),
                'versions': {'docx-rs': '0.4.22', 'office_oxide': '0.1.15', 'undoc': '0.27.1'},
                'scope': 'Warm native parse + model/IR; core also projects structured blocks. Common successful inputs per format. Five samples, 1–20 parses/sample. Per-document medians; p95 across documents. Excludes I/O, startup, JSON encoding, destruction, reference conversion. Shared development machine.',
                'groups': groups}
@@ -86,8 +92,8 @@ def main():
         ax.set_xlabel('Milliseconds · lower is faster')
         ax.grid(axis='x', alpha=.15)
         ax.set_axisbelow(True)
-    fig.suptitle('Native parser latency · release 0.13.0\nSolid: median    Light: p95 across documents', fontsize=18)
-    fig.savefig(args.images_output / 'docx-core-0.13.0-latency-overview.png', dpi=145)
+    fig.suptitle(f'Native parser latency · {args.label}\nSolid: median    Light: p95 across documents', fontsize=18)
+    fig.savefig(args.images_output / f'{args.asset_prefix}-latency-overview.png', dpi=145)
     plt.close(fig)
     for fmt, group in groups.items():
         fig, axes = plt.subplots(2, 2, figsize=(13, 9), layout='constrained')
@@ -114,8 +120,8 @@ def main():
         axes[0, 0].grid(alpha=.16)
         axes[0, 0].legend(loc='lower right')
         title = 'DOCX · additional regression cohort' if fmt == 'docx-regressions' else fmt.upper()
-        fig.suptitle(f'{title} · {group["common_inputs"]} common successful inputs\nNative parser latency · release 0.13.0', fontsize=17)
-        fig.savefig(args.images_output / f'docx-core-0.13.0-latency-{fmt}.png', dpi=145)
+        fig.suptitle(f'{title} · {group["common_inputs"]} common successful inputs\nNative parser latency · {args.label}', fontsize=17)
+        fig.savefig(args.images_output / f'{args.asset_prefix}-latency-{fmt}.png', dpi=145)
         plt.close(fig)
     print({fmt: {e: {k: v for k, v in stats.items() if k != 'points'} for e, stats in g['engines'].items()} for fmt, g in groups.items()})
 
