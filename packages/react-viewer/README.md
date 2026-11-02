@@ -160,7 +160,7 @@ if (controller?.hasDocument && !controller.isLoading) {
 }
 ```
 
-`exportDocx()` downloads the current document in the browser. The controller also exposes commands such as `undo()`, `redo()`, and `setDocumentTheme()`.
+`exportDocx()` downloads the current document in the browser, and `getDocxBytes()` resolves to the same bytes as an `ArrayBuffer` for saving elsewhere, such as uploading to your own storage. The controller also exposes commands such as `undo()`, `redo()`, and `setDocumentTheme()`.
 
 Change options or load another document with `setOptions`:
 

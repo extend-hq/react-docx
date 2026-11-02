@@ -4491,6 +4491,8 @@ export interface DocxEditorController {
   importDocxFile: (file: File) => Promise<void>;
   newDocument: () => void;
   exportDocx: () => void;
+  /** The current document as DOCX bytes, the same bytes `exportDocx()` downloads. */
+  getDocxBytes: () => Promise<ArrayBuffer>;
   undo: () => void;
   redo: () => void;
   setHeading: (heading?: HeadingLevel) => void;
@@ -31569,7 +31571,7 @@ export function useDocxEditor(
     setStatus("Created new document");
   }, [advanceDocumentLoadNonce, unloadEmbeddedFonts]);
 
-  const exportDocx = React.useCallback(async (): Promise<void> => {
+  const getDocxBytes = React.useCallback(async (): Promise<ArrayBuffer> => {
     const sourceModel = canonicalEditorStateRef.current.model;
     let transformedModel: DocModel;
     try {
@@ -31585,7 +31587,11 @@ export function useDocxEditor(
     }
 
     const exportModel = await prepareImagePaintBoundsForExport(transformedModel, basePackage);
-    const output = await serializeDocx(exportModel, basePackage);
+    return serializeDocx(exportModel, basePackage);
+  }, [basePackage, dispatchEditorTransaction]);
+
+  const exportDocx = React.useCallback(async (): Promise<void> => {
+    const output = await getDocxBytes();
     const blob = new Blob([output], {
       type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     });
@@ -31605,7 +31611,7 @@ export function useDocxEditor(
     }, 1000);
 
     setStatus("Exported DOCX");
-  }, [basePackage, fileName, dispatchEditorTransaction]);
+  }, [fileName, getDocxBytes]);
 
   const undo = React.useCallback((): void => {
     textCommitBurstRef.current = undefined;
@@ -35666,6 +35672,7 @@ export function useDocxEditor(
     importDocxFile,
     newDocument,
     exportDocx,
+    getDocxBytes,
     undo,
     redo,
     setHeading,
