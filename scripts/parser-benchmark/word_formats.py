@@ -166,6 +166,10 @@ def score(out):
                        source_group=entry.get('source_group', 'original'),
                        scope_eligible=entry.get('scope_eligible', True), scope_reason=entry.get('scope_reason'),
                        contains_vba=entry.get('contains_vba', False))
+            for metric in ('parse_ms', 'projection_ms'):
+                samples = [sample[metric] for sample in row.get('samples', []) if metric in sample]
+                row['median_' + metric] = statistics.median(samples) if samples else None
+            row['cold_total_ms'] = sum(row['warm_ms']) if row.get('warm_ms') else None
             if 'error' in truth:
                 row['accuracy_error'] = truth['error']
                 rows.append(row)
@@ -189,7 +193,8 @@ def score(out):
             row['ordered_body'] = ordered_text([p for p in truth['paragraphs'] if p['story'] == 'body'], body)
             row['features_v2'] = strict_features(truth, actual)
             row['features'] = feature_score(truth, actual)
-            row['features'].update(score_literal_features(Path(entry['reference_path']), truth, actual))
+            row['features'].update(score_literal_features(Path(entry['reference_path']), truth, actual,
+                                   data if engine == 'docx-core' and row['status'] == 'ok' else None))
             if row['status'] != 'ok':
                 row['body'].update(recall=0, precision=0, f1=0, paragraph_recall=0)
                 row['ordered_body'].update(recall=0, precision=0, f1=0, exact_ordered_text=False, exact_ordered_paragraphs=False)
@@ -228,8 +233,9 @@ def summarize(rows):
             features = {}
             for row in all_rows:
                 for name, value in row.get('features', {}).items():
-                    agg = features.setdefault(name, {'matched': 0, 'expected': 0, 'found': 0})
-                    for key in agg:
+                    agg = features.setdefault(name, {'matched': 0, 'expected': 0, 'found': 0,
+                                                    'unit': value.get('unit', '')})
+                    for key in ('matched', 'expected', 'found'):
                         agg[key] += value.get(key, 0)
             for value in features.values():
                 value['recall'] = value['matched'] / value['expected'] if value['expected'] else None
@@ -287,6 +293,7 @@ def report(out):
             'rows': rows, 'environment': json.loads((out / 'format-environment.json').read_text()),
             'scoring_environment': json.loads((out / 'format-scoring-environment.json').read_text()),
             'selection': manifest['selection'], 'external': manifest.get('external', False),
+            'provenance': manifest.get('provenance'),
             'diagnostics': json.loads((out / 'diagnostics.json').read_text()) if (out / 'diagnostics.json').exists() else None,
             'comparison': json.loads((out / 'comparison.json').read_text()) if (out / 'comparison.json').exists() else None,
             'corpus': {'unique_inputs': len(manifest['entries']), 'excluded_nonword': len(manifest.get('excluded', [])),

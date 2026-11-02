@@ -128,6 +128,7 @@ pub struct DocBuilder<'a> {
     endnote_ranges: Vec<(u32, u32)>,
     comments: Vec<super::comments::Comment>,
     field_instructions: HashMap<u32, String>,
+    phonetic_results: HashMap<u32, String>,
     spanning_links: Vec<super::fields::LinkRange>,
     bookmarks: std::collections::BTreeMap<u32, String>,
     text_boxes_by_anchor: HashMap<u32, Vec<TextBoxSpec>>,
@@ -186,6 +187,7 @@ impl<'a> DocBuilder<'a> {
             endnote_ranges: Vec::new(),
             comments: super::comments::parse(doc),
             field_instructions: super::fields::canonical_instructions(doc),
+            phonetic_results: super::fields::uncached_phonetic_results(doc),
             spanning_links: super::fields::spanning_links(doc),
             bookmarks: super::fields::bookmarks(doc),
             text_boxes_by_anchor: HashMap::new(),
@@ -642,12 +644,18 @@ impl<'a> DocBuilder<'a> {
         for (start, end, grpprl) in complete {
             let mut boundaries = vec![start, end];
             for link in &self.spanning_links {
-                boundaries.extend([link.start, link.end].into_iter().filter(|cp| *cp > start && *cp < end));
+                boundaries.extend(
+                    [link.start, link.end]
+                        .into_iter()
+                        .filter(|cp| *cp > start && *cp < end),
+                );
             }
             boundaries.sort_unstable();
             boundaries.dedup();
             for pair in boundaries.windows(2) {
-                let instruction = self.spanning_links.iter()
+                let instruction = self
+                    .spanning_links
+                    .iter()
                     .find(|link| pair[0] >= link.start && pair[1] <= link.end)
                     .map(|link| link.instruction.clone());
                 linked.push((pair[0], pair[1], grpprl.clone(), instruction));
@@ -655,7 +663,10 @@ impl<'a> DocBuilder<'a> {
         }
         for (start, end, grpprl, instruction) in linked {
             if let Some(instruction) = &instruction {
-                xml.push_str(&format!(r#"<w:fldSimple w:instr="{}">"#, escape_xml(instruction)));
+                xml.push_str(&format!(
+                    r#"<w:fldSimple w:instr="{}">"#,
+                    escape_xml(instruction)
+                ));
             }
             let char_istd = super::sprm::iterate(&grpprl)
                 .find(|sprm| sprm.opcode == 0x4A30)
@@ -726,7 +737,12 @@ impl<'a> DocBuilder<'a> {
         for (index, &unit) in text.iter().enumerate() {
             let cp = cp_start + index as u32;
             if let Some(markers) = self.bookmarks.get(&cp) {
-                flush(&mut buffer, xml, fields.last().copied().unwrap_or_default(), rpr);
+                flush(
+                    &mut buffer,
+                    xml,
+                    fields.last().copied().unwrap_or_default(),
+                    rpr,
+                );
                 xml.push_str(markers);
             }
             if fields.last() == Some(&FieldState::ReplacedInstruction)
@@ -819,7 +835,14 @@ impl<'a> DocBuilder<'a> {
                     );
                     single(xml, rpr, r#"<w:fldChar w:fldCharType="begin"/>"#);
                     if let Some(instruction) = self.field_instructions.get(&cp) {
-                        single(xml, rpr, &format!(r#"<w:instrText xml:space="preserve">{}</w:instrText>"#, escape_xml(instruction)));
+                        single(
+                            xml,
+                            rpr,
+                            &format!(
+                                r#"<w:instrText xml:space="preserve">{}</w:instrText>"#,
+                                escape_xml(instruction)
+                            ),
+                        );
                         fields.push(FieldState::ReplacedInstruction);
                     } else {
                         fields.push(FieldState::Instruction);
@@ -844,6 +867,16 @@ impl<'a> DocBuilder<'a> {
                         fields.last().copied().unwrap_or_default(),
                         rpr,
                     );
+                    if fields.last() == Some(&FieldState::Instruction) {
+                        if let Some(text) = self.phonetic_results.get(&cp) {
+                            single(xml, rpr, r#"<w:fldChar w:fldCharType="separate"/>"#);
+                            single(
+                                xml,
+                                rpr,
+                                &format!(r#"<w:t xml:space="preserve">{}</w:t>"#, escape_xml(text)),
+                            );
+                        }
+                    }
                     single(xml, rpr, r#"<w:fldChar w:fldCharType="end"/>"#);
                     fields.pop();
                 }

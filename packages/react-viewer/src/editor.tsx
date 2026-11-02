@@ -31443,10 +31443,10 @@ export function useDocxEditor(
       activeImportAbortControllerRef.current = undefined;
       embeddedFontLoadNonceRef.current += 1;
 
-      if (!/\.docx?$/i.test(file.name)) {
+      if (!/\.(?:doc|dot)[xm]?$/i.test(file.name)) {
         replaceDocumentWithImportError(
           file.name,
-          new Error("Only .docx and .doc files are supported")
+          new Error("Supported Word formats are .doc, .dot, .docx, .dotx, .docm, and .dotm.")
         );
         return;
       }
@@ -31592,16 +31592,28 @@ export function useDocxEditor(
 
   const exportDocx = React.useCallback(async (): Promise<void> => {
     const output = await getDocxBytes();
-    const blob = new Blob([output], {
-      type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    });
+    const contentTypes = basePackage?.parts.get("[Content_Types].xml")?.content;
+    const mainTypes = contentTypes
+      ? Array.from(new DOMParser().parseFromString(contentTypes, "application/xml").getElementsByTagNameNS("*", "Override"))
+          .map((element) => element.getAttribute("ContentType"))
+      : [];
+    const variants = [
+      { main: "application/vnd.openxmlformats-officedocument.wordprocessingml.template.main+xml", extension: "dotx", mime: "application/vnd.openxmlformats-officedocument.wordprocessingml.template" },
+      { main: "application/vnd.ms-word.document.macroEnabled.main+xml", extension: "docm", mime: "application/vnd.ms-word.document.macroEnabled.12" },
+      { main: "application/vnd.ms-word.template.macroEnabledTemplate.main+xml", extension: "dotm", mime: "application/vnd.ms-word.template.macroEnabled.12" },
+    ];
+    const format = variants.find((variant) => mainTypes.includes(variant.main)) ?? {
+      extension: "docx",
+      mime: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    };
+    const blob = new Blob([output], { type: format.mime });
 
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;
-    anchor.download = /\.docx?$/i.test(fileName)
-      ? fileName.replace(/\.docx?$/i, "") + "-edited.docx"
-      : "edited.docx";
+    anchor.download = /\.(?:doc|dot)[xm]?$/i.test(fileName)
+      ? fileName.replace(/\.(?:doc|dot)[xm]?$/i, "") + `-edited.${format.extension}`
+      : `edited.${format.extension}`;
     anchor.style.display = "none";
     document.body.append(anchor);
     anchor.click();
@@ -31610,8 +31622,8 @@ export function useDocxEditor(
       URL.revokeObjectURL(url);
     }, 1000);
 
-    setStatus("Exported DOCX");
-  }, [fileName, getDocxBytes]);
+    setStatus(`Exported ${format.extension.toUpperCase()}`);
+  }, [basePackage, fileName, getDocxBytes]);
 
   const undo = React.useCallback((): void => {
     textCommitBurstRef.current = undefined;
@@ -58570,7 +58582,7 @@ export function DocxEditorViewer({
   const extractDroppedDocxFile = React.useCallback(
     (dataTransfer: DataTransfer | null): File | undefined => {
       return Array.from(dataTransfer?.files ?? []).find((candidate) =>
-        /\.docx?$/i.test(candidate.name)
+        /\.(?:doc|dot)[xm]?$/i.test(candidate.name)
       );
     },
     []
@@ -65038,7 +65050,7 @@ export function DocxEditorViewer({
             fontWeight: 500,
           }}
         >
-          Drop .docx anywhere to replace current document
+          Drop a Word document anywhere to replace current document
         </div>
       ) : null}
       {editor.importError ? (

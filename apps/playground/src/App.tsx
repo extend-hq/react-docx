@@ -1974,7 +1974,7 @@ function PlaygroundApp(): React.JSX.Element {
   const extractDroppedDocxFile = React.useCallback(
     (dataTransfer: DataTransfer | null): File | undefined => {
       return Array.from(dataTransfer?.files ?? []).find((candidate) =>
-        /\.docx?$/i.test(candidate.name)
+        /\.(?:doc|dot)[xm]?$/i.test(candidate.name)
       );
     },
     []

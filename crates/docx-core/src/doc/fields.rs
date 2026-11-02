@@ -83,9 +83,9 @@ fn u32_at(bytes: &[u8], at: usize) -> Option<u32> {
     ))
 }
 
-pub(super) fn canonical_instructions(doc: &DocFile) -> HashMap<u32, String> {
+fn stories(doc: &DocFile) -> [(usize, u32, u32); 7] {
     let ccp = &doc.fib.ccp;
-    let stories = [
+    [
         (16, 0, ccp.text),
         (17, ccp.hdd_start(), ccp.hdd),
         (18, ccp.ftn_start(), ccp.ftn),
@@ -99,9 +99,12 @@ pub(super) fn canonical_instructions(doc: &DocFile) -> HashMap<u32, String> {
         (48, ccp.edn_start(), ccp.edn),
         (57, ccp.txbx_start(), ccp.txbx),
         (59, ccp.hdr_txbx_start(), ccp.hdr_txbx),
-    ];
+    ]
+}
+
+pub(super) fn canonical_instructions(doc: &DocFile) -> HashMap<u32, String> {
     let mut result = HashMap::new();
-    for (index, base, length) in stories {
+    for (index, base, length) in stories(doc) {
         let Some(data) = doc.fib.table_slice(&doc.table, index) else {
             continue;
         };
@@ -143,6 +146,111 @@ pub(super) fn canonical_instructions(doc: &DocFile) -> HashMap<u32, String> {
                 .filter(|c| *c >= ' ' || matches!(c, '\t' | '\r' | '\n'))
                 .collect();
             result.insert(base + start, format!("{keyword}{tail}"));
+        }
+    }
+    result
+}
+
+fn equation_arguments(input: &str) -> Option<(Vec<&str>, &str)> {
+    let input = input.trim_start().strip_prefix('(')?;
+    let mut depth = 1usize;
+    let mut escaped = false;
+    let mut start = 0;
+    let mut arguments = Vec::new();
+    for (index, character) in input.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match character {
+            '\\' => escaped = true,
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    arguments.push(&input[start..index]);
+                    return Some((arguments, &input[index + 1..]));
+                }
+            }
+            ',' if depth == 1 => {
+                arguments.push(&input[start..index]);
+                start = index + 1;
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn equation_literal(input: &str) -> Option<String> {
+    let mut output = String::new();
+    let mut characters = input.chars();
+    while let Some(character) = characters.next() {
+        match character {
+            '\\' => match characters.next()? {
+                escaped @ ('\\' | '(' | ')' | ',') => output.push(escaped),
+                _ => return None,
+            },
+            character if character.is_control() => return None,
+            character => output.push(character),
+        }
+    }
+    Some(output)
+}
+
+fn phonetic_text(instruction: &str) -> Option<String> {
+    static PREFIX: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(
+            r#"(?i)^[ \t\r\n]*EQ[ \t\r\n]+(?:\\\*[ \t\r\n]*(?:"[^"]*"|[^ \t\r\n\\()]+)[ \t\r\n]*)*\\o[ \t\r\n]*(?:\\a[dlr][ \t\r\n]*)?"#,
+        )
+        .expect("valid field grammar")
+    });
+    static SHIFT: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"(?i)^\\s[ \t\r\n]*\\up[ \t\r\n]*[+-]?[0-9]+(?:\.[0-9]+)?[ \t\r\n]*")
+            .expect("valid field grammar")
+    });
+    let prefix = PREFIX.find(instruction)?;
+    let (overlay, tail) = equation_arguments(&instruction[prefix.end()..])?;
+    if overlay.len() != 2 || !tail.trim().is_empty() {
+        return None;
+    }
+    let raised = overlay[0].trim();
+    let shift = SHIFT.find(raised)?;
+    let (annotation, tail) = equation_arguments(&raised[shift.end()..])?;
+    if annotation.len() != 1 || !tail.trim().is_empty() {
+        return None;
+    }
+    let mut result = equation_literal(annotation[0])?;
+    result.push_str(&equation_literal(overlay[1])?);
+    Some(result)
+}
+
+pub(super) fn uncached_phonetic_results(doc: &DocFile) -> HashMap<u32, String> {
+    let mut result = HashMap::new();
+    for (index, base, length) in stories(doc) {
+        let Some(data) = doc.fib.table_slice(&doc.table, index) else {
+            continue;
+        };
+        let Some(payload) = data.len().checked_sub(4).filter(|n| n % 6 == 0) else {
+            continue;
+        };
+        let count = payload / 6;
+        for field in 0..count.saturating_sub(1) {
+            let at = (count + 1) * 4 + field * 2;
+            if data[at] & 0x1f != 0x13 || data[at + 1] != 0x31 || data[at + 2] & 0x1f != 0x15 {
+                continue;
+            }
+            let (Some(start), Some(end)) = (u32_at(data, field * 4), u32_at(data, (field + 1) * 4))
+            else {
+                continue;
+            };
+            if start >= end || end >= length || end - start > 65536 {
+                continue;
+            }
+            let instruction = String::from_utf16_lossy(&doc.text(base + start + 1, base + end));
+            if let Some(text) = phonetic_text(&instruction) {
+                result.insert(base + end, text);
+            }
         }
     }
     result

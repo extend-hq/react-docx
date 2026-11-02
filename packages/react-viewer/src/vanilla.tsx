@@ -115,7 +115,7 @@ function fileNameForSource(options: DocxVanillaViewerOptions, owner: Document): 
   if (options.src) {
     try {
       const name = decodeURIComponent(new URL(options.src, owner.baseURI).pathname.split("/").pop() ?? "");
-      if (/\.docx?$/i.test(name)) return name;
+      if (/\.(?:doc|dot)[xm]?$/i.test(name)) return name;
     } catch {
       return "document.docx";
     }

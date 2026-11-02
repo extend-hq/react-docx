@@ -1,84 +1,75 @@
-# Word parser fixes and remeasurement
+# Word parser fixes and measurement
 
-The repaired build was rerun on the same 257 downloaded originals, with the same frozen references and scoring rules. No inputs were dropped to improve scores. The interactive report is `output/word-formats-fixed-20261102/report.html`; the immutable baseline is `output/word-formats-expanded-20261102/report.html`. The report retains every feature metric, all four comparison libraries, both scope filters, latency charts, and selectable size/complexity axes.
+The parser repair covers binary Word container access, document structure, fields, formatting, images, and the shared OOXML model. The deployed playground rebuilds its WASM from the deployed Rust sources; a package release is not required. See [deployment provenance](playground-deployment.md) and [supported formats](supported-word-formats.md).
 
 ## Changes
 
-- The repository's CFB reader respects declared FAT and stream lengths, tolerates absent unused sector padding, isolates errors in unrelated streams, and prevents embedded storage streams from shadowing top-level Word streams. It remains an internal reader, not the external Rust `cfb` crate.
-- The legacy adapter imports comments with author/initial metadata and reference anchors; resolves floating/grouped pictures, delayed blips, WMF/EMF payloads, picture fills, and image-only text boxes; and attaches story-specific image relationships.
-- Binary formatting now handles compact property modifiers, style-relative toggles, symbol runs, appended list-level records, list overrides, negative list identifiers, nested table cell boundaries, tracked deletions, nested fields, and UTF-16 surrogate pairs within a run.
-- The shared OOXML parser selects nested compatibility branches once and excludes deleted/moved-away runs from active text.
-- The Rust and TypeScript models retain Word heading levels 1–9. Paragraph reconstruction writes the outline level even when the paragraph uses a non-heading style.
+- The internal CFB reader honors declared FAT and stream lengths, tolerates absent unused padding, isolates unrelated stream errors, limits lookup to root streams, and resolves the ASCII stream names used by Word without case sensitivity. It remains an internal reader, not the external Rust `cfb` crate.
+- Binary import retains comments and author metadata, floating/grouped images, delayed blips, metafiles, picture fills, and image-only text boxes.
+- Paragraph/run decoding handles compact property modifiers, style-relative toggles, symbols, appended list levels, list overrides, nested table boundaries, tracked deletions, fields, and UTF-16 surrogate pairs. Unmapped paragraph formatting no longer inherits an unrelated final table record.
+- Localized link fields are identified by their binary field type. Bookmark ranges, REF/PAGEREF/NOTEREF links, and hyperlink results spanning paragraphs are retained.
+- Uncached phonetic-guide EQ fields recover their explicit annotation and base text while preserving the field instruction. This provides text extraction, not complete phonetic positioning or a general EQ evaluator.
+- Shared OOXML parsing handles nested compatibility branches once, excludes deleted/moved-away runs from active text, retains heading levels 1–9, and projects cropped/stretched bitmap fills.
+- Picker, import, URL naming, and drag-and-drop accept all six Word extensions. Download names and MIME types follow the retained OOXML package family.
 
-## Supported-version DOC results
+## Cohorts and immutable evidence
 
-The supported-version cohort contains 192 DOC inputs. Of these, 190 have independent conversion references. The malformed input that still fails parsing remains in coverage; all three binary Word parsers reject its invalid Word identifier. The two inputs without usable references remain excluded only from accuracy denominators.
+The final reports are generated locally under:
 
-| Metric | Before | After |
-| --- | ---: | ---: |
-| Parsed DOC inputs | 188/192 | 191/192 |
-| Mean body-text F1 | 97.00% | 98.58% |
-| Table-cell anchors | 4,584/5,066 | 5,058/5,066 |
-| Literal table-text anchors | 197/208 | 205/208 |
-| Image occurrences, count recall only | 76/131 | 131/131 |
-| Vertical merges | 79/84 | 84/84 |
-| Horizontal spans, literal anchors | 351/381 | 379/381 |
-| Explicit bold characters | 51,642/55,088 | 53,922/55,088 |
-| Heading anchors and levels | 502/774 | 572/774 |
-| Comment paragraph anchors | 0/46 | 34/46 |
-| Text-box paragraph anchors | 251/285 | 282/285 |
+| Directory | Cohort |
+| --- | --- |
+| `output/word-formats-final-20261102` | Same 257 downloaded originals used for the initial repair, with frozen references |
+| `output/word-formats-holdout-20261102` | First evaluation of 72 new content hashes, before inspecting their parser results |
+| `output/word-formats-holdout-fixed-20261102` | The same 72 inputs after repairing two newly discovered DOC defects |
+| `output/word-formats-final-docx1k-20261102` | Complete original seeded 1,000-document DOCX corpus, with frozen source references |
 
-No scored input has lower body-text F1 than the original baseline, and no previously successful parse fails. Image results measure occurrence-count recall, not payload, placement, or visual accuracy: core emits 140 occurrences against 131 reference occurrences. Other feature rows also measure recall under their stated matching rules, not precision or complete fidelity.
+The 257-input corpus contains 203 DOC, 31 DOCX, 2 DOT, 4 DOTX, 6 DOCM, and 11 DOTM originals. Nine pre-Word-97 and two encrypted documents are independently outside declared scope. The supported DOC cohort retains 192 inputs, including one invalid document identifier rejected by all binary parsers. There are 190 usable DOC references; missing references affect accuracy denominators only, not parse coverage.
 
-## Latency and competing parsers
+The new-input cohort contains 25 DOC, 44 DOCX, 2 DOTX, and 1 DOTM. Its first evaluation exposed uppercase compound-stream names and phonetic EQ text. The first-pass results remain intact; the repaired evaluation is now a regression cohort, not an untouched holdout. The regression source overlaps a development source, so this is not a source-disjoint holdout. No DOT or DOCM generalization claim is made from this cohort.
 
-All parsers were timed again from one optimized release executable with pinned comparison versions. On the identical 185-input before/after DOC cohort, core's median increased from 0.224 to 0.291 ms, and p95 from 3.823 to 4.303 ms. The median increase is about 30%; the repaired parser also extracts more content and features. This is an observed tradeoff, not a causal profile of each change.
+The 1,000-DOCX sample was selected before parser results using seed 20261029 from a pinned public corpus snapshot. All original inputs remain included. The source provenance and selection receipt remain under `output/parser-next-20261029/corpus-1k`.
 
-The current cross-library common-success cohort has 187 inputs, including two newly recovered documents. Its p95 is therefore not directly comparable with the old 185-input p95.
+Earlier baselines under `word-formats-expanded-20261102`, `word-formats-fixed-20261102`, `word-formats-verified-20261102`, and `word-formats-docx1k-20261102` are preserved. Raw output folders in a new run must not point to an older run.
 
-| Parser | Parsed | Body-text F1 | Median ms | p95 ms |
-| --- | ---: | ---: | ---: | ---: |
-| docx-core | 191/192 | 98.58% | 0.293 | 6.437 |
-| office_oxide | 191/192 | 98.38% | 0.070 | 1.405 |
-| undoc | 187/192 | 95.80% | 0.029 | 0.467 |
+## What the scores measure
 
-`docx-rs` has no binary Word parser. Versions remain pinned at docx-rs 0.4.22, office_oxide 0.1.15, and undoc 0.27.1. Core builds its complete model and structured blocks; competitors build their native model or IR. Nine warm samples per input average 1–20 parses each. Timings exclude file reads, process startup, serialization, destruction, and reference conversion. The p95 is across document medians, not request latency.
+The original body-text score compares overlapping five-character grams within paragraphs after NFC normalization and removal of whitespace/soft breaks. Precision is matched/found, recall is matched/expected, and F1 is their harmonic mean. The headline value is a document macro average; failed parses with references score zero. This score is sensitive to paragraph segmentation and does not fully enforce order.
 
-| Other format | Parsed | Body-text F1 | Median ms |
-| --- | ---: | ---: | ---: |
-| .dot | 2/2 | 100.00% | 0.969 |
-| .docx | 31/31 | 100.00% | 0.190 |
-| .dotx | 4/4 | 100.00% | 0.245 |
-| .docm | 6/6 | 100.00% | 0.184 |
-| .dotm | 11/11 | 100.00% | 0.559 |
+The report additionally shows pooled micro F1, exact longest-common-subsequence character F1, exact ordered text and paragraph counts, and feature precision/recall/F1. These additions do not replace or weaken the original references or denominators.
 
-These are small cohorts and text-extraction results, not a claim of full template, macro, or visual fidelity. Macros are not executed.
+Feature recall retains all earlier checks. Independent literal audits verify explicit bold and italic characters and hyperlink destinations at ordered text offsets. Native OOXML image checks match retained source payload occurrences. Other image/equation count metrics remain proxies, and inherited styling or field-derived links can legitimately exceed an explicit-markup reference. Exact feature anchors are segmentation-sensitive. None of these measurements establishes Word-identical rendering.
 
-## Remaining discrepancies and limits
+The complete reports retain all four engines, full feature tables, scope filters, timing charts, and selectable complexity and performance axes. Pinned comparisons are docx-rs 0.4.22, office_oxide 0.1.15, and undoc 0.27.1. docx-rs has no binary Word parser.
 
-The raw scores are preserved. `diagnostics.json` explains independently inspected differences:
+## Latency method
 
-- LibreOffice recalculates cached date/time and page fields, maps symbol characters differently, and can synthesize `numFmt="none"` numbering on headings. Core retains source values and bindings.
-- All 442 normalized characters of the comment input responsible for the remaining 12 paragraph-anchor misses are recovered in order. The conversion splits its paragraphs differently.
-- One deliberately damaged source accounts for the remaining 202 heading misses. Its malformed styles and garbled text are retained in the corpus; core does not invent LibreOffice's salvage assignments.
-- Two table-span counts differ despite matching cell widths and the complete grid. Another nested-table anchor differs because the reference moves the first source cell out of the inner table.
-- Remaining header/footer, hyperlink, formatting, text-box, and image-count differences remain visible in the full tables. They are not all established parser defects or all resolved. Image rendering and complete annotation/range metadata were not validated by this extraction benchmark.
+Every final cohort uses one optimized release executable for all libraries, randomized input/engine order, and the repeat count recorded in its environment receipt. Each sample averages 1–20 warm parses. Core constructs its model and structured blocks; competitors construct their native model or IR. File reads, process startup, output serialization, destruction, and reference conversion are excluded. The reported p95 is across document medians, not service-request p95 or browser import latency.
 
-Pre-Word-97 formats and password-encrypted documents remain unsupported. The six supported extensions and five MIME types are listed in [supported-word-formats.md](supported-word-formats.md). There is no claim of lossless binary round trips or standalone RTF/ODT/PDF support.
+Cross-library timings use the common successful cohort. Accuracy retains all reference-bearing inputs, including failures. Comparing latency across different format cohorts is not a controlled format-only experiment. This is a shared development machine, so small differences should not be treated as isolated laboratory measurements.
 
-## Validation and receipts
+## Remaining fidelity limits
 
-The optimized benchmark build, WASM core check, all eight package type checks, 32 existing DOC-module checks, and 50 focused Rust integration tests pass. A source-derived round-trip check verifies all nine heading levels, including direct outline assignments, through model JSON and reconstructed OOXML. The full library unit-test target is blocked by the pre-existing missing `src/parse/root_plan_parity.rs`; the existing DOC tests were run through an isolated harness importing the actual module instead of removing that test declaration.
+Raw discrepancies remain visible even when independent inspection identifies a reference limitation:
 
-The run records binary/source/scorer hashes, manifest hash, versions, timing samples, and environment metadata. The final Rust source hashes match the timed build. No new repository unit tests were added. Changes are local and uncommitted.
+- LibreOffice conversion can recalculate cached date/time/page fields, change symbol mapping, synthesize numbering, and repair damaged style/table structures. Core retains source values rather than copying the conversion output.
+- Comment and table paragraph segmentation can differ despite complete literal text. Heading, list, table-span, merge, text-box, and story checks still expose unresolved mismatches.
+- Some malformed link fields lack their opening field marker; their literal text is retained without inventing a hyperlink.
+- Complete visual layout, phonetic placement, image geometry, annotation ranges, and general legacy equations remain outside the guarantees of these extraction scores.
+- Encrypted documents, pre-Word-97 formats, and non-Word families remain unsupported. Template/macro content extraction does not establish lossless template or macro editing; macros are never executed.
 
-Reproduce the comparison after `word_formats.py run` and `score`:
+## Validation and reproduction
+
+The full Rust workspace suite runs again after the missing parity-test module is restored by relocating the existing test. Validation also includes package/playground type checks, the existing JavaScript and oracle suites, browser smoke checks, a fresh WASM/application build, and the deployed build manifest and asset hashes. No new repository unit tests were added for this repair batch.
+
+Build the release harness, copy it to a new run directory's `bin/parser-benchmark`, and preserve the selected manifest and references before measuring:
 
 ```sh
-python3 scripts/parser-benchmark/word_formats_compare.py --baseline output/word-formats-expanded-20261102 --out output/word-formats-fixed-20261102
-python3 scripts/parser-benchmark/word_formats.py report --out output/word-formats-fixed-20261102
+python3 scripts/parser-benchmark/word_formats.py run --out output/word-formats-final-20261102 --repeats 5
+python3 scripts/parser-benchmark/word_formats.py score --out output/word-formats-final-20261102
+python3 scripts/parser-benchmark/word_formats_compare.py --baseline output/word-formats-expanded-20261102 --out output/word-formats-final-20261102
+python3 scripts/parser-benchmark/word_formats.py report --out output/word-formats-final-20261102
 ```
 
-The run reuses the baseline's immutable manifest and reference/oracle artifacts while keeping its executable and all four engines' outputs separate. Never run into a directory whose raw-output folders point to an older run.
+Each run records executable, Rust source, scorer, and manifest hashes, raw timing samples, versions, and environment metadata. The scoring receipt separately records the scorer used for accuracy.
 
-Format interpretation follows Microsoft's [toggle operand](https://learn.microsoft.com/en-us/openspecs/office_file_formats/ms-doc/bc4ca98b-68ca-49dc-a091-1460e42d781e), [FIB table and list lengths](https://learn.microsoft.com/en-us/openspecs/office_file_formats/ms-doc/0c9df81f-98d0-454e-ad84-b612cd05b1a4), [list override data](https://learn.microsoft.com/en-us/openspecs/office_file_formats/ms-doc/1a3bc610-c07a-454e-876f-86534a50c33a), and [OfficeArt metafile header](https://learn.microsoft.com/en-us/openspecs/office_file_formats/ms-odraw/ffdcc2b8-98fd-46b2-921e-6bb6693d05e5) definitions.
+Format interpretation follows Microsoft's [compound-directory rules](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-cfb/a94d7445-c4be-49cd-b6b9-2f4abc663817), [toggle operand](https://learn.microsoft.com/en-us/openspecs/office_file_formats/ms-doc/bc4ca98b-68ca-49dc-a091-1460e42d781e), [FIB/list lengths](https://learn.microsoft.com/en-us/openspecs/office_file_formats/ms-doc/0c9df81f-98d0-454e-ad84-b612cd05b1a4), and [list overrides](https://learn.microsoft.com/en-us/openspecs/office_file_formats/ms-doc/1a3bc610-c07a-454e-876f-86534a50c33a). The phonetic EQ representation is documented in Microsoft's archived [Word 2000 phonetic-guide article](https://ftp.zx.net.nz/pub/archive/ftp.microsoft.com/MISC/KB/en-us/210/858.HTM).

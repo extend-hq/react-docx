@@ -130,7 +130,9 @@ impl CompoundFile {
                     Some(entry.size),
                 )
             };
-            streams.entry(entry.name.clone()).or_insert(data);
+            streams
+                .entry(entry.name.to_ascii_lowercase())
+                .or_insert(data);
         }
 
         Ok(CompoundFile { streams })
@@ -142,7 +144,7 @@ impl CompoundFile {
 
     pub fn try_stream(&self, name: &str) -> Result<Option<&[u8]>, String> {
         self.streams
-            .get(name)
+            .get(&name.to_ascii_lowercase())
             .map(|data| data.as_ref().map(Vec::as_slice).map_err(Clone::clone))
             .transpose()
     }
@@ -526,6 +528,7 @@ pub(crate) mod tests {
             cfb.stream("WordDocument").expect("stream"),
             b"hello mini stream"
         );
+        assert_eq!(cfb.stream("WORDDOCUMENT"), cfb.stream("worddocument"));
     }
 
     #[test]

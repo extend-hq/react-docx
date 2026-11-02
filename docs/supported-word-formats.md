@@ -31,7 +31,7 @@ The expanded external corpus is stored under `output/word-formats-expanded-20261
 
 Independent inspection identifies nine pre-Word-97 documents and two encrypted documents outside core's declared scope. The report exposes both the declared-supported-version cohort and all acquired Word inputs. Reference generation/extraction succeeds for 253 inputs; two encrypted inputs and two other unreadable binary inputs are retained in parse coverage but omitted from accuracy denominators. Public regression corpora include deliberately malformed inputs and are not representative of production error rates.
 
-The repaired build and fresh four-library measurements are stored under `output/word-formats-fixed-20261102`. Supported-version DOC parse coverage is 191/192 and mean body-text F1 is 98.58%, up from 188/192 and 97.00%. The complete [fix and validation report](word-parser-fixes.md) includes before/after feature recall, the measured latency cost, and unresolved fidelity limits. The original corpus, references, scores, and baseline report remain intact.
+The repair retains the initial `output/word-formats-fixed-20261102` measurements. Final four-library reruns are stored under `output/word-formats-final-20261102`, with separate first-pass and repaired new-input cohorts and a complete 1,000-DOCX rerun. The complete [fix and validation report](word-parser-fixes.md) includes before/after feature recall, the measured latency cost, and unresolved fidelity limits. The original corpus, references, scores, and baseline report remain intact.
 
 ## Reproduce the benchmark
 

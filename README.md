@@ -488,6 +488,8 @@ Run the playground:
 pnpm dev
 ```
 
+The deployed playground rebuilds WASM from the checked-out Rust sources on every deployment; an npm release is not required. The Build link opens a manifest with the Git revision, Rust source hash, and served WASM hash. See [playground deployment](docs/playground-deployment.md).
+
 Build all packages:
 
 ```bash
