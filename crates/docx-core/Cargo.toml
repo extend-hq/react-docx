@@ -31,6 +31,7 @@ unicode-segmentation = "=1.12.0"
 sha2 = { version = "0.10", features = ["asm"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+arc-swap = "=1.9.3"
 base64-simd = "=0.8.0"
 libdeflater = { version = "1.26.1", optional = true }
 rayon = "=1.12.0"

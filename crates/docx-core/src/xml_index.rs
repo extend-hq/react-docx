@@ -445,13 +445,11 @@ impl Index {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn shared_copy(&self) -> Self {
-        Self {
+    pub(crate) fn shared_source(&self) -> IndexedSource {
+        IndexedSource {
             address: self.address,
             len: self.len,
             data: std::sync::Arc::clone(&self.data),
-            tag_cache: RefCell::new(TagCache::default()),
-            name_cache: RefCell::new(Vec::new()),
         }
     }
 
@@ -836,10 +834,23 @@ thread_local! {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-struct IndexedSource {
+pub(crate) struct IndexedSource {
     address: usize,
     len: usize,
     data: std::sync::Arc<IndexData>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl IndexedSource {
+    pub(crate) fn local_index(&self) -> Index {
+        Index {
+            address: self.address,
+            len: self.len,
+            data: std::sync::Arc::clone(&self.data),
+            tag_cache: RefCell::new(TagCache::default()),
+            name_cache: RefCell::new(Vec::new()),
+        }
+    }
 }
 
 // Source borrows and thread affinity keep address-based lookups valid for the scope.
@@ -1427,7 +1438,7 @@ mod shared_index_tests {
         for _ in 0..4 {
             let copied = original.clone();
             assert_ne!(original.as_ptr(), copied.as_ptr());
-            let scope = scope([("part", copied.as_str())].into_iter(), HashMap::from([("part".to_owned(), index.shared_copy())]));
+            let scope = scope([("part", copied.as_str())].into_iter(), HashMap::from([("part".to_owned(), index.shared_source().local_index())]));
             let token = tag(&copied, "item").flatten().unwrap();
             assert_eq!(token, "<item value=\"one\"/>");
             assert_eq!(token.as_ptr(), copied[6..].as_ptr());

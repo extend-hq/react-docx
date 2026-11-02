@@ -427,29 +427,27 @@ struct IntermediateAbstractDefinition {
 mod numbering_templates {
     use super::*;
     use std::collections::VecDeque;
-    use std::sync::{Arc, Mutex, OnceLock};
+    use std::sync::{Arc, LazyLock};
 
-    type Entry = (String, Arc<Option<NumberingDefinitionSet>>);
-    static TEMPLATES: OnceLock<Mutex<VecDeque<Entry>>> = OnceLock::new();
+    type Entry = Arc<(String, Arc<Option<NumberingDefinitionSet>>)>;
+    static TEMPLATES: LazyLock<super::super::cache::Snapshot<VecDeque<Entry>>> =
+        LazyLock::new(|| super::super::cache::Snapshot::new(VecDeque::new()));
 
     pub(super) fn parse(xml: &str) -> Option<NumberingDefinitionSet> {
-        let templates = TEMPLATES.get_or_init(|| Mutex::new(VecDeque::new()));
-        let cached = {
-            let entries = templates.lock().unwrap_or_else(|error| error.into_inner());
-            entries.iter().find(|(key, _)| key == xml).map(|(_, value)| Arc::clone(value))
-        };
-        if let Some(value) = cached {
+        if let Some(value) = TEMPLATES.read(|entries| entries.iter()
+            .find(|entry| entry.0 == xml).map(|entry| Arc::clone(&entry.1))) {
             return (*value).clone();
         }
         let parsed = parse_numbering_xml(xml, &HashMap::new());
-        let entry = (xml.to_owned(), Arc::new(parsed.clone()));
-        let mut entries = templates.lock().unwrap_or_else(|error| error.into_inner());
-        if !entries.iter().any(|(key, _)| key == xml) {
-            if entries.len() == 4 {
-                entries.pop_front();
+        let entry = Arc::new((xml.to_owned(), Arc::new(parsed.clone())));
+        TEMPLATES.publish(move |entries| {
+            let mut next = entries.clone();
+            if !next.iter().any(|existing| existing.0 == entry.0) {
+                if next.len() == 4 { next.pop_front(); }
+                next.push_back(entry);
             }
-            entries.push_back(entry);
-        }
+            next
+        });
         parsed
     }
 }
