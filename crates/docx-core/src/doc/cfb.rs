@@ -58,6 +58,13 @@ pub fn is_cfb(bytes: &[u8]) -> bool {
 
 impl CompoundFile {
     pub fn parse(bytes: &[u8]) -> Result<CompoundFile, String> {
+        Self::parse_selected(bytes, None)
+    }
+
+    pub(crate) fn parse_selected(
+        bytes: &[u8],
+        selected: Option<&[&str]>,
+    ) -> Result<CompoundFile, String> {
         if !is_cfb(bytes) {
             return Err("CFB: missing compound file signature".to_string());
         }
@@ -113,6 +120,13 @@ impl CompoundFile {
             if entry.object_type != OBJECT_TYPE_STREAM {
                 continue;
             }
+            if selected.is_some_and(|names| {
+                !names
+                    .iter()
+                    .any(|name| entry.name.eq_ignore_ascii_case(name))
+            }) {
+                continue;
+            }
 
             let data = if entry.size < mini_cutoff {
                 match (&mini_stream, &mini_fat) {
@@ -140,6 +154,10 @@ impl CompoundFile {
 
     pub fn stream(&self, name: &str) -> Option<&[u8]> {
         self.try_stream(name).ok().flatten()
+    }
+
+    pub(crate) fn take_stream(&mut self, name: &str) -> Result<Option<Vec<u8>>, String> {
+        self.streams.remove(&name.to_ascii_lowercase()).transpose()
     }
 
     pub fn try_stream(&self, name: &str) -> Result<Option<&[u8]>, String> {

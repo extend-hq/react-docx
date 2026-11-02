@@ -42,26 +42,24 @@ pub struct DocFile {
 
 impl DocFile {
     pub fn open(bytes: &[u8]) -> Result<DocFile, String> {
-        let compound = CompoundFile::parse(bytes)?;
+        let mut compound = CompoundFile::parse_selected(
+            bytes,
+            Some(&["WordDocument", "0Table", "1Table", "Data"]),
+        )?;
         let word = compound
-            .try_stream("WordDocument")?
-            .ok_or_else(|| "Invalid .doc: missing WordDocument stream".to_string())?
-            .to_vec();
+            .take_stream("WordDocument")?
+            .ok_or_else(|| "Invalid .doc: missing WordDocument stream".to_string())?;
         let fib = Fib::parse(&word)?;
-        let table = match compound.try_stream(fib.table_stream_name())? {
+        let table = match compound.take_stream(fib.table_stream_name())? {
             Some(table) => Some(table),
-            None => compound.try_stream(if fib.f_which_tbl_stm {
+            None => compound.take_stream(if fib.f_which_tbl_stm {
                 "0Table"
             } else {
                 "1Table"
             })?,
         }
-        .ok_or_else(|| "Invalid .doc: missing Table stream".to_string())?
-        .to_vec();
-        let data = compound
-            .try_stream("Data")?
-            .map(|s| s.to_vec())
-            .unwrap_or_default();
+        .ok_or_else(|| "Invalid .doc: missing Table stream".to_string())?;
+        let data = compound.take_stream("Data")?.unwrap_or_default();
 
         let clx = fib
             .table_slice(&table, fib::fcidx::CLX)

@@ -3,17 +3,26 @@
 
 pub fn escape_xml(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
-    for ch in text.chars() {
-        match ch {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&apos;"),
-            _ => out.push(ch),
-        }
-    }
+    escape_xml_into(text, &mut out);
     out
+}
+
+pub(super) fn escape_xml_into(text: &str, out: &mut String) {
+    let mut start = 0;
+    for (index, byte) in text.bytes().enumerate() {
+        let escaped = match byte {
+            b'&' => "&amp;",
+            b'<' => "&lt;",
+            b'>' => "&gt;",
+            b'"' => "&quot;",
+            b'\'' => "&apos;",
+            _ => continue,
+        };
+        out.push_str(&text[start..index]);
+        out.push_str(escaped);
+        start = index + 1;
+    }
+    out.push_str(&text[start..]);
 }
 
 /// Classic 17-entry Word color palette (ico values 1-16; 0 = auto).
@@ -106,7 +115,10 @@ pub struct Border {
 
 impl Border {
     pub fn to_xml(&self, tag: &str) -> String {
-        let mut xml = format!(r#"<{tag} w:val="{}" w:sz="{}" w:space="{}""#, self.val, self.sz, self.space);
+        let mut xml = format!(
+            r#"<{tag} w:val="{}" w:sz="{}" w:space="{}""#,
+            self.val, self.sz, self.space
+        );
         xml.push_str(&format!(
             r#" w:color="{}""#,
             self.color.as_deref().unwrap_or("auto")
