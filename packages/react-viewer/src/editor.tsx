@@ -1,3 +1,4 @@
+import { isWordFileName, wordDownloadFormat, wordDownloadName } from "./word-formats";
 import { prepareImagePaintBoundsForExport } from "./image-paint-export";
 import { PaintBoundsImage } from "./paint-bounds-image";
 import { VmlCompositeStorySurface } from "./vml-composite-story-surface";
@@ -31443,7 +31444,7 @@ export function useDocxEditor(
       activeImportAbortControllerRef.current = undefined;
       embeddedFontLoadNonceRef.current += 1;
 
-      if (!/\.(?:doc|dot)[xm]?$/i.test(file.name)) {
+      if (!isWordFileName(file.name)) {
         replaceDocumentWithImportError(
           file.name,
           new Error("Supported Word formats are .doc, .dot, .docx, .dotx, .docm, and .dotm.")
@@ -31592,28 +31593,13 @@ export function useDocxEditor(
 
   const exportDocx = React.useCallback(async (): Promise<void> => {
     const output = await getDocxBytes();
-    const contentTypes = basePackage?.parts.get("[Content_Types].xml")?.content;
-    const mainTypes = contentTypes
-      ? Array.from(new DOMParser().parseFromString(contentTypes, "application/xml").getElementsByTagNameNS("*", "Override"))
-          .map((element) => element.getAttribute("ContentType"))
-      : [];
-    const variants = [
-      { main: "application/vnd.openxmlformats-officedocument.wordprocessingml.template.main+xml", extension: "dotx", mime: "application/vnd.openxmlformats-officedocument.wordprocessingml.template" },
-      { main: "application/vnd.ms-word.document.macroEnabled.main+xml", extension: "docm", mime: "application/vnd.ms-word.document.macroEnabled.12" },
-      { main: "application/vnd.ms-word.template.macroEnabledTemplate.main+xml", extension: "dotm", mime: "application/vnd.ms-word.template.macroEnabled.12" },
-    ];
-    const format = variants.find((variant) => mainTypes.includes(variant.main)) ?? {
-      extension: "docx",
-      mime: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    };
+    const format = wordDownloadFormat(basePackage?.parts.get("[Content_Types].xml")?.content);
     const blob = new Blob([output], { type: format.mime });
 
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;
-    anchor.download = /\.(?:doc|dot)[xm]?$/i.test(fileName)
-      ? fileName.replace(/\.(?:doc|dot)[xm]?$/i, "") + `-edited.${format.extension}`
-      : `edited.${format.extension}`;
+    anchor.download = wordDownloadName(fileName, format.extension);
     anchor.style.display = "none";
     document.body.append(anchor);
     anchor.click();
@@ -58582,7 +58568,7 @@ export function DocxEditorViewer({
   const extractDroppedDocxFile = React.useCallback(
     (dataTransfer: DataTransfer | null): File | undefined => {
       return Array.from(dataTransfer?.files ?? []).find((candidate) =>
-        /\.(?:doc|dot)[xm]?$/i.test(candidate.name)
+        isWordFileName(candidate.name)
       );
     },
     []

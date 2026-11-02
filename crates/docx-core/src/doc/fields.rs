@@ -102,8 +102,14 @@ fn stories(doc: &DocFile) -> [(usize, u32, u32); 7] {
     ]
 }
 
-pub(super) fn canonical_instructions(doc: &DocFile) -> HashMap<u32, String> {
-    let mut result = HashMap::new();
+#[derive(Default)]
+pub(super) struct FieldText {
+    pub instructions: HashMap<u32, String>,
+    pub phonetic_results: HashMap<u32, String>,
+}
+
+pub(super) fn field_text(doc: &DocFile) -> FieldText {
+    let mut result = FieldText::default();
     for (index, base, length) in stories(doc) {
         let Some(data) = doc.fib.table_slice(&doc.table, index) else {
             continue;
@@ -114,14 +120,15 @@ pub(super) fn canonical_instructions(doc: &DocFile) -> HashMap<u32, String> {
         let count = payload / 6;
         for field in 0..count.saturating_sub(1) {
             let at = (count + 1) * 4 + field * 2;
-            if data[at] & 0x1f != 0x13 || data[at + 2] & 0x1f != 0x14 {
+            if data[at] & 0x1f != 0x13 {
                 continue;
             }
-            let keyword = match data[at + 1] {
-                0x03 => "REF",
-                0x05 | 0x48 => "NOTEREF",
-                0x25 => "PAGEREF",
-                0x58 => "HYPERLINK",
+            let keyword = match (data[at + 1], data[at + 2] & 0x1f) {
+                (0x03, 0x14) => Some("REF"),
+                (0x05 | 0x48, 0x14) => Some("NOTEREF"),
+                (0x25, 0x14) => Some("PAGEREF"),
+                (0x58, 0x14) => Some("HYPERLINK"),
+                (0x31, 0x15) => None,
                 _ => continue,
             };
             let Some(start) = u32_at(data, field * 4) else {
@@ -134,6 +141,12 @@ pub(super) fn canonical_instructions(doc: &DocFile) -> HashMap<u32, String> {
                 continue;
             }
             let instruction = String::from_utf16_lossy(&doc.text(base + start + 1, base + end));
+            let Some(keyword) = keyword else {
+                if let Some(text) = phonetic_text(&instruction) {
+                    result.phonetic_results.insert(base + end, text);
+                }
+                continue;
+            };
             let instruction = instruction.trim_start();
             let split = instruction
                 .find(|c: char| c.is_whitespace() || c == '"' || c == '\\')
@@ -145,7 +158,9 @@ pub(super) fn canonical_instructions(doc: &DocFile) -> HashMap<u32, String> {
                 .chars()
                 .filter(|c| *c >= ' ' || matches!(c, '\t' | '\r' | '\n'))
                 .collect();
-            result.insert(base + start, format!("{keyword}{tail}"));
+            result
+                .instructions
+                .insert(base + start, format!("{keyword}{tail}"));
         }
     }
     result
@@ -223,37 +238,6 @@ fn phonetic_text(instruction: &str) -> Option<String> {
     let mut result = equation_literal(annotation[0])?;
     result.push_str(&equation_literal(overlay[1])?);
     Some(result)
-}
-
-pub(super) fn uncached_phonetic_results(doc: &DocFile) -> HashMap<u32, String> {
-    let mut result = HashMap::new();
-    for (index, base, length) in stories(doc) {
-        let Some(data) = doc.fib.table_slice(&doc.table, index) else {
-            continue;
-        };
-        let Some(payload) = data.len().checked_sub(4).filter(|n| n % 6 == 0) else {
-            continue;
-        };
-        let count = payload / 6;
-        for field in 0..count.saturating_sub(1) {
-            let at = (count + 1) * 4 + field * 2;
-            if data[at] & 0x1f != 0x13 || data[at + 1] != 0x31 || data[at + 2] & 0x1f != 0x15 {
-                continue;
-            }
-            let (Some(start), Some(end)) = (u32_at(data, field * 4), u32_at(data, (field + 1) * 4))
-            else {
-                continue;
-            };
-            if start >= end || end >= length || end - start > 65536 {
-                continue;
-            }
-            let instruction = String::from_utf16_lossy(&doc.text(base + start + 1, base + end));
-            if let Some(text) = phonetic_text(&instruction) {
-                result.insert(base + end, text);
-            }
-        }
-    }
-    result
 }
 
 pub(super) fn bookmarks(doc: &DocFile) -> BTreeMap<u32, String> {

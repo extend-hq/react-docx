@@ -171,6 +171,7 @@ impl<'a> DocBuilder<'a> {
             doc.fib.table_slice(&doc.table, fcidx::PLF_LFO),
         );
 
+        let field_text = super::fields::field_text(doc);
         let mut builder = DocBuilder {
             doc,
             styles,
@@ -186,8 +187,8 @@ impl<'a> DocBuilder<'a> {
             footnote_ranges: Vec::new(),
             endnote_ranges: Vec::new(),
             comments: super::comments::parse(doc),
-            field_instructions: super::fields::canonical_instructions(doc),
-            phonetic_results: super::fields::uncached_phonetic_results(doc),
+            field_instructions: field_text.instructions,
+            phonetic_results: field_text.phonetic_results,
             spanning_links: super::fields::spanning_links(doc),
             bookmarks: super::fields::bookmarks(doc),
             text_boxes_by_anchor: HashMap::new(),
