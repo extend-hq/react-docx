@@ -1,5 +1,7 @@
 # Word parser fixes and measurement
 
+The [0.13.0 release comparison](benchmarks-0.13.0.md) contains the final benchmarks rerun on merged main.
+
 The parser repair covers binary Word container access, document structure, fields, formatting, images, and the shared OOXML model. The deployed playground rebuilds its WASM from the deployed Rust sources; a package release is not required. See [deployment provenance](playground-deployment.md) and [supported formats](supported-word-formats.md).
 
 ## Changes
