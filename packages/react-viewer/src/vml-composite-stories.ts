@@ -1,4 +1,4 @@
-import { resolveImagePaintBounds, type ImagePaintRect, type ImageRunNode, type ParagraphNode } from "@extend-ai/react-docx-doc-model";
+import { resolveImagePaintBounds, type ImagePaintRect, type ImageRunNode, type ParagraphNode, type TextRunNode } from "@extend-ai/react-docx-doc-model";
 
 interface Element {
   name: string;
@@ -26,9 +26,11 @@ export interface VmlCompositeStories {
   artworkSrc: string;
   overlaySafe: boolean;
   paintBounds?: ImagePaintRect;
+  richText?: boolean;
 }
 export type VmlStoryRenderer = (image: ImageRunNode) => string | undefined;
 interface Story extends VmlCompositeStory {
+  richText: boolean;
   source: Element;
   shape: Element;
   sourceParagraphs: Element[];
@@ -54,7 +56,7 @@ const xmlTag = new RegExp(`^<(\\/?)(${qNameSource})(?=[\\x20\\t\\r\\n/>])((?:[^<
 const xmlAttribute = new RegExp(`^[\\x20\\t\\r\\n]+(${qNameSource})[\\x20\\t\\r\\n]*=[\\x20\\t\\r\\n]*(?:"([^"]*)"|'([^']*)')`, "u");
 const xmlInstruction = new RegExp(`^<\\?([:${nameStart}][${nameChar}:]*)(?:[\\x20\\t\\r\\n][\\s\\S]*?)?\\?>$`, "u");
 const numberPattern = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i;
-const sourceProperties = new Set("w:pPr w:rPr w:pStyle w:rFonts w:b w:bCs w:i w:iCs w:u w:strike w:dstrike w:sz w:szCs w:color w:lang w:spacing w:ind w:jc w:contextualSpacing w:keepNext w:keepLines w:widowControl w:shd w:rtl w:bidi w:outlineLvl w:snapToGrid".split(" "));
+const sourceProperties = new Set("w:pPr w:rPr w:pStyle w:rFonts w:b w:bCs w:i w:iCs w:u w:strike w:dstrike w:sz w:szCs w:color w:lang w:spacing w:ind w:jc w:contextualSpacing w:keepNext w:keepLines w:widowControl w:shd w:rtl w:bidi w:outlineLvl w:snapToGrid w:w".split(" "));
 function xmlCharacter(code: number): boolean {
   return code === 9 || code === 10 || code === 13 || (code >= 0x20 && code <= 0xd7ff) || (code >= 0xe000 && code <= 0xfffd) || (code >= 0x10000 && code <= 0x10ffff);
 }
@@ -224,9 +226,15 @@ function textValue(node: Element, svg: string): string {
 function paragraphText(node: Element, xml: string): string {
   for (const child of all(node)) {
     if (boundWordNamespace(child) !== wordNamespace) throw new Error("Invalid story namespace");
+    if (child.name === "w:proofErr") {
+      if (child.parent !== node || !["spellStart", "spellEnd", "gramStart", "gramEnd"].includes(child.attrs["w:type"] ?? "") ||
+          Object.keys(child.attrs).some((name) => name !== "w:type" && name !== "xmlns" && !name.startsWith("xmlns:")) ||
+          !emptyMarkerContent(child, xml)) throw new Error("Unsupported proofing marker");
+      continue;
+    }
     if (!["w:p", "w:r", "w:t", "w:bookmarkStart", "w:bookmarkEnd"].includes(child.name) && !sourceProperties.has(child.name)) throw new Error("Unsupported story content");
   }
-  if (node.children.some((c) => !["w:pPr", "w:r", "w:bookmarkStart", "w:bookmarkEnd"].includes(c.name))) throw new Error("Unsupported paragraph content");
+  if (node.children.some((c) => !["w:pPr", "w:r", "w:bookmarkStart", "w:bookmarkEnd", "w:proofErr"].includes(c.name))) throw new Error("Unsupported paragraph content");
   for (const run of node.children.filter((c) => c.name === "w:r")) if (run.children.some((c) => c.name !== "w:rPr" && c.name !== "w:t")) throw new Error("Unsupported run");
   return all(node).filter((c) => c.name === "w:t").map((c) => plain(c, xml)).join("");
 }
@@ -236,7 +244,7 @@ function boundWordNamespace(node: Element): string {
   }
   return wordNamespace;
 }
-function emptyBookmarkContent(marker: Element, xml: string): boolean {
+function emptyMarkerContent(marker: Element, xml: string): boolean {
   if (marker.children.length) return false;
   const whitespace = /^[\u0009-\u000d\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]*$/;
   const content = xml.slice(marker.openEnd, marker.closeStart);
@@ -270,7 +278,7 @@ function paragraphBookmarks(node: Element, xml: string, seenIds = new Set<string
   const textRuns = node.children.filter((n) => n.name === "w:r" && all(n).some((c) => c.name === "w:t" && plain(c, xml).length > 0));
   const open = new Set<string>();
   const markers = node.children.filter((n) => n.name === "w:bookmarkStart" || n.name === "w:bookmarkEnd").map((marker) => {
-    if (boundWordNamespace(marker) !== wordNamespace || Object.keys(marker.attrs).some((name) => name !== "xmlns" && !name.startsWith("xmlns:") && !(name.startsWith("w:") && ncName.test(name.slice(2)))) || !emptyBookmarkContent(marker, xml)) throw new Error("Unsupported bookmark XML");
+    if (boundWordNamespace(marker) !== wordNamespace || Object.keys(marker.attrs).some((name) => name !== "xmlns" && !name.startsWith("xmlns:") && !(name.startsWith("w:") && ncName.test(name.slice(2)))) || !emptyMarkerContent(marker, xml)) throw new Error("Unsupported bookmark XML");
     const id = marker.attrs["w:id"];
     if (id === undefined || id.length === 0 || (marker.name === "w:bookmarkStart" ? seenIds.has(id) : !open.has(id))) throw new Error("Unpaired or reused bookmark");
     if (marker.name === "w:bookmarkStart") { open.add(id); seenIds.add(id); } else open.delete(id);
@@ -281,16 +289,18 @@ function paragraphBookmarks(node: Element, xml: string, seenIds = new Set<string
   if (open.size) throw new Error("Cross-paragraph bookmark");
   return markers;
 }
-function typedText(node: ParagraphNode): string {
+function typedText(node: ParagraphNode, allowRichText = false): string {
   let style: string | undefined;
   return node.children.map((child) => {
     if (child.type !== "text" || child.link || child.noteReference) throw new Error("Unsupported typed content");
     const paint = child.style;
-    if (paint && (paint.allCaps || paint.smallCaps || paint.highlight || paint.backgroundColor || paint.verticalAlign || paint.runBorder || paint.rightToLeft || paint.complexScript || (paint.characterSpacingTwips !== undefined && paint.characterSpacingTwips !== 0) || (paint.characterScalePercent !== undefined && paint.characterScalePercent !== 100) || paint.kerningMinFontSizePt !== undefined || paint.ligatures !== undefined || paint.contextualAlternates !== undefined)) throw new Error("Unsupported typed paint");
+    if (paint && (paint.allCaps || paint.smallCaps || paint.highlight || paint.backgroundColor || paint.verticalAlign || paint.runBorder || paint.rightToLeft || paint.complexScript || (!allowRichText && ((paint.characterSpacingTwips !== undefined && paint.characterSpacingTwips !== 0) || (paint.characterScalePercent !== undefined && paint.characterScalePercent !== 100))) || paint.kerningMinFontSizePt !== undefined || paint.ligatures !== undefined || paint.contextualAlternates !== undefined)) throw new Error("Unsupported typed paint");
+    if (paint?.characterSpacingTwips !== undefined && !Number.isFinite(paint.characterSpacingTwips)) throw new Error("Invalid character spacing");
+    if (paint?.characterScalePercent !== undefined && (!Number.isFinite(paint.characterScalePercent) || paint.characterScalePercent <= 0)) throw new Error("Invalid character scale");
     const next = JSON.stringify(Object.entries(child.style ?? {})
       .filter(([key]) => key !== "language" && key !== "languageEastAsia" && key !== "languageBidi")
       .sort(([a], [b]) => a.localeCompare(b)));
-    if (child.text && style !== undefined && style !== next) throw new Error("Mixed text paint");
+    if (!allowRichText && child.text && style !== undefined && style !== next) throw new Error("Mixed text paint");
     if (child.text) style = next; return child.text;
   }).join("");
 }
@@ -303,7 +313,7 @@ function sourcePaintStories(group: Element): Element[] {
   const ordered = group.children.map((node, index) => ({ node, index, z: numeric(styles(node.attrs.style)["z-index"], 0) })).sort((a, b) => a.z - b.z || a.index - b.index);
   return ordered.flatMap(({ node }) => node.name === "v:group" ? sourcePaintStories(node) : all(node).filter((n) => n.name === "w:txbxContent"));
 }
-function map(image: ImageRunNode): Mapping {
+function map(image: ImageRunNode, allowRichText = false): Mapping {
   if (!image.syntheticTextBox || !image.sourceXml || !image.contentNodes?.length) throw new Error("Missing source story");
   const source = image.sourceXml, sourceRoot = scan(source), groups = all(sourceRoot).filter((n) => n.name === "v:group");
   const outerGroups = groups.filter((n) => !groups.some((g) => g !== n && g.start < n.start && g.end > n.end));
@@ -358,7 +368,8 @@ function map(image: ImageRunNode): Mapping {
     if (paragraphs.length !== sourceParagraphs.length || paragraphs.some((p) => p.type !== "paragraph")) throw new Error("Typed paragraph count mismatch");
     const typed = paragraphs as ParagraphNode[];
     const values = sourceParagraphs.map((p) => paragraphText(p, source));
-    if (values.some((text, i) => text !== typedText(typed[i]))) throw new Error("Source text mismatch");
+    if (values.some((text, i) => text !== typedText(typed[i], allowRichText))) throw new Error("Source text mismatch");
+    const richText = typed.some((paragraph) => { try { typedText(paragraph); return false; } catch { return true; } });
     const marker = svgNodes.filter((n) => n.attrs["data-docx-vml-story"] === String(index));
     if (marker.length > 1) throw new Error("Duplicate story marker");
     const expected = values.filter((text) => text !== "");
@@ -398,7 +409,7 @@ function map(image: ImageRunNode): Mapping {
     }
     const width = displayWidth, height = displayHeight;
     if (width <= 0 || height <= 0) throw new Error("Invalid display size");
-    return { index, editable: Boolean(slot), sourceXml: source.slice(shape.start, shape.end), source: sourceStory, shape, sourceParagraphs, paragraphs: typed, text: values.join("\n"), frame: f, framePx: { x: (paintBounds?.xPx ?? 0) + (f.x - viewport.x) * width / viewport.width, y: (paintBounds?.yPx ?? 0) + (f.y - viewport.y) * height / viewport.height, width: f.width * width / viewport.width, height: f.height * height / viewport.height }, slot };
+    return { index, editable: Boolean(slot), richText, sourceXml: source.slice(shape.start, shape.end), source: sourceStory, shape, sourceParagraphs, paragraphs: typed, text: values.join("\n"), frame: f, framePx: { x: (paintBounds?.xPx ?? 0) + (f.x - viewport.x) * width / viewport.width, y: (paintBounds?.yPx ?? 0) + (f.y - viewport.y) * height / viewport.height, width: f.width * width / viewport.width, height: f.height * height / viewport.height }, slot };
   });
   if (!stories.length || paragraphOffset !== image.contentNodes.length || textOffset !== texts.length || svgNodes.some((n) => n.attrs["data-docx-vml-story"] !== undefined && !stories.some((s) => String(s.index) === n.attrs["data-docx-vml-story"]))) throw new Error("Unmapped content");
   if (image.textBoxText !== undefined && image.textBoxText !== aggregate(stories)) throw new Error("Stale aggregate text");
@@ -424,14 +435,16 @@ function rectanglePaints(node: Element): boolean {
   };
   return paint("fill", "black") !== "none" || paint("stroke", "none") !== "none";
 }
-export function mapVmlCompositeStories(image: ImageRunNode): VmlCompositeStories | undefined {
+export function mapVmlCompositeStories(image: ImageRunNode, allowRichText = false): VmlCompositeStories | undefined {
   try {
-    const mapping = map(image);
+    const mapping = map(image, allowRichText);
     const slots = mapping.stories.flatMap((story) => story.slot ? [story.slot] : []);
     const firstPaint = Math.min(...slots.map((slot) => slot.start));
     const graphicElements = new Set("image rect path line polygon polyline circle ellipse use foreignObject".split(" "));
     const overlaySafe = slots.length > 0 && !all(mapping.root).some((node) => node.start > firstPaint && graphicElements.has(node.name) && visible(node) && (node.name !== "rect" || rectanglePaints(node)) && !slots.some((slot) => node.start >= slot.start && node.end <= slot.end));
-    return { stories: mapping.stories.map(({ index, editable, text, sourceXml, paragraphs, frame, framePx }) => ({ index, editable, text, sourceXml, paragraphs, frame, framePx })), artworkSrc: uri(replacements(mapping.svg, slots.map((slot) => ({ ...slot, value: "" })))), overlaySafe, paintBounds: mapping.paintBounds };
+    const richText = mapping.stories.some((story) => story.richText);
+    if (richText && !overlaySafe) return undefined;
+    return { stories: mapping.stories.map(({ index, editable, text, sourceXml, paragraphs, frame, framePx }) => ({ index, editable, text, sourceXml, paragraphs, frame, framePx })), artworkSrc: uri(replacements(mapping.svg, slots.map((slot) => ({ ...slot, value: "" })))), overlaySafe, paintBounds: mapping.paintBounds, ...(richText ? { richText: true } : {}) };
   } catch { return undefined; }
 }
 function paragraphXml(xml: string, template: Element, text: string, before: string, after: string, existing: boolean): string {
@@ -443,9 +456,105 @@ function paragraphXml(xml: string, template: Element, text: string, before: stri
   const opening = existing && template.closeStart !== template.openEnd ? xml.slice(template.start, template.openEnd) : "<w:p>";
   return `${opening}${raw(props)}${before}<w:r>${raw(runProps)}<w:t xml:space="preserve">${escape(text)}</w:t></w:r>${after}</w:p>`;
 }
-export function editVmlCompositeStory(image: ImageRunNode, text: string, renderStory: VmlStoryRenderer, storyIndex?: number): ImageRunNode | undefined {
+interface StyledSpan {
+  text: string;
+  run: TextRunNode;
+  sourceRun?: Element;
+  paragraphIndex: number;
+  paragraphBreak?: boolean;
+}
+function editStyledStory(story: Story, source: string, next: string): { paragraphs: ParagraphNode[]; xml: string } {
+  const spans: StyledSpan[] = [];
+  const templates: StyledSpan[] = [];
+  story.paragraphs.forEach((paragraph, paragraphIndex) => {
+    const sourceRuns = story.sourceParagraphs[paragraphIndex].children.filter((node) => node.name === "w:r");
+    let sourceOffset = 0;
+    const ranges = sourceRuns.map((node) => {
+      const text = node.children.filter((child) => child.name === "w:t").map((child) => plain(child, source)).join("");
+      const start = sourceOffset; sourceOffset += text.length;
+      return { node, start, end: sourceOffset };
+    });
+    let typedOffset = 0;
+    for (const run of paragraph.children) {
+      if (run.type !== "text") throw new Error("Unsupported rich story content");
+      const start = typedOffset, end = start + run.text.length;
+      typedOffset = end;
+      for (const range of ranges) {
+        const from = Math.max(start, range.start), to = Math.min(end, range.end);
+        if (from < to) spans.push({ text: run.text.slice(from - start, to - start), run, sourceRun: range.node, paragraphIndex });
+      }
+    }
+    if (typedOffset !== sourceOffset) throw new Error("Incoherent rich story runs");
+    const run = paragraph.children.find((node): node is TextRunNode => node.type === "text" && node.text.length > 0)
+      ?? paragraph.children.find((node): node is TextRunNode => node.type === "text") ?? { type: "text", text: "" };
+    const template = spans.find((span) => span.paragraphIndex === paragraphIndex)
+      ?? { text: "", run, sourceRun: sourceRuns[0], paragraphIndex };
+    templates.push(template);
+    if (paragraphIndex < story.paragraphs.length - 1) spans.push({ ...template, text: "\n", paragraphBreak: true, paragraphIndex: paragraphIndex + 1 });
+  });
+  if (spans.map((span) => span.text).join("") !== story.text) throw new Error("Incomplete rich story runs");
+  const oldPoints = Array.from(story.text), nextPoints = Array.from(next);
+  let prefix = 0, suffix = 0;
+  while (prefix < oldPoints.length && prefix < nextPoints.length && oldPoints[prefix] === nextPoints[prefix]) prefix++;
+  while (suffix < oldPoints.length - prefix && suffix < nextPoints.length - prefix && oldPoints[oldPoints.length - suffix - 1] === nextPoints[nextPoints.length - suffix - 1]) suffix++;
+  const start = oldPoints.slice(0, prefix).join("").length;
+  const end = story.text.length - oldPoints.slice(oldPoints.length - suffix).join("").length;
+  const inserted = nextPoints.slice(prefix, nextPoints.length - suffix).join("");
+  const slice = (from: number, to: number): StyledSpan[] => {
+    let offset = 0;
+    return spans.flatMap((span) => {
+      const left = Math.max(from, offset), right = Math.min(to, offset + span.text.length), base = offset;
+      offset += span.text.length;
+      return left < right ? [{ ...span, text: span.text.slice(left - base, right - base) }] : [];
+    });
+  };
+  const prefixSpans = slice(0, start), suffixSpans = slice(end, story.text.length);
+  const previous = prefixSpans.at(-1);
+  const insertion = previous?.paragraphBreak ? templates[previous.paragraphIndex]
+    : previous ?? suffixSpans.find((span) => !span.paragraphBreak) ?? templates[0];
+  const edited = [...prefixSpans, ...(inserted ? [{ ...insertion, text: inserted, paragraphBreak: false }] : []), ...suffixSpans];
+  const groups: { paragraphIndex: number; spans: StyledSpan[] }[] = [];
+  let current = { paragraphIndex: 0, spans: [] as StyledSpan[] };
+  for (const span of edited) {
+    const lines = span.text.split("\n");
+    lines.forEach((line, index) => {
+      if (line) current.spans.push({ ...span, text: line, paragraphBreak: false });
+      if (index < lines.length - 1) {
+        groups.push(current);
+        current = { paragraphIndex: span.paragraphIndex, spans: [] };
+      }
+    });
+  }
+  groups.push(current);
+  const markers = groups.map(() => ({ before: "", after: "" }));
+  story.sourceParagraphs.forEach((paragraph, index) => {
+    for (const marker of paragraphBookmarks(paragraph, source)) markers[Math.min(index, groups.length - 1)][index >= groups.length ? "after" : marker.side] += marker.xml;
+  });
+  const usedIds = new Set<number>();
+  const paragraphs: ParagraphNode[] = [];
+  const xml = groups.map((group, index) => {
+    const old = story.paragraphs[group.paragraphIndex], template = story.sourceParagraphs[group.paragraphIndex];
+    if (!group.spans.length) group.spans.push({ ...templates[group.paragraphIndex], text: "" });
+    paragraphs.push({ ...old, blockId: usedIds.has(group.paragraphIndex) ? undefined : old.blockId,
+      sourceXml: undefined, sourceTextPatch: undefined, sourceRunProvenance: undefined,
+      children: group.spans.map((span) => ({ ...span.run, text: span.text })) });
+    usedIds.add(group.paragraphIndex);
+    const props = template.children.find((node) => node.name === "w:pPr");
+    const opening = template.closeStart !== template.openEnd ? source.slice(template.start, template.openEnd) : "<w:p>";
+    const runs = group.spans.map((span) => {
+      const runProps = span.sourceRun?.children.find((node) => node.name === "w:rPr");
+      const runOpening = span.sourceRun && span.sourceRun.closeStart !== span.sourceRun.openEnd ? source.slice(span.sourceRun.start, span.sourceRun.openEnd) : "<w:r>";
+      return `${runOpening}${runProps ? source.slice(runProps.start, runProps.end) : ""}<w:t xml:space="preserve">${escape(span.text)}</w:t></w:r>`;
+    }).join("");
+    return `${opening}${props ? source.slice(props.start, props.end) : ""}${markers[index].before}${runs}${markers[index].after}</w:p>`;
+  }).join("");
+  if (paragraphs.map((paragraph) => typedText(paragraph, true)).join("\n") !== next) throw new Error("Incomplete rich story edit");
+  return { paragraphs, xml };
+}
+export function editVmlCompositeStory(image: ImageRunNode, text: string, renderStory: VmlStoryRenderer, storyIndex?: number, allowRichText = false): ImageRunNode | undefined {
   try {
-    const mapping = map(image);
+    const mapping = map(image, allowRichText);
+    if (!mapVmlCompositeStories(image, allowRichText)) return undefined;
     if (storyIndex !== undefined && (!Number.isInteger(storyIndex) || !mapping.stories[storyIndex])) return undefined;
     const normalized = text.replace(/\r\n?/g, "\n");
     if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(normalized)) return undefined;
@@ -455,7 +564,8 @@ export function editVmlCompositeStory(image: ImageRunNode, text: string, renderS
       if (!story.slot) throw new Error("No proven paint slot");
       const next = storyIndex !== undefined || story.index === 0 ? normalized : "";
       const lines = next.split("\n");
-      const paragraphs: ParagraphNode[] = lines.map((line, i) => {
+      const rich = story.richText ? editStyledStory(story, mapping.source, next) : undefined;
+      const paragraphs: ParagraphNode[] = rich?.paragraphs ?? lines.map((line, i) => {
         const old = story.paragraphs[i] ?? story.paragraphs[0];
         const run = old.children.find((n) => n.type === "text" && n.text.length > 0) ?? old.children.find((n) => n.type === "text");
         return { ...old, blockId: i < story.paragraphs.length ? old.blockId : undefined, sourceXml: undefined, sourceTextPatch: undefined, children: [{ type: "text", text: line, style: run?.type === "text" ? run.style : undefined }] };
@@ -464,10 +574,10 @@ export function editVmlCompositeStory(image: ImageRunNode, text: string, renderS
       story.sourceParagraphs.forEach((p, i) => {
         for (const marker of paragraphBookmarks(p, mapping.source)) markers[Math.min(i, lines.length - 1)][i >= lines.length ? "after" : marker.side] += marker.xml;
       });
-      const xml = lines.map((line, i) => paragraphXml(mapping.source, story.sourceParagraphs[i] ?? story.sourceParagraphs[0], line, markers[i].before, markers[i].after, i < story.sourceParagraphs.length)).join("");
+      const xml = rich?.xml ?? lines.map((line, i) => paragraphXml(mapping.source, story.sourceParagraphs[i] ?? story.sourceParagraphs[0], line, markers[i].before, markers[i].after, i < story.sourceParagraphs.length)).join("");
       sourceEdits.push({ start: story.source.openEnd, end: story.source.closeStart, value: xml });
       const storySource = replacements(mapping.source.slice(story.shape.start, story.shape.end), [{ start: story.source.openEnd - story.shape.start, end: story.source.closeStart - story.shape.start, value: xml }]);
-      const generated = svgData(renderStory({ ...image, sourceXml: storySource, contentNodes: paragraphs, textBoxText: next, widthPx: story.framePx.width, heightPx: story.framePx.height, paintBounds: undefined, src: undefined, data: undefined, partName: undefined }));
+      const generated = svgData(renderStory({ ...image, sourceXml: storySource, contentNodes: paragraphs, textBoxText: rich ? undefined : next, widthPx: story.framePx.width, heightPx: story.framePx.height, paintBounds: undefined, src: undefined, data: undefined, partName: undefined }));
       const rendered = scan(generated), generatedNodes = all(rendered);
       if (rendered.name !== "svg" || generatedNodes.some((n) => !["svg", "g", "text", "tspan"].includes(n.name) || !visible(n))) throw new Error("Unsupported generated paint");
       const renderedTexts = generatedNodes.filter((n) => n.name === "text").map((n) => textValue(n, generated));
@@ -480,7 +590,7 @@ export function editVmlCompositeStory(image: ImageRunNode, text: string, renderS
       return { ...story, text: next, paragraphs };
     });
     const result: ImageRunNode = { ...image, src: uri(replacements(mapping.svg, svgEdits)), data: undefined, partName: undefined, contentType: "image/svg+xml", sourceXml: replacements(mapping.source, sourceEdits), contentNodes: stories.flatMap((s) => [...s.paragraphs]), textBoxText: aggregate(stories) };
-    map(result);
+    map(result, allowRichText);
     return result;
   } catch { return undefined; }
 }

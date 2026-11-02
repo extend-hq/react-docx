@@ -355,19 +355,24 @@ impl<'a> Converter<'a> {
         } else {
             0.0
         };
-        let mut xs = Vec::new();
-        let mut ys = Vec::new();
+        let coordinate_capacity = if advances.is_empty() { 16 } else { count.saturating_mul(6) };
+        let mut xs = String::with_capacity(coordinate_capacity);
+        let mut ys = String::with_capacity(coordinate_capacity);
         let mut position = (x - shift, y);
         let mut unit_index = 0;
         if advances.is_empty() {
             let point = self.map_point(x, y);
-            xs.push(fmt(point.0).to_string());
-            ys.push(fmt(point.1).to_string());
+            let _ = write!(xs, "{}", fmt(point.0));
+            let _ = write!(ys, "{}", fmt(point.1));
         } else {
             for character in text.chars() {
                 let point = self.map_point(position.0, position.1);
-                xs.push(fmt(point.0).to_string());
-                ys.push(fmt(point.1).to_string());
+                if !xs.is_empty() {
+                    xs.push(' ');
+                    ys.push(' ');
+                }
+                let _ = write!(xs, "{}", fmt(point.0));
+                let _ = write!(ys, "{}", fmt(point.1));
                 for _ in 0..character.len_utf16() {
                     position.0 += advances[unit_index].0;
                     position.1 += advances[unit_index].1;
@@ -394,7 +399,7 @@ impl<'a> Converter<'a> {
         .join(" ");
         self.push_element(format!(
             "<text xml:space=\"preserve\" x=\"{}\" y=\"{}\" font-family=\"{}\" font-size=\"{}\" font-weight=\"{}\" font-style=\"{}\" text-decoration=\"{}\" text-anchor=\"{anchor}\" dominant-baseline=\"{baseline}\" fill=\"{}\">{}</text>",
-            xs.join(" "),ys.join(" "),escape_svg(&font.family),fmt(font.height*self.mapping.scale_y().abs()),font.weight,
+            xs,ys,escape_svg(&font.family),fmt(font.height*self.mapping.scale_y().abs()),font.weight,
             if font.italic { "italic" } else { "normal" },decoration.trim(),colorref_to_css(self.text_color),escape_svg(&text)));
         self.active_clip_id = old_clip;
         Some(())
@@ -987,5 +992,62 @@ mod bounded_coordinate_tests {
             };
             assert_eq!(super::fmt(value).to_string(), expected);
         }
+    }
+}
+
+#[cfg(test)]
+mod positioned_text_tests {
+    use super::*;
+
+    fn render(advances: &[(i32, i32)], align: u32) -> String {
+        let units: Vec<u16> = "A😀B".encode_utf16().collect();
+        let text_end = 76 + units.len() * 2;
+        let mut record = vec![0u8; text_end + advances.len() * 8];
+        for (offset, value) in [
+            (36, 100u32), (40, 200), (44, units.len() as u32),
+            (48, 76), (52, if advances.is_empty() { 0 } else { 0x2000 }),
+            (72, if advances.is_empty() { 0 } else { text_end as u32 }),
+        ] {
+            record[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        for (index, unit) in units.iter().enumerate() {
+            record[76 + index * 2..78 + index * 2].copy_from_slice(&unit.to_le_bytes());
+        }
+        for (index, (x, y)) in advances.iter().enumerate() {
+            let offset = text_end + index * 8;
+            record[offset..offset + 4].copy_from_slice(&x.to_le_bytes());
+            record[offset + 4..offset + 8].copy_from_slice(&y.to_le_bytes());
+        }
+        let mut converter = Converter {
+            data: &[],
+            mapping: Mapping { window_org: (0.0, 0.0), window_ext: (2.0, 4.0),
+                               viewport_org: (0.0, 0.0), viewport_ext: (3.0, -2.0) },
+            objects: std::collections::HashMap::new(), current_brush: None, current_pen: None,
+            current_font: Some(LogicalFont { family: "serif".into(), height: 10.0, weight: 400,
+                                            italic: false, underline: false, strikeout: false }),
+            text_color: 0, background_color: 0xffffff, background_mode: 1, text_align: align,
+            saved_states: Vec::new(), fill_rule: "nonzero", in_path: false,
+            path_data: String::new(), pending_path: None, current_point: (0.0, 0.0),
+            elements: Vec::new(), clip_defs: Vec::new(), active_clip_id: None, bounds: (0, 0, 1000, 1000),
+        };
+        assert_eq!(converter.emit_text(&record), Some(()));
+        assert_eq!(converter.elements.len(), 1);
+        converter.elements.pop().unwrap()
+    }
+
+    #[test]
+    fn paired_advances_preserve_surrogate_positions_and_alignment() {
+        assert_eq!(
+            render(&[(4, 8), (5, -4), (3, 4), (-2, 0)], 6 | 24),
+            "<text xml:space=\"preserve\" x=\"142.5 148.5 160.5\" y=\"-100 -104 -104\" font-family=\"serif\" font-size=\"5\" font-weight=\"400\" font-style=\"normal\" text-decoration=\"\" text-anchor=\"start\" dominant-baseline=\"alphabetic\" fill=\"#000000\">A😀B</text>"
+        );
+    }
+
+    #[test]
+    fn unpositioned_text_retains_one_anchor_point() {
+        assert_eq!(
+            render(&[], 2 | 24),
+            "<text xml:space=\"preserve\" x=\"150\" y=\"-100\" font-family=\"serif\" font-size=\"5\" font-weight=\"400\" font-style=\"normal\" text-decoration=\"\" text-anchor=\"end\" dominant-baseline=\"alphabetic\" fill=\"#000000\">A😀B</text>"
+        );
     }
 }

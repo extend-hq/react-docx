@@ -17,6 +17,81 @@ const render: VmlStoryRenderer = (image) => {
   return encode(`<svg xmlns="http://www.w3.org/2000/svg" width="${image.widthPx}" height="${image.heightPx}" viewBox="0 0 ${image.widthPx} ${image.heightPx}">${text.map((t, i) => `<text y="${Math.min(10 + i * 5, image.heightPx!)}"><tspan x="0">${xml(t)}</tspan></text>`).join("")}</svg>`);
 };
 
+function richFixture(): ImageRunNode {
+  const image = fixture([["ABCD"], ["Other"]]);
+  const markup = '<w:r><w:rPr><w:b/><w:spacing w:val="15"/></w:rPr><w:t>AB</w:t></w:r><w:r><w:rPr><w:i/><w:w w:val="80"/></w:rPr><w:t>CD</w:t></w:r>';
+  image.sourceXml = image.sourceXml!.replace(/<w:r>[\s\S]*?<\/w:r>/, markup);
+  (image.contentNodes![0] as ParagraphNode).children = [
+    { type: "text", text: "AB", style: { bold: true, characterSpacingTwips: 15 } },
+    { type: "text", text: "CD", style: { italic: true, characterScalePercent: 80 } },
+  ];
+  return image;
+}
+
+describe("rich VML story editing", () => {
+  it("requires a rich-text surface and exposes its artwork separately", () => {
+    const image = richFixture();
+    expect(mapVmlCompositeStories(image)).toBeUndefined();
+    const mapping = mapVmlCompositeStories(image, true)!;
+    expect(mapping.richText).toBe(true);
+    expect(mapping.overlaySafe).toBe(true);
+    expect(decode(mapping.artworkSrc)).toContain(artwork);
+    expect(decode(mapping.artworkSrc)).not.toContain("<text");
+    expect(mapping.stories.map((story) => story.text)).toEqual(["ABCD", "Other"]);
+  });
+
+  it.each([
+    ["AB!CD", ["b", "b", "b", "i", "i"]],
+    ["A!D", ["b", "b", "i"]],
+    ["AD", ["b", "i"]],
+    ["AB\nCD", ["b", "b", "i", "i"]],
+    ["ABCD\n", ["b", "b", "i", "i"]],
+    ["AB😀CD", ["b", "b", "b", "i", "i"]],
+    ["BCD", ["b", "i", "i"]],
+    ["ABCD!", ["b", "b", "i", "i", "i"]],
+  ])("retains formatting around the edit %j", (text, expectedStyles) => {
+    const image = richFixture();
+    const sibling = mapVmlCompositeStories(image, true)!.stories[1].sourceXml;
+    const edited = editVmlCompositeStory(image, text as string, render, 0, true)!;
+    expect(edited).toBeDefined();
+    const mapping = mapVmlCompositeStories(edited, true)!;
+    expect(mapping.stories.map((story) => story.text)).toEqual([text, "Other"]);
+    expect(mapping.stories[1].sourceXml).toBe(sibling);
+    expect(mapping.artworkSrc).toBe(mapVmlCompositeStories(image, true)!.artworkSrc);
+    const styles = mapping.stories[0].paragraphs.flatMap((paragraph) => paragraph.children.flatMap((run) => {
+      if (run.type !== "text") throw new Error("Expected text");
+      if (run.style?.bold) expect(run.style.characterSpacingTwips).toBe(15);
+      if (run.style?.italic) expect(run.style.characterScalePercent).toBe(80);
+      return Array.from(run.text, () => run.style?.bold ? "b" : "i");
+    }));
+    expect(styles).toEqual(expectedStyles);
+    expect(edited.sourceXml).toContain('<w:spacing w:val="15"/>');
+    expect(edited.sourceXml).toContain('<w:w w:val="80"/>');
+  });
+
+  it("preserves rich suffixes when paragraphs are merged and split again", () => {
+    const split = editVmlCompositeStory(richFixture(), "AB\nCD", render, 0, true)!;
+    const merged = editVmlCompositeStory(split, "ABCD", render, 0, true)!;
+    expect(mapVmlCompositeStories(merged, true)!.stories[0].paragraphs).toHaveLength(1);
+    const paragraph = mapVmlCompositeStories(merged, true)!.stories[0].paragraphs[0];
+    expect(paragraph.children.map((run) => run.type === "text" && [run.text, run.style])).toEqual([
+      ["AB", { bold: true, characterSpacingTwips: 15 }],
+      ["CD", { italic: true, characterScalePercent: 80 }],
+    ]);
+    expect(editVmlCompositeStory(merged, "AB\nCD", render, 0, true)?.textBoxText).toBe("AB\nCD\nOther");
+  });
+
+  it("rejects unsafe layer order and unsupported text semantics in rich mode", () => {
+    const image = richFixture();
+    image.src = encode(decode(image.src!).replace("</svg>", '<path d="M0 0L50 50" stroke="black"/></svg>'));
+    expect(mapVmlCompositeStories(image, true)).toBeUndefined();
+    expect(editVmlCompositeStory(image, "Updated", render, 0, true)).toBeUndefined();
+    const dynamic = richFixture();
+    dynamic.sourceXml = dynamic.sourceXml!.replace('<w:t>AB', '<w:instrText>PAGE</w:instrText><w:t>AB');
+    expect(mapVmlCompositeStories(dynamic, true)).toBeUndefined();
+  });
+});
+
 describe("VML composite story editing", () => {
   it("maps independent stories and exposes an exact artwork-only layer", () => {
     const image = fixture();
@@ -87,6 +162,43 @@ describe("VML composite story editing", () => {
     expect(edited).toBeDefined();
     expect(edited.sourceXml).toMatch(/bookmarkStart[^>]*\/>[\s\S]*<w:t xml:space="preserve">Updated<\/w:t>[\s\S]*bookmarkEnd/);
     expect((edited.contentNodes![0] as ParagraphNode).children[0]).toMatchObject({ style: { bold: true, fontFamily: "Arial" } });
+  });
+  it.each(["spellStart", "spellEnd", "gramStart", "gramEnd"])("maps text across a valid %s proofing marker", (kind) => {
+    const image = fixture([["First"]]);
+    image.sourceXml = image.sourceXml!.replace("<w:p>", `<w:p><w:proofErr w:type="${kind}"/>`);
+    const original = image.sourceXml;
+    expect(mapVmlCompositeStories(image)!.stories[0].text).toBe("First");
+    const edited = editVmlCompositeStory(image, "Updated", render, 0)!;
+    expect(mapVmlCompositeStories(edited)!.stories[0].text).toBe("Updated");
+    expect(decode(edited.src!)).toContain(artwork);
+    expect(edited.sourceXml).not.toContain("proofErr");
+    expect(image.sourceXml).toBe(original);
+  });
+  it("preserves untouched proofing ranges and artwork when another story changes", () => {
+    const image = fixture();
+    image.sourceXml = image.sourceXml!.replaceAll("<w:p>", '<w:p><w:proofErr w:type="spellStart"/>')
+      .replaceAll("</w:p>", '<w:proofErr w:type="spellEnd"/></w:p>');
+    const second = mapVmlCompositeStories(image)!.stories[1].sourceXml;
+    const edited = editVmlCompositeStory(image, "Updated", render, 0)!;
+    const mapping = mapVmlCompositeStories(edited)!;
+    expect(mapping.stories.map((story) => story.text)).toEqual(["Updated", "Second"]);
+    expect(mapping.stories[1].sourceXml).toBe(second);
+    expect(mapping.stories[0].sourceXml).not.toContain("proofErr");
+    expect(decode(edited.src!)).toContain(artwork);
+  });
+  it.each([
+    '<w:proofErr/>',
+    '<w:proofErr w:type="unknown"/>',
+    '<w:proofErr w:type="spellStart"><w:t>Hidden</w:t></w:proofErr>',
+    '<w:proofErr w:type="spellStart">Hidden</w:proofErr>',
+    '<w:proofErr w:type="spellStart" w:id="1"/>',
+    '<w:proofErr xmlns:w="urn:unrelated" w:type="spellStart"/>',
+    '<w:r><w:proofErr w:type="spellStart"/></w:r>',
+  ])("rejects malformed or misplaced proofing markers %#", (markup) => {
+    const image = fixture([["First"]]);
+    image.sourceXml = image.sourceXml!.replace("<w:p>", `<w:p>${markup}`);
+    expect(mapVmlCompositeStories(image)).toBeUndefined();
+    expect(editVmlCompositeStory(image, "Updated", render, 0)).toBeUndefined();
   });
   it("maps equal text paint across language metadata boundaries", () => {
     const image = fixture([["AlphaBeta"]]);

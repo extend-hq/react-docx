@@ -1,5 +1,6 @@
 //! DOCX serializer ported from `packages/serializer/src/index.ts`.
 
+use std::cell::OnceCell;
 use std::collections::HashMap;
 
 use crate::model::*;
@@ -166,6 +167,7 @@ struct ImageSerializationState<'a> {
     relationships: Vec<Relationship>,
     relationship_by_target: HashMap<String, Relationship>,
     pkg: &'a mut OoxmlPackage,
+    theme_fonts: OnceCell<crate::parse::ThemeFontMap>,
     paragraph_text_alignment_by_style_id: HashMap<String, ParagraphTextAlignment>,
     default_paragraph_text_alignment: Option<ParagraphTextAlignment>,
     paragraph_style_alignment_owners: HashMap<String, ParagraphTextAlignment>,
@@ -384,7 +386,26 @@ fn normalize_word_highlight(value: Option<&str>) -> Option<String> {
     None
 }
 
-fn run_properties_xml(style: Option<&TextStyle>) -> String {
+fn serialized_font_theme<'a>(
+    family: Option<&str>,
+    resolved: Option<&str>,
+    theme: Option<&'a str>,
+    state: &ImageSerializationState<'_>,
+) -> Option<&'a str> {
+    if let (Some(family), Some(resolved), Some(theme)) = (family, resolved, theme) {
+        if family == resolved {
+            let fonts = state.theme_fonts.get_or_init(|| crate::parse::parse_theme_fonts(state.pkg));
+            if crate::parse::resolve_theme_font(Some(theme), fonts)
+                .is_some_and(|value| value != resolved)
+            {
+                return None;
+            }
+        }
+    }
+    theme
+}
+
+fn run_properties_xml(style: Option<&TextStyle>, state: &ImageSerializationState<'_>) -> String {
     let Some(style) = style else {
         return String::new();
     };
@@ -420,6 +441,10 @@ fn run_properties_xml(style: Option<&TextStyle>) -> String {
             r#"<w:shd w:val="clear" w:color="auto" w:fill="{}"/>"#,
             background_color.replace('#', "").to_ascii_uppercase()
         ));
+    }
+
+    if let Some(spacing) = style.character_spacing_twips {
+        fragments.push(format!(r#"<w:spacing w:val="{spacing}"/>"#));
     }
 
     let percent = style.character_scale_percent.filter(|value| *value <= 600);
@@ -486,10 +511,30 @@ fn run_properties_xml(style: Option<&TextStyle>) -> String {
             ("w:hAnsi", style.font_family_h_ansi.as_deref()),
             ("w:eastAsia", style.font_family_east_asia.as_deref()),
             ("w:cs", style.font_family_cs.as_deref()),
-            ("w:asciiTheme", style.font_theme_ascii.as_deref()),
-            ("w:hAnsiTheme", style.font_theme_h_ansi.as_deref()),
-            ("w:eastAsiaTheme", style.font_theme_east_asia.as_deref()),
-            ("w:csTheme", style.font_theme_cs.as_deref()),
+            ("w:asciiTheme", serialized_font_theme(
+                style.font_family_ascii.as_deref(),
+                style.resolved_font_family_ascii.as_deref(),
+                style.font_theme_ascii.as_deref(),
+                state,
+            )),
+            ("w:hAnsiTheme", serialized_font_theme(
+                style.font_family_h_ansi.as_deref(),
+                style.resolved_font_family_h_ansi.as_deref(),
+                style.font_theme_h_ansi.as_deref(),
+                state,
+            )),
+            ("w:eastAsiaTheme", serialized_font_theme(
+                style.font_family_east_asia.as_deref(),
+                style.resolved_font_family_east_asia.as_deref(),
+                style.font_theme_east_asia.as_deref(),
+                state,
+            )),
+            ("w:csTheme", serialized_font_theme(
+                style.font_family_cs.as_deref(),
+                style.resolved_font_family_cs.as_deref(),
+                style.font_theme_cs.as_deref(),
+                state,
+            )),
             ("w:hint", style.font_hint.as_deref()),
         ] {
             if let Some(value) = value {
@@ -884,12 +929,12 @@ fn paragraph_properties_xml(
     }
 
     let mut indent_fragments: Vec<String> = Vec::new();
-    if let Some(left) = twips_to_xml_non_negative(style.indent.as_ref().and_then(|i| i.left_twips))
+    if let Some(left) = style.indent.as_ref().and_then(|i| i.left_twips)
     {
         indent_fragments.push(format!(r#"w:left="{left}""#));
     }
     if let Some(right) =
-        twips_to_xml_non_negative(style.indent.as_ref().and_then(|i| i.right_twips))
+        style.indent.as_ref().and_then(|i| i.right_twips)
     {
         indent_fragments.push(format!(r#"w:right="{right}""#));
     }
@@ -1876,6 +1921,61 @@ fn vml_paint_matches_source(
             }
 }
 
+fn vml_floating_paint_matches_source(
+    image: &ImageRunNode,
+    svg: roxmltree::Node<'_, '_>,
+    source: &str,
+    owner_part_name: &str,
+    relationships: &[Relationship],
+    package: &OoxmlPackage,
+) -> bool {
+    if image.floating.is_none() || image.paint_bounds.is_some() {
+        return false;
+    }
+    let mut targets = HashMap::new();
+    for relationship in relationships {
+        if relationship.r#type == REL_TYPE_IMAGE && relationship.target_mode.is_none() {
+            targets.entry(relationship.id.clone()).or_insert_with(|| {
+                crate::parse::resolve_part_path(owner_part_name, &relationship.target)
+            });
+        }
+    }
+    let context = crate::parse::ParseContext {
+        relationships: targets,
+        content_types: crate::parse::parse_content_types(package),
+        parts: &package.parts,
+        binary_assets: &package.binary_assets,
+        style_sheet: crate::parse::parse_style_sheet(package),
+        warnings: std::cell::RefCell::new(Vec::new()),
+    };
+    let Some(parsed) = crate::parse::parse_vml_group_image_from_part(source, &context, owner_part_name) else {
+        return false;
+    };
+    if parsed.synthetic_text_box != Some(true)
+        || parsed.paint_bounds.is_some()
+        || parsed.width_px != image.width_px
+        || parsed.height_px != image.height_px
+        || parsed.floating != image.floating
+    {
+        return false;
+    }
+    let Some((mime, bytes)) = parsed.src.as_deref().and_then(decode_data_uri) else {
+        return false;
+    };
+    if mime != "image/svg+xml" {
+        return false;
+    }
+    let Some(expected) = std::str::from_utf8(&bytes)
+        .ok()
+        .and_then(|text| roxmltree::Document::parse(text).ok())
+    else {
+        return false;
+    };
+    ["width", "height", "viewBox", "preserveAspectRatio"]
+        .into_iter()
+        .all(|name| svg.attribute(name) == expected.root_element().attribute(name))
+}
+
 fn edited_vml_textbox_source_plan(
     image: &ImageRunNode,
     owner_part_name: &str,
@@ -1883,7 +1983,6 @@ fn edited_vml_textbox_source_plan(
     package: &OoxmlPackage,
 ) -> Option<VmlTextboxSourcePlan> {
     if image.synthetic_text_box != Some(true)
-        || (image.text_box_text.is_none() && image.paint_bounds.is_none())
         || image.part_name.is_some()
         || image.data.is_some()
         || image.crop.is_some()
@@ -1965,7 +2064,7 @@ fn edited_vml_textbox_source_plan(
     }
     let root = groups[0];
     let (source_width, source_height, source_anchor) = vml_source_frame(root)?;
-    if !vml_paint_matches_source(
+    let direct_frame_matches = vml_paint_matches_source(
         image,
         svg.root_element(),
         root,
@@ -1973,7 +2072,16 @@ fn edited_vml_textbox_source_plan(
         source_height,
         frame_width,
         frame_height,
-    ) || source_anchor != image.floating
+    ) && source_anchor == image.floating;
+    if !direct_frame_matches
+        && !vml_floating_paint_matches_source(
+            image,
+            svg.root_element(),
+            source,
+            owner_part_name,
+            relationships,
+            package,
+        )
     {
         return None;
     }
@@ -1998,7 +2106,7 @@ fn edited_vml_textbox_source_plan(
             }
         }
     }
-    if image.paint_bounds.is_some() {
+    if image.paint_bounds.is_some() || !direct_frame_matches {
         let source_bitmaps: Vec<_> = root
             .descendants()
             .filter(|node| node.has_tag_name((VML_NS, "imagedata")))
@@ -2066,7 +2174,7 @@ fn edited_vml_textbox_source_plan(
                 .filter(|node| node.is_element())
                 .any(|node| {
                     node.tag_name().namespace() != Some(WORD_MAIN_NS)
-                        || (matches!(node.tag_name().name(), "bookmarkStart" | "bookmarkEnd")
+                        || (matches!(node.tag_name().name(), "bookmarkStart" | "bookmarkEnd" | "proofErr")
                             && node.parent() != Some(*paragraph))
                         || matches!(
                             node.tag_name().name(),
@@ -2102,6 +2210,13 @@ fn edited_vml_textbox_source_plan(
                                     "rPr" | "t" | "tab" | "br" | "cr"
                                 )
                         })
+                    {
+                        return None;
+                    }
+                } else if node.has_tag_name((WORD_MAIN_NS, "proofErr")) {
+                    if !matches!(node.attribute((WORD_MAIN_NS, "type")), Some("spellStart" | "spellEnd" | "gramStart" | "gramEnd"))
+                        || node.attributes().any(|attribute| attribute.namespace() != Some(WORD_MAIN_NS) || attribute.name() != "type")
+                        || node.children().any(|child| child.is_element() || (child.is_text() && child.text().is_some_and(|text| !text.trim().is_empty())))
                     {
                         return None;
                     }
@@ -2730,7 +2845,7 @@ fn legacy_form_field_run_xml(
         "<w:r>{}</w:r>",
         format!(
             "{}{}",
-            run_properties_xml(field.style.as_deref()),
+            run_properties_xml(field.style.as_deref(), state),
             render_text_tokens(&display_value)
         )
     );
@@ -2903,7 +3018,7 @@ fn form_field_run_xml(field: &FormFieldRunNode, state: &mut ImageSerializationSt
     };
     let content_xml = format!(
         "<w:sdtContent><w:r>{}{}</w:r></w:sdtContent>",
-        run_properties_xml(field.style.as_deref()),
+        run_properties_xml(field.style.as_deref(), state),
         render_text_tokens(&display_value)
     );
     let sdt_xml = format!("<w:sdt>{properties_xml}{content_xml}</w:sdt>");
@@ -3349,9 +3464,9 @@ fn merge_mark_properties_xml(source: &str, generated: &str) -> String {
     updated
 }
 
-fn paragraph_mark_properties_xml(style: Option<&TextStyle>) -> String {
+fn paragraph_mark_properties_xml(style: Option<&TextStyle>, state: &ImageSerializationState<'_>) -> String {
     let order = MARK_PROPERTY_ORDER;
-    let mut generated = run_properties_xml(style);
+    let mut generated = run_properties_xml(style, state);
     if generated.is_empty() {
         generated = "<w:rPr/>".to_string();
     }
@@ -3375,20 +3490,11 @@ fn paragraph_mark_properties_xml(style: Option<&TextStyle>) -> String {
             generated =
                 insert_property_child(&generated, "w:rPr", "w:u", r#"<w:u w:val="none"/>"#, order);
         }
-        if let Some(spacing) = style.character_spacing_twips {
-            generated = insert_property_child(
-                &generated,
-                "w:rPr",
-                "w:spacing",
-                &format!(r#"<w:spacing w:val="{spacing}"/>"#),
-                order,
-            );
-        }
     }
     merge_mark_properties_xml("<w:rPr/>", &generated)
 }
 
-fn paragraph_mark_xml(paragraph: &ParagraphNode, source: Option<&str>) -> String {
+fn paragraph_mark_xml(paragraph: &ParagraphNode, source: Option<&str>, state: &ImageSerializationState<'_>) -> String {
     if paragraph.paragraph_mark_style == paragraph.source_paragraph_mark_style
         && (source.is_some() || paragraph.source_paragraph_mark_style.is_some())
     {
@@ -3397,7 +3503,7 @@ fn paragraph_mark_xml(paragraph: &ParagraphNode, source: Option<&str>) -> String
     if paragraph.paragraph_mark_style.is_none() && source.is_none() {
         return String::new();
     }
-    let generated = paragraph_mark_properties_xml(paragraph.paragraph_mark_style.as_deref());
+    let generated = paragraph_mark_properties_xml(paragraph.paragraph_mark_style.as_deref(), state);
     source
         .map(|source| merge_mark_properties_xml(source, &generated))
         .unwrap_or(generated)
@@ -3707,6 +3813,7 @@ fn paragraph_properties_with_mark_xml(
     let mark = paragraph_mark_xml(
         paragraph,
         paragraph.source_paragraph_mark_properties_xml.as_deref(),
+        state,
     );
     if mark.is_empty() {
         return properties;
@@ -3724,7 +3831,7 @@ fn paragraph_properties_with_mark_xml(
     )
 }
 
-fn patch_source_paragraph_mark(paragraph: &ParagraphNode, source: &str) -> String {
+fn patch_source_paragraph_mark(paragraph: &ParagraphNode, source: &str, state: &ImageSerializationState<'_>) -> String {
     if paragraph.paragraph_mark_style == paragraph.source_paragraph_mark_style {
         return source.to_string();
     }
@@ -3745,6 +3852,7 @@ fn patch_source_paragraph_mark(paragraph: &ParagraphNode, source: &str) -> Strin
         mark_range
             .as_ref()
             .map(|range| &original_properties[range.start..range.end]),
+        state,
     );
     let mut properties = original_properties.to_string();
     if let Some(range) = mark_range {
@@ -3988,7 +4096,7 @@ fn patch_source_paragraph_properties(
     source: &str,
     state: &ImageSerializationState<'_>,
 ) -> String {
-    let marked = patch_source_paragraph_mark(paragraph, source);
+    let marked = patch_source_paragraph_mark(paragraph, source, state);
     let aligned = patch_source_paragraph_text_alignment(paragraph, &marked, state);
     let grid = patch_source_paragraph_snap_to_grid(paragraph, &aligned, state);
     patch_source_paragraph_auto_spacing(paragraph, &grid)
@@ -4037,7 +4145,7 @@ fn paragraph_xml(
                     };
                     let run_xml = format!(
                         "<w:r>{}{}{}</w:r>",
-                        run_properties_xml(text_run.style.as_deref()),
+                        run_properties_xml(text_run.style.as_deref(), state),
                         note_reference_xml,
                         text_xml
                     );
@@ -5298,6 +5406,7 @@ fn create_image_serialization_state<'a>(
         relationships,
         relationship_by_target,
         pkg: base_package,
+        theme_fonts: OnceCell::new(),
     }
 }
 
@@ -6825,6 +6934,44 @@ mod edited_vml_textbox_tests {
     }
 
     #[test]
+    fn edited_vml_textbox_accepts_empty_proofing_markers() {
+        for kind in ["spellStart", "spellEnd", "gramStart", "gramEnd"] {
+            let (package, model, mut image) = fixture();
+            image.source_xml = image.source_xml.map(|source| source.replace("<w:p>", &format!("<w:p><w:proofErr w:type=\"{kind}\"/>")));
+            let exported = export(&package, model, image);
+            let xml = &exported.parts["word/document.xml"].content;
+            let document = roxmltree::Document::parse(xml).unwrap();
+            assert_eq!(document.descendants().filter(|node| node.has_tag_name((WORD_MAIN_NS, "txbxContent"))).count(), 2);
+            assert_eq!(document.descendants().filter(|node| node.has_tag_name((VML_NS, "imagedata"))).count(), 1);
+            assert!(xml.contains("First current") && xml.contains("Second current"));
+            assert!(!xml.contains("<w:drawing>"));
+            assert_eq!(exported.binary_assets, package.binary_assets);
+        }
+    }
+
+    #[test]
+    fn edited_vml_textbox_rejects_invalid_proofing_markers() {
+        for marker in [
+            r#"<w:proofErr/>"#,
+            r#"<w:proofErr w:type="unknown"/>"#,
+            r#"<w:proofErr w:type="spellStart"><w:t>Hidden</w:t></w:proofErr>"#,
+            r#"<w:proofErr w:type="spellStart">Hidden</w:proofErr>"#,
+            r#"<w:proofErr w:type="spellStart" w:id="1"/>"#,
+            r#"<w:proofErr xmlns:w="urn:unrelated" w:type="spellStart"/>"#,
+            r#"<w:r><w:proofErr w:type="spellStart"/></w:r>"#,
+            r#"<w:pPr><w:proofErr w:type="spellStart"/></w:pPr>"#,
+        ] {
+            let (package, model, mut image) = fixture();
+            image.source_xml = image.source_xml.map(|source| source.replace("<w:p>", &format!("<w:p>{marker}")));
+            let exported = export(&package, model, image);
+            let xml = &exported.parts["word/document.xml"].content;
+            assert!(xml.contains("<w:drawing>"));
+            assert!(!xml.contains("<w:txbxContent"));
+            assert!(exported.binary_assets.contains_key("word/media/original.png"));
+        }
+    }
+
+    #[test]
     fn edited_vml_textbox_keeps_story_blank_paragraphs_and_empty_placeholders() {
         let (package, model, mut image) = fixture();
         image.source_xml = image.source_xml.map(|source| {
@@ -7227,6 +7374,148 @@ mod edited_vml_textbox_tests {
         assert!(xml.contains("First current"));
     }
 
+    fn add_font_theme(package: &mut OoxmlPackage) {
+        for (name, content) in [
+            ("word/theme/theme1.xml", r#"<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:themeElements><a:fontScheme name="Theme"><a:majorFont><a:latin typeface="Major Latin"/><a:ea typeface="Major East Asia"/><a:cs typeface="Major Complex"/></a:majorFont><a:minorFont><a:latin typeface="Minor Latin"/><a:ea typeface="Minor East Asia"/><a:cs typeface="Minor Complex"/></a:minorFont></a:fontScheme></a:themeElements></a:theme>"#),
+            ("word/styles.xml", r#"<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Fallback" w:hAnsi="Fallback" w:eastAsia="Fallback" w:cs="Fallback" w:asciiTheme="minorHAnsi" w:hAnsiTheme="minorHAnsi" w:eastAsiaTheme="minorEastAsia" w:csTheme="minorBidi"/></w:rPr></w:rPrDefault></w:docDefaults></w:styles>"#),
+        ] {
+            package.parts.insert(name.into(), OoxmlPart { name: name.into(), content: content.into() });
+        }
+    }
+
+    fn styled_roundtrip(properties: &str) -> (OoxmlPackage, TextStyle) {
+        let xml = format!(r#"<w:document xmlns:w="{WORD_MAIN_NS}"><w:body><w:p><w:r><w:rPr>{properties}</w:rPr><w:t>Before</w:t></w:r></w:p></w:body></w:document>"#);
+        let mut package = crate::create_minimal_docx_package(Some(&xml));
+        add_font_theme(&mut package);
+        let mut model = crate::build_doc_model(&package);
+        let DocNode::Paragraph(paragraph) = &mut model.nodes[0] else { panic!("paragraph") };
+        paragraph.source_xml = None;
+        paragraph.source_text_patch = None;
+        let ParagraphChildNode::Text(run) = &mut paragraph.children[0] else { panic!("run") };
+        run.text = "After".into();
+        let expected = run.style.as_deref().unwrap().clone();
+        let exported = try_serialize_doc_model(&model, Some(&package)).unwrap();
+        let reparsed = crate::build_doc_model(&exported);
+        let DocNode::Paragraph(paragraph) = &reparsed.nodes[0] else { panic!("paragraph") };
+        let ParagraphChildNode::Text(run) = &paragraph.children[0] else { panic!("run") };
+        assert_eq!(run.text, "After");
+        assert_eq!(run.style.as_deref(), Some(&expected));
+        (exported, expected)
+    }
+
+    #[test]
+    fn regenerated_runs_preserve_explicit_font_overrides_and_signed_spacing() {
+        for spacing in [-36, 0, 11] {
+            let (exported, style) = styled_roundtrip(&format!(r#"<w:rFonts w:ascii="Direct Latin" w:hAnsi="Direct High" w:eastAsia="Direct East" w:cs="Direct Complex"/><w:spacing w:val="{spacing}"/><w:w w:val="120"/>"#));
+            assert_eq!(style.character_spacing_twips, Some(spacing));
+            assert_eq!(style.character_scale_percent, Some(120));
+            let xml = &exported.parts["word/document.xml"].content;
+            let document = roxmltree::Document::parse(xml).unwrap();
+            let fonts = document.descendants().find(|node| node.has_tag_name((WORD_MAIN_NS, "rFonts"))).unwrap();
+            assert_eq!(fonts.attribute((WORD_MAIN_NS, "ascii")), Some("Direct Latin"));
+            assert_eq!(fonts.attribute((WORD_MAIN_NS, "hAnsi")), Some("Direct High"));
+            assert_eq!(fonts.attribute((WORD_MAIN_NS, "eastAsia")), Some("Direct East"));
+            assert_eq!(fonts.attribute((WORD_MAIN_NS, "cs")), Some("Direct Complex"));
+            for name in ["asciiTheme", "hAnsiTheme", "eastAsiaTheme", "csTheme"] {
+                assert!(fonts.attribute((WORD_MAIN_NS, name)).is_none());
+            }
+            let properties = document.descendants().find(|node| {
+                node.has_tag_name((WORD_MAIN_NS, "rPr"))
+                    && node.parent().is_some_and(|parent| parent.has_tag_name((WORD_MAIN_NS, "r")))
+            }).unwrap();
+            let spacing_nodes: Vec<_> = properties.children().filter(|node| node.has_tag_name((WORD_MAIN_NS, "spacing"))).collect();
+            assert_eq!(spacing_nodes.len(), 1);
+            assert_eq!(spacing_nodes[0].attribute((WORD_MAIN_NS, "val")), Some(spacing.to_string().as_str()));
+        }
+    }
+
+    #[test]
+    fn regenerated_runs_preserve_actual_theme_bindings() {
+        for fallback in ["Fallback", "Major Latin"] {
+            let (exported, style) = styled_roundtrip(&format!(r#"<w:rFonts w:ascii="{fallback}" w:hAnsi="Major Latin" w:eastAsia="Major East Asia" w:cs="Major Complex" w:asciiTheme="majorHAnsi" w:hAnsiTheme="majorHAnsi" w:eastAsiaTheme="majorEastAsia" w:csTheme="majorBidi"/>"#));
+            assert_eq!(style.resolved_font_family_ascii.as_deref(), Some("Major Latin"));
+            let document = roxmltree::Document::parse(&exported.parts["word/document.xml"].content).unwrap();
+            let fonts = document.descendants().find(|node| node.has_tag_name((WORD_MAIN_NS, "rFonts"))).unwrap();
+            for (name, value) in [("asciiTheme", "majorHAnsi"), ("hAnsiTheme", "majorHAnsi"), ("eastAsiaTheme", "majorEastAsia"), ("csTheme", "majorBidi")] {
+                assert_eq!(fonts.attribute((WORD_MAIN_NS, name)), Some(value));
+            }
+        }
+    }
+
+    #[test]
+    fn regenerated_runs_resolve_each_font_slot_independently() {
+        let (exported, style) = styled_roundtrip(r#"<w:rFonts w:ascii="Direct Latin" w:cs="Direct Complex" w:hAnsiTheme="majorHAnsi" w:eastAsiaTheme="majorEastAsia"/>"#);
+        assert_eq!(style.resolved_font_family_ascii.as_deref(), Some("Direct Latin"));
+        assert_eq!(style.resolved_font_family_cs.as_deref(), Some("Direct Complex"));
+        assert_eq!(style.resolved_font_family_h_ansi.as_deref(), Some("Major Latin"));
+        assert_eq!(style.resolved_font_family_east_asia.as_deref(), Some("Major East Asia"));
+        let document = roxmltree::Document::parse(&exported.parts["word/document.xml"].content).unwrap();
+        let fonts = document.descendants().find(|node| node.has_tag_name((WORD_MAIN_NS, "rFonts"))).unwrap();
+        assert!(fonts.attribute((WORD_MAIN_NS, "asciiTheme")).is_none());
+        assert!(fonts.attribute((WORD_MAIN_NS, "csTheme")).is_none());
+        assert_eq!(fonts.attribute((WORD_MAIN_NS, "hAnsiTheme")), Some("majorHAnsi"));
+        assert_eq!(fonts.attribute((WORD_MAIN_NS, "eastAsiaTheme")), Some("majorEastAsia"));
+    }
+
+    #[test]
+    fn regenerated_paragraph_marks_write_spacing_once() {
+        let xml = format!(r#"<w:document xmlns:w="{WORD_MAIN_NS}"><w:body><w:p><w:pPr><w:rPr><w:rFonts w:ascii="Direct Latin"/><w:spacing w:val="-24"/></w:rPr></w:pPr><w:r><w:t>Body</w:t></w:r></w:p></w:body></w:document>"#);
+        let mut package = crate::create_minimal_docx_package(Some(&xml));
+        add_font_theme(&mut package);
+        let mut model = crate::build_doc_model(&package);
+        let DocNode::Paragraph(paragraph) = &mut model.nodes[0] else { panic!("paragraph") };
+        paragraph.paragraph_mark_style.as_mut().unwrap().character_spacing_twips = Some(17);
+        let expected = paragraph.paragraph_mark_style.clone();
+        let exported = try_serialize_doc_model(&model, Some(&package)).unwrap();
+        let document = roxmltree::Document::parse(&exported.parts["word/document.xml"].content).unwrap();
+        let spacing: Vec<_> = document.descendants().filter(|node| node.has_tag_name((WORD_MAIN_NS, "spacing"))).collect();
+        assert_eq!(spacing.len(), 1);
+        assert_eq!(spacing[0].attribute((WORD_MAIN_NS, "val")), Some("17"));
+        let reparsed = crate::build_doc_model(&exported);
+        let DocNode::Paragraph(paragraph) = &reparsed.nodes[0] else { panic!("paragraph") };
+        assert_eq!(paragraph.paragraph_mark_style, expected);
+    }
+
+    #[test]
+    fn edited_vml_stories_preserve_inherited_theme_overrides_and_spacing() {
+        let (mut package, _) = inline_paint_fixture();
+        add_font_theme(&mut package);
+        let part = package.parts.get_mut("word/document.xml").unwrap();
+        part.content = part.content.replace("<w:b/>", r#"<w:b/><w:spacing w:val="-36"/><w:w w:val="120"/>"#);
+        let mut model = crate::build_doc_model(&package);
+        let DocNode::Paragraph(paragraph) = &mut model.nodes[0] else { panic!("paragraph") };
+        paragraph.source_xml = None;
+        paragraph.source_text_patch = None;
+        let image = inline_image_mut(&mut model);
+        let content = image.content_nodes.as_mut().unwrap();
+        let DocNode::Paragraph(story) = &mut content[0] else { panic!("story") };
+        let ParagraphChildNode::Text(run) = &mut story.children[0] else { panic!("run") };
+        run.text.push('!');
+        let expected: Vec<_> = content.iter().map(|node| {
+            let DocNode::Paragraph(story) = node else { panic!("story") };
+            story.children.clone()
+        }).collect();
+        image.text_box_text = Some(content.iter().map(|node| {
+            let DocNode::Paragraph(story) = node else { panic!("story") };
+            story.children.iter().map(|child| {
+                let ParagraphChildNode::Text(run) = child else { panic!("run") };
+                run.text.as_str()
+            }).collect::<String>()
+        }).collect::<Vec<_>>().join("\n"));
+        let exported = try_serialize_doc_model(&model, Some(&package)).unwrap();
+        assert_eq!(exported.binary_assets, package.binary_assets);
+        let document = roxmltree::Document::parse(&exported.parts["word/document.xml"].content).unwrap();
+        assert_eq!(document.descendants().filter(|node| node.has_tag_name((WORD_MAIN_NS, "txbxContent"))).count(), 2);
+        assert_eq!(document.descendants().filter(|node| node.has_tag_name((VML_NS, "imagedata"))).count(), 1);
+        let reparsed = crate::build_doc_model(&exported);
+        let image = inline_image(&reparsed);
+        let actual: Vec<_> = image.content_nodes.as_ref().unwrap().iter().map(|node| {
+            let DocNode::Paragraph(story) = node else { panic!("story") };
+            story.children.clone()
+        }).collect();
+        assert_eq!(actual, expected);
+    }
+
     fn inline_paint_fixture() -> (OoxmlPackage, DocModel) {
         let xml = r##"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body><w:p><w:r><w:pict><v:group style="width:270pt;height:105pt" coordorigin="0,0" coordsize="360,140"><v:shape id="bitmap" type="#_x0000_t75" style="position:absolute;left:10;top:18;width:45;height:45" stroked="f"><v:imagedata r:id="rIdBitmap"/></v:shape><v:line from="0,120" to="360,120" strokecolor="#3355aa" strokeweight="0.75pt"/><v:shape id="story-0" type="#_x0000_t202" style="position:absolute;left:65;top:12;width:190;height:40" filled="f" stroked="f"><v:textbox inset="0,0,0,0"><w:txbxContent><w:p><w:bookmarkStart w:id="0" w:name="story-0"/><w:r><w:rPr><w:rFonts w:ascii="Arial"/><w:b/><w:sz w:val="24"/></w:rPr><w:t>Original upper story</w:t></w:r><w:bookmarkEnd w:id="0"/></w:p></w:txbxContent></v:textbox></v:shape><v:shape id="story-1" type="#_x0000_t202" style="position:absolute;left:145;top:67;width:190;height:40" filled="f" stroked="f"><v:textbox inset="0,0,0,0"><w:txbxContent><w:p><w:bookmarkStart w:id="1" w:name="story-1"/><w:r><w:rPr><w:rFonts w:ascii="Arial"/><w:b/><w:sz w:val="24"/></w:rPr><w:t>Original lower story</w:t></w:r><w:bookmarkEnd w:id="1"/></w:p></w:txbxContent></v:textbox></v:shape></v:group></w:pict></w:r></w:p><w:p><w:r><w:t>Following body text</w:t></w:r></w:p></w:body></w:document>"##;
         let mut package = crate::create_minimal_docx_package(Some(xml));
@@ -7245,6 +7534,148 @@ mod edited_vml_textbox_tests {
         paragraph.source_xml = None;
         paragraph.source_text_patch = None;
         (package, model)
+    }
+
+    fn floating_overflow_fixture() -> (OoxmlPackage, DocModel) {
+        let (mut package, _) = inline_paint_fixture();
+        let part = package.parts.get_mut("word/document.xml").unwrap();
+        part.content = part.content.replace("width:270pt;height:105pt", "position:absolute;margin-left:24pt;margin-top:13pt;width:270pt;height:105pt;mso-position-horizontal-relative:page");
+        part.content = part.content.replace("<v:textbox inset=", "<v:textbox style=\"v-text-anchor:top\" inset=");
+        let mut model = crate::build_doc_model(&package);
+        let DocNode::Paragraph(paragraph) = &mut model.nodes[0] else { panic!("paragraph") };
+        paragraph.source_xml = None;
+        paragraph.source_text_patch = None;
+        assert_eq!(inline_image(&model).width_px, Some(361.0));
+        assert_eq!(inline_image(&model).floating.as_ref().unwrap().x_px, Some(31.5));
+        assert!(inline_image(&model).paint_bounds.is_none());
+        (package, model)
+    }
+
+    #[test]
+    fn floating_overflow_composites_preserve_stories_during_paragraph_regeneration() {
+        for edited in [false, true] {
+            let (package, mut model) = floating_overflow_fixture();
+            let image = inline_image_mut(&mut model);
+            if edited {
+                let content = image.content_nodes.as_mut().unwrap();
+                let DocNode::Paragraph(story) = &mut content[0] else { panic!("story") };
+                let ParagraphChildNode::Text(run) = &mut story.children[0] else { panic!("run") };
+                run.text.push('!');
+                image.text_box_text = Some("Original upper story!\nOriginal lower story".into());
+                image.source_xml = image.source_xml.as_ref().map(|xml| xml.replace("Original upper story</w:t>", "Original upper story!</w:t>"));
+            }
+            let expected = inline_image(&model).clone();
+            let exported = try_serialize_doc_model(&model, Some(&package)).unwrap();
+            assert_eq!(exported.binary_assets, package.binary_assets);
+            let xml = &exported.parts["word/document.xml"].content;
+            let document = roxmltree::Document::parse(xml).unwrap();
+            assert_eq!(document.descendants().filter(|node| node.has_tag_name((WORD_MAIN_NS, "txbxContent"))).count(), 2);
+            assert_eq!(document.descendants().filter(|node| node.has_tag_name((VML_NS, "imagedata"))).count(), 1);
+            assert!(!xml.contains("<w:drawing>"));
+            let reparsed = crate::build_doc_model(&exported);
+            let actual = inline_image(&reparsed);
+            assert_eq!(actual.width_px, expected.width_px);
+            assert_eq!(actual.height_px, expected.height_px);
+            assert_eq!(actual.floating, expected.floating);
+            assert_eq!(actual.paint_bounds, expected.paint_bounds);
+            let children = |image: &ImageRunNode| image.content_nodes.as_ref().unwrap().iter().map(|node| {
+                let DocNode::Paragraph(story) = node else { panic!("story") };
+                story.children.clone()
+            }).collect::<Vec<_>>();
+            assert_eq!(children(actual), children(&expected));
+        }
+    }
+
+    #[test]
+    fn floating_overflow_source_validation_rejects_changed_frame_anchor_and_viewport() {
+        use base64::Engine;
+        for case in 0..8 {
+            let (mut package, mut model) = floating_overflow_fixture();
+            let image = inline_image_mut(&mut model);
+            match case {
+                0 => image.width_px = Some(360.0),
+                1 => image.height_px = Some(141.0),
+                2 => image.floating.as_mut().unwrap().x_px = Some(32.0),
+                3 => image.floating.as_mut().unwrap().y_px = Some(20.0),
+                4 => image.floating.as_mut().unwrap().horizontal_relative_to = Some("margin".into()),
+                5 | 6 | 7 => {
+                    let (_, bytes) = decode_data_uri(image.src.as_deref().unwrap()).unwrap();
+                    let svg = String::from_utf8(bytes).unwrap();
+                    let svg = match case {
+                        5 => svg.replace("viewBox=\"-0.5 0 361 140\"", "viewBox=\"0 0 361 140\""),
+                        6 => svg.replace("width=\"361\"", "width=\"360\""),
+                        _ => svg.replace("preserveAspectRatio=\"none\"", "preserveAspectRatio=\"xMidYMid meet\""),
+                    };
+                    image.src = Some(format!("data:image/svg+xml;base64,{}", base64::engine::general_purpose::STANDARD.encode(svg)));
+                }
+                _ => unreachable!(),
+            }
+            let state = create_image_serialization_state(&mut package, "word/document.xml");
+            assert!(edited_vml_textbox_source_plan(image, &state.owner_part_name, &state.relationships, state.pkg).is_none(), "case {case}");
+        }
+    }
+
+    #[test]
+    fn regenerated_paragraphs_preserve_signed_edge_indents() {
+        for (left, right) in [(-12, -240), (0, 0), (720, 360)] {
+            let xml = format!(r#"<w:document xmlns:w="{WORD_MAIN_NS}"><w:body><w:p><w:pPr><w:ind w:left="{left}" w:right="{right}" w:firstLine="120"/></w:pPr><w:r><w:t>Paragraph text</w:t></w:r></w:p></w:body></w:document>"#);
+            let package = crate::create_minimal_docx_package(Some(&xml));
+            let mut model = crate::build_doc_model(&package);
+            let DocNode::Paragraph(paragraph) = &mut model.nodes[0] else { panic!("paragraph") };
+            let expected = paragraph.style.as_ref().unwrap().indent.clone();
+            paragraph.source_xml = None;
+            paragraph.source_text_patch = None;
+            let exported = try_serialize_doc_model(&model, Some(&package)).unwrap();
+            let document = roxmltree::Document::parse(&exported.parts["word/document.xml"].content).unwrap();
+            let indent = document.descendants().find(|node| node.has_tag_name((WORD_MAIN_NS, "ind"))).unwrap();
+            assert_eq!(indent.attribute((WORD_MAIN_NS, "left")), Some(left.to_string().as_str()));
+            assert_eq!(indent.attribute((WORD_MAIN_NS, "right")), Some(right.to_string().as_str()));
+            let reopened = crate::build_doc_model(&exported);
+            let DocNode::Paragraph(paragraph) = &reopened.nodes[0] else { panic!("paragraph") };
+            assert_eq!(paragraph.style.as_ref().unwrap().indent, expected);
+        }
+    }
+
+    #[test]
+    fn edited_floating_stories_preserve_signed_edge_indents() {
+        let (mut package, _) = floating_overflow_fixture();
+        let part = package.parts.get_mut("word/document.xml").unwrap();
+        part.content = part.content.replace("<w:p><w:bookmarkStart", r#"<w:p><w:pPr><w:ind w:left="-12" w:right="-24"/></w:pPr><w:bookmarkStart"#);
+        let mut model = crate::build_doc_model(&package);
+        let DocNode::Paragraph(paragraph) = &mut model.nodes[0] else { panic!("paragraph") };
+        paragraph.source_xml = None;
+        paragraph.source_text_patch = None;
+        let image = inline_image_mut(&mut model);
+        image.source_xml = image.source_xml.as_ref().map(|xml| xml.replace("Original upper story</w:t>", "Original upper story!</w:t>"));
+        image.text_box_text = Some("Original upper story!\nOriginal lower story".into());
+        let content = image.content_nodes.as_mut().unwrap();
+        let DocNode::Paragraph(story) = &mut content[0] else { panic!("story") };
+        let ParagraphChildNode::Text(run) = &mut story.children[0] else { panic!("run") };
+        run.text.push('!');
+        let styles = |image: &ImageRunNode| image.content_nodes.as_ref().unwrap().iter().map(|node| {
+            let DocNode::Paragraph(story) = node else { panic!("story") };
+            story.style.clone()
+        }).collect::<Vec<_>>();
+        let expected = styles(inline_image(&model));
+        let exported = try_serialize_doc_model(&model, Some(&package)).unwrap();
+        let reopened = crate::build_doc_model(&exported);
+        assert_eq!(styles(inline_image(&reopened)), expected);
+    }
+
+    #[test]
+    fn floating_overflow_replay_requires_valid_owning_part_definitions() {
+        let (mut package, model) = floating_overflow_fixture();
+        let mut image = inline_image(&model).clone();
+        image.source_xml = image.source_xml.map(|xml| xml.replace("Original upper story</w:t>", "Original upper story!</w:t>"));
+        {
+            let state = create_image_serialization_state(&mut package, "word/document.xml");
+            assert!(edited_vml_textbox_source_plan(&image, &state.owner_part_name, &state.relationships, state.pkg).is_some());
+            assert!(edited_vml_textbox_source_plan(&image, "word/missing.xml", &state.relationships, state.pkg).is_none());
+        }
+        let part = package.parts.get_mut("word/document.xml").unwrap();
+        part.content = part.content.replace("<w:body>", r#"<w:body><v:shapetype id="_x0000_t75" coordsize="21600,21600" path="m0,0 l1,1 e"/>"#);
+        let state = create_image_serialization_state(&mut package, "word/document.xml");
+        assert!(edited_vml_textbox_source_plan(&image, &state.owner_part_name, &state.relationships, state.pkg).is_none());
     }
 
     fn inline_image(model: &DocModel) -> &ImageRunNode {

@@ -71,6 +71,18 @@ fn escape_into(value: &str, attribute: bool, out: &mut String) {
 }
 
 pub fn normalize_xml(xml: &str) -> Result<String, String> {
+    normalize_xml_with_root(xml, |_, _, _, _| ()).map(|(normalized, ())| normalized)
+}
+
+fn normalize_xml_with_root<T>(
+    xml: &str,
+    inspect_root: impl FnOnce(
+        roxmltree::Node<'_, '_>,
+        &BTreeMap<String, String>,
+        &BTreeMap<&str, &str>,
+        &str,
+    ) -> T,
+) -> Result<(String, T), String> {
     let document = roxmltree::Document::parse(xml).map_err(|e| e.to_string())?;
     let mut namespaces = BTreeMap::<String, String>::new();
     let root = document.root_element();
@@ -90,6 +102,9 @@ pub fn normalize_xml(xml: &str) -> Result<String, String> {
             }
         }
         for ns in node.namespaces() {
+            if ns.uri().is_empty() {
+                continue;
+            }
             if !namespaces.contains_key(ns.uri()) {
                 let name = prefix(ns.uri()).map(str::to_string).unwrap_or_else(|| {
                     let candidate = ns.name().unwrap_or("");
@@ -114,6 +129,16 @@ pub fn normalize_xml(xml: &str) -> Result<String, String> {
             }
         }
     }
+    let mut declarations = BTreeMap::<&str, &str>::new();
+    for (uri, prefix) in &namespaces {
+        let previous = declarations.entry(prefix.as_str()).or_insert(uri.as_str());
+        if previous.starts_with("http://purl.oclc.org/") {
+            *previous = uri;
+        }
+    }
+    if root.tag_name().namespace().is_none_or(str::is_empty) {
+        declarations.remove("");
+    }
     fn write_name(
         ns: Option<&str>,
         local: &str,
@@ -132,6 +157,8 @@ pub fn normalize_xml(xml: &str) -> Result<String, String> {
     fn write(
         node: roxmltree::Node<'_, '_>,
         namespaces: &BTreeMap<String, String>,
+        declarations: &BTreeMap<&str, &str>,
+        inherited_default: Option<&str>,
         out: &mut String,
     ) {
         if node.is_text() {
@@ -150,16 +177,25 @@ pub fn normalize_xml(xml: &str) -> Result<String, String> {
         let tag = node.tag_name();
         out.push('<');
         write_name(tag.namespace(), tag.name(), namespaces, out);
-        if node.parent().is_some_and(|parent| parent.is_root()) {
-            let mut declarations = BTreeMap::<&str, &str>::new();
-            for (uri, prefix) in namespaces {
-                let previous = declarations.entry(prefix.as_str()).or_insert(uri.as_str());
-                if previous.starts_with("http://purl.oclc.org/") {
-                    *previous = uri;
-                }
+        let is_root = node.parent().is_some_and(|parent| parent.is_root());
+        let declared_default = if is_root {
+            declarations.get("").copied()
+        } else {
+            inherited_default
+        };
+        let current_default = match tag.namespace().filter(|uri| !uri.is_empty()) {
+            None => None,
+            Some(uri) if namespaces.get(uri).is_some_and(String::is_empty) => Some(uri),
+            Some(_) => declared_default,
+        };
+        if is_root {
+            if let Some(uri) = current_default {
+                out.push_str(" xmlns=\"");
+                escape_into(uri, true, out);
+                out.push('"');
             }
-            for (prefix, uri) in declarations {
-                if prefix != "xml" {
+            for (&prefix, &uri) in declarations {
+                if prefix != "xml" && !prefix.is_empty() {
                     out.push_str(" xmlns");
                     if !prefix.is_empty() {
                         out.push(':');
@@ -170,6 +206,11 @@ pub fn normalize_xml(xml: &str) -> Result<String, String> {
                     out.push('"');
                 }
             }
+        }
+        if !is_root && current_default != inherited_default {
+            out.push_str(" xmlns=\"");
+            escape_into(current_default.unwrap_or(""), true, out);
+            out.push('"');
         }
         for attr in node.attributes() {
             out.push(' ');
@@ -196,7 +237,7 @@ pub fn normalize_xml(xml: &str) -> Result<String, String> {
         if node.has_children() {
             out.push('>');
             for child in node.children() {
-                write(child, namespaces, out);
+                write(child, namespaces, declarations, current_default, out);
             }
             out.push_str("</");
             write_name(tag.namespace(), tag.name(), namespaces, out);
@@ -207,9 +248,10 @@ pub fn normalize_xml(xml: &str) -> Result<String, String> {
     }
     let mut result = String::with_capacity(xml.len());
     for node in document.root().children() {
-        write(node, &namespaces, &mut result);
+        write(node, &namespaces, &declarations, None, &mut result);
     }
-    Ok(result)
+    let metadata = inspect_root(root, &namespaces, &declarations, &result);
+    Ok((result, metadata))
 }
 
 fn contains_bmp_noncharacter(xml: &str) -> bool {
@@ -386,10 +428,12 @@ fn contains_disallowed_xml_controls(bytes: &[u8]) -> bool {
     scalar(chunks.remainder())
 }
 
+#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
 struct RootPlan {
     prefix: String,
     attributes: String,
     default_rebound: bool,
+    named_rebindings: Option<Vec<String>>,
 }
 
 type RootPlanEntry = (String, String, std::sync::Arc<RootPlan>);
@@ -441,30 +485,192 @@ struct PrologCache<'a> {
     roots: HashMap<(&'a str, &'a str), std::sync::Arc<RootPlan>>,
 }
 
-fn permits_default_rebinding(before: &str, after: &str) -> bool {
-    let Ok(before) = roxmltree::Document::parse(before) else {
-        return false;
-    };
-    let before = before.root_element();
-    let Some(default) = before.lookup_namespace_uri(None) else {
-        return false;
-    };
-    if prefix(default).is_some() {
+#[derive(Default)]
+struct RootBindings {
+    default_rebound: bool,
+    named_rebindings: Option<Vec<String>>,
+}
+
+fn changed_binding_names<'a>(
+    before: roxmltree::Node<'_, '_>,
+    after_names: impl Iterator<Item = &'a str>,
+    after_lookup: impl Fn(&str) -> Option<&'a str>,
+) -> Option<Vec<String>> {
+    let mut changed = Vec::<String>::new();
+    for name in before.namespaces().filter_map(|ns| ns.name()) {
+        if before.lookup_namespace_uri(Some(name)) != after_lookup(name) {
+            changed.push(format!("{name}:"));
+        }
+    }
+    for name in after_names {
+        if before.lookup_namespace_uri(Some(name)).is_none() && after_lookup(name).is_some() {
+            changed.push(format!("{name}:"));
+        }
+    }
+    changed.sort_unstable();
+    changed.dedup();
+    (!changed.is_empty()).then_some(changed)
+}
+
+fn root_metadata_can_use_declarations(
+    before: roxmltree::Node<'_, '_>,
+    namespaces: &BTreeMap<String, String>,
+    declarations: &BTreeMap<&str, &str>,
+) -> bool {
+    if before.has_children()
+        || declarations.contains_key("xmlns")
+        || declarations
+            .iter()
+            .any(|(&name, &uri)| !name.is_empty() && name != "xml" && uri.is_empty())
+    {
         return false;
     }
-    let Ok(after) = roxmltree::Document::parse(after) else {
-        return false;
+    let emitted_prefix = |namespace: Option<&str>| {
+        namespace
+            .and_then(|uri| prefix(uri).or_else(|| namespaces.get(uri).map(String::as_str)))
+            .filter(|name| !name.is_empty())
     };
-    let after = after.root_element();
-    after.lookup_namespace_uri(None).is_none()
-        && before.namespaces().len() == after.namespaces().len()
-        && before
-            .namespaces()
-            .filter(|ns| ns.name().is_some())
-            .all(|ns| after.lookup_namespace_uri(ns.name()) == Some(ns.uri()))
-        && after
-            .namespaces()
-            .any(|ns| ns.name().is_some() && ns.uri() == default)
+    if emitted_prefix(before.tag_name().namespace())
+        .is_some_and(|name| matches!(name, "xml" | "xmlns") || !declarations.contains_key(name))
+    {
+        return false;
+    }
+    before.attributes().all(|attribute| {
+        let name = emitted_prefix(attribute.namespace());
+        if name == Some("xmlns") || (name.is_none() && attribute.name() == "xmlns") {
+            return false;
+        }
+        let namespace = match name {
+            Some("xml") => Some("http://www.w3.org/XML/1998/namespace"),
+            Some(name) => declarations.get(name).copied(),
+            None => None,
+        };
+        namespace == attribute.namespace()
+    })
+}
+
+fn root_bindings(
+    before: roxmltree::Node<'_, '_>,
+    namespaces: &BTreeMap<String, String>,
+    declarations: &BTreeMap<&str, &str>,
+    normalized: &str,
+    changed_width: bool,
+) -> RootBindings {
+    let named_candidate = before.namespaces().any(|ns| {
+        ns.name().is_some_and(|name| {
+            prefix(ns.uri()).is_some_and(|expected| !expected.is_empty() && name != expected)
+        })
+    });
+    let default = before.lookup_namespace_uri(None);
+    let default_candidate = changed_width && default.is_some_and(|uri| prefix(uri).is_none());
+    if !named_candidate && !default_candidate {
+        return RootBindings::default();
+    }
+    if !root_metadata_can_use_declarations(before, namespaces, declarations) {
+        let Ok(after) = roxmltree::Document::parse(normalized) else {
+            return RootBindings::default();
+        };
+        let after = after.root_element();
+        return RootBindings {
+            default_rebound: default_candidate
+                && after.lookup_namespace_uri(None).is_none()
+                && before.namespaces().len() == after.namespaces().len()
+                && before
+                    .namespaces()
+                    .filter(|ns| ns.name().is_some())
+                    .all(|ns| after.lookup_namespace_uri(ns.name()) == Some(ns.uri()))
+                && after
+                    .namespaces()
+                    .any(|ns| ns.name().is_some() && Some(ns.uri()) == default),
+            named_rebindings: if named_candidate && default == after.lookup_namespace_uri(None) {
+                changed_binding_names(
+                    before,
+                    after.namespaces().filter_map(|ns| ns.name()),
+                    |name| after.lookup_namespace_uri(Some(name)),
+                )
+            } else {
+                None
+            },
+        };
+    }
+    let after_default = declarations.get("").copied();
+    let after_lookup = |name: &str| {
+        if name == "xml" {
+            None
+        } else {
+            declarations.get(name).copied()
+        }
+    };
+    RootBindings {
+        default_rebound: default_candidate
+            && after_default.is_none()
+            && before.namespaces().len()
+                == declarations.keys().filter(|name| **name != "xml").count()
+            && before
+                .namespaces()
+                .filter_map(|ns| ns.name().map(|name| (name, ns.uri())))
+                .all(|(name, uri)| after_lookup(name) == Some(uri))
+            && declarations
+                .iter()
+                .any(|(&name, &uri)| !name.is_empty() && name != "xml" && Some(uri) == default),
+        named_rebindings: if named_candidate && default == after_default {
+            changed_binding_names(
+                before,
+                declarations
+                    .keys()
+                    .copied()
+                    .filter(|name| !name.is_empty() && *name != "xml"),
+                after_lookup,
+            )
+        } else {
+            None
+        },
+    }
+}
+
+fn build_root_plan(root: &str) -> Option<RootPlan> {
+    let (normalized, bindings) =
+        normalize_xml_with_root(root, |before, namespaces, declarations, normalized| {
+            root_bindings(
+                before,
+                namespaces,
+                declarations,
+                normalized,
+                normalized.len() != root.len(),
+            )
+        })
+        .ok()?;
+    let name_end =
+        normalized[1..].find(|ch: char| ch.is_ascii_whitespace() || matches!(ch, '/' | '>'))? + 1;
+    let normalized_prefix_end = normalized[1..name_end]
+        .find(':')
+        .map_or(1, |position| position + 2);
+    Some(RootPlan {
+        prefix: normalized[1..normalized_prefix_end].to_owned(),
+        attributes: normalized[name_end..normalized.len() - 2].to_owned(),
+        default_rebound: bindings.default_rebound,
+        named_rebindings: bindings.named_rebindings,
+    })
+}
+
+fn named_bindings_unused(tail: &str, changed: &[String]) -> bool {
+    if tail.contains("<xml:") || tail.contains("</xml:") {
+        return false;
+    }
+    ![
+        "xmlns",
+        "Ignorable",
+        "Requires",
+        "MustUnderstand",
+        "ProcessContent",
+        "PreserveElements",
+        "PreserveAttributes",
+    ]
+    .iter()
+    .any(|name| memchr::memmem::find(tail.as_bytes(), name.as_bytes()).is_some())
+        && changed
+            .iter()
+            .all(|prefix| memchr::memmem::find(tail.as_bytes(), prefix.as_bytes()).is_none())
 }
 
 #[cfg(test)]
@@ -472,9 +678,18 @@ fn normalize_prolog_xml(xml: &str) -> Option<(String, crate::xml_index::Index)> 
     normalize_prolog_cached(xml, &mut PrologCache::default())
 }
 
+#[cfg(test)]
 fn normalize_prolog_cached<'a>(
     xml: &'a str,
     cache: &mut PrologCache<'a>,
+) -> Option<(String, crate::xml_index::Index)> {
+    normalize_prolog_with_rebindings(xml, cache, true)
+}
+
+fn normalize_prolog_with_rebindings<'a>(
+    xml: &'a str,
+    cache: &mut PrologCache<'a>,
+    names_match: bool,
 ) -> Option<(String, crate::xml_index::Index)> {
     if memchr::memchr(b'\r', xml.as_bytes()).is_none() {
         return None;
@@ -524,19 +739,7 @@ fn normalize_prolog_cached<'a>(
                 root.pop();
                 root.push_str("/>");
             }
-            let normalized = normalize_xml(&root).ok()?;
-            let name_end = normalized[1..]
-                .find(|ch: char| ch.is_ascii_whitespace() || matches!(ch, '/' | '>'))?
-                + 1;
-            let normalized_prefix_end = normalized[1..name_end]
-                .find(':')
-                .map_or(1, |position| position + 2);
-            Some(RootPlan {
-                prefix: normalized[1..normalized_prefix_end].to_owned(),
-                attributes: normalized[name_end..normalized.len() - 2].to_owned(),
-                default_rebound: normalized.len() != root.len()
-                    && permits_default_rebinding(&root, &normalized),
-            })
+            build_root_plan(&root)
         })?;
         cache.roots.insert(key, plan);
     }
@@ -556,6 +759,20 @@ fn normalize_prolog_cached<'a>(
     }
     if memchr::memmem::find(body[root_end..].as_bytes(), b"&#").is_some() {
         return None;
+    }
+    if names_match
+        && plan
+            .named_rebindings
+            .as_ref()
+            .is_some_and(|changed| named_bindings_unused(&body[root_end..], changed))
+    {
+        normalized.reserve(body.len() - root_end);
+        normalized.push_str(&body[root_end..]);
+        let index = crate::xml_index::Index::canonical_serialized(&normalized)?;
+        if !index.serialization_equivalent() {
+            return None;
+        }
+        return Some((normalized, index));
     }
     if normalized.len() != root_end {
         if !plan.default_rebound
@@ -699,7 +916,17 @@ fn prepare_part<'a>(
     #[cfg(not(target_arch = "wasm32"))]
     if names_match
         && part.content.len() <= 512 * 1024
-        && matches!(part.name.rsplit('/').next(), Some("styles.xml" | "stylesWithEffects.xml" | "numbering.xml" | "theme1.xml" | "fontTable.xml" | "settings.xml"))
+        && matches!(
+            part.name.rsplit('/').next(),
+            Some(
+                "styles.xml"
+                    | "stylesWithEffects.xml"
+                    | "numbering.xml"
+                    | "theme1.xml"
+                    | "fontTable.xml"
+                    | "settings.xml"
+            )
+        )
     {
         return definition_indexes::prepare(part, prologs);
     }
@@ -713,7 +940,9 @@ fn prepare_uncached_part<'a>(
 ) -> PreparedPart {
     if let Some(index) = crate::xml_index::Index::canonical(&part.content) {
         (Some(index), None)
-    } else if let Some((xml, index)) = normalize_prolog_cached(&part.content, prologs) {
+    } else if let Some((xml, index)) =
+        normalize_prolog_with_rebindings(&part.content, prologs, names_match)
+    {
         (Some(index), Some(Ok(xml)))
     } else if let Some((xml, index)) = names_match
         .then(|| normalize_hoisted_xml(&part.content))
@@ -1020,10 +1249,19 @@ mod definition_indexes {
     static PREPARED: OnceLock<Mutex<VecDeque<(String, PreparedPart)>>> = OnceLock::new();
 
     fn copy(prepared: &PreparedPart) -> PreparedPart {
-        (prepared.0.as_ref().map(crate::xml_index::Index::shared_copy), prepared.1.clone())
+        (
+            prepared
+                .0
+                .as_ref()
+                .map(crate::xml_index::Index::shared_copy),
+            prepared.1.clone(),
+        )
     }
 
-    pub(super) fn prepare<'a>(part: &'a crate::package::OoxmlPart, prologs: &mut PrologCache<'a>) -> PreparedPart {
+    pub(super) fn prepare<'a>(
+        part: &'a crate::package::OoxmlPart,
+        prologs: &mut PrologCache<'a>,
+    ) -> PreparedPart {
         let prepared = PREPARED.get_or_init(|| Mutex::new(VecDeque::new()));
         {
             let entries = prepared.lock().unwrap_or_else(|error| error.into_inner());
@@ -1038,7 +1276,9 @@ mod definition_indexes {
             if !entries.iter().any(|(key, _)| key == &part.content) {
                 let mut retained = entries.iter().map(|(key, _)| key.len()).sum::<usize>();
                 while entries.len() >= 8 || retained + part.content.len() > 1024 * 1024 {
-                    let Some((key, _)) = entries.pop_front() else { break };
+                    let Some((key, _)) = entries.pop_front() else {
+                        break;
+                    };
                     retained -= key.len();
                 }
                 entries.push_back(entry);
@@ -1058,19 +1298,27 @@ mod definition_index_tests {
         for value in (0..12).chain((0..12).rev()) {
             let prefix = if value % 2 == 0 { "w" } else { "alternate" };
             let content = format!("<?xml version=\"1.0\"?><{prefix}:styles xmlns:{prefix}=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><{prefix}:style {prefix}:val=\"{value}\"/></{prefix}:styles>");
-            let part = OoxmlPart { name: "word/styles.xml".to_owned(), content };
+            let part = OoxmlPart {
+                name: "word/styles.xml".to_owned(),
+                content,
+            };
             let expected = prepare_uncached_part(&part, true, &mut PrologCache::default()).1;
             for _ in 0..2 {
                 let (index, normalized) = prepare_part(&part, true, &mut PrologCache::default());
                 assert_eq!(normalized, expected);
-                let xml = normalized.as_ref().map(|value| value.as_ref().unwrap().as_str()).unwrap_or(&part.content);
-                let _scope = crate::xml_index::scope([("part", xml)].into_iter(), HashMap::from([("part".to_owned(), index.unwrap())]));
+                let xml = normalized
+                    .as_ref()
+                    .map(|value| value.as_ref().unwrap().as_str())
+                    .unwrap_or(&part.content);
+                let _scope = crate::xml_index::scope(
+                    [("part", xml)].into_iter(),
+                    HashMap::from([("part".to_owned(), index.unwrap())]),
+                );
                 assert!(crate::xml_index::tag(xml, "w:style").flatten().is_some());
             }
         }
     }
 }
-
 
 #[cfg(test)]
 mod numeric_reference_preflight_tests {
@@ -1088,7 +1336,10 @@ mod numeric_reference_preflight_tests {
             "<w:p w:val=\"&amp;#xA;\"><w:r><w:t>&amp;#65;</w:t></w:r></w:p>",
         ] {
             let xml = wrapped(body);
-            let part = crate::package::OoxmlPart { name: "part.xml".into(), content: xml.clone() };
+            let part = crate::package::OoxmlPart {
+                name: "part.xml".into(),
+                content: xml.clone(),
+            };
             let (_, replacement) = prepare_uncached_part(&part, true, &mut PrologCache::default());
             assert_eq!(replacement.unwrap().unwrap(), normalize_xml(&xml).unwrap());
         }
@@ -1097,8 +1348,59 @@ mod numeric_reference_preflight_tests {
     #[test]
     fn escaped_reference_text_remains_eligible() {
         let xml = wrapped("<w:p><w:r><w:t>&amp;#xA;</w:t></w:r></w:p>");
-        let (normalized, index) = normalize_prolog_cached(&xml, &mut PrologCache::default()).unwrap();
+        let (normalized, index) =
+            normalize_prolog_cached(&xml, &mut PrologCache::default()).unwrap();
         assert_eq!(normalized, normalize_xml(&xml).unwrap());
         assert!(index.serialization_equivalent());
+    }
+}
+
+#[cfg(test)]
+#[path = "root_plan_parity.rs"]
+mod root_plan_parity;
+
+#[cfg(test)]
+mod empty_namespace_tests {
+    use super::normalize_xml;
+
+    fn signature(xml: &str) -> Vec<(Option<String>, String, Vec<(Option<String>, String, String)>, Option<String>)> {
+        let document = roxmltree::Document::parse(xml).unwrap();
+        document.descendants().filter(|node| node.is_element()).map(|node| {
+            let mut attributes = node.attributes().map(|attribute| (
+                attribute.namespace().filter(|uri| !uri.is_empty()).map(str::to_owned), attribute.name().to_owned(), attribute.value().to_owned(),
+            )).collect::<Vec<_>>();
+            attributes.sort();
+            (node.tag_name().namespace().filter(|uri| !uri.is_empty()).map(str::to_owned), node.tag_name().name().to_owned(), attributes, node.text().map(str::to_owned))
+        }).collect()
+    }
+
+    #[test]
+    fn empty_default_bindings_preserve_expanded_names() {
+        for xml in [
+            r#"<w:root xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns=""><w:item value="a"/></w:root>"#,
+            r#"<w:root xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:item xmlns="" value="a"/></w:root>"#,
+            r#"<root xmlns="urn:outer"><item xmlns=""><leaf value="a"/></item><tail/></root>"#,
+            r#"<root xmlns=""><item xmlns="urn:inner"><leaf xmlns="" value="a"/></item></root>"#,
+        ] {
+            let output = normalize_xml(xml).unwrap();
+            assert_eq!(signature(xml), signature(&output));
+            assert_eq!(normalize_xml(&output).unwrap(), output);
+            let document = roxmltree::Document::parse(&output).unwrap();
+            assert!(document.descendants().filter(|node| node.is_element()).all(|node| node.namespaces().all(|namespace| namespace.name().is_none() || !namespace.uri().is_empty())));
+        }
+    }
+
+    #[test]
+    fn canonical_default_bindings_preserve_local_resets() {
+        for xml in [
+            r#"<root xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><item xmlns=""><leaf/></item><tail/></root>"#,
+            r#"<root><item xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><leaf/></item><tail/></root>"#,
+            r#"<root xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><item xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><leaf xmlns=""/></item><tail/></root>"#,
+            r#"<root xmlns="http://schemas.openxmlformats.org/package/2006/relationships" xmlns:q="urn:other"><q:item xmlns=""><q:leaf/><plain/><nested xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/></q:item><tail/></root>"#,
+        ] {
+            let output = normalize_xml(xml).unwrap();
+            assert_eq!(signature(xml), signature(&output));
+            assert_eq!(normalize_xml(&output).unwrap(), output);
+        }
     }
 }

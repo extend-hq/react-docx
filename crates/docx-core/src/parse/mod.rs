@@ -36,6 +36,7 @@ pub use context::{
     TableConditionalStyleType, ThemeColorMap, ThemeFontMap,
 };
 pub use document::parse_document_xml;
+pub(crate) use images::parse_vml_group_image_from_part;
 pub use images::{
     css_length_to_pixels, parse_drawing_image_crop, parse_drawing_image_css_filter,
     parse_drawing_image_opacity, parse_floating_anchor_from_run_xml, parse_run_image_block,
@@ -85,6 +86,7 @@ pub use table::{parse_table, parse_table_cell, parse_table_cell_content, ParsedT
 pub(crate) use table::{
     resolve_table_condition_for_cell, resolve_table_grid_skip_count, table_grid_column_bound,
 };
+pub(crate) use util::resolve_theme_font;
 pub use util::{
     emu_to_pixels, merge_text_styles as util_merge_text_styles,
     normalize_hex_color as util_normalize_hex_color, prefer_alternate_content_choice,

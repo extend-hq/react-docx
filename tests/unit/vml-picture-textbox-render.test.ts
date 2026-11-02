@@ -95,6 +95,28 @@ describe("rendered SVG picture layers", () => {
 describe("VML picture and textbox rendering", () => {
   const placements: Placement[] = ["inline", "absolute", "wrapped", "header", "floating-header", "footer"];
 
+  it.each(["inline", "absolute", "wrapped"] as Placement[])("keeps bitmap and rich text together in %s flow", (placement) => {
+    const image = importedImage(dataUri(svg(`${PICTURE}<text x="30" y="20">First Second</text>`)));
+    image.sourceXml = '<w:pict><v:group style="width:90pt;height:30pt" coordsize="120,40"><v:shape><v:imagedata r:id="rId1"/></v:shape><v:shape type="#_x0000_t202" style="left:30;top:0;width:90;height:40"><v:textbox><w:txbxContent><w:p><w:r><w:rPr><w:b/><w:spacing w:val="20"/></w:rPr><w:t>First </w:t></w:r><w:r><w:rPr><w:i/><w:w w:val="80"/></w:rPr><w:t>Second</w:t></w:r></w:p></w:txbxContent></v:textbox></v:shape></v:group></w:pict>';
+    image.contentNodes = [{ type: "paragraph", children: [
+      { type: "text", text: "First ", style: { bold: true, characterSpacingTwips: 20 } },
+      { type: "text", text: "Second", style: { italic: true, characterScalePercent: 80 } },
+    ] }];
+    for (const mode of ["read-only", "edit"] as const) {
+      const html = renderToStaticMarkup(React.createElement(ImportedViewer, { model: modelWithImage(image, placement), mode }));
+      expect(html).toContain('data-docx-vml-composite-surface="true"');
+      expect(html).toContain(encodeURIComponent(PIXEL));
+      expect(html).toContain('font-weight:700');
+      expect(html).toContain('font-style:italic');
+      expect(html).toContain('letter-spacing:1pt');
+      expect(html).toContain('transform:scaleX(0.8)');
+      expect(html).toContain('First ');
+      expect(html).toContain('Second');
+      expect(html).not.toContain(image.src);
+      expect(html).toMatch(new RegExp(`contentEditable="${mode === "edit"}"`, "i"));
+    }
+  });
+
   it.each(placements)("preserves composed bitmap and text layers in %s flow", (placement) => {
     const src = dataUri(svg(`${PICTURE}<path d="M0 20L120 20" stroke="black"/><text y="32">Editable text</text>`));
     const model = modelWithImage(importedImage(src), placement);

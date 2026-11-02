@@ -20489,6 +20489,16 @@ function resolveSyntheticTextBoxParagraphs(
   });
 }
 
+function scaledVmlText(text: string, style: React.CSSProperties, scale: number, key: number): React.ReactElement {
+  const spacing = typeof style.letterSpacing === "string" ? /^([+-]?[\d.]+)(pt|px)$/.exec(style.letterSpacing) : undefined;
+  return <span key={key} style={{ display: "inline-block", verticalAlign: "baseline" }}><span
+    data-docx-vml-text-scale={scale}
+    style={{ ...style, display: "inline-block", whiteSpace: "pre", maxWidth: "none",
+      letterSpacing: spacing ? `${Number(spacing[1]) / scale}${spacing[2]}` : style.letterSpacing,
+      transform: `scaleX(${scale})`, transformOrigin: "left center" }}
+  >{text}</span></span>;
+}
+
 function syntheticTextBoxForegroundZIndex(image: ImageRunNode): number {
   const normalizedZIndex = Number.isFinite(image.floating?.zIndex)
     ? Math.max(
@@ -30224,7 +30234,7 @@ function projectSyntheticTextBoxText(
   }
 
   const normalizedText = text.replace(/\r\n?/g, "\n");
-  const composite = mapVmlCompositeStories(child);
+  const composite = mapVmlCompositeStories(child, true);
   if (composite) {
     const previousText = storyIndex === undefined
       ? child.textBoxText
@@ -30236,7 +30246,8 @@ function projectSyntheticTextBoxText(
       (story) => syntheticTextBoxSvg(
         story, undefined, undefined, undefined, undefined, false, true
       ),
-      storyIndex
+      storyIndex,
+      true
     );
     if (!edited) return undefined;
     paragraph.children[location.childIndex] = edited;
@@ -57194,14 +57205,18 @@ export function DocxEditorViewer({
               }
             : {};
 
-          const coherentVmlComposite = mapVmlCompositeStories(child);
-          const editableVmlComposite =
-            coherentVmlComposite?.overlaySafe &&
+          const mappedVmlComposite = mapVmlCompositeStories(child, true);
+          const supportsVmlTextLayers =
             Number.isFinite(child.widthPx) && (child.widthPx ?? 0) > 0 &&
             Number.isFinite(child.heightPx) && (child.heightPx ?? 0) > 0 &&
             !imageCropLayout(child, widthPx, heightPx) &&
             !parseDrawingImageTransformFromSourceXml(child.sourceXml) &&
-            !isLikelyFullPageCoverImage
+            !isLikelyFullPageCoverImage;
+          const coherentVmlComposite = mappedVmlComposite?.richText && !supportsVmlTextLayers
+            ? mapVmlCompositeStories(child) : mappedVmlComposite;
+          const editableVmlComposite =
+            coherentVmlComposite?.overlaySafe &&
+            supportsVmlTextLayers
               ? coherentVmlComposite
               : undefined;
           const renderableImageSrc =
@@ -57454,12 +57469,20 @@ export function DocxEditorViewer({
                       {paragraph.segments.map((segment, segmentIndex) => (
                         <span
                           key={segmentIndex}
+                          data-docx-vml-run-index={segmentIndex}
                           style={segment.style ? runStyleToCss(
                             segment.style, documentContentTheme,
                             undefined, undefined, typography
                           ) : undefined}
                         >
-                          {segment.text}
+                          {segment.style?.characterScalePercent !== undefined && segment.style.characterScalePercent !== 100
+                            ? segment.text.split(/(\s+)/u).filter(Boolean).map((text, index) => scaledVmlText(
+                                text,
+                                runStyleToCss(segment.style, documentContentTheme, text, undefined, typography),
+                                segment.style!.characterScalePercent! / 100,
+                                index
+                              ))
+                            : segment.text}
                         </span>
                       ))}
                     </div>

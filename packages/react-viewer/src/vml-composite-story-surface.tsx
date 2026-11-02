@@ -42,11 +42,34 @@ export function VmlCompositeStorySurface({
   const frameRef = React.useRef<HTMLSpanElement>(null);
   const canvasRef = React.useRef<HTMLSpanElement>(null);
   const [wasEditing, setWasEditing] = React.useState(!readOnly);
-  const showEditors = !readOnly || wasEditing;
+  const showEditors = !readOnly || wasEditing || mapping.richText === true;
 
   React.useLayoutEffect(() => {
     setWasEditing(!readOnly);
   }, [readOnly]);
+
+  React.useLayoutEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || !showEditors || !mapping.richText) return;
+    const apply = (element: HTMLElement, width: number): void => {
+      const scale = Number(element.dataset.docxVmlTextScale);
+      if (element.parentElement && Number.isFinite(scale) && scale > 0) element.parentElement.style.width = `${width * scale}px`;
+    };
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) apply(entry.target as HTMLElement, entry.contentRect.width);
+    });
+    const refresh = (): void => {
+      observer.disconnect();
+      for (const element of canvas.querySelectorAll<HTMLElement>("[data-docx-vml-text-scale]")) {
+        apply(element, Number.parseFloat(window.getComputedStyle(element).width) || element.offsetWidth);
+        observer.observe(element);
+      }
+    };
+    refresh();
+    const changes = new MutationObserver(refresh);
+    changes.observe(canvas, { childList: true, characterData: true, subtree: true });
+    return () => { observer.disconnect(); changes.disconnect(); };
+  }, [mapping, showEditors]);
 
   React.useLayoutEffect(() => {
     const frame = frameRef.current;

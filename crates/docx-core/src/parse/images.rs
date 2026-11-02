@@ -1753,6 +1753,35 @@ fn vml_has_active_named_paint(tag_name: &str, xml: &str) -> bool {
 }
 
 
+
+fn vml_group_has_explicit_defaults(tag_name: &str, xml: &str) -> bool {
+    if !matches!(tag_name, "v:shape" | "v:rect" | "v:line") {
+        return false;
+    }
+    let Some(end) = crate::xml::tag_token_end(xml, 0) else {
+        return false;
+    };
+    let has_default = |tag: &str| {
+        get_attribute_ref(tag, "style").is_some_and(|style| {
+            parse_css_style_declarations(style).iter().any(|(key, value)| {
+                (key == "mso-wrap-style" && value == "square")
+                    || (key == "v-text-anchor" && value == "top")
+                    || key == "mso-next-textbox"
+            })
+        })
+    };
+    if has_default(&xml[..end]) {
+        return true;
+    }
+    if !xml.contains("<v:textbox") {
+        return false;
+    }
+    crate::xml::extract_direct_child_tag_ranges(xml).iter().any(|child| {
+        child.tag_name == "v:textbox" && has_default(&xml[child.start..child.end])
+    })
+}
+
+
 fn vml_inline_reference_hints(
     style: &std::collections::HashMap<String, String>,
     has_root_wrap: bool,
@@ -1800,6 +1829,26 @@ fn vml_inline_reference_hints(
 fn vml_group_image(
     run_xml: &str,
     context: &ParseContext<'_, impl std::borrow::Borrow<super::context::ParsedStyleSheet>>,
+) -> Option<ImageRunNode> {
+    vml_group_image_with_owner(run_xml, context, None)
+}
+
+pub(crate) fn parse_vml_group_image_from_part(
+    run_xml: &str,
+    context: &ParseContext<'_, impl std::borrow::Borrow<super::context::ParsedStyleSheet>>,
+    owner_part_name: &str,
+) -> Option<ImageRunNode> {
+    let part = context.parts.get(owner_part_name)?;
+    if part.name != owner_part_name {
+        return None;
+    }
+    vml_group_image_with_owner(run_xml, context, Some(owner_part_name))
+}
+
+fn vml_group_image_with_owner(
+    run_xml: &str,
+    context: &ParseContext<'_, impl std::borrow::Borrow<super::context::ParsedStyleSheet>>,
+    owner_part_name: Option<&str>,
 ) -> Option<ImageRunNode> {
     if !run_xml.contains("<v:group") || !run_xml.contains("<v:imagedata") {
         return None;
@@ -2005,6 +2054,7 @@ fn vml_group_image(
             let xml = &group[child.start..child.end];
             child.tag_name == "o:lock"
                 || vml_has_active_named_paint(&child.tag_name, xml)
+                || vml_group_has_explicit_defaults(&child.tag_name, xml)
                 || (child.tag_name == "v:rect" && vml_rect_has_default_stroke(xml))
                 || (child.tag_name == "v:shape"
                     && (xml.contains("<o:lock") || xml.contains("<w10:wrap")))
@@ -2014,7 +2064,10 @@ fn vml_group_image(
         for part in context
             .parts
             .values()
-            .filter(|part| part.content.contains(group.as_str()))
+            .filter(|part| match owner_part_name {
+                Some(owner) => part.name == owner,
+                None => part.content.contains(group.as_str()),
+            })
         {
             containing_part = true;
             for definition in extract_balanced_tag_blocks(&part.content, "v:shapetype") {
@@ -2073,7 +2126,8 @@ fn vml_group_image(
                 key.as_str(),
                 "position" | "left" | "top" | "width" | "height" | "z-index"
             ) || (key == "visibility" && value == "visible")
-                || (key == "mso-wrap-style" && value == "none"))
+                || (key == "mso-wrap-style" && matches!(value.as_str(), "none" | "square"))
+                || (key == "v-text-anchor" && value == "top"))
         }) {
             return None;
         }
@@ -2180,8 +2234,14 @@ fn vml_group_image(
                             parse_css_style_declarations(&style)
                                 .iter()
                                 .any(|(key, value)| {
-                                    key != "mso-fit-shape-to-text"
-                                        || !matches!(value.as_str(), "t" | "true")
+                                    match key.as_str() {
+                                        "mso-fit-shape-to-text" => !matches!(value.as_str(), "t" | "true"),
+                                        "v-text-anchor" => value != "top",
+                                        "mso-next-textbox" => !value.strip_prefix('#')
+                                            .filter(|target| !target.is_empty())
+                                            .is_some_and(|target| get_attribute_ref(tag, "id") == Some(target)),
+                                        _ => true,
+                                    }
                                 })
                         })
                     {
@@ -2410,6 +2470,17 @@ fn vml_group_image(
             }
         } else {
             floating = None;
+        }
+    }
+    if !multiple_root_wraps {
+        if let Some(wrap) = root_wrap {
+            if let Some(declared) = parse_vml_floating_anchor_from_style(wrap, &style_text) {
+                if declared.wrap_type.is_some() || declared.wrap_text.is_some() {
+                    let anchor = floating.get_or_insert_with(|| declared.clone());
+                    anchor.wrap_type = declared.wrap_type;
+                    anchor.wrap_text = declared.wrap_text;
+                }
+            }
         }
     }
     let paint_bounds = if canvas != (origin_x, origin_y, origin_x + extent_x, origin_y + extent_y) {
@@ -3156,6 +3227,155 @@ mod tests {
         );
         package.parts.get_mut("word/document.xml").unwrap().content = document;
         package
+    }
+
+
+    fn render_style_group(package: &crate::OoxmlPackage) -> Option<ImageRunNode> {
+        use std::{cell::RefCell, collections::HashMap};
+        let source = extract_balanced_tag_blocks(&package.parts["word/document.xml"].content, "w:pict")
+            .into_iter().next().unwrap();
+        let context = ParseContext {
+            relationships: HashMap::from([("rId1".to_string(), "word/media/image.png".to_string())]),
+            content_types: Default::default(),
+            parts: &package.parts,
+            binary_assets: &package.binary_assets,
+            style_sheet: crate::parse::empty_style_sheet(),
+            warnings: RefCell::new(Vec::new()),
+        };
+        vml_group_image(&source, &context)
+    }
+
+    fn style_group_package() -> crate::OoxmlPackage {
+        overflow_group_package("width:270pt;height:105pt", r#"coordsize="360,140""#,
+            r##"<v:shape type="#_x0000_t75" style="position:absolute;left:20;top:70;width:30;height:30" stroked="f"><v:imagedata r:id="rId1"/></v:shape>"##)
+    }
+
+    #[test]
+    fn explicit_default_group_styles_preserve_payload_and_placement() {
+        let package = style_group_package();
+        let expected = render_style_group(&package).unwrap();
+        assert_eq!(svg_fragment_count(&expected, "data:image/png;base64,"), 2);
+        assert_eq!(svg_fragment_count(&expected, "Upper story"), 1);
+        assert_eq!(svg_fragment_count(&expected, "Lower story"), 1);
+        for style in ["mso-wrap-style:square;", "v-text-anchor:top;", "mso-wrap-style:square;v-text-anchor:top;"] {
+            let mut explicit = package.clone();
+            let part = explicit.parts.get_mut("word/document.xml").unwrap();
+            part.content = part.content.replace("position:absolute;", &format!("position:absolute;{style}"));
+            let actual = render_style_group(&explicit).unwrap();
+            assert_eq!(actual.src, expected.src);
+            assert_eq!(actual.width_px, expected.width_px);
+            assert_eq!(actual.height_px, expected.height_px);
+            assert_eq!(actual.paint_bounds, expected.paint_bounds);
+            assert_eq!(serde_json::to_value(actual.floating).unwrap(), serde_json::to_value(&expected.floating).unwrap());
+        }
+    }
+
+    #[test]
+    fn self_linked_group_textboxes_terminate_without_cross_box_flow() {
+        let mut package = style_group_package();
+        let expected = render_style_group(&package).unwrap();
+        let part = package.parts.get_mut("word/document.xml").unwrap();
+        for id in ["box-a", "box-b"] {
+            part.content = part.content.replacen(r##"<v:shape type="#_x0000_t202""##,
+                &format!(r##"<v:shape id="{id}" type="#_x0000_t202""##), 1);
+            part.content = part.content.replacen("<v:textbox inset=",
+                &format!(r##"<v:textbox style="mso-next-textbox:#{id};v-text-anchor:top" inset="##), 1);
+        }
+        let actual = render_style_group(&package).unwrap();
+        assert_eq!(actual.src, expected.src);
+        assert_eq!(svg_fragment_count(&actual, "data:image/png;base64,"), 2);
+        for (from, to) in [
+            ("mso-next-textbox:#box-a", "mso-next-textbox:#box-b"),
+            ("mso-next-textbox:#box-a", "mso-next-textbox:#missing"),
+            ("mso-next-textbox:#box-a", "mso-next-textbox:#"),
+            ("mso-next-textbox:#box-a", "mso-next-textbox:box-a"),
+            ("v-text-anchor:top", "v-text-anchor:bottom"),
+            ("v-text-anchor:top", "mso-fit-shape-to-text:false"),
+        ] {
+            let mut unsupported = package.clone();
+            let part = unsupported.parts.get_mut("word/document.xml").unwrap();
+            part.content = part.content.replace(from, to);
+            assert!(render_style_group(&unsupported).is_none(), "{to}");
+        }
+    }
+
+
+    #[test]
+    fn explicit_default_bitmap_group_exports_inline() {
+        use crate::model::{DocNode, ParagraphChildNode};
+        let mut package = inline_group_package("", "", false);
+        let part = package.parts.get_mut("word/document.xml").unwrap();
+        part.content = part.content.replace("position:absolute;", "position:absolute;mso-wrap-style:square;");
+        let mut model = crate::build_doc_model(&package);
+        let DocNode::Paragraph(paragraph) = &mut model.nodes[0] else {
+            panic!("paragraph")
+        };
+        let ParagraphChildNode::Image(image) = &mut paragraph.children[0] else {
+            panic!("image")
+        };
+        assert!(image.floating.is_none());
+        assert_eq!(svg_fragment_count(image, "data:image/png;base64,"), 2);
+        image.width_px = Some(160.0);
+        image.height_px = Some(80.0);
+        paragraph.source_xml = None;
+        let exported = crate::serialize_doc_model(&model, Some(&package));
+        let xml = &exported.parts["word/document.xml"].content;
+        assert!(xml.contains("<wp:inline "));
+        assert!(!xml.contains("<wp:anchor "));
+    }
+
+    #[test]
+    fn grouped_bitmap_root_wrap_survives_edit_and_export() {
+        use crate::model::{DocNode, ParagraphChildNode};
+        for (kind, expected, export_tag) in [
+            ("topAndBottom", ImageWrapType::TopAndBottom, "<wp:wrapTopAndBottom"),
+            ("square", ImageWrapType::Square, "<wp:wrapSquare"),
+            ("tight", ImageWrapType::Tight, "<wp:wrapTight"),
+            ("through", ImageWrapType::Through, "<wp:wrapThrough"),
+            ("none", ImageWrapType::WrapNone, "<wp:wrapNone"),
+        ] {
+            let metadata = format!(r#"<w10:wrap type="{kind}" side="right"/>"#);
+            let package = inline_group_package(";position:absolute;left:12px;top:8px", &metadata, true);
+            let mut model = crate::build_doc_model(&package);
+            let DocNode::Paragraph(paragraph) = &mut model.nodes[0] else {
+                panic!("paragraph")
+            };
+            let ParagraphChildNode::Image(image) = &mut paragraph.children[0] else {
+                panic!("image")
+            };
+            assert_eq!(svg_fragment_count(image, "data:image/png;base64,"), 2);
+            let floating = image.floating.as_ref().unwrap();
+            assert_eq!(floating.wrap_type, Some(expected.clone()), "{kind}");
+            assert_eq!(floating.wrap_text, Some(ImageWrapText::Right));
+            assert_eq!((floating.x_px, floating.y_px), (Some(12.0), Some(8.0)));
+            image.width_px = Some(160.0);
+            image.height_px = Some(80.0);
+            paragraph.source_xml = None;
+            let exported = crate::serialize_doc_model(&model, Some(&package));
+            let xml = &exported.parts["word/document.xml"].content;
+            assert!(xml.contains("<wp:anchor "));
+            assert!(xml.contains(export_tag), "{kind}");
+            let reparsed = crate::build_doc_model(&exported);
+            let DocNode::Paragraph(paragraph) = &reparsed.nodes[0] else {
+                panic!("paragraph")
+            };
+            let ParagraphChildNode::Image(image) = &paragraph.children[0] else {
+                panic!("image")
+            };
+            assert_eq!(image.floating.as_ref().unwrap().wrap_type, Some(expected), "{kind}");
+        }
+    }
+
+    #[test]
+    fn group_wrap_metadata_creates_anchor_without_position_hints() {
+        let mut package = style_group_package();
+        let part = package.parts.get_mut("word/document.xml").unwrap();
+        part.content = part.content.replace("</v:group>", r#"<w10:wrap type="topAndBottom"/></v:group>"#);
+        let image = render_style_group(&package).unwrap();
+        let floating = image.floating.as_ref().unwrap();
+        assert_eq!(floating.wrap_type, Some(ImageWrapType::TopAndBottom));
+        assert_eq!((floating.x_px, floating.y_px), (None, None));
+        assert_eq!(svg_fragment_count(&image, "data:image/png;base64,"), 2);
     }
 
     fn first_group_image(package: &crate::OoxmlPackage) -> ImageRunNode {
