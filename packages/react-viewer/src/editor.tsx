@@ -22253,19 +22253,20 @@ function renderParagraphRuns(
       .trim();
   const trackTextAdvance = (
     text: string,
-    style?: TextRunNode["style"] | FormFieldRunNode["style"]
+    style?: TextRunNode["style"] | FormFieldRunNode["style"],
+    wrapsUnbrokenText = false
   ): void => {
     if (!shouldTrackTabLineWidth) {
       return;
     }
-    const overflowStyle = tabbedWordOverflowStyle(textFollowsTab, text,
+    const overflowStyle = wrapsUnbrokenText && tabbedWordOverflowStyle(textFollowsTab, text,
       approximateLineWidthPx, options?.paragraphContentWidthPx, style,
       paragraphBaseFontSizePx(paragraph), typography);
     textFollowsTab = false;
     if (overflowStyle) {
       approximateLineWidthPx = (approximateLineWidthPx + measureTextWidthPx(
         text, style, paragraphBaseFontSizePx(paragraph), typography
-      )) % (options!.paragraphContentWidthPx!);
+      )) % (options!.paragraphContentWidthPx!) || options!.paragraphContentWidthPx!;
       return;
     }
     approximateLineWidthPx = updateEstimatedLineWidthPxForText(
@@ -22296,7 +22297,8 @@ function renderParagraphRuns(
     text: string,
     style: React.CSSProperties,
     measureStyle?: TextRunNode["style"] | FormFieldRunNode["style"],
-    spanAttributes?: Record<string, string>
+    spanAttributes?: Record<string, string>,
+    terminalText = false
   ): void => {
     const shouldControlSoftBreakStretch =
       paragraph.style?.align === "justify" && text.includes("\n");
@@ -22308,13 +22310,13 @@ function renderParagraphRuns(
       );
       target.push(
         <span key={keySeed} {...spanAttributes} style={{ ...resolvedStyle,
-          ...tabbedWordOverflowStyle(textFollowsTab, text, approximateLineWidthPx,
+          ...tabbedWordOverflowStyle(terminalText && textFollowsTab, text, approximateLineWidthPx,
             options?.paragraphContentWidthPx, measureStyle, paragraphBaseFontSizePx(paragraph), typography),
         }}>
           {scriptFontTextContent(text, measureStyle, keySeed, paragraphBaseFontSizePx(paragraph) * 72 / 96, typography)}
         </span>
       );
-      trackTextAdvance(text, measureStyle);
+      trackTextAdvance(text, measureStyle, terminalText);
       return;
     }
 
@@ -23167,7 +23169,8 @@ function renderParagraphRuns(
       renderedText,
       textStyle,
       child.style,
-      annotationAttributes
+      annotationAttributes,
+      childIndex === paragraph.children.length - 1
     );
   };
 
@@ -55750,16 +55753,17 @@ export function DocxEditorViewer({
       let textFollowsTab = false;
       const trackTextAdvance = (
         text: string,
-        style?: TextRunNode["style"] | FormFieldRunNode["style"]
+        style?: TextRunNode["style"] | FormFieldRunNode["style"],
+        wrapsUnbrokenText = false
       ): void => {
-        const overflowStyle = tabbedWordOverflowStyle(textFollowsTab, text,
+        const overflowStyle = wrapsUnbrokenText && tabbedWordOverflowStyle(textFollowsTab, text,
           approximateLineWidthPx, paragraphRenderTextWidthPx, style,
           paragraphBaseFontSizePx(paragraph), typography);
         textFollowsTab = false;
         if (overflowStyle) {
           approximateLineWidthPx = (approximateLineWidthPx + measureTextWidthPx(
             text, style, paragraphBaseFontSizePx(paragraph), typography
-          )) % paragraphRenderTextWidthPx;
+          )) % paragraphRenderTextWidthPx || paragraphRenderTextWidthPx;
           return;
         }
         approximateLineWidthPx = updateEstimatedLineWidthPxForText(
@@ -55785,7 +55789,8 @@ export function DocxEditorViewer({
         keySeed: string,
         text: string,
         style: React.CSSProperties,
-        measureStyle?: TextRunNode["style"] | FormFieldRunNode["style"]
+        measureStyle?: TextRunNode["style"] | FormFieldRunNode["style"],
+        terminalText = false
       ): void => {
         const shouldControlSoftBreakStretch =
           paragraph.style?.align === "justify" && text.includes("\n");
@@ -55797,13 +55802,13 @@ export function DocxEditorViewer({
           );
           nodes.push(
             <span key={keySeed} style={{ ...resolvedStyle,
-              ...tabbedWordOverflowStyle(textFollowsTab, text, approximateLineWidthPx,
+              ...tabbedWordOverflowStyle(terminalText && textFollowsTab, text, approximateLineWidthPx,
                 paragraphRenderTextWidthPx, measureStyle, paragraphBaseFontSizePx(paragraph), typography),
             }}>
               {scriptFontTextContent(text, measureStyle, keySeed, paragraphBaseFontSizePx(paragraph) * 72 / 96, typography)}
             </span>
           );
-          trackTextAdvance(text, measureStyle);
+          trackTextAdvance(text, measureStyle, terminalText);
           return;
         }
 
@@ -58532,7 +58537,8 @@ export function DocxEditorViewer({
           if (renderedText.includes("\t")) {
             renderedText.split("\t").forEach((part, partIndex, parts) => {
               if (part) {
-                appendInteractiveTextWithSoftBreakControl(`${runKey}-text-${partIndex}`, part, runStyle, child.style);
+                appendInteractiveTextWithSoftBreakControl(`${runKey}-text-${partIndex}`, part, runStyle, child.style,
+                  childIndex === paragraph.children.length - 1 && partIndex === parts.length - 1);
               }
               if (partIndex + 1 >= parts.length) return;
               const tabWidthPx = resolveNextTabWidthPx();
@@ -58562,7 +58568,8 @@ export function DocxEditorViewer({
               runKey,
               renderedText,
               runStyle,
-              child.style
+              child.style,
+              childIndex === paragraph.children.length - 1
             );
           }
         }
