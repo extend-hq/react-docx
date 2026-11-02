@@ -18,7 +18,7 @@ use crate::parse::util::{
 };
 use crate::xml::{
     decode_xml_entities, extract_balanced_tag_blocks, extract_balanced_tag_blocks_in_order,
-    get_attribute,
+    get_attribute, get_attribute_ref,
 };
 
 const CHART_COLOR_PALETTE: [&str; 8] = [
@@ -341,17 +341,25 @@ pub fn parse_drawing_image_crop(run_xml: &str) -> Option<ImageCrop> {
     }
 }
 
-pub fn parse_vml_size(run_xml: &str) -> (Option<f64>, Option<f64>) {
+fn vml_shape_style(run_xml: &str) -> Option<String> {
     let shape_tag = regex_capture_tag(run_xml, r"(?i)<v:shape\b[^>]*>").unwrap_or_default();
-    let style = get_attribute(&shape_tag, "style").unwrap_or_default();
+    get_attribute(&shape_tag, "style")
+}
+
+pub fn parse_vml_size(run_xml: &str) -> (Option<f64>, Option<f64>) {
+    let style = vml_shape_style(run_xml).unwrap_or_default();
+    parse_vml_size_from_style(&style)
+}
+
+fn parse_vml_size_from_style(style: &str) -> (Option<f64>, Option<f64>) {
     if style.is_empty() {
         return (None, None);
     }
 
     let width_match =
-        re::get_unchecked(r"(?i)width:\s*([0-9.]+)\s*(px|pt|in|cm|mm)").captures(&style);
+        re::get_unchecked(r"(?i)width:\s*([0-9.]+)\s*(px|pt|in|cm|mm)").captures(style);
     let height_match =
-        re::get_unchecked(r"(?i)height:\s*([0-9.]+)\s*(px|pt|in|cm|mm)").captures(&style);
+        re::get_unchecked(r"(?i)height:\s*([0-9.]+)\s*(px|pt|in|cm|mm)").captures(style);
 
     let width_px = width_match.as_ref().and_then(|caps| {
         css_length_value_and_unit_to_pixels(caps.get(1)?.as_str(), caps.get(2)?.as_str())
@@ -415,9 +423,12 @@ fn parse_vml_numeric(raw: Option<&str>) -> Option<i64> {
 }
 
 pub fn parse_vml_floating_anchor_from_run_xml(run_xml: &str) -> Option<ImageFloating> {
-    let shape_tag = regex_capture_tag(run_xml, r"(?i)<v:shape\b[^>]*>").unwrap_or_default();
-    let style_value = get_attribute(&shape_tag, "style")?;
-    let declarations = parse_css_style_declarations(&style_value);
+    let style_value = vml_shape_style(run_xml)?;
+    parse_vml_floating_anchor_from_style(run_xml, &style_value)
+}
+
+fn parse_vml_floating_anchor_from_style(run_xml: &str, style_value: &str) -> Option<ImageFloating> {
+    let declarations = parse_css_style_declarations(style_value);
     if declarations.is_empty() {
         return None;
     }
@@ -1047,7 +1058,8 @@ fn resolve_preferred_drawing_relationship_id(run_xml: &str) -> Option<String> {
 fn resolve_run_image_layout(run_xml: &str) -> (Option<f64>, Option<f64>, Option<ImageFloating>) {
     let extent_cx = regex_capture(run_xml, r#"(?i)<wp:extent\b[^>]*cx="(\d+)""#);
     let extent_cy = regex_capture(run_xml, r#"(?i)<wp:extent\b[^>]*cy="(\d+)""#);
-    let vml_size = parse_vml_size(run_xml);
+    let vml_style = vml_shape_style(run_xml);
+    let vml_size = parse_vml_size_from_style(vml_style.as_deref().unwrap_or_default());
     let drawing_width_px = extent_cx
         .as_deref()
         .and_then(|raw| emu_to_pixels(Some(raw)));
@@ -1058,8 +1070,11 @@ fn resolve_run_image_layout(run_xml: &str) -> (Option<f64>, Option<f64>, Option<
     // govern the textbox; a nested wp:extent governs only the inline image.
     let width_px = vml_size.0.or(drawing_width_px);
     let height_px = vml_size.1.or(drawing_height_px);
-    let floating = parse_floating_anchor_from_run_xml(run_xml)
-        .or_else(|| parse_vml_floating_anchor_from_run_xml(run_xml));
+    let floating = parse_floating_anchor_from_run_xml(run_xml).or_else(|| {
+        vml_style
+            .as_deref()
+            .and_then(|style| parse_vml_floating_anchor_from_style(run_xml, style))
+    });
     (width_px, height_px, floating)
 }
 
@@ -1075,7 +1090,7 @@ fn vml_finite(value: &str) -> Option<f64> {
     value.is_finite().then_some(value)
 }
 
-fn vml_pixels(value: &str) -> Option<f64> {
+pub(crate) fn vml_pixels(value: &str) -> Option<f64> {
     let value = value.trim();
     let Some(split) = value.find(|c: char| c.is_ascii_alphabetic()) else {
         return vml_finite(value);
@@ -1674,6 +1689,70 @@ fn vml_browser_bitmap_src(src: &str, part_name: Option<&str>, content_type: Opti
     .any(|prefix| src.starts_with(prefix))
 }
 
+fn vml_named_paint_color(value: &str) -> Option<&'static str> {
+    let value = value.trim();
+    let color = match value.len() {
+        3..=7 => value,
+        _ => return None,
+    };
+    Some(match color {
+        name if name.eq_ignore_ascii_case("black") => "#000000",
+        name if name.eq_ignore_ascii_case("silver") => "#c0c0c0",
+        name if name.eq_ignore_ascii_case("gray") => "#808080",
+        name if name.eq_ignore_ascii_case("white") => "#ffffff",
+        name if name.eq_ignore_ascii_case("maroon") => "#800000",
+        name if name.eq_ignore_ascii_case("red") => "#ff0000",
+        name if name.eq_ignore_ascii_case("purple") => "#800080",
+        name if name.eq_ignore_ascii_case("fuchsia") => "#ff00ff",
+        name if name.eq_ignore_ascii_case("green") => "#008000",
+        name if name.eq_ignore_ascii_case("lime") => "#00ff00",
+        name if name.eq_ignore_ascii_case("olive") => "#808000",
+        name if name.eq_ignore_ascii_case("yellow") => "#ffff00",
+        name if name.eq_ignore_ascii_case("navy") => "#000080",
+        name if name.eq_ignore_ascii_case("blue") => "#0000ff",
+        name if name.eq_ignore_ascii_case("teal") => "#008080",
+        name if name.eq_ignore_ascii_case("aqua") => "#00ffff",
+        _ => return None,
+    })
+}
+
+fn vml_paint_color(value: &str) -> Option<String> {
+    normalize_hex_color(Some(value))
+        .or_else(|| vml_named_paint_color(value).map(str::to_owned))
+}
+
+fn vml_has_active_named_paint(tag_name: &str, xml: &str) -> bool {
+    if !matches!(tag_name, "v:shape" | "v:rect" | "v:line") {
+        return false;
+    }
+    let Some(end) = crate::xml::tag_token_end(xml, 0) else {
+        return false;
+    };
+    let tag = &xml[..end];
+    let is_named = |name| {
+        get_attribute_ref(tag, name)
+            .is_some_and(|value| vml_named_paint_color(value).is_some())
+    };
+    if !get_attribute_ref(tag, "filled")
+        .is_some_and(|value| matches!(value, "f" | "false" | "0"))
+        && is_named("fillcolor")
+    {
+        return true;
+    }
+    if !is_named("strokecolor") {
+        return false;
+    }
+    let stroked = get_attribute_ref(tag, "stroked");
+    if stroked
+        .is_some_and(|value| matches!(value, "f" | "false" | "0"))
+    {
+        return false;
+    }
+    let is_bitmap = xml.contains("<v:imagedata") && !xml.contains("<w:txbxContent");
+    !(is_bitmap && stroked.is_none())
+}
+
+
 fn vml_inline_reference_hints(
     style: &std::collections::HashMap<String, String>,
     has_root_wrap: bool,
@@ -1863,6 +1942,14 @@ fn vml_group_image(
             }
             let xml = &group[child.start..child.end];
             let tag = &xml[..crate::xml::tag_token_end(xml, 0)?];
+            if !matches!(child.tag_name.as_str(), "v:shape" | "v:rect" | "v:line") {
+                if get_attribute(tag, "type").is_some()
+                    && (child.tag_name != "w10:wrap" || !vml_no_wrap(xml) || multiple_root_wraps)
+                {
+                    return None;
+                }
+                continue;
+            }
             if let Some(kind) = get_attribute(tag, "type") {
                 let supported = match kind.as_str() {
                     "#_x0000_t75" => {
@@ -1898,12 +1985,26 @@ fn vml_group_image(
             }
         }
     }
+    let metadata_type_reference = (bitmap_definition || textbox_definition)
+        && children.iter().any(|child| {
+            child.tag_name == "w10:wrap" && vml_no_wrap(&group[child.start..child.end])
+        });
+    let named_paint_present = || {
+        children.iter().any(|child| {
+            vml_has_active_named_paint(&child.tag_name, &group[child.start..child.end])
+        })
+    };
+    if multiple_root_wraps && named_paint_present() {
+        return None;
+    }
     let expanded_support = nested_groups
+        || metadata_type_reference
         || textbox_definition
         || skip_placeholder
         || children.iter().any(|child| {
             let xml = &group[child.start..child.end];
             child.tag_name == "o:lock"
+                || vml_has_active_named_paint(&child.tag_name, xml)
                 || (child.tag_name == "v:rect" && vml_rect_has_default_stroke(xml))
                 || (child.tag_name == "v:shape"
                     && (xml.contains("<o:lock") || xml.contains("<w10:wrap")))
@@ -1931,6 +2032,13 @@ fn vml_group_image(
             }
         }
         if !containing_part {
+            return None;
+        }
+    }
+    if root_wrap.is_some_and(|wrap| !vml_no_wrap(wrap)) && named_paint_present() {
+        let anchor = format!(r#"<v:shape style="{}">"#, escape_xml_text(&style_text));
+        let floating = parse_vml_floating_anchor_from_run_xml(&anchor);
+        if vml_inline_reference_hints(&style, false, floating.as_ref()) {
             return None;
         }
     }
@@ -2090,7 +2198,7 @@ fn vml_group_image(
             "none".to_string()
         } else {
             match get_attribute(tag, "fillcolor") {
-                Some(value) => normalize_hex_color(Some(&value))?,
+                Some(value) => vml_paint_color(&value)?,
                 None => "#ffffff".to_string(),
             }
         };
@@ -2103,7 +2211,7 @@ fn vml_group_image(
             "none".to_string()
         } else {
             match get_attribute(tag, "strokecolor") {
-                Some(value) => normalize_hex_color(Some(&value))?,
+                Some(value) => vml_paint_color(&value)?,
                 None => "#000000".to_string(),
             }
         };
@@ -2860,6 +2968,115 @@ mod tests {
     }
 
     #[test]
+    fn named_paint_preflight_tracks_consumed_colors() {
+        for (name, xml) in [
+            ("v:rect", r#"<v:rect fillcolor="black"/>"#),
+            ("v:rect", r#"<v:rect strokecolor="NAVY" strokeweight="1px"/>"#),
+            ("v:line", r#"<v:line fillcolor=" green "/>"#),
+            ("v:rect", r#"<v:rect strokecolor="black" strokeweight="0px"/>"#),
+        ] {
+            assert!(vml_has_active_named_paint(name, xml));
+        }
+        for (name, xml) in [
+            ("v:rect", r#"<v:rect filled="f" fillcolor="black"/>"#),
+            ("v:rect", r#"<v:rect stroked="false" strokecolor="black"/>"#),
+            ("v:rect", r##"<v:rect fillcolor="#000000" strokecolor="000000"/>"##),
+            ("v:rect", r#"<v:rect fillcolor="windowText"/>"#),
+            ("v:shape", r#"<v:shape strokecolor="black"><v:imagedata/></v:shape>"#),
+            ("v:shape", r#"<v:shape><v:fill color="black"/></v:shape>"#),
+            ("v:shapetype", r#"<v:shapetype fillcolor="black"/>"#),
+        ] {
+            assert!(!vml_has_active_named_paint(name, xml));
+        }
+    }
+
+    #[test]
+    fn grouped_bitmap_named_paint_matches_rgb_and_enables_preflight() {
+        use crate::{package::OoxmlPart, parse::empty_style_sheet};
+        use base64::Engine;
+        use std::{cell::RefCell, collections::HashMap};
+        let render = |extension: &str, color: &str, definition: &str, style: &str, wrap: &str| {
+            let source = format!(
+                r##"<w:pict><v:group style="width:100pt;height:100pt;{style}" coordsize="100,100"><v:shape type="#_x0000_t75" style="position:absolute;left:10;top:10;width:20;height:20"><v:imagedata r:id="rId1"/></v:shape><v:rect style="position:absolute;left:70;top:70;width:20;height:20" strokeweight="1px" fillcolor="{color}" strokecolor="{color}"/><v:shape type="#_x0000_t75" style="position:absolute;left:40;top:10;width:20;height:20"><v:imagedata r:id="rId1"/></v:shape>{wrap}</v:group></w:pict>"##
+            );
+            let name = "word/document.xml".to_string();
+            let parts = HashMap::from([(
+                name.clone(),
+                OoxmlPart {
+                    name,
+                    content: format!("{definition}{source}"),
+                },
+            )]);
+            let target = format!("word/media/image.{extension}");
+            let pixels = base64::engine::general_purpose::STANDARD
+                .decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==")
+                .expect("valid PNG payload");
+            let assets = HashMap::from([(target.clone(), pixels)]);
+            let context = ParseContext {
+                relationships: HashMap::from([("rId1".to_string(), target)]),
+                content_types: Default::default(),
+                parts: &parts,
+                binary_assets: &assets,
+                style_sheet: empty_style_sheet(),
+                warnings: RefCell::new(Vec::new()),
+            };
+            vml_group_image(&source, &context)
+        };
+        for (name, rgb) in [
+            ("black", "#000000"),
+            ("NAVY", "#000080"),
+            (" green ", "#008000"),
+            ("silver", "#c0c0c0"),
+            ("gray", "#808080"),
+            ("white", "#ffffff"),
+            ("maroon", "#800000"),
+            ("red", "#ff0000"),
+            ("purple", "#800080"),
+            ("fuchsia", "#ff00ff"),
+            ("lime", "#00ff00"),
+            ("olive", "#808000"),
+            ("yellow", "#ffff00"),
+            ("blue", "#0000ff"),
+            ("teal", "#008080"),
+            ("aqua", "#00ffff"),
+        ] {
+            let named = render("png", name, "", "", "").expect("resolved named paint");
+            let explicit = render("png", rgb, "", "", "").expect("explicit RGB paint");
+            assert_eq!(named.src, explicit.src);
+            assert_eq!(named.width_px, explicit.width_px);
+            assert_eq!(named.height_px, explicit.height_px);
+            assert_eq!(named.src.as_deref().unwrap().matches("%3Cimage%20").count(), 2);
+        }
+        for unresolved in [
+            "auto", "windowText", "currentColor", "transparent", "url(#paint)", "black [0]",
+        ] {
+            assert!(render("png", unresolved, "", "", "").is_none());
+        }
+        assert!(render("emf", "black", "", "", "").is_none());
+        assert!(render("emf", "#000000", "", "", "").is_some());
+        let conflicting = r#"<v:shapetype id="_x0000_t75" path="m0,0l1,1xe"/>"#;
+        assert!(render("png", "black", conflicting, "", "").is_none());
+        assert!(render("png", "#000000", conflicting, "", "").is_some());
+        let reference = "mso-position-horizontal-relative:char;mso-position-vertical-relative:line";
+        for metadata in [
+            r#"<w10:wrap type="none"/><w10:wrap type="none"/>"#,
+            r#"<w10:wrap type="square"/>"#,
+            r#"<w10:wrap type="none" anchorx="page"/>"#,
+        ] {
+            assert!(render("png", "black", "", reference, metadata).is_none());
+            assert!(render("png", "#000000", "", reference, metadata).is_some());
+        }
+        let duplicate = r#"<w10:wrap type="none"/><w10:wrap type="none"/>"#;
+        assert!(render("png", "black", "", "position:absolute;left:1pt", duplicate).is_none());
+        let none = r#"<w10:wrap type="none"/>"#;
+        let image = render("png", "black", "", reference, none).unwrap();
+        let floating = image.floating.unwrap();
+        assert!(floating.horizontal_relative_to.is_none());
+        assert!(floating.vertical_relative_to.is_none());
+        assert!(matches!(floating.wrap_type, Some(ImageWrapType::WrapNone)));
+    }
+
+    #[test]
     fn default_rectangle_stroke_enables_the_metafile_guard_before_leaf_rendering() {
         use crate::{package::OoxmlPart, parse::empty_style_sheet};
         use std::{cell::RefCell, collections::HashMap};
@@ -3192,6 +3409,76 @@ mod tests {
     }
 
     #[test]
+    fn group_wrap_types_are_not_shape_type_references() {
+        use crate::{package::OoxmlPart, parse::empty_style_sheet};
+        use base64::Engine;
+        use std::{cell::RefCell, collections::HashMap};
+        let xml = format!(
+            r##"<w:pict><v:group editas="canvas" style="width:100pt;height:80pt" coordsize="100,80">{}<v:shape type="#_x0000_t75" style="position:absolute;width:100;height:80"><v:fill o:detectmouseclick="t"/><v:path o:connecttype="none"/></v:shape><v:shape type="#_x0000_t75" style="position:absolute;left:10;width:20;height:20"><v:imagedata r:id="rId1"/></v:shape><v:shape type="#_x0000_t75" style="position:absolute;left:40;width:20;height:20"><v:imagedata r:id="rId1"/></v:shape><w10:wrap type="none"/><w10:anchorlock/></v:group></w:pict>"##,
+            rectangular_bitmap_type()
+        );
+        let render = |extension: &str, source: &str, part_prefix: &str| {
+            let name = "word/document.xml".to_string();
+            let parts = HashMap::from([(
+                name.clone(),
+                OoxmlPart {
+                    name,
+                    content: format!("{part_prefix}{source}"),
+                },
+            )]);
+            let target = format!("word/media/image.{extension}");
+            let pixels = base64::engine::general_purpose::STANDARD
+                .decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==")
+                .unwrap();
+            let payload = if extension == "emf" {
+                vec![1, 2, 3]
+            } else {
+                pixels
+            };
+            let assets = HashMap::from([(target.clone(), payload)]);
+            let context = ParseContext {
+                relationships: HashMap::from([("rId1".to_string(), target)]),
+                content_types: Default::default(),
+                parts: &parts,
+                binary_assets: &assets,
+                style_sheet: empty_style_sheet(),
+                warnings: RefCell::new(Vec::new()),
+            };
+            vml_group_image(source, &context)
+        };
+        let image = render("png", &xml, "").unwrap();
+        assert_eq!(image.src.unwrap().matches("%3Cimage%20").count(), 2);
+        assert!(render("emf", &xml, "").is_none());
+        let unknown_shape = xml.replacen(
+            "left:10;width:20;height:20\"><v:imagedata",
+            "left:10;width:20;height:20\" path=\"m0,0l1,1xe\"><v:imagedata",
+            1,
+        );
+        assert!(render("png", &unknown_shape, "").is_none());
+        assert!(render("png", &xml.replace("#_x0000_t75", "#_x0000_t999"), "").is_none());
+        let direct = xml
+            .replace(
+                r##"<v:shape type="#_x0000_t75" style="position:absolute;width:100;height:80"><v:fill o:detectmouseclick="t"/><v:path o:connecttype="none"/></v:shape>"##,
+                "",
+            )
+            .replace("editas=\"canvas\" ", "")
+            .replace("<v:shape type=", "<v:shape stroked=\"f\" strokeweight=\"1px\" type=");
+        assert!(render("png", &direct, "").is_some());
+        assert!(render("emf", &direct, "").is_none());
+        let conflicting = rectangular_bitmap_type().replace("stroked=\"f\"", "stroked=\"t\"");
+        assert!(render("png", &direct, &conflicting).is_none());
+        for metadata in [
+            r#"<w10:wrap type="none"/><w10:wrap type="none"/>"#,
+            r#"<w10:wrap type="square"/>"#,
+            r#"<w10:wrap type="none" anchorx="page"/>"#,
+            r#"<w10:anchorlock type="none"/>"#,
+        ] {
+            let unsupported = direct.replace(r#"<w10:wrap type="none"/>"#, metadata);
+            assert!(render("png", &unsupported, "").is_none());
+        }
+    }
+
+    #[test]
     fn compact_vml_paths_resolve_relative_coordinates() {
         assert_eq!(
             vml_svg_path("m10,20r5,-2,-3,4xe").as_deref(),
@@ -3243,5 +3530,74 @@ mod tests {
         let (width, height, _) = resolve_run_image_layout(xml);
         assert!(width.is_some_and(|value| (value - 744.0).abs() < 0.01));
         assert!(height.is_some_and(|value| (value - 984.0).abs() < 0.01));
+    }
+}
+
+#[cfg(test)]
+mod shared_vml_layout_style_tests {
+    use super::*;
+
+    #[test]
+    fn first_shape_with_missing_or_empty_style_blocks_later_shapes() {
+        for first in [r#"<v:shape/>"#, r#"<v:shape style=""/>"#, r#"<v:shape style=" "/>"#] {
+            let xml = format!(r#"{first}<v:shape style="width:40px;left:12px"/>"#);
+            let (width, height, floating) = resolve_run_image_layout(&xml);
+            assert_eq!((width, height), (None, None));
+            assert!(floating.is_none());
+            assert_eq!(parse_vml_size(&xml), (None, None));
+            assert!(parse_vml_floating_anchor_from_run_xml(&xml).is_none());
+        }
+    }
+
+    #[test]
+    fn dimension_and_position_declaration_precedence_remains_distinct() {
+        let xml = r#"<v:shape style="width:8px;width:16px;height:12pt;left:1px;left:2px"/>"#;
+        let (width, height, floating) = resolve_run_image_layout(xml);
+        assert_eq!((width, height), (Some(8.0), Some(16.0)));
+        assert_eq!(floating.unwrap().x_px, Some(2.0));
+        assert_eq!(parse_vml_size(xml), (Some(8.0), Some(16.0)));
+        assert_eq!(parse_vml_floating_anchor_from_run_xml(xml).unwrap().x_px, Some(2.0));
+    }
+
+    #[test]
+    fn case_folding_and_existing_token_boundaries_select_the_first_shape() {
+        for name in ["v:shape", "V:SHAPE", "v:ſhape", "v:shapeλ", "v:shape-extra"] {
+            let xml = format!(r#"<{name} style="width:7px;left:3px"/><v:shape style="width:9px;left:5px"/>"#);
+            let (width, _, floating) = resolve_run_image_layout(&xml);
+            assert_eq!(width, Some(7.0), "{name}");
+            assert_eq!(floating.unwrap().x_px, Some(3.0), "{name}");
+        }
+        let xml = r#"<v:shape_extra style="width:7px;left:3px"/><v:shape style="width:9px;left:5px"/>"#;
+        let (width, _, floating) = resolve_run_image_layout(xml);
+        assert_eq!(width, Some(9.0));
+        assert_eq!(floating.unwrap().x_px, Some(5.0));
+    }
+
+    #[test]
+    fn vml_dimensions_override_drawing_extent_without_changing_anchor_priority() {
+        let xml = r#"<v:shape style="width:8px;height:9px;left:17px"/><wp:extent cx="952500" cy="1905000"/><wp:anchor><wp:positionH relativeFrom="page"><wp:posOffset>95250</wp:posOffset></wp:positionH></wp:anchor>"#;
+        let (width, height, floating) = resolve_run_image_layout(xml);
+        assert_eq!((width, height), (Some(8.0), Some(9.0)));
+        let floating = floating.unwrap();
+        assert_eq!(floating.x_px, Some(10.0));
+        assert_eq!(floating.horizontal_relative_to.as_deref(), Some("page"));
+    }
+
+    #[test]
+    fn absent_vml_dimensions_keep_extent_and_empty_anchor_falls_back() {
+        let xml = r#"<v:shape style="left:17px"/><wp:extent cx="952500" cy="1905000"/><wp:anchor/>"#;
+        let (width, height, floating) = resolve_run_image_layout(xml);
+        assert_eq!((width, height), (Some(100.0), Some(200.0)));
+        assert_eq!(floating.unwrap().x_px, Some(17.0));
+    }
+
+    #[test]
+    fn wrap_selection_keeps_whole_run_scope() {
+        let xml = r#"<w10:wrap type="tight" side="right"/><v:shape style="width:8px;left:3px"><w10:wrap type="square" side="left"/></v:shape>"#;
+        let (width, _, floating) = resolve_run_image_layout(xml);
+        assert_eq!(width, Some(8.0));
+        let floating = floating.unwrap();
+        assert!(matches!(floating.wrap_type, Some(ImageWrapType::Tight)));
+        assert!(matches!(floating.wrap_text, Some(ImageWrapText::Right)));
     }
 }

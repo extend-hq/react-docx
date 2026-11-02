@@ -88,6 +88,23 @@ describe("VML composite story editing", () => {
     expect(edited.sourceXml).toMatch(/bookmarkStart[^>]*\/>[\s\S]*<w:t xml:space="preserve">Updated<\/w:t>[\s\S]*bookmarkEnd/);
     expect((edited.contentNodes![0] as ParagraphNode).children[0]).toMatchObject({ style: { bold: true, fontFamily: "Arial" } });
   });
+  it("maps equal text paint across language metadata boundaries", () => {
+    const image = fixture([["AlphaBeta"]]);
+    const node = image.contentNodes![0] as ParagraphNode;
+    const original = node.children[0];
+    if (original.type !== "text") throw new Error("Expected text");
+    node.children = [
+      { ...original, text: "Alpha", style: { ...original.style, language: "en-US", languageEastAsia: "ja-JP", languageBidi: "ar-SA" } },
+      { ...original, text: "Beta", style: { ...original.style, language: "fr-FR", languageEastAsia: "ko-KR", languageBidi: "he-IL" } },
+    ];
+    expect(mapVmlCompositeStories(image)!.stories[0].text).toBe("AlphaBeta");
+    expect(editVmlCompositeStory(image, "Updated", render, 0)!.textBoxText).toBe("Updated");
+    const second = node.children[1];
+    if (second.type !== "text") throw new Error("Expected text");
+    second.style = { ...second.style, italic: true };
+    expect(mapVmlCompositeStories(image)).toBeUndefined();
+    expect(editVmlCompositeStory(image, "Updated", render, 0)).toBeUndefined();
+  });
   it("rejects inconsistent, reordered, rich, transformed, or truncated text mappings", () => {
     const changed = (mutate: (image: ImageRunNode) => void) => { const image = fixture(); mutate(image); return image; };
     const invalid = [

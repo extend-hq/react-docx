@@ -5,6 +5,7 @@ mod content_types;
 mod context;
 mod document;
 mod images;
+pub(crate) use images::vml_pixels;
 mod math;
 mod metadata;
 mod namespaces;

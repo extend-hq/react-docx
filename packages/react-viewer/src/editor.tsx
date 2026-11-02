@@ -57214,7 +57214,7 @@ export function DocxEditorViewer({
               isReadOnly
             ) ?? resolveRenderableImageSource(child);
           const isLiveSyntheticTextBox =
-            !editableVmlComposite && child.syntheticTextBox &&
+            !coherentVmlComposite && child.syntheticTextBox &&
             !syntheticTextBoxContainsPictureLayer(child, false) &&
             !(isReadOnly && (coherentVmlComposite || hasUneditedVmlPictureComposite(child)));
           const hasStructuredTextBoxContent =

@@ -1626,6 +1626,18 @@ fn vml_source_frame(root: roxmltree::Node<'_, '_>) -> Option<(f64, f64, Option<I
         .unwrap_or_default();
     let synthetic = format!("<v:shape style=\"{}\">{wrap}</v:shape>", escape_xml(style));
     let mut floating = crate::parse::parse_vml_floating_anchor_from_run_xml(&synthetic);
+    if let Some(anchor) = floating.as_mut() {
+        if anchor.horizontal_align.is_none() {
+            if let Some(value) = declarations.get("margin-left") {
+                anchor.x_px = Some(crate::parse::vml_pixels(value)?);
+            }
+        }
+        if anchor.vertical_align.is_none() {
+            if let Some(value) = declarations.get("margin-top") {
+                anchor.y_px = Some(crate::parse::vml_pixels(value)?);
+            }
+        }
+    }
     let inert = declarations.keys().all(|key| {
         matches!(
             key.as_str(),
@@ -6974,6 +6986,29 @@ mod edited_vml_textbox_tests {
         assert_eq!(width, 813.3333333333333);
         assert_eq!(height, 194.59999999999997);
         assert_eq!(anchor, None);
+    }
+
+    #[test]
+    fn edited_vml_textbox_preserves_fractional_margin_anchors() {
+        let (package, model, mut image) = fixture();
+        image.source_xml = image.source_xml.map(|source| source.replace(
+            "width:160px;height:80px",
+            "position:absolute;left:5px;top:6px;margin-left:-22.1pt;margin-top:-14.4pt;z-index:-1;width:160px;height:80px",
+        ));
+        image.floating = Some(serde_json::from_value(serde_json::json!({
+            "xPx": -22.1 * (96.0 / 72.0),
+            "yPx": -14.4 * (96.0 / 72.0),
+            "behindDocument": true,
+            "zIndex": -1,
+        })).unwrap());
+        let exported = export(&package, model.clone(), image.clone());
+        let xml = &exported.parts["word/document.xml"].content;
+        assert!(xml.contains("<v:group"));
+        assert!(xml.contains("margin-left:-22.1pt;margin-top:-14.4pt"));
+        assert!(!xml.contains("<w:drawing>"));
+        image.floating.as_mut().unwrap().x_px = Some(-29.0);
+        let changed = export(&package, model, image);
+        assert!(changed.parts["word/document.xml"].content.contains("<w:drawing>"));
     }
 
     #[test]

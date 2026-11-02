@@ -287,7 +287,9 @@ function typedText(node: ParagraphNode): string {
     if (child.type !== "text" || child.link || child.noteReference) throw new Error("Unsupported typed content");
     const paint = child.style;
     if (paint && (paint.allCaps || paint.smallCaps || paint.highlight || paint.backgroundColor || paint.verticalAlign || paint.runBorder || paint.rightToLeft || paint.complexScript || (paint.characterSpacingTwips !== undefined && paint.characterSpacingTwips !== 0) || (paint.characterScalePercent !== undefined && paint.characterScalePercent !== 100) || paint.kerningMinFontSizePt !== undefined || paint.ligatures !== undefined || paint.contextualAlternates !== undefined)) throw new Error("Unsupported typed paint");
-    const next = JSON.stringify(Object.entries(child.style ?? {}).sort(([a], [b]) => a.localeCompare(b)));
+    const next = JSON.stringify(Object.entries(child.style ?? {})
+      .filter(([key]) => key !== "language" && key !== "languageEastAsia" && key !== "languageBidi")
+      .sort(([a], [b]) => a.localeCompare(b)));
     if (child.text && style !== undefined && style !== next) throw new Error("Mixed text paint");
     if (child.text) style = next; return child.text;
   }).join("");
