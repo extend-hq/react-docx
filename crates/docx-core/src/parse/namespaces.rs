@@ -438,6 +438,38 @@ struct RootPlan {
 
 type RootPlanEntry = (String, String, std::sync::Arc<RootPlan>);
 
+#[cfg(not(target_arch = "wasm32"))]
+fn cached_root_plan(
+    key: (&str, &str),
+    build: impl FnOnce() -> Option<RootPlan>,
+) -> Option<std::sync::Arc<RootPlan>> {
+    use std::collections::VecDeque;
+    use std::sync::{Arc, LazyLock};
+    static PLANS: LazyLock<super::cache::Snapshot<VecDeque<Arc<RootPlanEntry>>>> =
+        LazyLock::new(|| super::cache::Snapshot::new(VecDeque::new()));
+    if key.0.len() > 64 || key.1.len() > 8192 {
+        return build().map(Arc::new);
+    }
+    if let Some(plan) = PLANS.read(|plans| plans.iter()
+        .find(|entry| entry.0 == key.0 && entry.1 == key.1)
+        .map(|entry| Arc::clone(&entry.2))) {
+        return Some(plan);
+    }
+    let plan = Arc::new(build()?);
+    let entry = Arc::new((key.0.to_owned(), key.1.to_owned(), Arc::clone(&plan)));
+    PLANS.publish(move |plans| {
+        if plans.iter().any(|existing| existing.0 == entry.0 && existing.1 == entry.1) {
+            return plans.clone();
+        }
+        let mut next = plans.clone();
+        if next.len() == 32 { next.pop_back(); }
+        next.push_front(entry);
+        next
+    });
+    Some(plan)
+}
+
+#[cfg(target_arch = "wasm32")]
 fn cached_root_plan(
     key: (&str, &str),
     build: impl FnOnce() -> Option<RootPlan>,
@@ -1229,45 +1261,40 @@ pub(crate) fn worker_pool() -> Option<&'static rayon::ThreadPool> {
 mod definition_indexes {
     use super::*;
     use std::collections::VecDeque;
-    use std::sync::{Mutex, OnceLock};
+    use std::sync::{Arc, LazyLock};
 
-    static PREPARED: OnceLock<Mutex<VecDeque<(String, PreparedPart)>>> = OnceLock::new();
+    type CachedPart = (Option<crate::xml_index::IndexedSource>, Option<Result<String, String>>);
+    type Entry = Arc<(String, CachedPart)>;
+    static PREPARED: LazyLock<super::super::cache::Snapshot<VecDeque<Entry>>> =
+        LazyLock::new(|| super::super::cache::Snapshot::new(VecDeque::new()));
 
-    fn copy(prepared: &PreparedPart) -> PreparedPart {
-        (
-            prepared
-                .0
-                .as_ref()
-                .map(crate::xml_index::Index::shared_copy),
-            prepared.1.clone(),
-        )
+    fn copy(prepared: &CachedPart) -> PreparedPart {
+        (prepared.0.as_ref().map(crate::xml_index::IndexedSource::local_index), prepared.1.clone())
     }
 
     pub(super) fn prepare<'a>(
         part: &'a crate::package::OoxmlPart,
         prologs: &mut PrologCache<'a>,
     ) -> PreparedPart {
-        let prepared = PREPARED.get_or_init(|| Mutex::new(VecDeque::new()));
-        {
-            let entries = prepared.lock().unwrap_or_else(|error| error.into_inner());
-            if let Some((_, result)) = entries.iter().find(|(key, _)| key == &part.content) {
-                return copy(result);
-            }
+        if let Some(result) = PREPARED.read(|entries| entries.iter()
+            .find(|entry| entry.0 == part.content).map(|entry| copy(&entry.1))) {
+            return result;
         }
         let result = prepare_uncached_part(part, true, prologs);
         if result.0.is_some() && !matches!(result.1, Some(Err(_))) {
-            let entry = (part.content.clone(), copy(&result));
-            let mut entries = prepared.lock().unwrap_or_else(|error| error.into_inner());
-            if !entries.iter().any(|(key, _)| key == &part.content) {
-                let mut retained = entries.iter().map(|(key, _)| key.len()).sum::<usize>();
-                while entries.len() >= 8 || retained + part.content.len() > 1024 * 1024 {
-                    let Some((key, _)) = entries.pop_front() else {
-                        break;
-                    };
-                    retained -= key.len();
+            let entry = Arc::new((part.content.clone(), (result.0.as_ref().map(crate::xml_index::Index::shared_source), result.1.clone())));
+            PREPARED.publish(move |entries| {
+                let mut next = entries.clone();
+                if !next.iter().any(|existing| existing.0 == entry.0) {
+                    let mut retained = next.iter().map(|entry| entry.0.len()).sum::<usize>();
+                    while next.len() >= 8 || retained + entry.0.len() > 1024 * 1024 {
+                        let Some(old) = next.pop_front() else { break };
+                        retained -= old.0.len();
+                    }
+                    next.push_back(entry);
                 }
-                entries.push_back(entry);
-            }
+                next
+            });
         }
         result
     }

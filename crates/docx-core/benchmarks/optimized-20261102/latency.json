@@ -1,0 +1,162 @@
+{
+  "label": "unreleased optimizations",
+  "measured_date": "2026-11-02",
+  "measured_commit": "dcce836072cb01a24f6490c97643f825d2d6902e",
+  "binary_sha256": [
+    "f15b9150db8ed9136311995e8f554ed16a55ebf300aee446ff9e7b34a35b9220"
+  ],
+  "versions": {
+    "docx-rs": "0.4.22",
+    "office_oxide": "0.1.15",
+    "undoc": "0.27.1"
+  },
+  "scope": "Warm native parse + model/IR; core also projects structured blocks. Common successful inputs per format. Five samples, 1\u201320 parses/sample. Per-document medians; p95 across documents. Excludes I/O, startup, JSON encoding, destruction, reference conversion. Shared development machine.",
+  "groups": {
+    "docx": {
+      "common_inputs": 999,
+      "attempted_inputs": 1000,
+      "engines": {
+        "docx-core": {
+          "median_ms": 0.6729685,
+          "p95_ms": 5.080422949999991
+        },
+        "docx-rs": {
+          "median_ms": 1.192551153846154,
+          "p95_ms": 9.498645799999966
+        },
+        "office_oxide": {
+          "median_ms": 0.7496617777777778,
+          "p95_ms": 5.379519375
+        },
+        "undoc": {
+          "median_ms": 1.1304833333333333,
+          "p95_ms": 14.260343949999996
+        }
+      }
+    },
+    "doc": {
+      "common_inputs": 211,
+      "attempted_inputs": 217,
+      "engines": {
+        "docx-core": {
+          "median_ms": 0.265642,
+          "p95_ms": 5.016135416666666
+        },
+        "office_oxide": {
+          "median_ms": 0.07659374999999999,
+          "p95_ms": 1.289615369047619
+        },
+        "undoc": {
+          "median_ms": 0.02679170000000001,
+          "p95_ms": 0.42453890357142854
+        }
+      }
+    },
+    "dot": {
+      "common_inputs": 2,
+      "attempted_inputs": 2,
+      "engines": {
+        "docx-core": {
+          "median_ms": 0.8427029047619048,
+          "p95_ms": 1.2636515904761907
+        },
+        "office_oxide": {
+          "median_ms": 0.5048541,
+          "p95_ms": 0.5059396799999999
+        },
+        "undoc": {
+          "median_ms": 0.13333645,
+          "p95_ms": 0.19577295999999994
+        }
+      }
+    },
+    "dotx": {
+      "common_inputs": 6,
+      "attempted_inputs": 6,
+      "engines": {
+        "docx-core": {
+          "median_ms": 0.49578063333333333,
+          "p95_ms": 9.455236249999999
+        },
+        "docx-rs": {
+          "median_ms": 0.6090204294117647,
+          "p95_ms": 3.71757184375
+        },
+        "office_oxide": {
+          "median_ms": 0.49055527499999996,
+          "p95_ms": 2.1200322035714283
+        },
+        "undoc": {
+          "median_ms": 0.4443197750000001,
+          "p95_ms": 3.8815780772058828
+        }
+      }
+    },
+    "docm": {
+      "common_inputs": 6,
+      "attempted_inputs": 6,
+      "engines": {
+        "docx-core": {
+          "median_ms": 0.18297297499999998,
+          "p95_ms": 2.3796379264705885
+        },
+        "docx-rs": {
+          "median_ms": 0.2592604,
+          "p95_ms": 1.8558563750000003
+        },
+        "office_oxide": {
+          "median_ms": 0.14765324999999999,
+          "p95_ms": 0.898928103846154
+        },
+        "undoc": {
+          "median_ms": 0.0836656,
+          "p95_ms": 2.5706526249999997
+        }
+      }
+    },
+    "dotm": {
+      "common_inputs": 12,
+      "attempted_inputs": 12,
+      "engines": {
+        "docx-core": {
+          "median_ms": 0.5659778888888889,
+          "p95_ms": 1.1299218271428568
+        },
+        "docx-rs": {
+          "median_ms": 1.6565965897435897,
+          "p95_ms": 2.6480899071428574
+        },
+        "office_oxide": {
+          "median_ms": 0.627180225,
+          "p95_ms": 1.7040655642857132
+        },
+        "undoc": {
+          "median_ms": 0.715742625,
+          "p95_ms": 3.454795812499997
+        }
+      }
+    },
+    "docx-regressions": {
+      "common_inputs": 72,
+      "attempted_inputs": 75,
+      "engines": {
+        "docx-core": {
+          "median_ms": 0.2111316538461539,
+          "p95_ms": 0.7934202066666669
+        },
+        "docx-rs": {
+          "median_ms": 0.310368875,
+          "p95_ms": 1.1449689894871802
+        },
+        "office_oxide": {
+          "median_ms": 0.175740725,
+          "p95_ms": 0.6484220152631579
+        },
+        "undoc": {
+          "median_ms": 0.1271969,
+          "p95_ms": 0.7499995325000001
+        }
+      }
+    }
+  }
+}

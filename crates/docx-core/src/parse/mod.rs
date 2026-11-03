@@ -1,3 +1,5 @@
+#[cfg(not(target_arch = "wasm32"))]
+mod cache;
 mod body;
 mod build;
 mod colors;

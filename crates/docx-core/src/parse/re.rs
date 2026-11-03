@@ -1,8 +1,11 @@
 use std::collections::HashMap;
-use std::sync::{LazyLock, Mutex};
+use std::sync::LazyLock;
+#[cfg(target_arch = "wasm32")]
+use std::sync::Mutex;
 
 use regex::Regex;
 
+#[cfg(target_arch = "wasm32")]
 static REGEX_CACHE: LazyLock<Mutex<HashMap<String, &'static Regex>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
@@ -46,19 +49,55 @@ fn ascii_token_pattern(pattern: &str) -> String {
     result
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+static REGEX_CACHE: LazyLock<super::cache::Snapshot<HashMap<String, &'static Regex>>> =
+    LazyLock::new(|| super::cache::Snapshot::new(HashMap::new()));
+
+#[cfg(not(target_arch = "wasm32"))]
+thread_local! {
+    static REGEX_READER: std::cell::RefCell<arc_swap::cache::Cache<
+        &'static arc_swap::ArcSwap<HashMap<String, &'static Regex>>,
+        std::sync::Arc<HashMap<String, &'static Regex>>,
+    >> = std::cell::RefCell::new(REGEX_CACHE.reader());
+}
+
 pub fn get(pattern: &str) -> Option<&'static Regex> {
-    if let Ok(cache) = REGEX_CACHE.lock() {
-        if let Some(regex) = cache.get(pattern) {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        if let Some(regex) =
+            REGEX_READER.with(|cache| cache.borrow_mut().load().get(pattern).copied())
+        {
             return Some(regex);
         }
+        let compiled = Regex::new(&ascii_token_pattern(pattern)).ok()?;
+        let key = pattern.to_owned();
+        let result = REGEX_CACHE.update(move |cache| {
+            let mut next = cache.clone();
+            let regex = *next
+                .entry(key)
+                .or_insert_with(|| Box::leak(Box::new(compiled)));
+            (next, regex)
+        });
+        result.or_else(|| {
+            Regex::new(&ascii_token_pattern(pattern))
+                .ok()
+                .map(|regex| &*Box::leak(Box::new(regex)))
+        })
     }
-
-    let compiled = Regex::new(&ascii_token_pattern(pattern)).ok()?;
-    let leaked: &'static Regex = Box::leak(Box::new(compiled));
-    if let Ok(mut cache) = REGEX_CACHE.lock() {
-        cache.insert(pattern.to_string(), leaked);
+    #[cfg(target_arch = "wasm32")]
+    {
+        if let Ok(cache) = REGEX_CACHE.lock() {
+            if let Some(regex) = cache.get(pattern) {
+                return Some(regex);
+            }
+        }
+        let compiled = Regex::new(&ascii_token_pattern(pattern)).ok()?;
+        let leaked: &'static Regex = Box::leak(Box::new(compiled));
+        if let Ok(mut cache) = REGEX_CACHE.lock() {
+            cache.insert(pattern.to_string(), leaked);
+        }
+        Some(leaked)
     }
-    Some(leaked)
 }
 
 pub fn get_unchecked(pattern: &str) -> &'static Regex {

@@ -10,7 +10,7 @@ use crate::package::{OoxmlPackage, OoxmlPart};
 use super::chp::Chp;
 use super::fib::fcidx;
 use super::fkp;
-use super::fmt::escape_xml;
+use super::fmt::{escape_xml, escape_xml_into};
 use super::fonts::FontTable;
 use super::images::{extract_image, InlineImage};
 use super::lists::ListTables;
@@ -118,6 +118,7 @@ pub struct DocBuilder<'a> {
     fonts: FontTable,
     lists: ListTables,
     char_runs: Vec<CharRun>,
+    char_run_max_ends: Vec<u32>,
     papx_bins: Vec<(u32, u32, u32)>,
     papx_pages: HashMap<u32, Vec<fkp::PapxRun>>,
     sections: Vec<(u32, Sep)>, // (exclusive cp end, properties)
@@ -178,6 +179,7 @@ impl<'a> DocBuilder<'a> {
             fonts,
             lists,
             char_runs: Vec::new(),
+            char_run_max_ends: Vec::new(),
             papx_bins: Vec::new(),
             papx_pages: HashMap::new(),
             sections: Vec::new(),
@@ -266,6 +268,22 @@ impl<'a> DocBuilder<'a> {
             }
         }
         self.char_runs.sort_by_key(|run| run.cp_start);
+        self.char_run_max_ends = self
+            .char_runs
+            .iter()
+            .scan(0, |end, run| {
+                *end = (*end).max(run.cp_end);
+                Some(*end)
+            })
+            .collect();
+    }
+
+    fn char_run_range(&self, start: u32, end: u32) -> std::ops::Range<usize> {
+        let first = self
+            .char_run_max_ends
+            .partition_point(|max_end| *max_end <= start);
+        let last = self.char_runs.partition_point(|run| run.cp_start < end);
+        first.min(last)..last
     }
 
     fn prm_grpprl(&self, prm: u16) -> Option<Vec<u8>> {
@@ -507,6 +525,7 @@ impl<'a> DocBuilder<'a> {
                 paragraphs.push(self.build_paragraph(
                     para_start,
                     cp + 1,
+                    &text[(para_start - cp_start) as usize..=index],
                     unit,
                     context,
                     &mut fields,
@@ -515,7 +534,14 @@ impl<'a> DocBuilder<'a> {
             }
         }
         if para_start < cp_end {
-            paragraphs.push(self.build_paragraph(para_start, cp_end, 0x0D, context, &mut fields));
+            paragraphs.push(self.build_paragraph(
+                para_start,
+                cp_end,
+                &text[(para_start - cp_start) as usize..],
+                0x0D,
+                context,
+                &mut fields,
+            ));
         }
         paragraphs
     }
@@ -524,6 +550,7 @@ impl<'a> DocBuilder<'a> {
         &mut self,
         cp_start: u32,
         cp_end: u32,
+        text: &[u16],
         mark_char: u16,
         context: &NoteContext,
         fields: &mut Vec<FieldState>,
@@ -556,18 +583,24 @@ impl<'a> DocBuilder<'a> {
             0
         };
 
-        let mut runs_xml = self.build_runs(cp_start, mark_cp, pap.istd, context, fields);
+        let mut runs_xml = self.build_runs(
+            cp_start,
+            mark_cp,
+            &text[..text.len().saturating_sub(1)],
+            pap.istd,
+            context,
+            fields,
+        );
         if let Some(markers) = self.bookmarks.get(&mark_cp) {
             runs_xml.push_str(markers);
         }
 
         // Paragraph-mark formatting (empty-paragraph strut height).
         let mark_rpr = {
-            let grpprl = self
-                .char_runs
+            let grpprl = self.char_runs[self.char_run_range(mark_cp, cp_end)]
                 .iter()
                 .find(|run| mark_cp >= run.cp_start && mark_cp < run.cp_end)
-                .map(|run| run.grpprl.clone())
+                .map(|run| run.grpprl.as_slice())
                 .unwrap_or_default();
             let char_istd = super::sprm::iterate(&grpprl)
                 .find(|sprm| sprm.opcode == 0x4A30)
@@ -598,6 +631,7 @@ impl<'a> DocBuilder<'a> {
         &mut self,
         cp_start: u32,
         cp_end: u32,
+        text: &[u16],
         para_istd: u16,
         context: &NoteContext,
         fields: &mut Vec<FieldState>,
@@ -608,28 +642,29 @@ impl<'a> DocBuilder<'a> {
         }
 
         // Collect runs intersecting the range; fall back to one unformatted run.
-        let mut intervals: Vec<(u32, u32, Vec<u8>)> = self
-            .char_runs
+        let range = self.char_run_range(cp_start, cp_end);
+        let mut intervals: Vec<(u32, u32, Option<usize>)> = self.char_runs[range.clone()]
             .iter()
-            .filter(|run| run.cp_end > cp_start && run.cp_start < cp_end)
-            .map(|run| {
+            .enumerate()
+            .filter(|(_, run)| run.cp_end > cp_start && run.cp_start < cp_end)
+            .map(|(index, run)| {
                 (
                     run.cp_start.max(cp_start),
                     run.cp_end.min(cp_end),
-                    run.grpprl.clone(),
+                    Some(range.start + index),
                 )
             })
             .collect();
         if intervals.is_empty() {
-            intervals.push((cp_start, cp_end, Vec::new()));
+            intervals.push((cp_start, cp_end, None));
         }
         intervals.sort_by_key(|(start, _, _)| *start);
         // Fill any gaps so every CP is covered.
         let mut covered = cp_start;
-        let mut complete: Vec<(u32, u32, Vec<u8>)> = Vec::new();
+        let mut complete: Vec<(u32, u32, Option<usize>)> = Vec::new();
         for (start, end, grpprl) in intervals {
             if start > covered {
-                complete.push((covered, start, Vec::new()));
+                complete.push((covered, start, None));
             }
             let clamped_start = start.max(covered);
             if clamped_start < end {
@@ -638,11 +673,15 @@ impl<'a> DocBuilder<'a> {
             }
         }
         if covered < cp_end {
-            complete.push((covered, cp_end, Vec::new()));
+            complete.push((covered, cp_end, None));
         }
 
         let mut linked = Vec::new();
         for (start, end, grpprl) in complete {
+            if self.spanning_links.is_empty() {
+                linked.push((start, end, grpprl, None));
+                continue;
+            }
             let mut boundaries = vec![start, end];
             for link in &self.spanning_links {
                 boundaries.extend(
@@ -659,10 +698,13 @@ impl<'a> DocBuilder<'a> {
                     .iter()
                     .find(|link| pair[0] >= link.start && pair[1] <= link.end)
                     .map(|link| link.instruction.clone());
-                linked.push((pair[0], pair[1], grpprl.clone(), instruction));
+                linked.push((pair[0], pair[1], grpprl, instruction));
             }
         }
-        for (start, end, grpprl, instruction) in linked {
+        for (start, end, run_index, instruction) in linked {
+            let grpprl = run_index
+                .map(|index| self.char_runs[index].grpprl.as_slice())
+                .unwrap_or_default();
             if let Some(instruction) = &instruction {
                 xml.push_str(&format!(
                     r#"<w:fldSimple w:instr="{}">"#,
@@ -684,7 +726,7 @@ impl<'a> DocBuilder<'a> {
                 self.emit_run_content(
                     &mut deleted,
                     start,
-                    end,
+                    &text[(start - cp_start) as usize..(end - cp_start) as usize],
                     &chp,
                     &rpr,
                     &mut deleted_fields,
@@ -695,7 +737,15 @@ impl<'a> DocBuilder<'a> {
                     .replace("</w:t>", "</w:delText>");
                 xml.push_str(&format!(r#"<w:del w:id="{start}">{deleted}</w:del>"#));
             } else {
-                self.emit_run_content(&mut xml, start, end, &chp, &rpr, fields, context);
+                self.emit_run_content(
+                    &mut xml,
+                    start,
+                    &text[(start - cp_start) as usize..(end - cp_start) as usize],
+                    &chp,
+                    &rpr,
+                    fields,
+                    context,
+                );
             }
             if instruction.is_some() {
                 xml.push_str("</w:fldSimple>");
@@ -709,30 +759,39 @@ impl<'a> DocBuilder<'a> {
         &mut self,
         xml: &mut String,
         cp_start: u32,
-        cp_end: u32,
+        text: &[u16],
         chp: &Chp,
         rpr: &str,
         fields: &mut Vec<FieldState>,
         context: &NoteContext,
     ) {
-        let text = self.doc.text(cp_start, cp_end);
         let mut buffer = String::new();
 
         let flush = |buffer: &mut String, xml: &mut String, state: FieldState, rpr: &str| {
             if buffer.is_empty() {
                 return;
             }
-            let escaped = escape_xml(buffer);
-            let body = if state == FieldState::Instruction {
-                format!(r#"<w:instrText xml:space="preserve">{escaped}</w:instrText>"#)
+            xml.push_str("<w:r>");
+            xml.push_str(rpr);
+            let instruction = state == FieldState::Instruction;
+            xml.push_str(if instruction {
+                r#"<w:instrText xml:space="preserve">"#
             } else {
-                format!(r#"<w:t xml:space="preserve">{escaped}</w:t>"#)
-            };
-            xml.push_str(&format!("<w:r>{rpr}{body}</w:r>"));
+                r#"<w:t xml:space="preserve">"#
+            });
+            escape_xml_into(buffer, xml);
+            xml.push_str(if instruction {
+                "</w:instrText></w:r>"
+            } else {
+                "</w:t></w:r>"
+            });
             buffer.clear();
         };
         let single = |xml: &mut String, rpr: &str, inner: &str| {
-            xml.push_str(&format!("<w:r>{rpr}{inner}</w:r>"));
+            xml.push_str("<w:r>");
+            xml.push_str(rpr);
+            xml.push_str(inner);
+            xml.push_str("</w:r>");
         };
 
         for (index, &unit) in text.iter().enumerate() {
@@ -1019,7 +1078,7 @@ impl<'a> DocBuilder<'a> {
         let index = self.image_count;
         let file_name = format!("media/image{index}.{}", image.extension);
         let part_name = format!("word/{file_name}");
-        self.media.insert(part_name, image.bytes.clone());
+        self.media.insert(part_name, image.bytes);
         self.media_extensions.insert(image.extension);
 
         // The rel id is fixed up by the caller part's RelSet via placeholder
@@ -1128,14 +1187,14 @@ impl<'a> DocBuilder<'a> {
                 }
                 index += consumed;
             } else {
-                xml.push_str(&self.paragraph_xml(para));
+                self.append_paragraph_xml(para, &mut xml);
                 index += 1;
             }
         }
         xml
     }
 
-    fn paragraph_xml(&self, para: &ParaOut) -> String {
+    fn append_paragraph_xml(&self, para: &ParaOut, xml: &mut String) {
         let mut ppr_inner = para
             .pap
             .to_ppr_inner_xml(&|istd| self.styles.style_id(istd));
@@ -1143,11 +1202,14 @@ impl<'a> DocBuilder<'a> {
         if let Some(sect_index) = para.sect_index {
             ppr_inner.push_str(&self.sect_pr_xml(sect_index));
         }
-        if ppr_inner.is_empty() {
-            format!("<w:p>{}</w:p>", para.runs_xml)
-        } else {
-            format!("<w:p><w:pPr>{ppr_inner}</w:pPr>{}</w:p>", para.runs_xml)
+        xml.push_str("<w:p>");
+        if !ppr_inner.is_empty() {
+            xml.push_str("<w:pPr>");
+            xml.push_str(&ppr_inner);
+            xml.push_str("</w:pPr>");
         }
+        xml.push_str(&para.runs_xml);
+        xml.push_str("</w:p>");
     }
 
     /// Builds one table at `level` from the head of `paragraphs`. Returns the
@@ -1421,7 +1483,7 @@ impl<'a> DocBuilder<'a> {
                 let (table_xml, _, _) = self.assemble_table(&owned, 1);
                 xml.push_str(&table_xml);
             } else {
-                xml.push_str(&self.paragraph_xml(para));
+                self.append_paragraph_xml(para, &mut xml);
                 index += 1;
             }
         }

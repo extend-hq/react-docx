@@ -2258,14 +2258,14 @@ struct CachedDocumentStyleSheet {
 
 #[cfg(not(target_arch = "wasm32"))]
 static DOCUMENT_STYLE_CACHE: std::sync::LazyLock<
-    std::sync::Mutex<std::collections::VecDeque<CachedDocumentStyleSheet>>,
-> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::VecDeque::new()));
+    super::cache::Snapshot<std::collections::VecDeque<std::sync::Arc<CachedDocumentStyleSheet>>>,
+> = std::sync::LazyLock::new(|| super::cache::Snapshot::new(std::collections::VecDeque::new()));
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn cached_document_style_identity(styles: &ParsedStyleSheet) -> Option<DocumentStyleSheet> {
-    DOCUMENT_STYLE_CACHE.lock().ok()?.iter()
+    DOCUMENT_STYLE_CACHE.read(|cache| cache.iter()
         .find(|entry| std::ptr::eq(entry.parsed.as_ref(), styles))
-        .map(|entry| std::sync::Arc::clone(&entry.parsed))
+        .map(|entry| std::sync::Arc::clone(&entry.parsed)))
 }
 
 pub(crate) fn acquire_document_style_sheet(pkg: &OoxmlPackage) -> DocumentStyleSheet {
@@ -2300,35 +2300,35 @@ pub(crate) fn acquire_document_style_sheet(pkg: &OoxmlPackage) -> DocumentStyleS
                 && entry.theme.as_deref() == theme
                 && entry.references == references
         };
-        if let Ok(cache) = DOCUMENT_STYLE_CACHE.lock() {
-            if let Some(entry) = cache.iter().find(|entry| matches(entry)) {
-                return entry.parsed.clone();
-            }
+        if let Some(parsed) = DOCUMENT_STYLE_CACHE.read(|cache| cache.iter()
+            .find(|entry| matches(entry)).map(|entry| entry.parsed.clone())) {
+            return parsed;
         }
         let parsed = std::sync::Arc::new(parse_referenced_style_sheet(
-            pkg,
-            references.iter().cloned().collect(),
+            pkg, references.iter().cloned().collect(),
         ));
-        if let Ok(mut cache) = DOCUMENT_STYLE_CACHE.lock() {
-            if let Some(entry) = cache.iter().find(|entry| matches(entry)) {
-                return entry.parsed.clone();
+        if source_bytes > 512 * 1024 { return parsed; }
+        let entry = std::sync::Arc::new(CachedDocumentStyleSheet {
+            styles: styles.map(str::to_owned),
+            theme: theme.map(str::to_owned),
+            references,
+            source_bytes,
+            parsed: parsed.clone(),
+        });
+        DOCUMENT_STYLE_CACHE.publish(move |cache| {
+            if cache.iter().any(|existing| existing.styles == entry.styles
+                && existing.theme == entry.theme && existing.references == entry.references) {
+                return cache.clone();
             }
-            if source_bytes > 512 * 1024 {
-                return parsed;
-            }
-            let mut retained = cache.iter().map(|entry| entry.source_bytes).sum::<usize>();
-            while cache.len() >= 4 || retained + source_bytes > 512 * 1024 {
-                let Some(old) = cache.pop_front() else { break };
+            let mut next = cache.clone();
+            let mut retained = next.iter().map(|entry| entry.source_bytes).sum::<usize>();
+            while next.len() >= 4 || retained + entry.source_bytes > 512 * 1024 {
+                let Some(old) = next.pop_front() else { break };
                 retained -= old.source_bytes;
             }
-            cache.push_back(CachedDocumentStyleSheet {
-                styles: styles.map(str::to_owned),
-                theme: theme.map(str::to_owned),
-                references,
-                source_bytes,
-                parsed: parsed.clone(),
-            });
-        }
+            next.push_back(entry);
+            next
+        });
         parsed
     }
 }
@@ -3151,9 +3151,10 @@ mod bounded_large_definition_tests {
             let expected = parse_document_style_sheet(&pkg);
             for _ in 0..2 {
                 assert_eq!(*acquire_document_style_sheet(&pkg), expected);
-                let cache = DOCUMENT_STYLE_CACHE.lock().unwrap();
-                assert!(cache.len() <= 4);
-                assert!(cache.iter().map(|entry| entry.source_bytes).sum::<usize>() <= 512 * 1024);
+                DOCUMENT_STYLE_CACHE.read(|cache| {
+                    assert!(cache.len() <= 4);
+                    assert!(cache.iter().map(|entry| entry.source_bytes).sum::<usize>() <= 512 * 1024);
+                });
             }
         }
     }
