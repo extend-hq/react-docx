@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use base64::Engine;
-use docx_core::{
+use extend_docx::{
     build_doc_model, extract_document_blocks, serialize_doc_model, DocModel, DocNode,
     FormFieldRunNode, OoxmlPackage, OoxmlPart, ParagraphChildNode, ParagraphNode,
     TableCellContentNode,
@@ -212,8 +212,8 @@ fn bitmap_metafile_preview_renders_and_roundtrips_original_bytes() {
     let exported = serialize_doc_model(&model, Some(&source));
     assert_eq!(exported.binary_assets, source.binary_assets);
     assert_eq!(
-        docx_core::parse::parse_part_relationships(&exported, "word/document.xml"),
-        docx_core::parse::parse_part_relationships(&source, "word/document.xml")
+        extend_docx::parse::parse_part_relationships(&exported, "word/document.xml"),
+        extend_docx::parse::parse_part_relationships(&source, "word/document.xml")
     );
     assert!(exported.parts["word/document.xml"].content.contains(&xml));
     assert_eq!(
@@ -291,8 +291,8 @@ fn unchanged_export_preserves_control_markup_relationships_and_bytes() {
     assert!(exported.parts["word/document.xml"].content.contains(&xml));
     assert_eq!(exported.binary_assets, source.binary_assets);
     assert_eq!(
-        docx_core::parse::parse_part_relationships(&exported, "word/document.xml"),
-        docx_core::parse::parse_part_relationships(&source, "word/document.xml")
+        extend_docx::parse::parse_part_relationships(&exported, "word/document.xml"),
+        extend_docx::parse::parse_part_relationships(&source, "word/document.xml")
     );
     for name in [
         "word/activeX/control.xml",

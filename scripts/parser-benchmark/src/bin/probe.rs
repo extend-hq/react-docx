@@ -8,13 +8,13 @@ fn main() {
         let mut samples = Vec::new();
         for index in 0..=repeats {
             let start = Instant::now();
-            let package = docx_core::parse_document_bytes(&bytes).unwrap();
+            let package = extend_docx::parse_document_bytes(&bytes).unwrap();
             let package_ms = start.elapsed().as_secs_f64() * 1000.0;
             let start = Instant::now();
-            let model = docx_core::build_doc_model(&package);
+            let model = extend_docx::build_doc_model(&package);
             let model_ms = start.elapsed().as_secs_f64() * 1000.0;
             let start = Instant::now();
-            let blocks = docx_core::extract_document_blocks(&model);
+            let blocks = extend_docx::extract_document_blocks(&model);
             let blocks_ms = start.elapsed().as_secs_f64() * 1000.0;
             black_box((&package, &model, &blocks));
             if index > 0 {

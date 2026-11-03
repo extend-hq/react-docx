@@ -116,7 +116,7 @@ def run(out, repeats):
            'seed': seed, 'repeats': repeats, 'load_start': os.getloadavg(), 'start_time': time.time(),
            'timing': 'Warm parse plus native model/IR and core structured blocks; excludes input reads, output serialization, destruction, process startup, and reference conversion. Each sample averages adaptive 1–20 parses.',
            'profile': 'release opt-level=3 thin LTO codegen-units=1',
-           'source_sha256': {str(p.relative_to(ROOT)): sha(p) for root in (ROOT / 'crates/docx-core/src', ROOT / 'scripts/parser-benchmark/src') for p in sorted(root.rglob('*.rs'))},
+           'source_sha256': {str(p.relative_to(ROOT)): sha(p) for root in (ROOT / 'crates/extend-docx/src', ROOT / 'scripts/parser-benchmark/src') for p in sorted(root.rglob('*.rs'))},
            'scorer_sha256': {p.name: sha(p) for p in Path(__file__).parent.glob('*.py')}}
     save(out / 'format-environment.json', env)
     for index, (entry, engine) in enumerate(jobs):

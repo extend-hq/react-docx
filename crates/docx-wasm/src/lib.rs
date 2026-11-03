@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use docx_core::{
+use extend_docx::{
     build_doc_model, model_to_document_xml, package_to_bytes, parse_document_bytes,
     try_serialize_doc_model, DocModel, ImageRunNode, OoxmlPackage, OoxmlPart,
 };
@@ -22,7 +22,7 @@ fn doc_model_from_json(json_str: &str) -> Result<DocModel, JsValue> {
 #[wasm_bindgen]
 pub fn extract_document_blocks_wasm(model_json: &str) -> Result<String, JsValue> {
     let model = doc_model_from_json(model_json)?;
-    serde_json::to_string(&docx_core::extract_document_blocks(&model))
+    serde_json::to_string(&extend_docx::extract_document_blocks(&model))
         .map_err(|error| JsValue::from_str(&error.to_string()))
 }
 
@@ -35,7 +35,7 @@ pub fn extract_document_blocks_with_options_wasm(
     let options = serde_json::from_str(options_json).map_err(|error| {
         JsValue::from_str(&format!("Invalid block extraction options JSON: {error}"))
     })?;
-    serde_json::to_string(&docx_core::extract_document_blocks_with_options(
+    serde_json::to_string(&extend_docx::extract_document_blocks_with_options(
         &model, options,
     ))
     .map_err(|error| JsValue::from_str(&error.to_string()))
@@ -44,7 +44,7 @@ pub fn extract_document_blocks_with_options_wasm(
 #[wasm_bindgen]
 pub fn inspect_document_source_wasm(bytes: &[u8]) -> Result<String, JsValue> {
     let package = parse_document_bytes(bytes).map_err(|error| JsValue::from_str(&error))?;
-    serde_json::to_string(&docx_core::document_source_graph(&package))
+    serde_json::to_string(&extend_docx::document_source_graph(&package))
         .map_err(|error| JsValue::from_str(&error.to_string()))
 }
 
@@ -86,10 +86,10 @@ pub fn can_preserve_image_paint_source_wasm(
         None => None,
     };
     let owner = owner_part_name.unwrap_or_else(|| match base.as_ref() {
-        Some(package) => docx_core::main_document_part_name(package),
-        None => docx_core::main_document_part_name(&docx_core::create_minimal_docx_package(None)),
+        Some(package) => extend_docx::main_document_part_name(package),
+        None => extend_docx::main_document_part_name(&extend_docx::create_minimal_docx_package(None)),
     });
-    Ok(docx_core::can_preserve_image_paint_source(&image, base.as_ref(), &owner))
+    Ok(extend_docx::can_preserve_image_paint_source(&image, base.as_ref(), &owner))
 }
 
 fn js_bytes_to_vec(value: &JsValue, key: &str) -> Result<Vec<u8>, JsValue> {
@@ -273,7 +273,7 @@ pub fn serialize_docx_wasm(
     base_package: Option<JsValue>,
 ) -> Result<Vec<u8>, JsValue> {
     let doc_model = value_to_doc_model(model)?;
-    docx_core::table_grid::validate_collapsed_table_grids(&doc_model)
+    extend_docx::table_grid::validate_collapsed_table_grids(&doc_model)
         .map_err(|error| JsValue::from_str(&error))?;
     let base = match base_package {
         Some(value) => Some(value_to_ooxml_package(&value)?),
@@ -290,7 +290,7 @@ pub fn serialize_docx_from_json_wasm(
     base_package: Option<JsValue>,
 ) -> Result<Vec<u8>, JsValue> {
     let doc_model = doc_model_from_json(model_json)?;
-    docx_core::table_grid::validate_collapsed_table_grids(&doc_model)
+    extend_docx::table_grid::validate_collapsed_table_grids(&doc_model)
         .map_err(|error| JsValue::from_str(&error))?;
     let base = match base_package {
         Some(value) => Some(value_to_ooxml_package(&value)?),
@@ -307,13 +307,13 @@ pub fn model_to_document_xml_wasm(
     base_package: Option<JsValue>,
 ) -> Result<String, JsValue> {
     let doc_model = value_to_doc_model(model)?;
-    docx_core::table_grid::validate_collapsed_table_grids(&doc_model)
+    extend_docx::table_grid::validate_collapsed_table_grids(&doc_model)
         .map_err(|error| JsValue::from_str(&error))?;
     let base = match base_package {
         Some(value) => Some(value_to_ooxml_package(&value)?),
         None => None,
     };
-    docx_core::validate_image_paint_bounds(&doc_model, base.as_ref())
+    extend_docx::validate_image_paint_bounds(&doc_model, base.as_ref())
         .map_err(|error| JsValue::from_str(&error))?;
     Ok(model_to_document_xml(&doc_model, base.as_ref()))
 }
@@ -324,13 +324,13 @@ pub fn model_to_document_xml_from_json_wasm(
     base_package: Option<JsValue>,
 ) -> Result<String, JsValue> {
     let doc_model = doc_model_from_json(model_json)?;
-    docx_core::table_grid::validate_collapsed_table_grids(&doc_model)
+    extend_docx::table_grid::validate_collapsed_table_grids(&doc_model)
         .map_err(|error| JsValue::from_str(&error))?;
     let base = match base_package {
         Some(value) => Some(value_to_ooxml_package(&value)?),
         None => None,
     };
-    docx_core::validate_image_paint_bounds(&doc_model, base.as_ref())
+    extend_docx::validate_image_paint_bounds(&doc_model, base.as_ref())
         .map_err(|error| JsValue::from_str(&error))?;
     Ok(model_to_document_xml(&doc_model, base.as_ref()))
 }

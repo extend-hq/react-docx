@@ -1,4 +1,4 @@
-use docx_core::{build_doc_model, parse_docx};
+use extend_docx::{build_doc_model, parse_docx};
 use std::{env, fs, path::PathBuf};
 
 #[test]

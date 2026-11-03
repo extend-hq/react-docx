@@ -8,7 +8,7 @@ All four parsers were rerun on 1,329 distinct inputs: the 257-input multi-format
 
 Each cell is **body-text F1 · median / p95 milliseconds**. DOCX below uses the separate 1,000-input corpus; other formats pool both multi-format cohorts. Timing uses the common successful inputs for libraries supporting that format. Accuracy retains every reference-bearing input, including failed parses as zero.
 
-| Format (inputs) | docx-core | docx-rs | office_oxide | undoc |
+| Format (inputs) | extend-docx | docx-rs | office_oxide | undoc |
 | --- | --- | --- | --- | --- |
 | DOCX (1,000) | 99.983% · 0.800 / 6.641 | 99.740% · 1.212 / 9.593 | 99.917% · 0.816 / 5.793 | 99.988% · 1.204 / 13.712 |
 | DOC (217) | 98.748% · 0.268 / 5.664 | Unsupported | 97.979% · 0.063 / 1.285 | 95.293% · 0.027 / 0.417 |
@@ -19,11 +19,11 @@ Each cell is **body-text F1 · median / p95 milliseconds**. DOCX below uses the 
 
 The pooled DOC cohort has 217 declared-supported inputs and 215 usable references. Core parses 216/217; the remaining invalid document identifier is rejected by every compared binary parser. Nine pre-Word-97 and two encrypted acquired DOC inputs remain visible in the all-input reports but are outside declared support. The template and macro-enabled cohorts are small; their scores do not establish universal compatibility or lossless editing.
 
-The 75 additional DOCX inputs score docx-core **100.000%**, docx-rs **95.658%**, office_oxide **90.578%**, undoc **98.644%**. On the 25 additional DOC inputs, core parses 25/25 and scores **99.961%**, up from **91.961%** on their first evaluation. Those inputs became regressions after their defects were inspected and repaired; they are not an untouched holdout.
+The 75 additional DOCX inputs score extend-docx **100.000%**, docx-rs **95.658%**, office_oxide **90.578%**, undoc **98.644%**. On the 25 additional DOC inputs, core parses 25/25 and scores **99.961%**, up from **91.961%** on their first evaluation. Those inputs became regressions after their defects were inspected and repaired; they are not an untouched holdout.
 
 F1 is the harmonic mean of precision and recall for normalized paragraph-level character five-grams, macro-averaged across documents. It ignores whitespace and soft breaks and is sensitive to paragraph segmentation. The original score remains alongside ordered longest-common-subsequence character F1, exact-text counts, feature precision/recall/F1, and literal-content audits. Binary references are LibreOffice conversion proxies; OOXML references are independently extracted from source packages.
 
-On the 1,000-DOCX corpus, ordered-text F1 is docx-core **99.995%**, docx-rs **99.747%**, office_oxide **99.926%**, undoc **99.975%**. Undoc has the slightly higher original five-gram score, while core has the higher ordered-text score. Core has the lowest measured median, but its 0.800 ms versus office_oxide's 0.816 ms is a small difference on a shared machine; core has a higher p95 than office_oxide. Core is slower than the other binary parsers on DOC.
+On the 1,000-DOCX corpus, ordered-text F1 is extend-docx **99.995%**, docx-rs **99.747%**, office_oxide **99.926%**, undoc **99.975%**. Undoc has the slightly higher original five-gram score, while core has the higher ordered-text score. Core has the lowest measured median, but its 0.800 ms versus office_oxide's 0.816 ms is a small difference on a shared machine; core has a higher p95 than office_oxide. Core is slower than the other binary parsers on DOC.
 
 Timing measures native optimized parsing, model/IR construction, and core's additional structured-block projection. Every parser uses the same release executable and five warm samples; each sample averages 1–20 parses. File reads, process startup, serialization, destruction, and reference conversion are excluded. The p95 is across per-document medians, not request-level or browser latency. Measurements came from a shared development machine.
 

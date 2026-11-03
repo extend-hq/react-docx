@@ -36,7 +36,7 @@ This does not make the entire library lock-free: initialization, actor mailboxes
 
 Measured source: `dcce836072cb01a24f6490c97643f825d2d6902e`. Each cell is body-text five-gram F1 followed by median / p95 milliseconds. DOCX uses the seeded 1,000-input corpus; other formats pool both multi-format cohorts.
 
-| Format | docx-core | docx-rs | office_oxide | undoc |
+| Format | extend-docx | docx-rs | office_oxide | undoc |
 | --- | --- | --- | --- | --- |
 | DOCX | 99.983% · 0.673 / 5.080 | 99.740% · 1.193 / 9.499 | 99.917% · 0.750 / 5.380 | 99.988% · 1.130 / 14.260 |
 | DOC | 98.748% · 0.266 / 5.016 | Unsupported | 97.979% · 0.077 / 1.290 | 95.293% · 0.027 / 0.425 |
@@ -55,7 +55,7 @@ An additional 1,088 concurrent parses across 272 inputs, at four and eight calle
 
 The 329 existing Rust tests pass, with one opt-in corpus test ignored. The WASM target check passes, and PR CI passes JavaScript, Rust/package build, browser smoke, and preview deployment. No new unit tests or corpus documents were added.
 
-Complete interactive reports retain all feature tables and selectable complexity/performance axes under `output/doc-actor-perf-20261102/formats`, `holdout`, and `docx1k`. Original release and allocation-only runs are preserved separately. Charts and sanitized numeric data are linked from the [docx-core README](../crates/docx-core/README.md#parser-latency-comparisons).
+Complete interactive reports retain all feature tables and selectable complexity/performance axes under `output/doc-actor-perf-20261102/formats`, `holdout`, and `docx1k`. Original release and allocation-only runs are preserved separately. Charts and sanitized numeric data are linked from the [extend-docx README](../crates/extend-docx/README.md#parser-latency-comparisons).
 
 ## Paired before/after measurements
 

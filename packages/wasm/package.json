@@ -17,7 +17,7 @@
   "files": ["dist", "pkg"],
   "scripts": {
     "build:wasm": "wasm-pack build ../../crates/docx-wasm --target web --out-dir \"$(pwd)/pkg\" -- --locked && mkdir -p src/generated && cp pkg/docx_wasm.js pkg/docx_wasm.d.ts pkg/docx_wasm_bg.wasm.d.ts pkg/docx_wasm_bg.wasm src/generated/ && cp pkg/docx_wasm_bg.wasm src/docx_wasm_bg.wasm",
-    "build:js": "tsup src/index.ts --format esm,cjs --dts --sourcemap --clean --shims && cp src/docx_wasm_bg.wasm dist/docx_wasm_bg.wasm && cp ../../crates/docx-core/third-party/dingbat-to-unicode-LICENSE dist/dingbat-to-unicode-LICENSE",
+    "build:js": "tsup src/index.ts --format esm,cjs --dts --sourcemap --clean --shims && cp src/docx_wasm_bg.wasm dist/docx_wasm_bg.wasm && cp ../../crates/extend-docx/third-party/dingbat-to-unicode-LICENSE dist/dingbat-to-unicode-LICENSE",
     "build": "pnpm run build:wasm && pnpm run build:js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "clean": "rm -rf dist pkg"

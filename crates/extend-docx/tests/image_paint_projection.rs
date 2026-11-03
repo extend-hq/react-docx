@@ -1,4 +1,4 @@
-use docx_core::{
+use extend_docx::{
     build_doc_model, create_minimal_docx_package, extract_document_blocks, DocModel, DocNode,
     ImageRunNode, ParagraphChildNode, StructuredDocument,
 };

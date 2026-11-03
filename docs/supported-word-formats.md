@@ -2,7 +2,7 @@
 
 The [0.13.0 release comparison](benchmarks-0.13.0.md) contains the final benchmarks rerun on merged main.
 
-`docx-core::parse_document_bytes` and `parse_document_blocks` accept bytes, not a filename or MIME type. They dispatch compound-file input to the legacy Word adapter and other input to the OOXML ZIP reader. The document structures inside the container must still be valid; a ZIP or CFB signature alone does not establish Word support.
+`extend-docx::parse_document_bytes` and `parse_document_blocks` accept bytes, not a filename or MIME type. They dispatch compound-file input to the legacy Word adapter and other input to the OOXML ZIP reader. The document structures inside the container must still be valid; a ZIP or CFB signature alone does not establish Word support.
 
 The standard Word input family comprises six extensions and five distinct MIME types:
 

@@ -4,7 +4,7 @@ The shared Rust parser owns content identity. The browser owns the geometry of t
 
 ```mermaid
 flowchart LR
-  Upload[Original DOCX or DOC] --> Core[docx-core native Rust]
+  Upload[Original DOCX or DOC] --> Core[extend-docx native Rust]
   Core --> Blocks[Versioned blocks and source references]
   Core --> Source[Package XML and assets]
   Upload --> Wasm[Same parser compiled to WASM]
@@ -102,13 +102,13 @@ Figures resolve their source IDs against the loaded model's embedded images, inc
 
 ## Extend integration
 
-1. Add the native `docx-core` dependency to Extend's Rust/N-API package and expose parsing through the existing native worker boundary. Retain the original upload, package assets, parser version, upload hash, and source references.
+1. Add the native `extend-docx` dependency to Extend's Rust/N-API package and expose parsing through the existing native worker boundary. Retain the original upload, package assets, parser version, upload hash, and source references.
 2. Replace the Mammoth HTML/chunk conversion with the structured tree. Use block/source identity for extraction citations; source paragraphs and images can participate in chunks without assigning fake physical page numbers.
 3. Add a DOCX source-reference variant beside the existing HTML byte anchor. Preserve DOCX details as typed extensions: MathML is not LaTeX, and form controls and merged-cell spans carry information beyond current Extend detail schemas.
 4. Update Extend's viewer dependency and pass citation source references to the public geometry/highlight APIs. Share its existing page overlay UI through normalized rectangles. Parser block type names remain unchanged.
 5. When physical page geometry must exist on the backend, run the matching renderer with pinned fonts, browser, layout options, and document version, materialize all pages, and persist that render fingerprint with the geometry. Rust parsing alone cannot determine browser or Word page breaks.
 
-The `docx-core` crate can be consumed from this workspace or a pinned Git revision now. Registry publication and changes to Extend's application are separate deployment steps.
+The `extend-docx` crate can be installed with `cargo add extend-docx`, consumed from this workspace, or pinned to a Git revision. Import it as `extend_docx`. Changes to Extend's application are separate deployment steps.
 
 ## Coverage and remaining work
 

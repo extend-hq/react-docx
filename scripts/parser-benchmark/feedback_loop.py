@@ -64,7 +64,7 @@ def main():
         parser.error('The frozen queue and digest executable must exist before starting a trial')
     directory = work / args.label
     directory.mkdir(parents=True)
-    source_paths = sorted((root / 'crates/docx-core/src').rglob('*.rs'))
+    source_paths = sorted((root / 'crates/extend-docx/src').rglob('*.rs'))
     source = {str(p.relative_to(root)): sha(p) for p in source_paths}
     result = {'label': args.label, 'status': 'running', 'started_at': time.time(), 'records': [],
               'scope': 'Targeted tuning, not a random corpus estimate. Fast-profile core builds use identical flags; office_oxide uses the accepted release binary. Full native model and block parity is required. Production release/WASM validation remains separate.',

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
-use docx_core::model::{DocModel, DocNode, ParagraphNode, TableCellContentNode};
-use docx_core::{build_doc_model, serialize_doc_model, OoxmlPackage, OoxmlPart};
+use extend_docx::model::{DocModel, DocNode, ParagraphNode, TableCellContentNode};
+use extend_docx::{build_doc_model, serialize_doc_model, OoxmlPackage, OoxmlPart};
 
 fn package(body: &str, styles: &str) -> OoxmlPackage {
     let document = format!(

@@ -3,12 +3,14 @@ name = "docx-wasm"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+description = "Internal WebAssembly bindings for extend-docx and the React document viewer"
+publish = false
 
 [lib]
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-docx-core = { path = "../docx-core" }
+extend-docx = { path = "../extend-docx" }
 serde.workspace = true
 serde_json = { workspace = true, features = ["float_roundtrip"] }
 wasm-bindgen = "0.2"
