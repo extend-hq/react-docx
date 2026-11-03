@@ -1,0 +1,601 @@
+{
+  "accuracy": {
+    "engine_input_records": 5316,
+    "changes": []
+  },
+  "output_parity": {
+    "core_inputs": 1329,
+    "exact_original_baseline": 1323,
+    "exact_baseline_rerun": 6,
+    "regressions": [],
+    "by_format": {
+      "doc": {
+        "inputs": 228,
+        "exact_original_baseline": 222,
+        "exact_baseline_rerun": 6
+      },
+      "docx": {
+        "inputs": 1075,
+        "exact_original_baseline": 1075
+      },
+      "docm": {
+        "inputs": 6,
+        "exact_original_baseline": 6
+      },
+      "dotx": {
+        "inputs": 6,
+        "exact_original_baseline": 6
+      },
+      "dotm": {
+        "inputs": 12,
+        "exact_original_baseline": 12
+      },
+      "dot": {
+        "inputs": 2,
+        "exact_original_baseline": 2
+      }
+    },
+    "baseline_binary_sha256": "3a8d0e2f668bbc1cd283daeeb0bf9582c3ae9aed2dc6d6c9704ca65f95aedea9",
+    "note": "Original-baseline differences are checked against reruns of the unmodified binary. Unmodified baseline binary reruns exactly reproduce each candidate full-model and full-block digest, including IDs. The original mismatches remain retained in output-parity.json."
+  },
+  "concurrent_validated_parses": 1088,
+  "paired": {
+    "doc": {
+      "inputs": 216,
+      "baseline": {
+        "median_ms": 0.26049957222222225,
+        "p95_ms": 4.769786
+      },
+      "candidate": {
+        "median_ms": 0.25499695555555557,
+        "p95_ms": 4.245916833333333
+      },
+      "median_paired_ratio": 0.9342218717353656,
+      "p95_paired_ratio": 1.0453759932865336
+    },
+    "docm": {
+      "inputs": 6,
+      "baseline": {
+        "median_ms": 0.17854692499999997,
+        "p95_ms": 2.334735472222222
+      },
+      "candidate": {
+        "median_ms": 0.17450312500000004,
+        "p95_ms": 2.269368613970588
+      },
+      "median_paired_ratio": 0.9931098049538675,
+      "p95_paired_ratio": 1.0343359214957832
+    },
+    "docx": {
+      "inputs": 1075,
+      "baseline": {
+        "median_ms": 0.54214225,
+        "p95_ms": 4.125308733333332
+      },
+      "candidate": {
+        "median_ms": 0.5512566666666666,
+        "p95_ms": 4.130672699999997
+      },
+      "median_paired_ratio": 0.9990689944155422,
+      "p95_paired_ratio": 1.1249533921527806
+    },
+    "dot": {
+      "inputs": 2,
+      "baseline": {
+        "median_ms": 0.9198514523809525,
+        "p95_ms": 1.4370786452380953
+      },
+      "candidate": {
+        "median_ms": 0.8096285833333333,
+        "p95_ms": 1.2438192583333332
+      },
+      "median_paired_ratio": 0.90624114297788,
+      "p95_paired_ratio": 0.9437927360581421
+    },
+    "dotm": {
+      "inputs": 12,
+      "baseline": {
+        "median_ms": 0.557482873015873,
+        "p95_ms": 1.0470677559523804
+      },
+      "candidate": {
+        "median_ms": 0.5286873750000001,
+        "p95_ms": 1.0106973199999996
+      },
+      "median_paired_ratio": 0.9716403894646084,
+      "p95_paired_ratio": 1.0388406298556712
+    },
+    "dotx": {
+      "inputs": 6,
+      "baseline": {
+        "median_ms": 0.5345405666666666,
+        "p95_ms": 7.017807937500001
+      },
+      "candidate": {
+        "median_ms": 0.5606717083333334,
+        "p95_ms": 7.009425125
+      },
+      "median_paired_ratio": 1.021946721010218,
+      "p95_paired_ratio": 1.1155564564717066
+    }
+  },
+  "stages": {
+    "doc": {
+      "inputs": 216,
+      "stages": {
+        "package_ms": {
+          "baseline": 0.134729,
+          "candidate": 0.1191255,
+          "median_paired_ratio": 0.8908799637185691
+        },
+        "model_ms": {
+          "baseline": 0.115729,
+          "candidate": 0.121479,
+          "median_paired_ratio": 1.0167041902830225
+        },
+        "blocks_ms": {
+          "baseline": 0.012542,
+          "candidate": 0.012875,
+          "median_paired_ratio": 1.0175720311020573
+        },
+        "total_ms": {
+          "baseline": 0.27464500000000003,
+          "candidate": 0.263542,
+          "median_paired_ratio": 0.9506402991713869
+        },
+        "doc.cfb": {
+          "baseline": 0.006479,
+          "candidate": 0.005396,
+          "median_paired_ratio": 0.8385997163764745
+        },
+        "doc.emit_xml": {
+          "baseline": 0.10091649999999999,
+          "candidate": 0.088729,
+          "median_paired_ratio": 0.8871462137172001
+        },
+        "doc.open_including_cfb": {
+          "baseline": 0.0078125,
+          "candidate": 0.006291000000000001,
+          "median_paired_ratio": 0.7664376101096096
+        },
+        "doc.setup": {
+          "baseline": 0.0137295,
+          "candidate": 0.013042000000000002,
+          "median_paired_ratio": 1.017388954887429
+        },
+        "model.body": {
+          "baseline": 0.0294795,
+          "candidate": 0.031896,
+          "median_paired_ratio": 1.01021961426492
+        },
+        "model.normalize": {
+          "baseline": 0.023104,
+          "candidate": 0.0234795,
+          "median_paired_ratio": 1.005922615775282
+        },
+        "model.stories": {
+          "baseline": 0.0071665,
+          "candidate": 0.0071665,
+          "median_paired_ratio": 1.0127638936816128
+        },
+        "model.styles": {
+          "baseline": 0.0028539999999999998,
+          "candidate": 0.0029584999999999998,
+          "median_paired_ratio": 1.0
+        },
+        "model.xml_index": {
+          "baseline": 0.0007085,
+          "candidate": 0.000709,
+          "median_paired_ratio": 1.0
+        }
+      }
+    },
+    "docm": {
+      "inputs": 6,
+      "stages": {
+        "package_ms": {
+          "baseline": 0.078625,
+          "candidate": 0.07772899999999999,
+          "median_paired_ratio": 1.0146388317717272
+        },
+        "model_ms": {
+          "baseline": 0.1205205,
+          "candidate": 0.1197295,
+          "median_paired_ratio": 1.0044340238035245
+        },
+        "blocks_ms": {
+          "baseline": 0.0013745,
+          "candidate": 0.001271,
+          "median_paired_ratio": 1.0624610169491524
+        },
+        "total_ms": {
+          "baseline": 0.197417,
+          "candidate": 0.2036035,
+          "median_paired_ratio": 1.0089190364754164
+        },
+        "model.body": {
+          "baseline": 0.0020625,
+          "candidate": 0.002125,
+          "median_paired_ratio": 1.0178036792308567
+        },
+        "model.normalize": {
+          "baseline": 0.054166,
+          "candidate": 0.0520415,
+          "median_paired_ratio": 1.0073638879836535
+        },
+        "model.stories": {
+          "baseline": 0.0020625,
+          "candidate": 0.0021869999999999997,
+          "median_paired_ratio": 1.0791843698744483
+        },
+        "model.styles": {
+          "baseline": 0.0042295,
+          "candidate": 0.003979,
+          "median_paired_ratio": 1.0084634304207118
+        },
+        "model.xml_index": {
+          "baseline": 0.0011250000000000001,
+          "candidate": 0.001167,
+          "median_paired_ratio": 1.0114500626294944
+        }
+      }
+    },
+    "docx": {
+      "inputs": 30,
+      "stages": {
+        "package_ms": {
+          "baseline": 0.0930005,
+          "candidate": 0.09693750000000001,
+          "median_paired_ratio": 1.0068328303680072
+        },
+        "model_ms": {
+          "baseline": 0.4505835,
+          "candidate": 0.4494165,
+          "median_paired_ratio": 1.0028281845505957
+        },
+        "blocks_ms": {
+          "baseline": 0.054854,
+          "candidate": 0.0549165,
+          "median_paired_ratio": 0.9835807607218687
+        },
+        "total_ms": {
+          "baseline": 0.5865005,
+          "candidate": 0.596833,
+          "median_paired_ratio": 1.001061393106156
+        },
+        "model.body": {
+          "baseline": 0.1394375,
+          "candidate": 0.14158300000000001,
+          "median_paired_ratio": 1.0004803073967339
+        },
+        "model.normalize": {
+          "baseline": 0.1542915,
+          "candidate": 0.15670800000000001,
+          "median_paired_ratio": 1.0059971352978256
+        },
+        "model.stories": {
+          "baseline": 0.04375,
+          "candidate": 0.0536245,
+          "median_paired_ratio": 1.011798984259026
+        },
+        "model.styles": {
+          "baseline": 0.008146,
+          "candidate": 0.0085,
+          "median_paired_ratio": 0.9938958906402566
+        },
+        "model.xml_index": {
+          "baseline": 0.0018960000000000001,
+          "candidate": 0.0019585,
+          "median_paired_ratio": 0.9746779993240959
+        }
+      }
+    },
+    "dot": {
+      "inputs": 2,
+      "stages": {
+        "package_ms": {
+          "baseline": 0.6564795,
+          "candidate": 0.500354,
+          "median_paired_ratio": 0.8139520901406176
+        },
+        "model_ms": {
+          "baseline": 0.210167,
+          "candidate": 0.2175625,
+          "median_paired_ratio": 1.0306992784756308
+        },
+        "blocks_ms": {
+          "baseline": 0.059417000000000005,
+          "candidate": 0.06375,
+          "median_paired_ratio": 1.0513024118146155
+        },
+        "total_ms": {
+          "baseline": 0.9198759999999999,
+          "candidate": 0.7767705,
+          "median_paired_ratio": 0.8815581852741912
+        },
+        "doc.cfb": {
+          "baseline": 0.008625,
+          "candidate": 0.0074164999999999995,
+          "median_paired_ratio": 0.8685742397137746
+        },
+        "doc.emit_xml": {
+          "baseline": 0.5926665,
+          "candidate": 0.4395205,
+          "median_paired_ratio": 0.7960258903218467
+        },
+        "doc.open_including_cfb": {
+          "baseline": 0.010708000000000002,
+          "candidate": 0.008312,
+          "median_paired_ratio": 0.7795110291710459
+        },
+        "doc.setup": {
+          "baseline": 0.045937500000000006,
+          "candidate": 0.045541000000000005,
+          "median_paired_ratio": 1.0010135149034207
+        },
+        "model.body": {
+          "baseline": 0.0739165,
+          "candidate": 0.076333,
+          "median_paired_ratio": 1.0288169560605727
+        },
+        "model.normalize": {
+          "baseline": 0.04666650000000001,
+          "candidate": 0.0484995,
+          "median_paired_ratio": 1.05493077708601
+        },
+        "model.stories": {
+          "baseline": 0.030125,
+          "candidate": 0.0297705,
+          "median_paired_ratio": 1.015971181169048
+        },
+        "model.styles": {
+          "baseline": 0.0048965,
+          "candidate": 0.004937,
+          "median_paired_ratio": 1.0083807619667873
+        },
+        "model.xml_index": {
+          "baseline": 0.000771,
+          "candidate": 0.0008960000000000001,
+          "median_paired_ratio": 1.1444668814177148
+        }
+      }
+    },
+    "dotm": {
+      "inputs": 12,
+      "stages": {
+        "package_ms": {
+          "baseline": 0.0960625,
+          "candidate": 0.1024795,
+          "median_paired_ratio": 0.9825492071684956
+        },
+        "model_ms": {
+          "baseline": 0.45570849999999996,
+          "candidate": 0.475188,
+          "median_paired_ratio": 0.959245234852075
+        },
+        "blocks_ms": {
+          "baseline": 0.025709000000000003,
+          "candidate": 0.0302705,
+          "median_paired_ratio": 0.9602508748025114
+        },
+        "total_ms": {
+          "baseline": 0.605416,
+          "candidate": 0.593459,
+          "median_paired_ratio": 0.9668243794133229
+        },
+        "model.body": {
+          "baseline": 0.0934795,
+          "candidate": 0.102208,
+          "median_paired_ratio": 1.021105322294202
+        },
+        "model.normalize": {
+          "baseline": 0.1639585,
+          "candidate": 0.15300049999999998,
+          "median_paired_ratio": 0.9698027400351961
+        },
+        "model.stories": {
+          "baseline": 0.065729,
+          "candidate": 0.0633955,
+          "median_paired_ratio": 0.967719775439178
+        },
+        "model.styles": {
+          "baseline": 0.010395999999999999,
+          "candidate": 0.009229,
+          "median_paired_ratio": 0.9584510409882578
+        },
+        "model.xml_index": {
+          "baseline": 0.0022085000000000004,
+          "candidate": 0.0022915,
+          "median_paired_ratio": 1.006871794871795
+        }
+      }
+    },
+    "dotx": {
+      "inputs": 6,
+      "stages": {
+        "package_ms": {
+          "baseline": 0.0874585,
+          "candidate": 0.08612500000000001,
+          "median_paired_ratio": 0.9925187265450958
+        },
+        "model_ms": {
+          "baseline": 0.422083,
+          "candidate": 0.397084,
+          "median_paired_ratio": 1.021523454109718
+        },
+        "blocks_ms": {
+          "baseline": 0.022167000000000003,
+          "candidate": 0.0231045,
+          "median_paired_ratio": 1.0644453643798175
+        },
+        "total_ms": {
+          "baseline": 0.539396,
+          "candidate": 0.5011680000000001,
+          "median_paired_ratio": 1.0084623050271389
+        },
+        "model.body": {
+          "baseline": 0.07985450000000001,
+          "candidate": 0.07589599999999999,
+          "median_paired_ratio": 1.038237276860714
+        },
+        "model.normalize": {
+          "baseline": 0.18518749999999998,
+          "candidate": 0.17468699999999998,
+          "median_paired_ratio": 0.98388892079741
+        },
+        "model.stories": {
+          "baseline": 0.058229,
+          "candidate": 0.057124999999999995,
+          "median_paired_ratio": 1.001262455103128
+        },
+        "model.styles": {
+          "baseline": 0.0106875,
+          "candidate": 0.0097915,
+          "median_paired_ratio": 0.9884714131607335
+        },
+        "model.xml_index": {
+          "baseline": 0.002354,
+          "candidate": 0.0023955,
+          "median_paired_ratio": 1.1306570338058888
+        }
+      }
+    }
+  },
+  "concurrent": [
+    {
+      "case": "mixed",
+      "workers": 1,
+      "allocation": {
+        "throughput_per_second": 622.4087160102915,
+        "median_ms": 0.7139169999999999,
+        "p95_ms": 6.036299999999957
+      },
+      "actor": {
+        "throughput_per_second": 619.5133142123129,
+        "median_ms": 0.7126874999999999,
+        "p95_ms": 5.952816699999992
+      },
+      "median_paired_throughput_change_pct": 0.7389831646653855
+    },
+    {
+      "case": "mixed",
+      "workers": 4,
+      "allocation": {
+        "throughput_per_second": 1464.5920398068965,
+        "median_ms": 0.812354,
+        "p95_ms": 7.887837849999999
+      },
+      "actor": {
+        "throughput_per_second": 1508.6720209392317,
+        "median_ms": 0.7996875,
+        "p95_ms": 7.721666349999993
+      },
+      "median_paired_throughput_change_pct": 3.0097105497136845
+    },
+    {
+      "case": "mixed",
+      "workers": 8,
+      "allocation": {
+        "throughput_per_second": 2236.6838414875915,
+        "median_ms": 0.9201254999999999,
+        "p95_ms": 10.052099699999996
+      },
+      "actor": {
+        "throughput_per_second": 2306.790484392231,
+        "median_ms": 0.873354,
+        "p95_ms": 9.746372949999992
+      },
+      "median_paired_throughput_change_pct": 0.040448893357702964
+    },
+    {
+      "case": "hot-doc",
+      "workers": 1,
+      "allocation": {
+        "throughput_per_second": 1435.9129888601108,
+        "median_ms": 0.6456660000000001,
+        "p95_ms": 0.7794253
+      },
+      "actor": {
+        "throughput_per_second": 1418.2360586198802,
+        "median_ms": 0.6518125,
+        "p95_ms": 0.8010481999999999
+      },
+      "median_paired_throughput_change_pct": -0.8125956345382157
+    },
+    {
+      "case": "hot-doc",
+      "workers": 4,
+      "allocation": {
+        "throughput_per_second": 3860.668102127411,
+        "median_ms": 0.9351875,
+        "p95_ms": 1.09471425
+      },
+      "actor": {
+        "throughput_per_second": 3803.1559681631156,
+        "median_ms": 0.9634375000000001,
+        "p95_ms": 1.2016270999999998
+      },
+      "median_paired_throughput_change_pct": -2.2850918613881
+    },
+    {
+      "case": "hot-doc",
+      "workers": 8,
+      "allocation": {
+        "throughput_per_second": 6469.19613920396,
+        "median_ms": 1.075958,
+        "p95_ms": 1.4291291499999998
+      },
+      "actor": {
+        "throughput_per_second": 6541.890932142897,
+        "median_ms": 1.07225,
+        "p95_ms": 1.4433666499999995
+      },
+      "median_paired_throughput_change_pct": -1.9524867124385725
+    },
+    {
+      "case": "hot-docx",
+      "workers": 1,
+      "allocation": {
+        "throughput_per_second": 740.1039643697762,
+        "median_ms": 1.2307080000000001,
+        "p95_ms": 1.43975625
+      },
+      "actor": {
+        "throughput_per_second": 756.6025399435721,
+        "median_ms": 1.2494375,
+        "p95_ms": 2.197493749999998
+      },
+      "median_paired_throughput_change_pct": -1.203496730125131
+    },
+    {
+      "case": "hot-docx",
+      "workers": 4,
+      "allocation": {
+        "throughput_per_second": 2111.775038518117,
+        "median_ms": 1.6401455,
+        "p95_ms": 2.7061131
+      },
+      "actor": {
+        "throughput_per_second": 2202.2986230354973,
+        "median_ms": 1.565875,
+        "p95_ms": 2.1286381499999996
+      },
+      "median_paired_throughput_change_pct": 8.056912255383475
+    },
+    {
+      "case": "hot-docx",
+      "workers": 8,
+      "allocation": {
+        "throughput_per_second": 2876.7061671235842,
+        "median_ms": 2.2480835,
+        "p95_ms": 3.7467461499999994
+      },
+      "actor": {
+        "throughput_per_second": 3284.61370184304,
+        "median_ms": 2.1661875,
+        "p95_ms": 3.4192148999999996
+      },
+      "median_paired_throughput_change_pct": -0.8069952007797143
+    }
+  ]
+}

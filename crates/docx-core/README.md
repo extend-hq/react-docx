@@ -68,68 +68,68 @@ Deserializing `BlockDetails` stores `Raw(Value)` to retain unknown fields, inclu
 
 ## Parser latency comparisons
 
-Measured November 2, 2026 for release **0.13.0**, against **docx-rs 0.4.22**, **office_oxide 0.1.15**, and **undoc 0.27.1**. The measured Rust source is commit `9ae335abdc79f7defe5a2843065a3ff13c6e5cea` and is unchanged in the release.
+Measured November 2, 2026 for the **unreleased parser optimizations**, against **docx-rs 0.4.22**, **office_oxide 0.1.15**, and **undoc 0.27.1**. The measured source is commit `dcce836072cb01a24f6490c97643f825d2d6902e`. The [published 0.13.0 results](../../docs/benchmarks-0.13.0.md) remain available separately.
 
-![Median and p95 native parser latency for DOCX, DOC, DOT, DOTX, DOCM, and DOTM](../../docs/readme-assets/docx-core-0.13.0-latency-overview.png)
+![Median and p95 native parser latency for DOCX, DOC, DOT, DOTX, DOCM, and DOTM](../../docs/readme-assets/docx-core-optimized-20261102-latency-overview.png)
 
 These are native optimized parse and model/IR timings; docx-core also includes structured-block projection. Each document has five warm samples, each averaging 1–20 parses. Charts use the common successful inputs for the parsers supporting each format. File reads, process startup, JSON serialization, destruction, and reference conversion are excluded. The p95 is across per-document medians, not request-level or browser latency. Measurements were taken on a shared development machine.
 
 DOCX uses the separate seeded 1,000-input corpus. DOC and the template/macro formats pool the two multi-format cohorts. The additional 75 DOCX inputs are shown separately below because they became regressions after inspection and repair. Template and macro-enabled cohorts are small (2–12 inputs); these results do not establish universal performance.
 
-Core has the lowest measured DOCX median (0.800 ms), close to office_oxide (0.816 ms), while office_oxide has the lower DOCX p95. Core is slower than the other binary parsers on DOC. See the [full accuracy comparison and limitations](../../docs/benchmarks-0.13.0.md) when interpreting speed: the parsers retain different amounts of structure, and text F1 does not measure visual layout.
+Core has the lowest measured DOCX median (0.673 ms) and p95 (5.080 ms) in this run. Core remains slower than the other binary parsers on DOC; the two paths retain different amounts of structure. See the [full accuracy comparison and limitations](../../docs/benchmarks-optimized-20261102.md) when interpreting speed: the parsers retain different amounts of structure, and text F1 does not measure visual layout.
 
 Each format chart includes the cumulative latency distribution and latency against input bytes, parsed paragraph count, and feature occurrences. Complexity counts use the core result for the same document across every parser. The axes use logarithmic scales so small and large documents remain visible.
 
 <details>
 <summary>DOCX — seeded corpus: latency distribution and complexity</summary>
 
-![DOCX — seeded corpus native latency distribution and complexity comparisons](../../docs/readme-assets/docx-core-0.13.0-latency-docx.png)
+![DOCX — seeded corpus native latency distribution and complexity comparisons](../../docs/readme-assets/docx-core-optimized-20261102-latency-docx.png)
 
 </details>
 
 <details>
 <summary>DOC: latency distribution and complexity</summary>
 
-![DOC native latency distribution and complexity comparisons](../../docs/readme-assets/docx-core-0.13.0-latency-doc.png)
+![DOC native latency distribution and complexity comparisons](../../docs/readme-assets/docx-core-optimized-20261102-latency-doc.png)
 
 </details>
 
 <details>
 <summary>DOT: latency distribution and complexity</summary>
 
-![DOT native latency distribution and complexity comparisons](../../docs/readme-assets/docx-core-0.13.0-latency-dot.png)
+![DOT native latency distribution and complexity comparisons](../../docs/readme-assets/docx-core-optimized-20261102-latency-dot.png)
 
 </details>
 
 <details>
 <summary>DOTX: latency distribution and complexity</summary>
 
-![DOTX native latency distribution and complexity comparisons](../../docs/readme-assets/docx-core-0.13.0-latency-dotx.png)
+![DOTX native latency distribution and complexity comparisons](../../docs/readme-assets/docx-core-optimized-20261102-latency-dotx.png)
 
 </details>
 
 <details>
 <summary>DOCM: latency distribution and complexity</summary>
 
-![DOCM native latency distribution and complexity comparisons](../../docs/readme-assets/docx-core-0.13.0-latency-docm.png)
+![DOCM native latency distribution and complexity comparisons](../../docs/readme-assets/docx-core-optimized-20261102-latency-docm.png)
 
 </details>
 
 <details>
 <summary>DOTM: latency distribution and complexity</summary>
 
-![DOTM native latency distribution and complexity comparisons](../../docs/readme-assets/docx-core-0.13.0-latency-dotm.png)
+![DOTM native latency distribution and complexity comparisons](../../docs/readme-assets/docx-core-optimized-20261102-latency-dotm.png)
 
 </details>
 
 <details>
 <summary>DOCX — additional regression cohort: latency distribution and complexity</summary>
 
-![DOCX — additional regression cohort native latency distribution and complexity comparisons](../../docs/readme-assets/docx-core-0.13.0-latency-docx-regressions.png)
+![DOCX — additional regression cohort native latency distribution and complexity comparisons](../../docs/readme-assets/docx-core-optimized-20261102-latency-docx-regressions.png)
 
 </details>
 
-The [summary](benchmarks/0.13.0/latency.json) and [chart data](benchmarks/0.13.0/latency.csv) contain timings and numeric complexity measurements, with no document names or parsed content. Regenerate the figures with [readme_charts.py](../../scripts/parser-benchmark/readme_charts.py) and the retained release benchmark runs.
+The [summary](benchmarks/optimized-20261102/latency.json) and [chart data](benchmarks/optimized-20261102/latency.csv) contain timings and numeric complexity measurements, with no document names or parsed content. Regenerate the figures with [readme_charts.py](../../scripts/parser-benchmark/readme_charts.py) and the retained optimized benchmark runs and the label, asset-prefix, and measured-commit options.
 
 ## Regression inputs
 
