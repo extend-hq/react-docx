@@ -1,5 +1,15 @@
 # @extend-ai/react-docx
 
+## 0.13.1
+
+### Patch Changes
+
+- eaf0f26: Reduce legacy Word import overhead by moving compound-file streams into the parser, reusing decoded text and formatting data, and appending XML directly into output buffers. Preserve the generated package, parsed model, and structured-block representation.
+
+  Use immutable native cache snapshots with thread-local regex readers and a bounded update actor. Skip optional cache admission when its mailbox is full, while preserving complete parsing results.
+
+- fa27e2e: Resolve plain tab stops from the current visual line after wrapping, and preserve tab indentation when an unbroken run exceeds the remaining line width. Apply the layout consistently in editing, read-only, and markup views.
+
 ## 0.13.0
 
 ### Minor Changes

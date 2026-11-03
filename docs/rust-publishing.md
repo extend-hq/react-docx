@@ -38,4 +38,4 @@ Team owners can publish and yank versions. Individual owners manage ownership, s
 
 ## Historical benchmark names
 
-Older measurement records use `docx-core` as their engine identifier. The benchmark tools retain that identifier for compatibility, while their Cargo dependency and Rust imports use `extend-docx` and `extend_docx`. Both native runner names select the same parser. Historical chart labels using `docx-core` refer to this parser before its rename; the stored timings and cohort membership are unchanged.
+Older measurement records use `docx-core` as their engine identifier. The benchmark tools retain that identifier for compatibility, while their Cargo dependency and Rust imports use `extend-docx` and `extend_docx`. Both native runner names select the same parser. Charts and tables display `extend-docx`, including regenerated historical figures; stored timings, cohort membership, and measured revisions are unchanged.

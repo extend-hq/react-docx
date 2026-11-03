@@ -10,7 +10,7 @@ Extend's native Rust parser, document model, and serializer, shared with the Rea
 cargo add extend-docx
 ```
 
-The Cargo package is `extend-docx`; the Rust import is `extend_docx`. The source lives in `crates/extend-docx` within [extend-hq/react-docx](https://github.com/extend-hq/react-docx/tree/extend-docx-v0.1.0/crates/extend-docx). Rust crate versions are independent of the `@extend-ai/react-docx` npm versions. The internal `docx-wasm` package provides the JavaScript bindings and is not published to crates.io.
+The Cargo package is `extend-docx`; the Rust import is `extend_docx`. The source lives in `crates/extend-docx` within [extend-hq/react-docx](https://github.com/extend-hq/react-docx/tree/main/crates/extend-docx). Rust crate versions are independent of the `@extend-ai/react-docx` npm versions. The internal `docx-wasm` package provides the JavaScript bindings and is not published to crates.io.
 
 Native builds enable `native-deflate` by default, using libdeflate for whole-buffer ZIP decompression and reusing its decoder across package entries. This requires a C compiler at build time. Disable default features to use the portable Rust decoder. WebAssembly always uses the Rust decoder. Both paths retain the same fallback for entries whose declared size cannot be used for bounded preallocation.
 
@@ -85,37 +85,129 @@ Deserializing `BlockDetails` stores `Raw(Value)` to retain unknown fields, inclu
 
 ## Parser latency comparisons
 
-Measured November 2, 2026 for the **optimized parser**, against **docx-rs 0.4.22**, **office_oxide 0.1.15**, and **undoc 0.27.1**. The measured source is commit `dcce836072cb01a24f6490c97643f825d2d6902e`, before the crate was renamed from `docx-core` to `extend-docx`. Historical benchmark records retain the `docx-core` engine identifier. The [npm release 0.13.0 results](https://github.com/extend-hq/react-docx/blob/extend-docx-v0.1.0/docs/benchmarks-0.13.0.md) remain available separately.
+The native Rust parser is **extend-docx**, also used by the JavaScript package through WebAssembly. It builds an editable document model and structured blocks with source references. The comparisons below measure native parsing and extraction; browser loading, layout, pagination, and editing are outside the timing scope.
 
-![DOCX native parser latency: median and p95 for four libraries on 999 common successful inputs](https://raw.githubusercontent.com/extend-hq/react-docx/main/docs/readme-assets/docx-core-optimized-20261102-latency-docx-summary.png)
+### DOCX latency and text accuracy
 
-| Parser | DOCX median | DOCX p95 |
-| --- | ---: | ---: |
-| extend-docx | **0.673 ms** | **5.080 ms** |
-| docx-rs | 1.193 ms | 9.499 ms |
-| office_oxide | 0.750 ms | 5.380 ms |
-| undoc | 1.130 ms | 14.260 ms |
+Measured **November 2, 2026**, on a seeded **1,000-document DOCX corpus**. Latency uses the **999 inputs all four parsers completed**; accuracy includes every reference-bearing input and counts parser failures as zero. Comparison versions: docx-rs **0.4.22**, office_oxide **0.1.15**, undoc **0.27.1**.
 
-These are native optimized parse and model/IR timings; extend-docx also includes structured-block projection. Each document has five warm samples, each averaging 1–20 parses. Charts use the common successful inputs for the parsers supporting each format. File reads, process startup, JSON serialization, destruction, and reference conversion are excluded. The p95 is across per-document medians, not request-level or browser latency. Measurements were taken on a shared development machine.
+| Parser | Parsed | Median | p95 | Body-text F1 | Ordered-text F1 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| extend-docx | 1,000/1,000 | 0.673 ms | 5.080 ms | 99.983% | 99.995% |
+| docx-rs | 999/1,000 | 1.193 ms | 9.499 ms | 99.740% | 99.747% |
+| office_oxide | 1,000/1,000 | 0.750 ms | 5.380 ms | 99.917% | 99.926% |
+| undoc | 1,000/1,000 | 1.130 ms | 14.260 ms | 99.988% | 99.975% |
 
-DOCX uses the separate seeded 1,000-input corpus. DOC and the template/macro formats pool the two multi-format cohorts. The additional 75 DOCX inputs are shown separately below because they became regressions after inspection and repair. Template and macro-enabled cohorts are small (2–12 inputs); these results do not establish universal performance.
+![Native DOCX median and p95 latency for all four libraries](https://raw.githubusercontent.com/extend-hq/react-docx/main/docs/readme-assets/docx-core-optimized-20261102-latency-docx-summary.png)
 
-Core has the lowest measured DOCX median (0.673 ms) and p95 (5.080 ms) in this run. Core remains slower than the other binary parsers on DOC; the two paths retain different amounts of structure. See the [full accuracy comparison and limitations](https://github.com/extend-hq/react-docx/blob/extend-docx-v0.1.0/docs/benchmarks-optimized-20261102.md) when interpreting speed: the parsers retain different amounts of structure, and text F1 does not measure visual layout.
+Extend-docx has the lowest median and p95 in this run. Its median is 10.3% lower than office_oxide's; this does **not** establish a 5× speedup. Undoc has the highest five-gram text F1, while extend-docx has the highest ordered-text F1.
 
-The scatter plots show all four libraries on the same 999 successful DOCX inputs. Each dot is one document's median latency. Paragraph and feature counts come from the source reference extractor and are shared across parsers; they do not measure how much each parser retained. Logarithmic axes keep small and large documents visible, with zero complexity counts retained.
+Each document has five warm samples, each averaging 1–20 parses. Timings include parsing and native model/IR construction; extend-docx also projects structured blocks. File reads, process startup, JSON serialization, object destruction, and reference generation are excluded. The p95 is across document medians. Results come from a shared development machine and the libraries retain different amounts of structure.
 
-![Four-library DOCX latency scatter plots against input size, source paragraph count, and source feature occurrences](https://raw.githubusercontent.com/extend-hq/react-docx/main/docs/readme-assets/docx-core-optimized-20261102-latency-docx-scatter.png)
+### Latency by document size and complexity
 
-Accuracy is measured against a custom source-XML reference, with LibreOffice conversion as a proxy for binary DOC. This reference is not a complete Word implementation. A 100% feature-recall score means that the specified checks matched, not that all content, formatting, or rendering is correct. See the [scoring definitions and limitations](https://github.com/extend-hq/react-docx/blob/main/scripts/parser-benchmark/README.md#reference-limitations).
+The same 999 successful inputs appear for every library. Each point is one document's median latency. Complexity counts come from the source reference and are shared across parsers. Logarithmic axes retain zero complexity counts.
+
+![DOCX latency scatter plots by input size, source paragraph count, and source feature count](https://raw.githubusercontent.com/extend-hq/react-docx/main/docs/readme-assets/docx-core-optimized-20261102-latency-docx-scatter.png)
+
+### Feature recall on 1,000 DOCX inputs
+
+These are **recall checks against an independent source-XML extractor**, not universal accuracy or Word rendering scores. Image occurrences match retained payload bytes and multiplicity. Literal table/span checks allow additional output characters; exact-anchor checks remain separately available. Positive explicit-formatting recall does not establish precision or inherited-style correctness.
+
+| Check | Expected units | extend-docx | docx-rs | office_oxide | undoc |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Images · payload-matched occurrences | 1,069 | 100.000% | 97.381% | 95.603% | 97.568% |
+| Explicit bold · aligned characters | 680,435 | 100.000% | 94.577% | 99.948% | 98.016% |
+| Tables · literal text retained | 2,267 | 100.000% | 96.427% | 99.868% | 97.706% |
+| Horizontal spans · literal text + exact span | 3,706 | 99.946% | 98.354% | 100.000% | 99.217% |
+| Headings · text + level | 6,741 | 99.985% | 53.004% | 99.466% | 86.219% |
+| Lists · paragraph membership | 15,361 | 99.980% | 98.568% | 91.758% | 93.184% |
+| Vertical merges · start markers | 1,398 | 99.571% | 99.928% | 98.069% | 94.134% |
+| Textboxes · exact text anchors | 2,652 | 99.774% | 35.633% | 99.623% | 100.000% |
 
 <details>
-<summary>All Word formats — median and p95 latency</summary>
+<summary>All remaining source-reference feature checks</summary>
 
-![Median and p95 native parser latency for DOCX, DOC, DOT, DOTX, DOCM, and DOTM](https://raw.githubusercontent.com/extend-hq/react-docx/main/docs/readme-assets/docx-core-optimized-20261102-latency-overview.png)
+| Check | Expected units | extend-docx | docx-rs | office_oxide | undoc |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Tables · exact text anchors | 2,267 | 98.985% | 96.427% | 97.045% | 97.706% |
+| Table cells · exact text anchors | 62,518 | 99.744% | 99.520% | 99.575% | 99.659% |
+| Nested tables · text anchors | 97 | 100.000% | 97.938% | 98.969% | 97.938% |
+| Horizontal spans · exact text + span | 3,706 | 96.492% | 98.354% | 96.114% | 99.217% |
+| Headers · paragraph text | 807 | 100.000% | 69.888% | 99.504% | 100.000% |
+| Footers · paragraph text | 818 | 100.000% | 61.858% | 98.044% | 100.000% |
+| Footnotes · paragraph text | 339 | 100.000% | 0.000% | 100.000% | 92.035% |
+| Endnotes · paragraph text | 46 | 100.000% | 0.000% | 100.000% | 95.652% |
+| Comments · paragraph text | 40 | 100.000% | 100.000% | 100.000% | 0.000% |
+| Equations · occurrence count proxy | 52 | 100.000% | 0.000% | 0.000% | 0.000% |
+| Images · node-count proxy | 1,069 | 87.278% | 97.381% | 95.603% | 97.755% |
+| Explicit bold · run five-grams | 548,210 | 98.236% | 96.942% | 98.247% | 98.236% |
+| Explicit italic · run five-grams | 378,087 | 99.270% | 98.035% | 99.215% | 99.269% |
+| Hyperlinks · text five-grams | 88,320 | 99.341% | 95.138% | 96.355% | 68.332% |
+| Explicit italic · aligned characters | 433,678 | 100.000% | Not scored | Not scored | Not scored |
+| Hyperlink targets · aligned characters | 101,572 | 100.000% | Not scored | Not scored | Not scored |
+
+Run-based checks are sensitive to segmentation and inherited formatting. Image node counts can undercount composite SVGs even when all payloads are retained. “Not scored” means that adapter has no measurement for the stated native semantic audit; the comparable five-gram rows remain above. Original measurements, precision/F1, and denominators are preserved in the aggregate data.
 
 </details>
 
-Each format below includes its cumulative latency distribution and the same three complexity views. The additional DOCX regression cohort remains separate from the seeded corpus above.
+### Independent Microsoft Word reference sample
+
+Measured **November 3, 2026**, on **25 documents** selected from the start of the fixed manifest without score filtering. All four parsers completed all inputs. Text uses Microsoft Word's object model; image payload checks use the original source bytes. This small sample supplements the larger XML-reference benchmark.
+
+| Parser | Median / p95 | Word body recall | Word body F1 | Source image payloads |
+| --- | ---: | ---: | ---: | ---: |
+| extend-docx | 0.530 / 6.880 ms | 99.949% | 99.952% | 52/52 · 100.000% |
+| docx-rs | 1.089 / 6.606 ms | 99.939% | 99.947% | 48/52 · 92.308% |
+| office_oxide | 0.680 / 3.668 ms | 99.937% | 99.946% | 48/52 · 92.308% |
+| undoc | 1.084 / 11.990 ms | 99.949% | 96.999% | 52/52 · 100.000% |
+
+Extend-docx has the lowest median in this sample; office_oxide has the lowest p95. Body F1 here pools ordered character counts; it is a different metric and cohort from the macro-averaged source-XML scores above.
+
+Each cell below is **precision / recall**. Resolved formatting covers only **10 documents** whose Word capture completed within its time budget. Native table and hyperlink references cover **24**.
+
+| Word object-model check | extend-docx | docx-rs | office_oxide | undoc |
+| --- | ---: | ---: | ---: | ---: |
+| Resolved bold · 611 characters | 100.000% / 99.836% | 100.000% / 93.781% | 100.000% / 93.781% | 93.558% / 99.836% |
+| Resolved italic · 387 characters | 100.000% / 100.000% | 100.000% / 88.372% | 100.000% / 100.000% | 100.000% / 100.000% |
+| Top-level tables · 28 text anchors | 100.000% / 100.000% | 89.286% / 89.286% | 96.429% / 96.429% | 100.000% / 100.000% |
+| Hyperlinks · 73 text anchors | 69.307% / 95.890% | 95.745% / 61.644% | 97.183% / 94.521% | 97.222% / 95.890% |
+
+The hyperlink reference omits some field-generated links, so additional valid output can lower apparent precision. Word can normalize or repair input; its exports and the custom extractor each have limits. Neither benchmark establishes visual fidelity, exact image placement, or complete OOXML conformance.
+
+### Other Word formats
+
+Binary DOC and DOT use LibreOffice conversion as a reference proxy. Template/macro cohorts have only **2–12 inputs** each. The retained optimization improves DOC adaptation, but extend-docx remains slower than office_oxide and undoc on binary DOC. Macros are never executed.
+
+<details>
+<summary>All-format accuracy table and latency chart</summary>
+
+Each cell is **body-text F1 · median / p95 milliseconds**. Accuracy and latency use the per-format scopes described above.
+
+| Format | extend-docx | docx-rs | office_oxide | undoc |
+| --- | --- | --- | --- | --- |
+| DOCX | 99.983% · 0.673 / 5.080 | 99.740% · 1.193 / 9.499 | 99.917% · 0.750 / 5.380 | 99.988% · 1.130 / 14.260 |
+| DOC | 98.748% · 0.266 / 5.016 | Unsupported | 97.979% · 0.077 / 1.290 | 95.293% · 0.027 / 0.425 |
+| DOT | 100.000% · 0.843 / 1.264 | Unsupported | 99.902% · 0.505 / 0.506 | 100.000% · 0.133 / 0.196 |
+| DOTX | 100.000% · 0.496 / 9.455 | 99.756% · 0.609 / 3.718 | 99.813% · 0.491 / 2.120 | 99.911% · 0.444 / 3.882 |
+| DOCM | 100.000% · 0.183 / 2.380 | 100.000% · 0.259 / 1.856 | 100.000% · 0.148 / 0.899 | 100.000% · 0.084 / 2.571 |
+| DOTM | 100.000% · 0.566 / 1.130 | 100.000% · 1.657 / 2.648 | 100.000% · 0.627 / 1.704 | 100.000% · 0.716 / 3.455 |
+
+![Native median and p95 latency across DOCX, DOC, DOT, DOTX, DOCM, and DOTM](https://raw.githubusercontent.com/extend-hq/react-docx/main/docs/readme-assets/docx-core-optimized-20261102-latency-overview.png)
+
+</details>
+
+### Reproducibility and detailed results
+
+- [Measured revisions, timing protocol, validation, and paired optimization results](https://github.com/extend-hq/react-docx/blob/main/docs/benchmarks-optimized-20261102.md)
+- [Word capture/scoring methods, coverage, and unresolved reference limitations](https://github.com/extend-hq/react-docx/blob/main/docs/word-reference-benchmarks.md)
+- [Source-reference accuracy aggregates](https://github.com/extend-hq/react-docx/blob/main/crates/extend-docx/benchmarks/optimized-20261102/accuracy.json), [latency summary](https://github.com/extend-hq/react-docx/blob/main/crates/extend-docx/benchmarks/optimized-20261102/latency.json), and [anonymous scatter data](https://github.com/extend-hq/react-docx/blob/main/crates/extend-docx/benchmarks/optimized-20261102/latency.csv)
+- [Word-reference aggregate precision, recall, F1, and coverage for every measured category](https://github.com/extend-hq/react-docx/blob/main/crates/extend-docx/benchmarks/word-reference-20261103/summary.json)
+- [Per-format distribution and complexity charts](https://github.com/extend-hq/react-docx/blob/main/crates/extend-docx/README.md#per-format-charts) and [historical npm 0.13.0 results](https://github.com/extend-hq/react-docx/blob/main/docs/benchmarks-0.13.0.md)
+
+These are retained completed runs, not new measurements of a documentation release. Source revisions and executable hashes identify each measured build. Historical records use the internal engine identifier `docx-core`; chart and table labels use the published crate name **extend-docx**. Public data contains aggregate counts and anonymous numeric points, without source documents or extracted text.
+
+### Per-format charts
 
 <details>
 <summary>DOCX — seeded corpus: latency distribution and complexity</summary>
@@ -166,7 +258,7 @@ Each format below includes its cumulative latency distribution and the same thre
 
 </details>
 
-The [summary](https://github.com/extend-hq/react-docx/blob/extend-docx-v0.1.0/crates/extend-docx/benchmarks/optimized-20261102/latency.json) and [chart data](https://github.com/extend-hq/react-docx/blob/extend-docx-v0.1.0/crates/extend-docx/benchmarks/optimized-20261102/latency.csv) contain timings and numeric complexity measurements, with no document names or parsed content. The figures use these complete measurements; refreshing a chart does not create a new benchmark run. With Matplotlib and NumPy installed, regenerate the charts from the published data without the original documents:
+With Matplotlib and NumPy installed, regenerate charts from the published data without the original documents:
 
 ```sh
 python3 scripts/parser-benchmark/readme_charts.py \

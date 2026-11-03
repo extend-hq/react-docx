@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.1
+
+- Expand the package overview with native latency, scatter plots, feature recall, and Microsoft Word reference comparisons.
+- Use the published `extend-docx` name throughout benchmark charts and tables.
+- Publish aggregate precision, recall, and coverage with links to measurement methods and limitations.
+
+The parser implementation is unchanged from 0.1.0. Benchmark measurements retain their original dates and measured revisions.
+
 ## 0.1.0
 
 Initial crates.io release of Extend's shared Rust parser, previously named `docx-core` within the repository.

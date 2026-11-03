@@ -1,0 +1,1583 @@
+{
+  "measured_date": "2026-11-02",
+  "measured_commit": "dcce836072cb01a24f6490c97643f825d2d6902e",
+  "binary_sha256": [
+    "f15b9150db8ed9136311995e8f554ed16a55ebf300aee446ff9e7b34a35b9220"
+  ],
+  "versions": {
+    "docx-rs": "0.4.22",
+    "office_oxide": "0.1.15",
+    "undoc": "0.27.1"
+  },
+  "scope": "Seeded 1,000 DOCX inputs. Accuracy includes failures as zero wherever a source reference is available. Native latency uses the 999 common successful inputs. Source XML references are independent extraction checks, not a Word rendering oracle.",
+  "docx": {
+    "common_n": 999,
+    "common_engines": [
+      "docx-core",
+      "docx-rs",
+      "office_oxide",
+      "undoc"
+    ],
+    "engines": {
+      "docx-core": {
+        "attempted": 1000,
+        "ok": 1000,
+        "status": {
+          "ok": 1000
+        },
+        "accuracy_scored": 1000,
+        "accuracy_unscored": 0,
+        "common_accuracy_scored": 999,
+        "median_ms": 0.6729685,
+        "p95_ms": 5.080422949999991,
+        "cold_median_ms": 4.054708,
+        "text_f1_macro_all": 0.9998296226946475,
+        "text_f1_macro_success": 0.9998296226946475,
+        "text_f1_macro_common": 0.9998294521467943,
+        "text_f1_micro": 0.9998779591192816,
+        "ordered_f1_macro": 0.9999508237296579,
+        "ordered_f1_micro": 0.9999615366460294,
+        "exact_ordered_text": 957,
+        "exact_ordered_paragraphs": 957,
+        "features_v2": {
+          "explicit_bold": {
+            "matched": 21349,
+            "expected": 43149,
+            "found": 35940,
+            "unit": "exact normalized feature anchors and values; source-explicit styling and run segmentation may differ",
+            "recall": 0.49477392291826,
+            "precision": 0.5940178074568726,
+            "f1": 0.5398728015273931
+          },
+          "lists": {
+            "matched": 15358,
+            "expected": 15361,
+            "found": 15559,
+            "unit": "exact normalized feature anchors and values; source-explicit styling and run segmentation may differ",
+            "recall": 0.9998047002148298,
+            "precision": 0.9870814319686355,
+            "f1": 0.9934023285899094
+          },
+          "table_cells": {
+            "matched": 62358,
+            "expected": 62518,
+            "found": 62538,
+            "unit": "exact normalized feature anchors and values; source-explicit styling and run segmentation may differ",
+            "recall": 0.9974407370677245,
+            "precision": 0.9971217499760145,
+            "f1": 0.9972812180143296
+          },
+          "tables": {
+            "matched": 2244,
+            "expected": 2267,
+            "found": 2267,
+            "unit": "exact normalized feature anchors and values; source-explicit styling and run segmentation may differ",
+            "recall": 0.9898544331715924,
+            "precision": 0.9898544331715924,
+            "f1": 0.9898544331715924
+          },
+          "header_ordered_text": {
+            "matched": 26006,
+            "expected": 28257,
+            "found": 28257,
+            "unit": "longest common subsequence of NFC body characters, ignoring whitespace and soft breaks",
+            "recall": 0.920338323247337,
+            "precision": 0.920338323247337,
+            "f1": 0.920338323247337
+          },
+          "textbox_text": {
+            "matched": 2646,
+            "expected": 2652,
+            "found": 2667,
+            "unit": "exact normalized feature anchors and values; source-explicit styling and run segmentation may differ",
+            "recall": 0.997737556561086,
+            "precision": 0.9921259842519685,
+            "f1": 0.9949238578680203
+          },
+          "images": {
+            "matched": 933,
+            "expected": 1069,
+            "found": 1107,
+            "unit": "occurrence count proxy; identity and geometry are not established",
+            "recall": 0.872778297474275,
+            "precision": 0.8428184281842819,
+            "f1": 0.8575367647058824
+          },
+          "hyperlinks": {
+            "matched": 3612,
+            "expected": 3736,
+            "found": 5605,
+            "unit": "exact normalized feature anchors and values; source-explicit styling and run segmentation may differ",
+            "recall": 0.9668094218415417,
+            "precision": 0.6444246208742195,
+            "f1": 0.7733647361096242
+          },
+          "explicit_italic": {
+            "matched": 8534,
+            "expected": 16556,
+            "found": 13994,
+            "unit": "exact normalized feature anchors and values; source-explicit styling and run segmentation may differ",
+            "recall": 0.5154626721430298,
+            "precision": 0.6098327854794912,
+            "f1": 0.5586906710310966
+          },
+          "headings": {
+            "matched": 6740,
+            "expected": 6741,
+            "found": 7035,
+            "unit": "exact normalized feature anchors and values; source-explicit styling and run segmentation may differ",
+            "recall": 0.9998516540572615,
+            "precision": 0.9580668088130775,
+            "f1": 0.978513356562137
+          },
+          "horizontal_merges": {
+            "matched": 3576,
+            "expected": 3706,
+            "found": 3707,
+            "unit": "exact normalized feature anchors and values; source-explicit styling and run segmentation may differ",
+            "recall": 0.9649217485159202,
+            "precision": 0.9646614513083356,
+            "f1": 0.9647915823553217
+          },
+          "nested_tables": {
+            "matched": 97,
+            "expected": 97,
+            "found": 97,
+            "unit": "exact normalized feature anchors and values; source-explicit styling and run segmentation may differ",
+            "recall": 1.0,
+            "precision": 1.0,
+            "f1": 1.0
+          },
+          "footer_ordered_text": {
+            "matched": 32518,
+            "expected": 35666,
+            "found": 35666,
+            "unit": "longest common subsequence of NFC body characters, ignoring whitespace and soft breaks",
+            "recall": 0.9117366679751023,
+            "precision": 0.9117366679751023,
+            "f1": 0.9117366679751023
+          },
+          "footnotes_ordered_text": {
+            "matched": 47038,
+            "expected": 47038,
+            "found": 47038,
+            "unit": "longest common subsequence of NFC body characters, ignoring whitespace and soft breaks",
+            "recall": 1.0,
+            "precision": 1.0,
+            "f1": 1.0
+          },
+          "vertical_merges": {
+            "matched": 1392,
+            "expected": 1398,
+            "found": 1396,
+            "unit": "exact normalized feature anchors and values; source-explicit styling and run segmentation may differ",
+            "recall": 0.9957081545064378,
+            "precision": 0.997134670487106,
+            "f1": 0.9964209019327129
+          },
+          "endnotes_ordered_text": {
+            "matched": 10822,
+            "expected": 10822,
+            "found": 10822,
+            "unit": "longest common subsequence of NFC body characters, ignoring whitespace and soft breaks",
+            "recall": 1.0,
+            "precision": 1.0,
+            "f1": 1.0
+          },
+          "equations": {
+            "matched": 52,
+            "expected": 52,
+            "found": 52,
+            "unit": "occurrence count proxy; identity and geometry are not established",
+            "recall": 1.0,
+            "precision": 1.0,
+            "f1": 1.0
+          },
+          "comments_ordered_text": {
+            "matched": 1700,
+            "expected": 1700,
+            "found": 1700,
+            "unit": "longest common subsequence of NFC body characters, ignoring whitespace and soft breaks",
+            "recall": 1.0,
+            "precision": 1.0,
+            "f1": 1.0
+          }
+        },
+        "features": {
+          "explicit_bold": {
+            "matched": 538541,
+            "expected": 548210,
+            "found": 786660,
+            "unit": "normalized character 5-grams in explicitly marked source text; segmentation-sensitive",
+            "recall": 0.9823625982743839,
+            "precision": 0.6845918185747337,
+            "f1": 0.806881568991737
+          },
+          "tables": {
+            "matched": 2244,
+            "expected": 2267,
+            "found": 2267,
+            "unit": "exact normalized content anchor",
+            "recall": 0.9898544331715924,
+            "precision": 0.9898544331715924,
+            "f1": 0.9898544331715924
+          },
+          "table_cells": {
+            "matched": 62358,
+            "expected": 62518,
+            "found": 62538,
+            "unit": "exact normalized content anchor",
+            "recall": 0.9974407370677245,
+            "precision": 0.9971217499760145,
+            "f1": 0.9972812180143296
+          },
+          "lists": {
+            "matched": 15358,
+            "expected": 15361,
+            "found": 15469,
+            "unit": "exact normalized content anchor",
+            "recall": 0.9998047002148298,
+            "precision": 0.9928243583942078,
+            "f1": 0.9963023029516704
+          },
+          "explicit_bold_characters": {
+            "matched": 680435,
+            "expected": 680435,
+            "found": 925877,
+            "unit": "explicit source bold characters at aligned literal paragraph offsets",
+            "recall": 1.0,
+            "precision": 0.7349086325721451,
+            "f1": 0.8472015399249959
+          },
+          "table_text_literal": {
+            "matched": 2267,
+            "expected": 2267,
+            "found": 2267,
+            "unit": "one-to-one literal-content subsequence anchor",
+            "recall": 1.0,
+            "precision": 1.0,
+            "f1": 1.0
+          },
+          "hyperlink_target_characters": {
+            "matched": 101572,
+            "expected": 101572,
+            "found": 111833,
+            "unit": "explicit source markup at ordered literal character offsets; inherited styles and field links are outside reference scope",
+            "recall": 1.0,
+            "precision": 0.908247118471292,
+            "f1": 0.9519177151425693
+          },
+          "explicit_italic_characters": {
+            "matched": 433678,
+            "expected": 433678,
+            "found": 560491,
+            "unit": "explicit source markup at ordered literal character offsets; inherited styles and field links are outside reference scope",
+            "recall": 1.0,
+            "precision": 0.7737465900433727,
+            "f1": 0.872443216394798
+          },
+          "image_payload_occurrences": {
+            "matched": 1069,
+            "expected": 1069,
+            "found": 1069,
+            "unit": "source image occurrence matched to native payload bytes, allowing declared SVG alternatives",
+            "recall": 1.0,
+            "precision": 1.0,
+            "f1": 1.0
+          },
+          "header_text": {
+            "matched": 807,
+            "expected": 807,
+            "found": 807,
+            "unit": "distinct exact normalized paragraphs in matching story",
+            "recall": 1.0,
+            "precision": 1.0,
+            "f1": 1.0
+          },
+          "headings": {
+            "matched": 6740,
+            "expected": 6741,
+            "found": 6741,
+            "unit": "exact normalized content anchor and value",
+            "recall": 0.9998516540572615,
+            "precision": 0.9998516540572615,
+            "f1": 0.9998516540572615
+          },
+          "hyperlinks": {
+            "matched": 87738,
+            "expected": 88320,
+            "found": 92579,
+            "unit": "normalized character 5-grams in explicitly marked source text; segmentation-sensitive",
+            "recall": 0.9934103260869566,
+            "precision": 0.9477095237580877,
+            "f1": 0.9700219459477388
+          },
+          "images": {
+            "matched": 933,
+            "expected": 1069,
+            "found": 1026,
+            "unit": "occurrence count only",
+            "recall": 0.872778297474275,
+            "precision": 0.9093567251461988,
+            "f1": 0.890692124105012
+          },
+          "textbox_text": {
+            "matched": 2646,
+            "expected": 2652,
+            "found": 23696,
+            "unit": "exact normalized content anchor",
+            "recall": 0.997737556561086,
+            "precision": 0.11166441593517894,
+            "f1": 0.20085015940488843
+          },
+          "explicit_italic": {
+            "matched": 375326,
+            "expected": 378087,
+            "found": 505404,
+            "unit": "normalized character 5-grams in explicitly marked source text; segmentation-sensitive",
+            "recall": 0.9926974479418759,
+            "precision": 0.7426257014190628,
+            "f1": 0.8496430637097605
+          },
+          "horizontal_merges": {
+            "matched": 3576,
+            "expected": 3706,
+            "found": 3707,
+            "unit": "exact normalized content anchor and value",
+            "recall": 0.9649217485159202,
+            "precision": 0.9646614513083356,
+            "f1": 0.9647915823553217
+          },
+          "nested_tables": {
+            "matched": 97,
+            "expected": 97,
+            "found": 97,
+            "unit": "exact normalized content anchor",
+            "recall": 1.0,
+            "precision": 1.0,
+            "f1": 1.0
+          },
+          "horizontal_spans_literal": {
+            "matched": 3704,
+            "expected": 3706,
+            "found": 3707,
+            "unit": "one-to-one literal-content subsequence anchor and exact span value",
+            "recall": 0.9994603345925526,
+            "precision": 0.9991907202589695,
+            "f1": 0.9993255092405234
+          },
+          "footer_text": {
+            "matched": 818,
+            "expected": 818,
+            "found": 818,
+            "unit": "distinct exact normalized paragraphs in matching story",
+            "recall": 1.0,
+            "precision": 1.0,
+            "f1": 1.0
+          },
+          "footnotes_text": {
+            "matched": 339,
+            "expected": 339,
+            "found": 339,
+            "unit": "distinct exact normalized paragraphs in matching story",
+            "recall": 1.0,
+            "precision": 1.0,
+            "f1": 1.0
+          },
+          "vertical_merges": {
+            "matched": 1392,
+            "expected": 1398,
+            "found": 1396,
+            "unit": "exact normalized content anchor",
+            "recall": 0.9957081545064378,
+            "precision": 0.997134670487106,
+            "f1": 0.9964209019327129
+          },
+          "endnotes_text": {
+            "matched": 46,
+            "expected": 46,
+            "found": 46,
+            "unit": "distinct exact normalized paragraphs in matching story",
+            "recall": 1.0,
+            "precision": 1.0,
+            "f1": 1.0
+          },
+          "equations": {
+            "matched": 52,
+            "expected": 52,
+            "found": 52,
+            "unit": "occurrence count only",
+            "recall": 1.0,
+            "precision": 1.0,
+            "f1": 1.0
+          },
+          "comments_text": {
+            "matched": 40,
+            "expected": 40,
+            "found": 40,
+            "unit": "distinct exact normalized paragraphs in matching story",
+            "recall": 1.0,
+            "precision": 1.0,
+            "f1": 1.0
+          }
+        }
+      },
+      "docx-rs": {
+        "attempted": 1000,
+        "ok": 999,
+        "status": {
+          "ok": 999,
+          "error": 1
+        },
+        "accuracy_scored": 1000,
+        "accuracy_unscored": 0,
+        "common_accuracy_scored": 999,
+        "median_ms": 1.192551153846154,
+        "p95_ms": 9.498645799999966,
+        "cold_median_ms": 1.5503330000000002,
+        "text_f1_macro_all": 0.9974027372329486,
+        "text_f1_macro_success": 0.9984011383713198,
+        "text_f1_macro_common": 0.9984011383713198,
+        "text_f1_micro": 0.9967550213377859,
+        "ordered_f1_macro": 0.997470438122921,
+        "ordered_f1_micro": 0.997067982954302,
+        "exact_ordered_text": 947,
+        "exact_ordered_paragraphs": 947,
+        "features_v2": {
+          "explicit_bold": {
+            "matched": 21626,
+            "expected": 43149,
+            "found": 27397,
+            "unit": "exact normalized feature anchors and values; source-explicit styling and run segmentation may differ",
+            "recall": 0.5011935386683353,
+            "precision": 0.7893564988867394,
+            "f1": 0.6131035069316474
+          },
+          "lists": {
+            "matched": 15141,
+            "expected": 15361,
+            "found": 15627,
+            "unit": "exact normalized feature anchors and values; source-explicit styling and run segmentation may differ",
+            "recall": 0.9856780157541827,
+            "precision": 0.9688999808024573,
+            "f1": 0.9772169872208597
+          },
+          "table_cells": {
+            "matched": 62218,
+            "expected": 62518,
+            "found": 62368,
+            "unit": "exact normalized feature anchors and values; source-explicit styling and run segmentation may differ",
+            "recall": 0.9952013820019834,
+            "precision": 0.9975949204720369,
+            "f1": 0.9963967138029883
+          },
+          "tables": {
+            "matched": 2186,
+            "expected": 2267,
+            "found": 2243,
+            "unit": "exact normalized feature anchors and values; source-explicit styling and run segmentation may differ",
+            "recall": 0.9642699602999559,
+            "precision": 0.9745876058849755,
+            "f1": 0.9694013303769401
+          },
+          "header_ordered_text": {
+            "matched": 14713,
+            "expected": 28257,
+            "found": 15049,
+            "unit": "longest common subsequence of NFC body characters, ignoring whitespace and soft breaks",
+            "recall": 0.5206851399653183,
+            "precision": 0.9776729350787428,
+            "f1": 0.6794901399344202
+          },
+          "textbox_text": {
+            "matched": 939,
+            "expected": 2652,
+            "found": 939,
+            "unit": "exact normalized feature anchors and values; source-explicit styling and run segmentation may differ",
+            "recall": 0.35407239819004527,
+            "precision": 1.0,
+            "f1": 0.5229741019214703
+          },
+          "images": {
+            "matched": 1041,
+            "expected": 1069,
+            "found": 1041,
+            "unit": "occurrence count proxy; identity and geometry are not established",
+            "recall": 0.9738072965388214,
+            "precision": 1.0,
+            "f1": 0.9867298578199052
+          },
+          "hyperlinks": {
+            "matched": 2898,
+            "expected": 3736,
+            "found": 4580,
+            "unit": "exact normalized feature anchors and values; source-explicit styling and run segmentation may differ",
+            "recall": 0.775695931477516,
+            "precision": 0.6327510917030568,
+            "f1": 0.696969696969697
+          },
+          "explicit_italic": {
+            "matched": 8428,
+            "expected": 16556,
+            "found": 10503,
+            "unit": "exact normalized feature anchors and values; source-explicit styling and run segmentation may differ",
+            "recall": 0.5090601594588064,
+            "precision": 0.8024373988384271,
+            "f1": 0.6229350678147751
+          },
+          "headings": {
+            "matched": 3573,
+            "expected": 6741,
+            "found": 3738,
+            "unit": "exact normalized feature anchors and values; source-explicit styling and run segmentation may differ",
+            "recall": 0.5300400534045394,
+            "precision": 0.9558587479935795,
+            "f1": 0.6819352991697681
+          },
+          "horizontal_merges": {
+            "matched": 3645,
+            "expected": 3706,
+            "found": 3680,
+            "unit": "exact normalized feature anchors and values; source-explicit styling and run segmentation may differ",
+            "recall": 0.9835402050728548,
+            "precision": 0.9904891304347826,
+            "f1": 0.9870024370430545
+          },
+          "nested_tables": {
+            "matched": 95,
+            "expected": 97,
+            "found": 95,
+            "unit": "exact normalized feature anchors and values; source-explicit styling and run segmentation may differ",
+            "recall": 0.979381443298969,
+            "precision": 1.0,
+            "f1": 0.9895833333333334
+          },
+          "footer_ordered_text": {
+            "matched": 17069,
+            "expected": 35666,
+            "found": 17373,
+            "unit": "longest common subsequence of NFC body characters, ignoring whitespace and soft breaks",
+            "recall": 0.47857903886053943,
+            "precision": 0.9825015829160191,
+            "f1": 0.6436395859650446
+          },
+          "footnotes_ordered_text": {
+            "matched": 0,
+            "expected": 47038,
+            "found": 0,
+            "unit": "longest common subsequence of NFC body characters, ignoring whitespace and soft breaks",
+            "recall": 0.0,
+            "precision": 1.0,
+            "f1": 0.0
+          },
+          "vertical_merges": {
+            "matched": 1397,
+            "expected": 1398,
+            "found": 1397,
+            "unit": "exact normalized feature anchors and values; source-explicit styling and run segmentation may differ",
+            "recall": 0.9992846924177397,
+            "precision": 1.0,
+            "f1": 0.9996422182468694
+          },
+          "endnotes_ordered_text": {
+            "matched": 0,
+            "expected": 10822,
+            "found": 0,
+            "unit": "longest common subsequence of NFC body characters, ignoring whitespace and soft breaks",
+            "recall": 0.0,
+            "precision": 1.0,
+            "f1": 0.0
+          },
+          "equations": {
+            "matched": 0,
+            "expected": 52,
+            "found": 0,
+            "unit": "occurrence count proxy; identity and geometry are not established",
+            "recall": 0.0,
+            "precision": 1.0,
+            "f1": 0.0
+          },
+          "comments_ordered_text": {
+            "matched": 1700,
+            "expected": 1700,
+            "found": 1700,
+            "unit": "longest common subsequence of NFC body characters, ignoring whitespace and soft breaks",
+            "recall": 1.0,
+            "precision": 1.0,
+            "f1": 1.0
+          }
+        },
+        "features": {
+          "explicit_bold": {
+            "matched": 531445,
+            "expected": 548210,
+            "found": 570628,
+            "unit": "normalized character 5-grams in explicitly marked source text; segmentation-sensitive",
+            "recall": 0.9694186534357272,
+            "precision": 0.93133354830117,
+            "f1": 0.9499945479148902
+          },
+          "tables": {
+            "matched": 2186,
+            "expected": 2267,
+            "found": 2243,
+            "unit": "exact normalized content anchor",
+            "recall": 0.9642699602999559,
+            "precision": 0.9745876058849755,
+            "f1": 0.9694013303769401
+          },
+          "table_cells": {
+            "matched": 62218,
+            "expected": 62518,
+            "found": 62368,
+            "unit": "exact normalized content anchor",
+            "recall": 0.9952013820019834,
+            "precision": 0.9975949204720369,
+            "f1": 0.9963967138029883
+          },
+          "lists": {
+            "matched": 15141,
+            "expected": 15361,
+            "found": 15566,
+            "unit": "exact normalized content anchor",
+            "recall": 0.9856780157541827,
+            "precision": 0.9726969035076448,
+            "f1": 0.9791444368997962
+          },
+          "explicit_bold_characters": {
+            "matched": 643536,
+            "expected": 680435,
+            "found": 670689,
+            "unit": "explicit source bold characters at aligned literal paragraph offsets",
+            "recall": 0.9457714550250942,
+            "precision": 0.9595147676493874,
+            "f1": 0.9525935443378994
+          },
+          "table_text_literal": {
+            "matched": 2186,
+            "expected": 2267,
+            "found": 2243,
+            "unit": "one-to-one literal-content subsequence anchor",
+            "recall": 0.9642699602999559,
+            "precision": 0.9745876058849755,
+            "f1": 0.9694013303769401
+          },
+          "image_payload_occurrences": {
+            "matched": 1041,
+            "expected": 1069,
+            "found": 1041,
+            "unit": "source image occurrence matched to native payload bytes, allowing declared SVG alternatives",
+            "recall": 0.9738072965388214,
+            "precision": 1.0,
+            "f1": 0.9867298578199052
+          },
+          "header_text": {
+            "matched": 564,
+            "expected": 807,
+            "found": 564,
+            "unit": "distinct exact normalized paragraphs in matching story",
+            "recall": 0.6988847583643123,
+            "precision": 1.0,
+            "f1": 0.8227571115973742
+          },
+          "headings": {
+            "matched": 3573,
+            "expected": 6741,
+            "found": 3606,
+            "unit": "exact normalized content anchor and value",
+            "recall": 0.5300400534045394,
+            "precision": 0.9908485856905158,
+            "f1": 0.6906349666570021
+          },
+          "hyperlinks": {
+            "matched": 84026,
+            "expected": 88320,
+            "found": 84975,
+            "unit": "normalized character 5-grams in explicitly marked source text; segmentation-sensitive",
+            "recall": 0.9513813405797101,
+            "precision": 0.9888320094145336,
+            "f1": 0.9697452321186416
+          },
+          "images": {
+            "matched": 1041,
+            "expected": 1069,
+            "found": 1041,
+            "unit": "occurrence count only",
+            "recall": 0.9738072965388214,
+            "precision": 1.0,
+            "f1": 0.9867298578199052
+          },
+          "textbox_text": {
+            "matched": 945,
+            "expected": 2652,
+            "found": 21968,
+            "unit": "exact normalized content anchor",
+            "recall": 0.3563348416289593,
+            "precision": 0.043017115804806993,
+            "f1": 0.07676685621445979
+          },
+          "explicit_italic": {
+            "matched": 370658,
+            "expected": 378087,
+            "found": 387891,
+            "unit": "normalized character 5-grams in explicitly marked source text; segmentation-sensitive",
+            "recall": 0.9803510832162968,
+            "precision": 0.9555725706448461,
+            "f1": 0.9678032528349378
+          },
+          "horizontal_merges": {
+            "matched": 3645,
+            "expected": 3706,
+            "found": 3680,
+            "unit": "exact normalized content anchor and value",
+            "recall": 0.9835402050728548,
+            "precision": 0.9904891304347826,
+            "f1": 0.9870024370430545
+          },
+          "nested_tables": {
+            "matched": 95,
+            "expected": 97,
+            "found": 95,
+            "unit": "exact normalized content anchor",
+            "recall": 0.979381443298969,
+            "precision": 1.0,
+            "f1": 0.9895833333333334
+          },
+          "horizontal_spans_literal": {
+            "matched": 3645,
+            "expected": 3706,
+            "found": 3680,
+            "unit": "one-to-one literal-content subsequence anchor and exact span value",
+            "recall": 0.9835402050728548,
+            "precision": 0.9904891304347826,
+            "f1": 0.9870024370430545
+          },
+          "footer_text": {
+            "matched": 506,
+            "expected": 818,
+            "found": 506,
+            "unit": "distinct exact normalized paragraphs in matching story",
+            "recall": 0.6185819070904646,
+            "precision": 1.0,
+            "f1": 0.7643504531722054
+          },
+          "footnotes_text": {
+            "matched": 0,
+            "expected": 339,
+            "found": 0,
+            "unit": "distinct exact normalized paragraphs in matching story",
+            "recall": 0.0,
+            "precision": null,
+            "f1": 0.0
+          },
+          "vertical_merges": {
+            "matched": 1397,
+            "expected": 1398,
+            "found": 1397,
+            "unit": "exact normalized content anchor",
+            "recall": 0.9992846924177397,
+            "precision": 1.0,
+            "f1": 0.9996422182468694
+          },
+          "endnotes_text": {
+            "matched": 0,
+            "expected": 46,
+            "found": 0,
+            "unit": "distinct exact normalized paragraphs in matching story",
+            "recall": 0.0,
+            "precision": null,
+            "f1": 0.0
+          },
+          "equations": {
+            "matched": 0,
+            "expected": 52,
+            "found": 0,
+            "unit": "occurrence count only",
+            "recall": 0.0,
+            "precision": null,
+            "f1": 0.0
+          },
+          "comments_text": {
+            "matched": 40,
+            "expected": 40,
+            "found": 40,
+            "unit": "distinct exact normalized paragraphs in matching story",
+            "recall": 1.0,
+            "precision": 1.0,
+            "f1": 1.0
+          }
+        }
+      },
+      "office_oxide": {
+        "attempted": 1000,
+        "ok": 1000,
+        "status": {
+          "ok": 1000
+        },
+        "accuracy_scored": 1000,
+        "accuracy_unscored": 0,
+        "common_accuracy_scored": 999,
+        "median_ms": 0.7496617777777778,
+        "p95_ms": 5.379519375,
+        "cold_median_ms": 1.133416,
+        "text_f1_macro_all": 0.999167823512593,
+        "text_f1_macro_success": 0.999167823512593,
+        "text_f1_macro_common": 0.9991669905030961,
+        "text_f1_micro": 0.9973803350938699,
+        "ordered_f1_macro": 0.999261795671418,
+        "ordered_f1_micro": 0.9974511218858383,
+        "exact_ordered_text": 929,
+        "exact_ordered_paragraphs": 929,
+        "features_v2": {
+          "explicit_bold": {
+            "matched": 22107,
+            "expected": 43149,
+            "found": 32188,
+            "unit": "exact normalized feature anchors and values; source-explicit styling and run segmentation may differ",
+            "recall": 0.5123409580755058,
+            "precision": 0.6868087486019635,
+            "f1": 0.586882939325962
+          },
+          "lists": {
+            "matched": 14095,
+            "expected": 15361,
+            "found": 14103,
+            "unit": "exact normalized feature anchors and values; source-explicit styling and run segmentation may differ",
+            "recall": 0.9175834906581603,
+            "precision": 0.9994327448060696,
+            "f1": 0.9567607928319305
+          },
+          "table_cells": {
+            "matched": 62252,
+            "expected": 62518,
+            "found": 62547,
+            "unit": "exact normalized feature anchors and values; source-explicit styling and run segmentation may differ",
+            "recall": 0.995745225375092,
+            "precision": 0.9952835467728268,
+            "f1": 0.9955143325470756
+          },
+          "tables": {
+            "matched": 2200,
+            "expected": 2267,
+            "found": 2267,
+            "unit": "exact normalized feature anchors and values; source-explicit styling and run segmentation may differ",
+            "recall": 0.9704455227172475,
+            "precision": 0.9704455227172475,
+            "f1": 0.9704455227172475
+          },
+          "header_ordered_text": {
+            "matched": 24827,
+            "expected": 28257,
+            "found": 26830,
+            "unit": "longest common subsequence of NFC body characters, ignoring whitespace and soft breaks",
+            "recall": 0.8786141487065152,
+            "precision": 0.9253447633246366,
+            "f1": 0.9013741899177664
+          },
+          "textbox_text": {
+            "matched": 2642,
+            "expected": 2652,
+            "found": 3159,
+            "unit": "exact normalized feature anchors and values; source-explicit styling and run segmentation may differ",
+            "recall": 0.9962292609351433,
+            "precision": 0.8363406141183919,
+            "f1": 0.9093099294441577
+          },
+          "images": {
+            "matched": 1022,
+            "expected": 1069,
+            "found": 1022,
+            "unit": "occurrence count proxy; identity and geometry are not established",
+            "recall": 0.9560336763330215,
+            "precision": 1.0,
+            "f1": 0.9775227164036346
+          },
+          "hyperlinks": {
+            "matched": 2947,
+            "expected": 3736,
+            "found": 5130,
+            "unit": "exact normalized feature anchors and values; source-explicit styling and run segmentation may differ",
+            "recall": 0.7888115631691649,
+            "precision": 0.5744639376218323,
+            "f1": 0.6647868260771487
+          },
+          "explicit_italic": {
+            "matched": 8638,
+            "expected": 16556,
+            "found": 14009,
+            "unit": "exact normalized feature anchors and values; source-explicit styling and run segmentation may differ",
+            "recall": 0.5217443827011355,
+            "precision": 0.6166036119637376,
+            "f1": 0.5652216587600196
+          },
+          "headings": {
+            "matched": 6705,
+            "expected": 6741,
+            "found": 7100,
+            "unit": "exact normalized feature anchors and values; source-explicit styling and run segmentation may differ",
+            "recall": 0.9946595460614153,
+            "precision": 0.9443661971830986,
+            "f1": 0.9688606314572646
+          },
+          "horizontal_merges": {
+            "matched": 3562,
+            "expected": 3706,
+            "found": 3707,
+            "unit": "exact normalized feature anchors and values; source-explicit styling and run segmentation may differ",
+            "recall": 0.9611440906637885,
+            "precision": 0.96088481251686,
+            "f1": 0.9610144341022528
+          },
+          "nested_tables": {
+            "matched": 96,
+            "expected": 97,
+            "found": 97,
+            "unit": "exact normalized feature anchors and values; source-explicit styling and run segmentation may differ",
+            "recall": 0.9896907216494846,
+            "precision": 0.9896907216494846,
+            "f1": 0.9896907216494846
+          },
+          "footer_ordered_text": {
+            "matched": 29564,
+            "expected": 35666,
+            "found": 31623,
+            "unit": "longest common subsequence of NFC body characters, ignoring whitespace and soft breaks",
+            "recall": 0.8289126899568217,
+            "precision": 0.9348891629510167,
+            "f1": 0.87871717516979
+          },
+          "footnotes_ordered_text": {
+            "matched": 47038,
+            "expected": 47038,
+            "found": 47038,
+            "unit": "longest common subsequence of NFC body characters, ignoring whitespace and soft breaks",
+            "recall": 1.0,
+            "precision": 1.0,
+            "f1": 1.0
+          },
+          "vertical_merges": {
+            "matched": 1371,
+            "expected": 1398,
+            "found": 1402,
+            "unit": "exact normalized feature anchors and values; source-explicit styling and run segmentation may differ",
+            "recall": 0.98068669527897,
+            "precision": 0.9778887303851641,
+            "f1": 0.9792857142857143
+          },
+          "endnotes_ordered_text": {
+            "matched": 10822,
+            "expected": 10822,
+            "found": 10822,
+            "unit": "longest common subsequence of NFC body characters, ignoring whitespace and soft breaks",
+            "recall": 1.0,
+            "precision": 1.0,
+            "f1": 1.0
+          },
+          "equations": {
+            "matched": 0,
+            "expected": 52,
+            "found": 0,
+            "unit": "occurrence count proxy; identity and geometry are not established",
+            "recall": 0.0,
+            "precision": 1.0,
+            "f1": 0.0
+          },
+          "comments_ordered_text": {
+            "matched": 1700,
+            "expected": 1700,
+            "found": 1700,
+            "unit": "longest common subsequence of NFC body characters, ignoring whitespace and soft breaks",
+            "recall": 1.0,
+            "precision": 1.0,
+            "f1": 1.0
+          }
+        },
+        "features": {
+          "explicit_bold": {
+            "matched": 538601,
+            "expected": 548210,
+            "found": 652425,
+            "unit": "normalized character 5-grams in explicitly marked source text; segmentation-sensitive",
+            "recall": 0.9824720453840682,
+            "precision": 0.825537034908227,
+            "f1": 0.8971935684033865
+          },
+          "tables": {
+            "matched": 2200,
+            "expected": 2267,
+            "found": 2267,
+            "unit": "exact normalized content anchor",
+            "recall": 0.9704455227172475,
+            "precision": 0.9704455227172475,
+            "f1": 0.9704455227172475
+          },
+          "table_cells": {
+            "matched": 62252,
+            "expected": 62518,
+            "found": 62547,
+            "unit": "exact normalized content anchor",
+            "recall": 0.995745225375092,
+            "precision": 0.9952835467728268,
+            "f1": 0.9955143325470756
+          },
+          "lists": {
+            "matched": 14095,
+            "expected": 15361,
+            "found": 14103,
+            "unit": "exact normalized content anchor",
+            "recall": 0.9175834906581603,
+            "precision": 0.9994327448060696,
+            "f1": 0.9567607928319305
+          },
+          "explicit_bold_characters": {
+            "matched": 680079,
+            "expected": 680435,
+            "found": 771472,
+            "unit": "explicit source bold characters at aligned literal paragraph offsets",
+            "recall": 0.999476805278976,
+            "precision": 0.8815342617748927,
+            "f1": 0.9368079360454905
+          },
+          "table_text_literal": {
+            "matched": 2264,
+            "expected": 2267,
+            "found": 2267,
+            "unit": "one-to-one literal-content subsequence anchor",
+            "recall": 0.9986766651962946,
+            "precision": 0.9986766651962946,
+            "f1": 0.9986766651962946
+          },
+          "image_payload_occurrences": {
+            "matched": 1022,
+            "expected": 1069,
+            "found": 1022,
+            "unit": "source image occurrence matched to native payload bytes, allowing declared SVG alternatives",
+            "recall": 0.9560336763330215,
+            "precision": 1.0,
+            "f1": 0.9775227164036346
+          },
+          "header_text": {
+            "matched": 803,
+            "expected": 807,
+            "found": 804,
+            "unit": "distinct exact normalized paragraphs in matching story",
+            "recall": 0.9950433705080545,
+            "precision": 0.9987562189054726,
+            "f1": 0.9968963376784605
+          },
+          "headings": {
+            "matched": 6705,
+            "expected": 6741,
+            "found": 6948,
+            "unit": "exact normalized content anchor and value",
+            "recall": 0.9946595460614153,
+            "precision": 0.9650259067357513,
+            "f1": 0.9796186719263642
+          },
+          "hyperlinks": {
+            "matched": 85101,
+            "expected": 88320,
+            "found": 90084,
+            "unit": "normalized character 5-grams in explicitly marked source text; segmentation-sensitive",
+            "recall": 0.9635529891304347,
+            "precision": 0.9446849607033435,
+            "f1": 0.9540256944911549
+          },
+          "images": {
+            "matched": 1022,
+            "expected": 1069,
+            "found": 1022,
+            "unit": "occurrence count only",
+            "recall": 0.9560336763330215,
+            "precision": 1.0,
+            "f1": 0.9775227164036346
+          },
+          "textbox_text": {
+            "matched": 2642,
+            "expected": 2652,
+            "found": 23730,
+            "unit": "exact normalized content anchor",
+            "recall": 0.9962292609351433,
+            "precision": 0.11133586177833965,
+            "f1": 0.20028807520278977
+          },
+          "explicit_italic": {
+            "matched": 375119,
+            "expected": 378087,
+            "found": 499499,
+            "unit": "normalized character 5-grams in explicitly marked source text; segmentation-sensitive",
+            "recall": 0.992149954904559,
+            "precision": 0.7509904924734584,
+            "f1": 0.8548882958479282
+          },
+          "horizontal_merges": {
+            "matched": 3562,
+            "expected": 3706,
+            "found": 3707,
+            "unit": "exact normalized content anchor and value",
+            "recall": 0.9611440906637885,
+            "precision": 0.96088481251686,
+            "f1": 0.9610144341022528
+          },
+          "nested_tables": {
+            "matched": 96,
+            "expected": 97,
+            "found": 97,
+            "unit": "exact normalized content anchor",
+            "recall": 0.9896907216494846,
+            "precision": 0.9896907216494846,
+            "f1": 0.9896907216494846
+          },
+          "horizontal_spans_literal": {
+            "matched": 3706,
+            "expected": 3706,
+            "found": 3707,
+            "unit": "one-to-one literal-content subsequence anchor and exact span value",
+            "recall": 1.0,
+            "precision": 0.9997302400863232,
+            "f1": 0.9998651018481047
+          },
+          "footer_text": {
+            "matched": 802,
+            "expected": 818,
+            "found": 802,
+            "unit": "distinct exact normalized paragraphs in matching story",
+            "recall": 0.980440097799511,
+            "precision": 1.0,
+            "f1": 0.9901234567901235
+          },
+          "footnotes_text": {
+            "matched": 339,
+            "expected": 339,
+            "found": 339,
+            "unit": "distinct exact normalized paragraphs in matching story",
+            "recall": 1.0,
+            "precision": 1.0,
+            "f1": 1.0
+          },
+          "vertical_merges": {
+            "matched": 1371,
+            "expected": 1398,
+            "found": 1402,
+            "unit": "exact normalized content anchor",
+            "recall": 0.98068669527897,
+            "precision": 0.9778887303851641,
+            "f1": 0.9792857142857143
+          },
+          "endnotes_text": {
+            "matched": 46,
+            "expected": 46,
+            "found": 46,
+            "unit": "distinct exact normalized paragraphs in matching story",
+            "recall": 1.0,
+            "precision": 1.0,
+            "f1": 1.0
+          },
+          "equations": {
+            "matched": 0,
+            "expected": 52,
+            "found": 0,
+            "unit": "occurrence count only",
+            "recall": 0.0,
+            "precision": null,
+            "f1": 0.0
+          },
+          "comments_text": {
+            "matched": 40,
+            "expected": 40,
+            "found": 40,
+            "unit": "distinct exact normalized paragraphs in matching story",
+            "recall": 1.0,
+            "precision": 1.0,
+            "f1": 1.0
+          }
+        }
+      },
+      "undoc": {
+        "attempted": 1000,
+        "ok": 1000,
+        "status": {
+          "ok": 1000
+        },
+        "accuracy_scored": 1000,
+        "accuracy_unscored": 0,
+        "common_accuracy_scored": 999,
+        "median_ms": 1.1304833333333333,
+        "p95_ms": 14.260343949999996,
+        "cold_median_ms": 1.517417,
+        "text_f1_macro_all": 0.9998809103080459,
+        "text_f1_macro_success": 0.9998809103080459,
+        "text_f1_macro_common": 0.9998807910991451,
+        "text_f1_micro": 0.999912353493904,
+        "ordered_f1_macro": 0.99975365823917,
+        "ordered_f1_micro": 0.999794294359378,
+        "exact_ordered_text": 977,
+        "exact_ordered_paragraphs": 977,
+        "features_v2": {
+          "explicit_bold": {
+            "matched": 21335,
+            "expected": 43149,
+            "found": 35770,
+            "unit": "exact normalized feature anchors and values; source-explicit styling and run segmentation may differ",
+            "recall": 0.49444946580453775,
+            "precision": 0.5964495387195974,
+            "f1": 0.540680951355187
+          },
+          "lists": {
+            "matched": 14314,
+            "expected": 15361,
+            "found": 14315,
+            "unit": "exact normalized feature anchors and values; source-explicit styling and run segmentation may differ",
+            "recall": 0.9318403749755876,
+            "precision": 0.9999301432064268,
+            "f1": 0.9646852675562745
+          },
+          "table_cells": {
+            "matched": 62305,
+            "expected": 62518,
+            "found": 62517,
+            "unit": "exact normalized feature anchors and values; source-explicit styling and run segmentation may differ",
+            "recall": 0.9965929812214083,
+            "precision": 0.9966089223731145,
+            "f1": 0.9966009517335146
+          },
+          "tables": {
+            "matched": 2215,
+            "expected": 2267,
+            "found": 2250,
+            "unit": "exact normalized feature anchors and values; source-explicit styling and run segmentation may differ",
+            "recall": 0.9770621967357741,
+            "precision": 0.9844444444444445,
+            "f1": 0.980739428824441
+          },
+          "header_ordered_text": {
+            "matched": 26006,
+            "expected": 28257,
+            "found": 28257,
+            "unit": "longest common subsequence of NFC body characters, ignoring whitespace and soft breaks",
+            "recall": 0.920338323247337,
+            "precision": 0.920338323247337,
+            "f1": 0.920338323247337
+          },
+          "textbox_text": {
+            "matched": 0,
+            "expected": 2652,
+            "found": 0,
+            "unit": "exact normalized feature anchors and values; source-explicit styling and run segmentation may differ",
+            "recall": 0.0,
+            "precision": 1.0,
+            "f1": 0.0
+          },
+          "images": {
+            "matched": 1045,
+            "expected": 1069,
+            "found": 1052,
+            "unit": "occurrence count proxy; identity and geometry are not established",
+            "recall": 0.9775491113189897,
+            "precision": 0.9933460076045627,
+            "f1": 0.9853842527109854
+          },
+          "hyperlinks": {
+            "matched": 1874,
+            "expected": 3736,
+            "found": 2195,
+            "unit": "exact normalized feature anchors and values; source-explicit styling and run segmentation may differ",
+            "recall": 0.5016059957173448,
+            "precision": 0.85375854214123,
+            "f1": 0.6319339065924802
+          },
+          "explicit_italic": {
+            "matched": 8535,
+            "expected": 16556,
+            "found": 14008,
+            "unit": "exact normalized feature anchors and values; source-explicit styling and run segmentation may differ",
+            "recall": 0.5155230732060885,
+            "precision": 0.6092946887492862,
+            "f1": 0.5585001963093836
+          },
+          "headings": {
+            "matched": 5812,
+            "expected": 6741,
+            "found": 5994,
+            "unit": "exact normalized feature anchors and values; source-explicit styling and run segmentation may differ",
+            "recall": 0.862186619195965,
+            "precision": 0.9696363029696363,
+            "f1": 0.9127601099332548
+          },
+          "horizontal_merges": {
+            "matched": 3677,
+            "expected": 3706,
+            "found": 3683,
+            "unit": "exact normalized feature anchors and values; source-explicit styling and run segmentation may differ",
+            "recall": 0.9921748515920129,
+            "precision": 0.9983708932935107,
+            "f1": 0.995263229124374
+          },
+          "nested_tables": {
+            "matched": 95,
+            "expected": 97,
+            "found": 95,
+            "unit": "exact normalized feature anchors and values; source-explicit styling and run segmentation may differ",
+            "recall": 0.979381443298969,
+            "precision": 1.0,
+            "f1": 0.9895833333333334
+          },
+          "footer_ordered_text": {
+            "matched": 32518,
+            "expected": 35666,
+            "found": 35666,
+            "unit": "longest common subsequence of NFC body characters, ignoring whitespace and soft breaks",
+            "recall": 0.9117366679751023,
+            "precision": 0.9117366679751023,
+            "f1": 0.9117366679751023
+          },
+          "footnotes_ordered_text": {
+            "matched": 47038,
+            "expected": 47038,
+            "found": 47038,
+            "unit": "longest common subsequence of NFC body characters, ignoring whitespace and soft breaks",
+            "recall": 1.0,
+            "precision": 1.0,
+            "f1": 1.0
+          },
+          "vertical_merges": {
+            "matched": 1316,
+            "expected": 1398,
+            "found": 1324,
+            "unit": "exact normalized feature anchors and values; source-explicit styling and run segmentation may differ",
+            "recall": 0.9413447782546495,
+            "precision": 0.9939577039274925,
+            "f1": 0.9669360764144012
+          },
+          "endnotes_ordered_text": {
+            "matched": 10822,
+            "expected": 10822,
+            "found": 10822,
+            "unit": "longest common subsequence of NFC body characters, ignoring whitespace and soft breaks",
+            "recall": 1.0,
+            "precision": 1.0,
+            "f1": 1.0
+          },
+          "equations": {
+            "matched": 0,
+            "expected": 52,
+            "found": 0,
+            "unit": "occurrence count proxy; identity and geometry are not established",
+            "recall": 0.0,
+            "precision": 1.0,
+            "f1": 0.0
+          },
+          "comments_ordered_text": {
+            "matched": 0,
+            "expected": 1700,
+            "found": 0,
+            "unit": "longest common subsequence of NFC body characters, ignoring whitespace and soft breaks",
+            "recall": 0.0,
+            "precision": 1.0,
+            "f1": 0.0
+          }
+        },
+        "features": {
+          "explicit_bold": {
+            "matched": 538537,
+            "expected": 548210,
+            "found": 784355,
+            "unit": "normalized character 5-grams in explicitly marked source text; segmentation-sensitive",
+            "recall": 0.982355301800405,
+            "precision": 0.6865985427516877,
+            "f1": 0.8082712663172152
+          },
+          "tables": {
+            "matched": 2215,
+            "expected": 2267,
+            "found": 2246,
+            "unit": "exact normalized content anchor",
+            "recall": 0.9770621967357741,
+            "precision": 0.9861976847729297,
+            "f1": 0.9816086860181698
+          },
+          "table_cells": {
+            "matched": 62305,
+            "expected": 62518,
+            "found": 62452,
+            "unit": "exact normalized content anchor",
+            "recall": 0.9965929812214083,
+            "precision": 0.9976461922756678,
+            "f1": 0.9971193086340722
+          },
+          "lists": {
+            "matched": 14314,
+            "expected": 15361,
+            "found": 14315,
+            "unit": "exact normalized content anchor",
+            "recall": 0.9318403749755876,
+            "precision": 0.9999301432064268,
+            "f1": 0.9646852675562745
+          },
+          "explicit_bold_characters": {
+            "matched": 666932,
+            "expected": 680435,
+            "found": 922764,
+            "unit": "explicit source bold characters at aligned literal paragraph offsets",
+            "recall": 0.9801553418034051,
+            "precision": 0.7227546805033573,
+            "f1": 0.8320015169670141
+          },
+          "table_text_literal": {
+            "matched": 2215,
+            "expected": 2267,
+            "found": 2246,
+            "unit": "one-to-one literal-content subsequence anchor",
+            "recall": 0.9770621967357741,
+            "precision": 0.9861976847729297,
+            "f1": 0.9816086860181698
+          },
+          "image_payload_occurrences": {
+            "matched": 1043,
+            "expected": 1069,
+            "found": 1047,
+            "unit": "source image occurrence matched to native payload bytes, allowing declared SVG alternatives",
+            "recall": 0.9756782039289055,
+            "precision": 0.9961795606494747,
+            "f1": 0.9858223062381852
+          },
+          "header_text": {
+            "matched": 807,
+            "expected": 807,
+            "found": 807,
+            "unit": "distinct exact normalized paragraphs in matching story",
+            "recall": 1.0,
+            "precision": 1.0,
+            "f1": 1.0
+          },
+          "headings": {
+            "matched": 5812,
+            "expected": 6741,
+            "found": 5971,
+            "unit": "exact normalized content anchor and value",
+            "recall": 0.862186619195965,
+            "precision": 0.9733712945905209,
+            "f1": 0.9144115796098174
+          },
+          "hyperlinks": {
+            "matched": 60351,
+            "expected": 88320,
+            "found": 61174,
+            "unit": "normalized character 5-grams in explicitly marked source text; segmentation-sensitive",
+            "recall": 0.6833220108695652,
+            "precision": 0.9865465720731029,
+            "f1": 0.8074036416177238
+          },
+          "images": {
+            "matched": 1045,
+            "expected": 1069,
+            "found": 1052,
+            "unit": "occurrence count only",
+            "recall": 0.9775491113189897,
+            "precision": 0.9933460076045627,
+            "f1": 0.9853842527109854
+          },
+          "textbox_text": {
+            "matched": 2652,
+            "expected": 2652,
+            "found": 23801,
+            "unit": "exact normalized content anchor",
+            "recall": 1.0,
+            "precision": 0.11142388975253141,
+            "f1": 0.20050655880240426
+          },
+          "explicit_italic": {
+            "matched": 375325,
+            "expected": 378087,
+            "found": 505391,
+            "unit": "normalized character 5-grams in explicitly marked source text; segmentation-sensitive",
+            "recall": 0.9926948030479757,
+            "precision": 0.742642825060201,
+            "f1": 0.8496533020629828
+          },
+          "horizontal_merges": {
+            "matched": 3677,
+            "expected": 3706,
+            "found": 3683,
+            "unit": "exact normalized content anchor and value",
+            "recall": 0.9921748515920129,
+            "precision": 0.9983708932935107,
+            "f1": 0.995263229124374
+          },
+          "nested_tables": {
+            "matched": 95,
+            "expected": 97,
+            "found": 95,
+            "unit": "exact normalized content anchor",
+            "recall": 0.979381443298969,
+            "precision": 1.0,
+            "f1": 0.9895833333333334
+          },
+          "horizontal_spans_literal": {
+            "matched": 3677,
+            "expected": 3706,
+            "found": 3683,
+            "unit": "one-to-one literal-content subsequence anchor and exact span value",
+            "recall": 0.9921748515920129,
+            "precision": 0.9983708932935107,
+            "f1": 0.995263229124374
+          },
+          "footer_text": {
+            "matched": 818,
+            "expected": 818,
+            "found": 818,
+            "unit": "distinct exact normalized paragraphs in matching story",
+            "recall": 1.0,
+            "precision": 1.0,
+            "f1": 1.0
+          },
+          "footnotes_text": {
+            "matched": 312,
+            "expected": 339,
+            "found": 320,
+            "unit": "distinct exact normalized paragraphs in matching story",
+            "recall": 0.9203539823008849,
+            "precision": 0.975,
+            "f1": 0.9468892261001517
+          },
+          "vertical_merges": {
+            "matched": 1316,
+            "expected": 1398,
+            "found": 1324,
+            "unit": "exact normalized content anchor",
+            "recall": 0.9413447782546495,
+            "precision": 0.9939577039274925,
+            "f1": 0.9669360764144012
+          },
+          "endnotes_text": {
+            "matched": 44,
+            "expected": 46,
+            "found": 45,
+            "unit": "distinct exact normalized paragraphs in matching story",
+            "recall": 0.9565217391304348,
+            "precision": 0.9777777777777777,
+            "f1": 0.967032967032967
+          },
+          "equations": {
+            "matched": 0,
+            "expected": 52,
+            "found": 0,
+            "unit": "occurrence count only",
+            "recall": 0.0,
+            "precision": null,
+            "f1": 0.0
+          },
+          "comments_text": {
+            "matched": 0,
+            "expected": 40,
+            "found": 0,
+            "unit": "distinct exact normalized paragraphs in matching story",
+            "recall": 0.0,
+            "precision": null,
+            "f1": 0.0
+          }
+        }
+      }
+    }
+  }
+}
