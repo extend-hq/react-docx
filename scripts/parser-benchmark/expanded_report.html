@@ -20,6 +20,35 @@
 </style>
 </head>
 <body>
+<section id="word-reference-live" hidden aria-labelledby="word-reference-title">
+<div class="eyebrow">Latest comparison · Microsoft Word references</div>
+<h2 id="word-reference-title">Structured Word recall benchmark</h2>
+<p id="word-reference-progress" aria-live="polite"></p>
+<div class="scroll"><table id="word-reference-summary"></table></div>
+<p class="subtle">Word-derived scores use their own labeled cohort and reference version. Earlier XML-reference results remain below. <a href="/word-structured/report.html">Open the current Word comparison and latency charts</a></p>
+</section>
+<script>
+async function refreshWordReference(){
+  try{
+    const response=await fetch('/word-structured/status.json',{cache:'no-store'});
+    if(!response.ok)return;
+    const data=await response.json();
+    document.getElementById('word-reference-live').hidden=false;
+    document.getElementById('word-reference-progress').textContent=data.message+' · Updated '+new Date(data.updated_at*1000).toLocaleString();
+    const target=document.getElementById('word-reference-summary');
+    target.replaceChildren();
+    const measurements=await fetch('/word-structured/benchmark.json',{cache:'no-store'});
+    const benchmark=measurements.ok?await measurements.json():null;
+    if(benchmark?.comparison){
+      document.getElementById('word-reference-progress').textContent+=' · '+benchmark.scope;
+      const row=(values,heading=false)=>{const tr=document.createElement('tr');for(const value of values){const cell=document.createElement(heading?'th':'td');cell.textContent=value;tr.append(cell);}target.append(tr);};
+      row(['Parser','Word-scored inputs','Body recall','Body F1','Median ms','p95 ms'],true);
+      for(const [engine,value] of Object.entries(benchmark.comparison))row([engine,value.scored??0,...['recall','f1'].map(k=>value.body?.[k]==null?'Pending':(value.body[k]*100).toFixed(3)+'%'),...['median_ms','p95_ms'].map(k=>value[k]==null?'Pending':value[k].toFixed(3))]);
+    }
+  }catch{}
+}
+refreshWordReference();setInterval(refreshWordReference,5000);
+</script>
 <div id="report-root">
 <aside id="live-banner" hidden role="status" aria-live="polite"><div class="flex"><strong id="live-stage"></strong><span id="live-count"></span></div><progress id="live-progress" max="1" value="0"></progress><div id="live-detail" class="subtle"></div></aside>
 <section id="live-dashboard" class="performance-dashboard" aria-labelledby="dashboard-title">

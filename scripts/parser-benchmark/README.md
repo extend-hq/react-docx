@@ -43,6 +43,8 @@ Competitor accuracy can be reused only when pinned versions, dependencies, and n
 
 ## Reference limitations
 
+For desktop Word object-model JSON, Word-saved Flat OPC references, and fresh four-parser comparisons, see [Microsoft Word reference benchmarks](../../docs/word-reference-benchmarks.md). The Word report keeps direct application measurements, checks derived from Word-saved XML, and original image-payload checks separately labeled, with per-feature reference coverage.
+
 The Python XML extractor is an independent reference, not a complete Word implementation. Adjacent short formatted runs can score differently after a parser combines them, even when every character retains its formatting. Exact content anchors can differ when a parser resolves symbol characters absent from the literal-text reference. An image's preferred SVG representation can also differ from the PNG fallback counted by the original reference.
 
 Keep the original scores visible. Investigate each deficit against source relationships, character-position formatting, native image payloads, and independently specified geometry. Track reference mistakes separately from parser omissions, and retain source and binary identities with the evidence. A 100% recall score does not establish precision, complete format coverage, or rendering fidelity.

@@ -11,25 +11,27 @@
 </head>
 <body>
 <header>
-<div><strong>DOCX parser benchmarks</strong><small id="scope">4,000 new inputs · 5,000 total · live measurements</small></div>
+<div><strong>DOCX parser benchmarks</strong><small id="scope">Structured Word references · live comparison</small></div>
 <nav aria-label="Benchmark corpus">
-<a href="?cohort=5000" data-cohort="5000" aria-current="page">Expanded · 5,000</a>
-<a href="?cohort=1000" data-cohort="1000">Original · 1,000</a>
+<a href="?cohort=word" data-cohort="word" aria-current="page">Word · latest sample</a>
+<a href="?cohort=5000" data-cohort="5000">XML · 5,000</a>
+<a href="?cohort=1000" data-cohort="1000">XML · original 1,000</a>
 </nav>
 </header>
-<iframe id="report" title="Latency and feature recall benchmark report" src="corpus-5000/report.html"></iframe>
+<iframe id="report" title="Latency and feature recall benchmark report" src="word-structured/report.html"></iframe>
 <script>
 const links=[...document.querySelectorAll('[data-cohort]')];
 function select(cohort,push=false){
- const original=cohort==='1000';
- document.getElementById('report').src=original?'report-1000.html':'corpus-5000/report.html';
- document.getElementById('scope').textContent=original?'Original random cohort · latest validated results and candidate measurements':'4,000 new inputs · 5,000 total · live measurements';
+ const original=cohort==='1000',word=cohort==='word';
+ document.getElementById('report').src=word?'word-structured/report.html':original?'report-1000.html':'corpus-5000/report.html';
+ document.getElementById('scope').textContent=word?'Latest Word sample · structured Microsoft Word references':original?'Original XML-reference cohort · measured history':'Expanded XML-reference cohort · 5,000 inputs · measured history';
  for(const link of links){if(link.dataset.cohort===cohort)link.setAttribute('aria-current','page');else link.removeAttribute('aria-current');}
  if(push){const url=new URL(location.href);url.searchParams.set('cohort',cohort);history.pushState({},'',url);}
 }
 for(const link of links)link.addEventListener('click',event=>{event.preventDefault();select(link.dataset.cohort,true);});
-window.addEventListener('popstate',()=>select(new URLSearchParams(location.search).get('cohort')==='1000'?'1000':'5000'));
-select(new URLSearchParams(location.search).get('cohort')==='1000'?'1000':'5000');
+const selected=()=>{const value=new URLSearchParams(location.search).get('cohort');return ['1000','5000'].includes(value)?value:'word';};
+window.addEventListener('popstate',()=>select(selected()));
+select(selected());
 </script>
 </body>
 </html>
