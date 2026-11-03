@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use docx_core::parse::{empty_style_sheet, parse_table, ParseContext};
+use extend_docx::parse::{empty_style_sheet, parse_table, ParseContext};
 
 /// Placeholder-grid tables whose vertical-merge continuation cells are stamped
 /// with grid-matching widths must still regrid: the continuation cells inherit

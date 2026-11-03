@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use docx_core::{
+use extend_docx::{
     build_doc_model, extract_document_blocks, serialize_doc_model, DocNode, OoxmlPackage,
     OoxmlPart, ParagraphChildNode,
 };

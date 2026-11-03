@@ -1,8 +1,8 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use docx_core::model::{FormFieldRunNode, ParagraphChildNode};
-use docx_core::parse::{empty_style_sheet, parse_paragraph, ParseContext};
+use extend_docx::model::{FormFieldRunNode, ParagraphChildNode};
+use extend_docx::parse::{empty_style_sheet, parse_paragraph, ParseContext};
 
 fn parse_field(properties: &str, content: &str) -> FormFieldRunNode {
     let parts = HashMap::new();

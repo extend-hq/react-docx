@@ -10,17 +10,17 @@ use std::{
 };
 
 enum Parsed {
-    Core(docx_core::DocModel, docx_core::StructuredDocument),
+    Core(extend_docx::DocModel, extend_docx::StructuredDocument),
 }
 fn parse(_: &str, bytes: &Arc<[u8]>, _: &str) -> Result<(Parsed, [f64; 3]), String> {
     let start = Instant::now();
-    let package = docx_core::parse_document_bytes(bytes)?;
+    let package = extend_docx::parse_document_bytes(bytes)?;
     let package_ms = start.elapsed().as_secs_f64() * 1000.0;
     let start = Instant::now();
-    let model = docx_core::build_doc_model(&package);
+    let model = extend_docx::build_doc_model(&package);
     let model_ms = start.elapsed().as_secs_f64() * 1000.0;
     let start = Instant::now();
-    let blocks = docx_core::extract_document_blocks(&model);
+    let blocks = extend_docx::extract_document_blocks(&model);
     let blocks_ms = start.elapsed().as_secs_f64() * 1000.0;
     Ok((
         Parsed::Core(model, blocks),

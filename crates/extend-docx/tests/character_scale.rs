@@ -1,4 +1,4 @@
-use docx_core::{
+use extend_docx::{
     build_doc_model, extract_document_blocks_with_options, serialize_doc_model, DocNode,
     ExtractDocumentBlocksOptions, OoxmlPackage, OoxmlPart, ParagraphChildNode,
 };

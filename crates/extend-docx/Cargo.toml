@@ -1,12 +1,15 @@
 [package]
-name = "docx-core"
+name = "extend-docx"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Shared native Rust and WebAssembly parsing for DOCX and legacy Word documents"
+description = "Rust parser, document model, and serializer for DOCX and legacy Word documents"
 repository = "https://github.com/extend-hq/react-docx"
+documentation = "https://docs.rs/extend-docx"
+keywords = ["docx", "doc", "ooxml", "parser", "wasm"]
+categories = ["parser-implementations", "text-processing"]
 readme = "README.md"
-include = ["src/**", "examples/parse_blocks.rs", "README.md", "third-party/**", "LICENSE", "Cargo.toml"]
+include = ["src/**", "examples/parse_blocks.rs", "README.md", "CHANGELOG.md", "third-party/**", "LICENSE", "Cargo.toml"]
 
 [features]
 default = ["native-deflate"]

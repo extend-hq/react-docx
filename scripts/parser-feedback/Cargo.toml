@@ -7,7 +7,7 @@ publish = false
 [workspace]
 
 [dependencies]
-docx-core = { path = "../../crates/docx-core" }
+extend-docx = { path = "../../crates/extend-docx" }
 serde = "1"
 serde_json = "1"
 flate2 = "1"

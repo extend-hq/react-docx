@@ -22,16 +22,16 @@ fn main() {
             }
         };
         let result = std::panic::catch_unwind(|| {
-            let pkg = docx_core::parse_document_bytes(&bytes)?;
-            let model = docx_core::build_doc_model(&pkg);
+            let pkg = extend_docx::parse_document_bytes(&bytes)?;
+            let model = extend_docx::build_doc_model(&pkg);
             let mut text_len = 0usize;
             let mut tables = 0usize;
             for node in &model.nodes {
                 match node {
-                    docx_core::DocNode::Table(_) => tables += 1,
-                    docx_core::DocNode::Paragraph(p) => {
+                    extend_docx::DocNode::Table(_) => tables += 1,
+                    extend_docx::DocNode::Paragraph(p) => {
                         for c in &p.children {
-                            if let docx_core::ParagraphChildNode::Text(r) = c {
+                            if let extend_docx::ParagraphChildNode::Text(r) = c {
                                 text_len += r.text.len();
                             }
                         }

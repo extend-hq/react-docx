@@ -182,7 +182,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "docx-core"
+name = "extend-docx"
 version = "0.1.0"
 dependencies = [
  "arc-swap",
@@ -462,7 +462,7 @@ checksum = "1a80800c0488c3a21695ea981a54918fbb37abf04f4d0720c453632255e2ff0e"
 name = "parser-benchmark"
 version = "0.1.0"
 dependencies = [
- "docx-core",
+ "extend-docx",
  "docx-rs",
  "flate2",
  "office_oxide",

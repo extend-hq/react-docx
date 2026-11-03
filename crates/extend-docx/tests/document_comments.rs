@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use docx_core::{
+use extend_docx::{
     build_doc_model, create_minimal_docx_package, serialize_doc_model, DocumentCommentDefinition,
     OoxmlPackage, OoxmlPart,
 };
@@ -96,7 +96,7 @@ fn parses_comment_definitions_with_thread_and_resolution() {
         .nodes
         .iter()
         .find_map(|node| match node {
-            docx_core::model::DocNode::Paragraph(paragraph) => paragraph.source_xml.clone(),
+            extend_docx::model::DocNode::Paragraph(paragraph) => paragraph.source_xml.clone(),
             _ => None,
         })
         .expect("paragraph source xml");

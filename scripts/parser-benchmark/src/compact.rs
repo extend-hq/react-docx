@@ -1,4 +1,4 @@
-use docx_core::*;
+use extend_docx::*;
 use serde_json::{json, Value};
 
 fn paragraph(p: &ParagraphNode) -> Value {

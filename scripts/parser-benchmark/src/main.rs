@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 mod compact;
 
 enum Parsed {
-    Core(docx_core::DocModel, docx_core::StructuredDocument),
+    Core(extend_docx::DocModel, extend_docx::StructuredDocument),
     Rs(docx_rs::Docx),
     Oxide(office_oxide::ir::DocumentIR),
     Undoc(undoc::Document),
@@ -15,12 +15,12 @@ enum Parsed {
 fn parse(engine: &str, bytes: &Arc<[u8]>, format: &str) -> Result<(Parsed, [f64; 2]), String> {
     let start = Instant::now();
     match engine {
-        "docx-core" => {
-            let package = docx_core::parse_document_bytes(bytes)?;
-            let model = docx_core::build_doc_model(&package);
+        "extend-docx" | "docx-core" => {
+            let package = extend_docx::parse_document_bytes(bytes)?;
+            let model = extend_docx::build_doc_model(&package);
             let parse_ms = start.elapsed().as_secs_f64() * 1000.0;
             let projection_start = Instant::now();
-            let blocks = docx_core::extract_document_blocks(&model);
+            let blocks = extend_docx::extract_document_blocks(&model);
             let project_ms = projection_start.elapsed().as_secs_f64() * 1000.0;
             Ok((Parsed::Core(model, blocks), [parse_ms, project_ms]))
         }

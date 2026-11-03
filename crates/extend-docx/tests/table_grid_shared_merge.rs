@@ -1,8 +1,8 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use docx_core::model::TableNode;
-use docx_core::parse::{empty_style_sheet, parse_table, ParseContext};
+use extend_docx::model::TableNode;
+use extend_docx::parse::{empty_style_sheet, parse_table, ParseContext};
 
 fn cell(width: Option<i64>, span: i64, merge: Option<&str>) -> String {
     let width = width

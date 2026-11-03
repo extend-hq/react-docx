@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use docx_core::{
+use extend_docx::{
     build_doc_model, extract_document_blocks, extract_document_blocks_with_options,
     parse_document_blocks, parse_document_blocks_with_options, DocumentBlock,
     ExtractDocumentBlocksOptions, OoxmlPackage, OoxmlPart,
@@ -181,7 +181,7 @@ fn nested_and_auxiliary_story_words_use_their_own_source_nodes() {
 #[test]
 fn byte_parsing_keeps_word_ids_stable_and_old_api_unchanged() {
     let source = package("<w:p><w:r><w:t>Stable words</w:t></w:r></w:p>", &[]);
-    let bytes = docx_core::package_to_bytes(&source).unwrap();
+    let bytes = extend_docx::package_to_bytes(&source).unwrap();
     let options = ExtractDocumentBlocksOptions {
         include_words: true,
     };

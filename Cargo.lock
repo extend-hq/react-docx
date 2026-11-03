@@ -151,7 +151,25 @@ dependencies = [
 ]
 
 [[package]]
-name = "docx-core"
+name = "docx-wasm"
+version = "0.1.0"
+dependencies = [
+ "extend-docx",
+ "js-sys",
+ "serde",
+ "serde_json",
+ "wasm-bindgen",
+ "wasm-bindgen-test",
+]
+
+[[package]]
+name = "either"
+version = "1.19.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0e9c71c2167ca323c882b99918929403426e2373ea17242ff5653e0d5e1058be"
+
+[[package]]
+name = "extend-docx"
 version = "0.1.0"
 dependencies = [
  "arc-swap",
@@ -172,24 +190,6 @@ dependencies = [
  "unicode-segmentation",
  "zlib-rs",
 ]
-
-[[package]]
-name = "docx-wasm"
-version = "0.1.0"
-dependencies = [
- "docx-core",
- "js-sys",
- "serde",
- "serde_json",
- "wasm-bindgen",
- "wasm-bindgen-test",
-]
-
-[[package]]
-name = "either"
-version = "1.19.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0e9c71c2167ca323c882b99918929403426e2373ea17242ff5653e0d5e1058be"
 
 [[package]]
 name = "find-msvc-tools"

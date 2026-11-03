@@ -3,10 +3,10 @@
 //! pitch in exported PDFs), recorded under output/playwright/word-breaks-20261012.
 use std::collections::HashMap;
 
-use docx_core::model::{
+use extend_docx::model::{
     DocModel, DocNode, ParagraphChildNode, ParagraphLineRule, ParagraphNode, TextStyle,
 };
-use docx_core::{build_doc_model, OoxmlPackage, OoxmlPart};
+use extend_docx::{build_doc_model, OoxmlPackage, OoxmlPart};
 
 const W: &str = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
 

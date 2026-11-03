@@ -6,9 +6,9 @@ use sha2::{Digest, Sha256};
 fn run(path: &str) -> Result<serde_json::Value, String> {
     let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
     let input_sha256 = format!("{:x}", Sha256::digest(&bytes));
-    let package = docx_core::parse_document_bytes(&bytes)?;
-    let model = docx_core::build_doc_model(&package);
-    let blocks = docx_core::extract_document_blocks(&model);
+    let package = extend_docx::parse_document_bytes(&bytes)?;
+    let model = extend_docx::build_doc_model(&package);
+    let blocks = extend_docx::extract_document_blocks(&model);
     let model_digest = direct_merkle::digest(&model).map_err(|e| e.to_string())?;
     let blocks_digest = direct_merkle::digest(&blocks).map_err(|e| e.to_string())?;
     Ok(

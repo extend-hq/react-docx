@@ -99,7 +99,7 @@ export default defineConfig([
       await copyFile("node_modules/utif/LICENSE", "dist/utif-license.txt");
       const requireFromUtif = createRequire(createRequire(import.meta.url).resolve("utif/package.json"));
       await copyFile(join(dirname(requireFromUtif.resolve("pako/package.json")), "LICENSE"), "dist/pako-license.txt");
-      await copyFile("../../crates/docx-core/third-party/dingbat-to-unicode-LICENSE", "dist/dingbat-to-unicode-LICENSE");
+      await copyFile("../../crates/extend-docx/third-party/dingbat-to-unicode-LICENSE", "dist/dingbat-to-unicode-LICENSE");
     },
   },
 ]);

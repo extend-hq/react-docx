@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
-use docx_core::model::DocNode;
-use docx_core::{build_doc_model, serialize_doc_model, OoxmlPackage, OoxmlPart};
+use extend_docx::model::DocNode;
+use extend_docx::{build_doc_model, serialize_doc_model, OoxmlPackage, OoxmlPart};
 
 fn package_with_parts(parts: &[(&str, &str)]) -> OoxmlPackage {
     let mut map = HashMap::new();

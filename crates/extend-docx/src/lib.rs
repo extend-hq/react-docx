@@ -1,3 +1,5 @@
+//! Native and WebAssembly-compatible Word document parsing, modeling, and serialization.
+
 pub mod doc;
 pub mod emf;
 pub mod model;

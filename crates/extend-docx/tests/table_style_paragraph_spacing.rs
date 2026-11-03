@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
-use docx_core::model::{DocModel, ParagraphNode, TableCellContentNode};
-use docx_core::{build_doc_model, OoxmlPackage, OoxmlPart};
+use extend_docx::model::{DocModel, ParagraphNode, TableCellContentNode};
+use extend_docx::{build_doc_model, OoxmlPackage, OoxmlPart};
 
 fn build_package(document_xml: &str, styles_xml: &str) -> OoxmlPackage {
     let mut parts = HashMap::new();
@@ -61,7 +61,7 @@ const DOCUMENT_XML: &str = r#"<?xml version="1.0"?>
 fn first_cell_paragraph(model: &DocModel, table_index: usize) -> &ParagraphNode {
     let mut seen = 0usize;
     for node in &model.nodes {
-        if let docx_core::model::DocNode::Table(table) = node {
+        if let extend_docx::model::DocNode::Table(table) = node {
             if seen == table_index {
                 let cell = &table.rows[0].cells[0];
                 let TableCellContentNode::Paragraph(paragraph) = &cell.nodes[0] else {
@@ -88,7 +88,7 @@ fn table_style_paragraph_spacing_overrides_doc_defaults_in_cells() {
         .nodes
         .iter()
         .find_map(|node| match node {
-            docx_core::model::DocNode::Paragraph(paragraph) => Some(paragraph),
+            extend_docx::model::DocNode::Paragraph(paragraph) => Some(paragraph),
             _ => None,
         })
         .expect("body paragraph");
@@ -129,7 +129,7 @@ fn declared_default_table_style_resolves_properties_without_adding_style_referen
         );
         let package = build_package(DOCUMENT_XML, &styles_xml);
         let model = build_doc_model(&package);
-        let docx_core::model::DocNode::Table(table) = &model.nodes[2] else {
+        let extend_docx::model::DocNode::Table(table) = &model.nodes[2] else {
             panic!("expected table");
         };
         let style = table.style.as_ref().expect("table properties");
@@ -144,9 +144,9 @@ fn declared_default_table_style_resolves_properties_without_adding_style_referen
             .style.as_ref().and_then(|style| style.spacing.as_ref()).expect("spacing");
         assert_eq!(spacing.after_twips, Some(0));
         assert_eq!(spacing.line_twips, Some(240));
-        let exported = docx_core::serialize_doc_model(&model, Some(&package));
+        let exported = extend_docx::serialize_doc_model(&model, Some(&package));
         let reparsed = build_doc_model(&exported);
-        let docx_core::model::DocNode::Table(reparsed_table) = &reparsed.nodes[2] else {
+        let extend_docx::model::DocNode::Table(reparsed_table) = &reparsed.nodes[2] else {
             panic!("expected table");
         };
         assert_eq!(reparsed_table.source_xml, table.source_xml);
@@ -166,7 +166,7 @@ fn explicit_table_reference_and_direct_properties_take_precedence_over_default()
     ] {
         let document = format!(r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:tbl><w:tblPr>{properties}</w:tblPr><w:tr><w:tc><w:p/></w:tc></w:tr></w:tbl></w:body></w:document>"#);
         let model = build_doc_model(&build_package(&document, &styles));
-        let docx_core::model::DocNode::Table(table) = &model.nodes[0] else {
+        let extend_docx::model::DocNode::Table(table) = &model.nodes[0] else {
             panic!("expected table");
         };
         let margins = table.style.as_ref().and_then(|style| style.cell_margin_twips.as_ref());

@@ -1,6 +1,7 @@
 # react-docx
 
 [![npm version](https://img.shields.io/npm/v/%40extend-ai%2Freact-docx)](https://www.npmjs.com/package/@extend-ai/react-docx)
+[![crates.io version](https://img.shields.io/crates/v/extend-docx)](https://crates.io/crates/extend-docx)
 
 `react-docx` is a DOCX viewer and editor for JavaScript and React applications, built as a monorepo.
 
@@ -22,6 +23,14 @@ pnpm add @extend-ai/react-docx
 ```
 
 For React integrations, also install `react` and `react-dom`. The vanilla entry bundles Preact and does not require React.
+
+For native Rust parsing, structured extraction, and serialization, use [`extend-docx`](./crates/extend-docx/README.md):
+
+```bash
+cargo add extend-docx
+```
+
+Import it as `extend_docx` in Rust. The Rust crate and npm packages have independent release versions.
 
 ## WebAssembly and Vite
 
@@ -459,6 +468,8 @@ const output = serializeDocx(model, pkg);
 
 ## Workspace Layout
 
+- `crates/extend-docx`: the published Rust parser, document model, and serializer, `extend-docx`
+- `crates/docx-wasm`: internal WebAssembly bindings for the JavaScript viewer
 - `packages/react-viewer`: the main published React package, `@extend-ai/react-docx`
 - `packages/ooxml-core`: OOXML package parsing and part graph handling
 - `packages/doc-model`: normalized document model
@@ -522,7 +533,7 @@ pnpm test:docx-vs-libreoffice
 
 ## Publishing
 
-Changesets are used for release management:
+Changesets are used for npm release management:
 
 ```bash
 pnpm changeset
@@ -530,3 +541,5 @@ pnpm version-packages
 pnpm build
 pnpm publish-packages
 ```
+
+The Rust crate is released independently with `cargo publish -p extend-docx --locked`. See [Rust publishing](docs/rust-publishing.md) for validation and GitHub team ownership.

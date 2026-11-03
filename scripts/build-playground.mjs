@@ -17,7 +17,7 @@ function collect(directory) {
     else sourceFiles.push(name);
   }
 }
-for (const crate of ["docx-core", "docx-wasm"]) {
+for (const crate of ["extend-docx", "docx-wasm"]) {
   sourceFiles.push(`crates/${crate}/Cargo.toml`);
   collect(`crates/${crate}/src`);
 }

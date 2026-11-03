@@ -2,11 +2,11 @@ fn main() {
     let path = std::env::args().nth(1).expect("path");
     let bytes = std::fs::read(&path).expect("read");
     let pkg = if path.ends_with(".doc") {
-        docx_core::parse_document_bytes(&bytes).expect("parse")
+        extend_docx::parse_document_bytes(&bytes).expect("parse")
     } else {
-        docx_core::parse_docx(&bytes).expect("parse_docx")
+        extend_docx::parse_docx(&bytes).expect("parse_docx")
     };
-    let model = docx_core::build_doc_model(&pkg);
+    let model = extend_docx::build_doc_model(&pkg);
     println!("parts: {}", pkg.parts.len());
     println!("binary assets: {:?}", pkg.binary_assets.keys().collect::<Vec<_>>());
     println!("headers: {}", model.metadata.header_sections.len());

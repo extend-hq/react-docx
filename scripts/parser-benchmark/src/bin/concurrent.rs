@@ -40,7 +40,7 @@ fn canonicalize(value: &mut Value, document_id: &str) {
     }
 }
 
-fn output_digest(model: &docx_core::DocModel, blocks: &docx_core::StructuredDocument) -> [u8; 32] {
+fn output_digest(model: &extend_docx::DocModel, blocks: &extend_docx::StructuredDocument) -> [u8; 32] {
     let mut model = serde_json::to_value(model).unwrap();
     let mut blocks = serde_json::to_value(blocks).unwrap();
     let id = model["metadata"]["documentId"]
@@ -79,9 +79,9 @@ fn run() {
         inputs
             .iter()
             .map(|bytes| {
-                let package = docx_core::parse_document_bytes(bytes).unwrap();
-                let model = docx_core::build_doc_model(&package);
-                output_digest(&model, &docx_core::extract_document_blocks(&model))
+                let package = extend_docx::parse_document_bytes(bytes).unwrap();
+                let model = extend_docx::build_doc_model(&package);
+                output_digest(&model, &extend_docx::extract_document_blocks(&model))
             })
             .collect::<Vec<_>>()
     } else {
@@ -102,9 +102,9 @@ fn run() {
                     for round in 0..rounds {
                         for index in (worker..inputs.len()).step_by(workers) {
                             let start = Instant::now();
-                            let package = docx_core::parse_document_bytes(&inputs[index]).unwrap();
-                            let model = docx_core::build_doc_model(&package);
-                            let blocks = docx_core::extract_document_blocks(&model);
+                            let package = extend_docx::parse_document_bytes(&inputs[index]).unwrap();
+                            let model = extend_docx::build_doc_model(&package);
+                            let blocks = extend_docx::extract_document_blocks(&model);
                             black_box((&package, &model, &blocks));
                             let ms = start.elapsed().as_secs_f64() * 1000.0;
                             if audit {

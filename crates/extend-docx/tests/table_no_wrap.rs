@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use docx_core::{build_doc_model, serialize_doc_model, DocNode, OoxmlPackage, OoxmlPart};
+use extend_docx::{build_doc_model, serialize_doc_model, DocNode, OoxmlPackage, OoxmlPart};
 
 fn package(properties: &str) -> OoxmlPackage {
     let xml = format!(r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:tbl><w:tblPr><w:tblW w:w="4000" w:type="dxa"/></w:tblPr><w:tr><w:tc><w:tcPr>{properties}</w:tcPr><w:p><w:r><w:t>Alpha Beta</w:t></w:r></w:p></w:tc></w:tr></w:tbl></w:body></w:document>"#);

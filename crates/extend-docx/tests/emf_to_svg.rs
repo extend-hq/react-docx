@@ -1,4 +1,4 @@
-use docx_core::emf::emf_to_svg;
+use extend_docx::emf::emf_to_svg;
 
 fn vector_drawing() -> Vec<u8> {
     let mut bytes = vec![0u8; 88];
