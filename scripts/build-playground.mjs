@@ -9,18 +9,7 @@ const app = path.join(root, "apps/playground");
 const run = (command, args, cwd = root) => execFileSync(command, args, { cwd, stdio: "inherit" });
 run("pnpm", ["--filter", "@extend-ai/react-docx-wasm", "build:wasm"]);
 
-const sourceFiles = ["Cargo.toml", "Cargo.lock", ".cargo/config.toml"];
-function collect(directory) {
-  for (const entry of readdirSync(path.join(root, directory), { withFileTypes: true })) {
-    const name = `${directory}/${entry.name}`;
-    if (entry.isDirectory()) collect(name);
-    else sourceFiles.push(name);
-  }
-}
-for (const crate of ["extend-docx", "docx-wasm"]) {
-  sourceFiles.push(`crates/${crate}/Cargo.toml`);
-  collect(`crates/${crate}/src`);
-}
+const sourceFiles = ["Cargo.toml", "Cargo.lock", ".cargo/config.toml", "crates/docx-wasm/Cargo.toml", "crates/docx-wasm/src/lib.rs"];
 const sourceHash = createHash("sha256");
 for (const name of sourceFiles.sort()) {
   sourceHash.update(name).update("\0").update(readFileSync(path.join(root, name))).update("\0");

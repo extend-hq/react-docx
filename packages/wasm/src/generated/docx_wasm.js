@@ -434,7 +434,7 @@ function __wbg_get_imports() {
             const ret = new Uint8Array(getArrayU8FromWasm0(arg0, arg1));
             return addHeapObject(ret);
         },
-        __wbg_now_bbe6a2f16a9002a5: function() {
+        __wbg_now_9d349f69ae7e8a1b: function() {
             const ret = performance.now();
             return ret;
         },

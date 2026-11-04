@@ -1,19 +1,7 @@
 [workspace]
-members = ["crates/extend-docx", "crates/docx-wasm"]
+members = ["crates/docx-wasm"]
 resolver = "2"
 
-[workspace.package]
-version = "0.2.0"
-edition = "2021"
-license = "MIT"
-
-[workspace.dependencies]
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-serde_bytes = "0.11"
-miniz_oxide = "0.8"
-
-# Optimize the shared parser for throughput in release builds.
 [profile.release]
 opt-level = 3
 lto = true

@@ -138,11 +138,14 @@ checksum = "0e9c71c2167ca323c882b99918929403426e2373ea17242ff5653e0d5e1058be"
 
 [[package]]
 name = "extend-docx"
-version = "0.2.0"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8c744579db7b5fc3ea368d764cf2e284a30a64b1da98cf4c4c71a7748a4a49a9"
 dependencies = [
  "arc-swap",
  "base64",
  "base64-simd",
+ "extend-office-charts",
  "itoa",
  "libdeflater",
  "memchr",
@@ -157,6 +160,18 @@ dependencies = [
  "sha2",
  "unicode-segmentation",
  "zlib-rs",
+]
+
+[[package]]
+name = "extend-office-charts"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e9ee00cce14edabf1c29f03013b6fb4acb2355b11c253d0bb1a1a61e9cfec2be"
+dependencies = [
+ "base64",
+ "miniz_oxide 0.8.9",
+ "roxmltree",
+ "serde",
 ]
 
 [[package]]

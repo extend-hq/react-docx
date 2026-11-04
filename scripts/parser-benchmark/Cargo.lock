@@ -182,29 +182,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "extend-docx"
-version = "0.2.0"
-dependencies = [
- "arc-swap",
- "base64",
- "base64-simd",
- "itoa",
- "libdeflater",
- "memchr",
- "miniz_oxide 0.8.9",
- "quick-xml 0.42.0",
- "rayon",
- "regex",
- "roxmltree",
- "serde",
- "serde_bytes",
- "serde_json",
- "sha2",
- "unicode-segmentation",
- "zlib-rs",
-]
-
-[[package]]
 name = "docx-rs"
 version = "0.4.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -245,6 +222,44 @@ name = "equivalent"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "00d174d5400e5e8fd687ad1049e2f578285fa914201b1af7e8b112a4546bd826"
+
+[[package]]
+name = "extend-docx"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8c744579db7b5fc3ea368d764cf2e284a30a64b1da98cf4c4c71a7748a4a49a9"
+dependencies = [
+ "arc-swap",
+ "base64",
+ "base64-simd",
+ "extend-office-charts",
+ "itoa",
+ "libdeflater",
+ "memchr",
+ "miniz_oxide 0.8.9",
+ "quick-xml 0.42.0",
+ "rayon",
+ "regex",
+ "roxmltree",
+ "serde",
+ "serde_bytes",
+ "serde_json",
+ "sha2",
+ "unicode-segmentation",
+ "zlib-rs",
+]
+
+[[package]]
+name = "extend-office-charts"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e9ee00cce14edabf1c29f03013b6fb4acb2355b11c253d0bb1a1a61e9cfec2be"
+dependencies = [
+ "base64",
+ "miniz_oxide 0.8.9",
+ "roxmltree",
+ "serde",
+]
 
 [[package]]
 name = "fast-float2"
@@ -462,8 +477,8 @@ checksum = "1a80800c0488c3a21695ea981a54918fbb37abf04f4d0720c453632255e2ff0e"
 name = "parser-benchmark"
 version = "0.1.0"
 dependencies = [
- "extend-docx",
  "docx-rs",
+ "extend-docx",
  "flate2",
  "office_oxide",
  "serde",

@@ -1,23 +1,17 @@
 [package]
-name = "docx-wasm"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
-description = "Internal WebAssembly bindings for extend-docx and the React document viewer"
+name = "react-docx-runtime"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Browser runtime for the React DOCX viewer"
+repository = "https://github.com/extend-hq/react-docx"
 publish = false
 
 [lib]
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-extend-docx = { path = "../extend-docx" }
-serde.workspace = true
-serde_json = { workspace = true, features = ["float_roundtrip"] }
-wasm-bindgen = "0.2"
-js-sys = "0.3"
-
-[dev-dependencies]
-wasm-bindgen-test = "0.3"
+extend-docx-wasm = "=0.2.1"
 
 [package.metadata.wasm-pack.profile.release]
 wasm-opt = ["-O3", "--enable-bulk-memory", "--enable-nontrapping-float-to-int", "--enable-simd"]

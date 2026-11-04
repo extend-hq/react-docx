@@ -1,6 +1,6 @@
 # Parser benchmark and optimization harness
 
-The standalone Cargo workspace pins docx-rs 0.4.22, office_oxide 0.1.15, and undoc 0.27.1. It links the local extend-docx. Release measurements use opt-level 3, thin LTO, and one codegen unit for every parser. The production WASM build uses opt-level 3 and wasm-opt -O3; record its compressed size alongside speed.
+The standalone Cargo workspace pins docx-rs 0.4.22, office_oxide 0.1.15, and undoc 0.27.1. It pins the published extend-docx from [extend-office](https://github.com/extend-hq/extend-office). Release measurements use opt-level 3, thin LTO, and one codegen unit for every parser. The production WASM build uses opt-level 3 and wasm-opt -O3; record its compressed size alongside speed.
 
 The Rust package and import names are `extend-docx` and `extend_docx`. Historical benchmark records and the comparison scripts retain `docx-core` as the engine identifier so existing measurements remain comparable. The native runner accepts both `extend-docx` and `docx-core`; both select the same parser. Historical chart labels using `docx-core` refer to this parser before its rename.
 

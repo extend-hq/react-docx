@@ -73,14 +73,14 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Run Rust tests
-        run: cargo test --workspace --locked
-
       - name: Install wasm-pack
         run: cargo install wasm-pack --version 0.13.1 --locked
 
       - name: Build packages
         run: pnpm run build
+
+      - name: Test rebuilt parser
+        run: pnpm exec vitest run tests/unit/wasm-parity-legacy.test.ts tests/unit/legacy-doc-import.test.ts
 
   browser-smoke:
     name: Browser smoke

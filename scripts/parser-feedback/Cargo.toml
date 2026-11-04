@@ -7,7 +7,7 @@ publish = false
 [workspace]
 
 [dependencies]
-extend-docx = { path = "../../crates/extend-docx" }
+extend-docx = "=0.2.1"
 serde = "1"
 serde_json = "1"
 flate2 = "1"
