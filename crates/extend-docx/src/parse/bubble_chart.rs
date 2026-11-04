@@ -334,25 +334,32 @@ pub(super) fn render(
             ) else {
                 continue;
             };
+            xr = (xr.0.min(x), xr.1.max(x));
+            yr = (yr.0.min(y), yr.1.max(y));
             if z == 0. || (z < 0. && !show_neg) {
                 continue;
             }
-            xr = (xr.0.min(x), xr.1.max(x));
-            yr = (yr.0.min(y), yr.1.max(y));
             max_size = max_size.max(z.abs());
-            points.push((s, pt.index, x, y, z.abs()));
+            points.push((s, pt.index, x, y, z));
         }
     }
-    if points.is_empty() {
+    if !xr.0.is_finite() {
         xr = (0., 1.);
         yr = (0., 1.);
+    }
+    let legend_pos = val(legend, "legendPos").unwrap_or("r");
+    let side_legend = matches!(legend_pos, "l" | "r" | "tr");
+    if side_legend {
+        entries.truncate(
+            ((height - title_height - 40. / 3.) / (lf * 1.16 + 8.))
+                .floor()
+                .clamp(1., 256.) as usize,
+        );
     }
     let name_width = entries
         .iter()
         .map(|(_, _, n)| text_width(n, lf))
         .fold(0., f64::max);
-    let legend_pos = val(legend, "legendPos").unwrap_or("r");
-    let side_legend = matches!(legend_pos, "l" | "r" | "tr");
     let legend_width = if legend.is_some() && !on(val(legend, "overlay")) && side_legend {
         name_width + lf * 1.055 + 16.
     } else {
@@ -386,26 +393,24 @@ pub(super) fn render(
         .map(|v| text_width(&y_axis.label(v), yf))
         .fold(0., f64::max);
     let legend_left = if legend_pos == "l" { legend_width } else { 0. };
-    let at_left = xr.1 >= 0.;
-    let mut left = 14.67 + legend_left;
-    if y_labels && at_left {
-        left = 8.67 + widest_y + 0.903 * yf + legend_left;
-    }
-    let mut right = width - 14.67 - (legend_width - legend_left);
+    let reversed = val(x_ax.and_then(|n| child(n, "scaling")), "orientation") == Some("maxMin");
+    let outside_y = y_labels && xr.1 >= 0.;
+    let gutter = 8.67 + widest_y + 0.903 * yf;
+    let mut left = (if outside_y && !reversed {
+        gutter
+    } else {
+        14.67
+    }) + legend_left;
+    let mut right =
+        width - (if outside_y && reversed { gutter } else { 14.67 }) - (legend_width - legend_left);
     let mut x_axis = Axis::new(xr, x_ax, (right - left).max(1.), radius(1.), xf * 3.5);
     if x_labels {
-        let end = if x_axis.reversed {
-            x_axis.low
-        } else {
-            x_axis.high
-        };
-        right -= text_width(&x_axis.label(end), xf) / 2.;
-        if !at_left {
-            let start = if x_axis.reversed {
-                x_axis.high
-            } else {
-                x_axis.low
-            };
+        if !outside_y || !reversed {
+            let end = if reversed { x_axis.low } else { x_axis.high };
+            right -= text_width(&x_axis.label(end), xf) / 2.;
+        }
+        if !outside_y || reversed {
+            let start = if reversed { x_axis.high } else { x_axis.low };
             left += text_width(&x_axis.label(start), xf) / 2.;
         }
     }
@@ -472,12 +477,20 @@ pub(super) fn render(
                     -1.
                 };
                 if tick > 0. {
-                    line(&mut svg, vline, pos, vline + direction * tick, pos, &stroke);
+                    line(
+                        &mut svg,
+                        vline,
+                        pos,
+                        vline + direction * tick * (if reversed { -1. } else { 1. }),
+                        pos,
+                        &stroke,
+                    );
                 }
                 if show_labels {
                     let (base, anchor) = match val(node, "tickLblPos") {
                         Some("high") => (right + font * 0.9, "start"),
                         Some("low") => (left - font * 0.9, "end"),
+                        _ if reversed => (vline + font * 0.9, "start"),
                         _ => (vline - font * 0.9, "end"),
                     };
                     text(
@@ -500,7 +513,7 @@ pub(super) fn render(
     }
     write!(svg,r#"<defs><clipPath id="plot"><rect x="{left:.2}" y="{top:.2}" width="{:.2}" height="{:.2}"/></clipPath></defs><g clip-path="url(#plot)">"#,right-left,bottom-top).unwrap();
     for (i, idx, vx, vy, z) in points {
-        let ratio = z / max_size;
+        let ratio = z.abs() / max_size;
         let radius = max_radius * if size_is_width { ratio } else { ratio.sqrt() };
         let fx = x_axis.fraction(vx / x_axis.multiplier);
         let fy = y_axis.fraction(vy / y_axis.multiplier);
@@ -515,8 +528,16 @@ pub(super) fn render(
         write!(
             svg,
             r#"<circle cx="{cx:.2}" cy="{cy:.2}" r="{radius:.2}" fill="{}" stroke="{}"/>"#,
-            colors.fill(i, Some(idx)),
-            colors.outline(i, Some(idx)).unwrap_or("none")
+            if z < 0. {
+                "white".into()
+            } else {
+                colors.fill(i, Some(idx))
+            },
+            if z < 0. {
+                "black"
+            } else {
+                colors.outline(i, Some(idx)).unwrap_or("none")
+            }
         )
         .unwrap();
     }
