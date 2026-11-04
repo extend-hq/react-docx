@@ -1,5 +1,11 @@
 # @extend-ai/react-docx
 
+## 0.13.6
+
+### Patch Changes
+
+- Render native bubble charts from indexed coordinates and sizes, and preserve the chart frame when series have no cached observations.
+
 ## 0.13.5
 
 ### Patch Changes
