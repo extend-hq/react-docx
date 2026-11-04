@@ -20928,7 +20928,7 @@ function syntheticTextBoxContainsPictureLayer(
   return groupedShapes.some((shapeXml) => {
     const shapePropertiesXml =
       balancedTagXmlBlocks(shapeXml, "wps:spPr")[0] ?? "";
-    if (!shapePropertiesXml || /<w:txbxContent\b/i.test(shapeXml)) {
+    if (!shapePropertiesXml) {
       return false;
     }
 
