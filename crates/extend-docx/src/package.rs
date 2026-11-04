@@ -177,12 +177,20 @@ fn collect_relationship_targets(
 }
 
 fn uncached_relationship_target(pkg: &OoxmlPackage, source: &str, kind: &str) -> Option<String> {
+    relationship_target_from_parts(&pkg.parts, source, kind)
+}
+
+pub(crate) fn relationship_target_from_parts(
+    parts: &HashMap<String, OoxmlPart>,
+    source: &str,
+    kind: &str,
+) -> Option<String> {
     let rel_name = if source.is_empty() {
         "_rels/.rels".to_string()
     } else {
         crate::parse::relationship_part_name_for_part(source)
     };
-    let part = pkg.parts.get(&rel_name)?;
+    let part = parts.get(&rel_name)?;
     let xml = roxmltree::Document::parse(&part.content).ok()?;
     let rel = xml.descendants().find(|node| {
         node.is_element()

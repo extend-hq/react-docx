@@ -41,7 +41,7 @@ pub struct ChartCategory {
     pub label: String,
 }
 
-fn chart_node(node: Node, name: &str) -> bool {
+pub(crate) fn chart_node(node: Node, name: &str) -> bool {
     node.tag_name().name() == name
         && matches!(
             node.tag_name().namespace(),
@@ -52,7 +52,7 @@ fn chart_node(node: Node, name: &str) -> bool {
         )
 }
 
-fn child<'a>(node: Node<'a, 'a>, name: &str) -> Option<Node<'a, 'a>> {
+pub(crate) fn child<'a>(node: Node<'a, 'a>, name: &str) -> Option<Node<'a, 'a>> {
     node.children().find(|n| chart_node(*n, name))
 }
 
@@ -124,7 +124,11 @@ pub fn extract_chart_data(package: &OoxmlPackage, part_name: &str) -> Option<Cha
 
 pub(crate) fn parse_chart_xml(content: &str) -> Option<ChartData> {
     let xml = roxmltree::Document::parse(content).ok()?;
-    let chart = child(xml.root_element(), "chart")?;
+    chart_data_from_root(xml.root_element())
+}
+
+pub(crate) fn chart_data_from_root(root: Node) -> Option<ChartData> {
+    let chart = child(root, "chart")?;
     let plot = child(chart, "plotArea")?;
     let title = child(chart, "title")
         .and_then(|n| child(n, "tx"))

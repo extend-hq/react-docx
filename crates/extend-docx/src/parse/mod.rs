@@ -2,6 +2,8 @@
 mod cache;
 mod body;
 mod build;
+mod bubble_chart;
+mod chart_colors;
 mod colors;
 mod content_types;
 mod context;
