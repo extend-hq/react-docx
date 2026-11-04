@@ -21,7 +21,7 @@ For the React entry, install `react` and `react-dom` as well. The vanilla entry 
 
 ## Benchmarks and chart accuracy
 
-See [Extend Office](https://github.com/extend-hq/extend-office#packages-benchmarks-and-chart-accuracy) for parser benchmarks, accuracy results, and chart comparisons with Microsoft Word.
+See [Rust Office](https://github.com/extend-hq/rust-office#packages-benchmarks-and-chart-accuracy) for parser benchmarks, accuracy results, and chart comparisons with Microsoft Word.
 
 ## WebAssembly Asset
 

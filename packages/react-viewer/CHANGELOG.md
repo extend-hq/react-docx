@@ -1,8 +1,12 @@
 # @extend-ai/react-docx
 
+## 0.14.2
+
+- Use the Rust Office crates by Extend and refresh the bundled WebAssembly.
+
 ## 0.14.1
 
-- Use the published Extend Office parser to include visible heading numbers and list markers in structured paragraph details.
+- Use the published Rust Office parser to include visible heading numbers and list markers in structured paragraph details.
 
 ## 0.14.0
 
@@ -20,7 +24,7 @@
 
 ### Patch Changes
 
-- Update the bundled WebAssembly parser to `extend-docx` 0.1.5. Imported charts now retain their source part name in the document model. Legacy Word imports preserve stored comment timestamps and the authors and timestamps of tracked text edits.
+- Update the bundled WebAssembly parser to `rust-docx` 0.1.5. Imported charts now retain their source part name in the document model. Legacy Word imports preserve stored comment timestamps and the authors and timestamps of tracked text edits.
 
 ## 0.13.4
 

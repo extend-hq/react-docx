@@ -134,57 +134,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0e9c71c2167ca323c882b99918929403426e2373ea17242ff5653e0d5e1058be"
 
 [[package]]
-name = "extend-docx"
-version = "0.2.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "33cc456f0659350d0301dddb02827fddf38171b11a5597571ca6ff23018c364f"
-dependencies = [
- "arc-swap",
- "base64",
- "base64-simd",
- "extend-office-charts",
- "itoa",
- "libdeflater",
- "memchr",
- "miniz_oxide",
- "quick-xml",
- "rayon",
- "regex",
- "roxmltree",
- "serde",
- "serde_bytes",
- "serde_json",
- "sha2",
- "unicode-segmentation",
- "zlib-rs",
-]
-
-[[package]]
-name = "extend-docx-wasm"
-version = "0.2.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3dd6688b00e88c5002289ab317d5e86c2d84e24656d28f138d8ce922c434af43"
-dependencies = [
- "extend-docx",
- "js-sys",
- "serde",
- "serde_json",
- "wasm-bindgen",
-]
-
-[[package]]
-name = "extend-office-charts"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e9ee00cce14edabf1c29f03013b6fb4acb2355b11c253d0bb1a1a61e9cfec2be"
-dependencies = [
- "base64",
- "miniz_oxide",
- "roxmltree",
- "serde",
-]
-
-[[package]]
 name = "find-msvc-tools"
 version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -349,7 +298,7 @@ dependencies = [
 name = "react-docx-runtime"
 version = "0.1.0"
 dependencies = [
- "extend-docx-wasm",
+ "rust-docx-wasm",
 ]
 
 [[package]]
@@ -386,6 +335,57 @@ name = "roxmltree"
 version = "0.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6c20b6793b5c2fa6553b250154b78d6d0db37e72700ae35fad9387a46f487c97"
+
+[[package]]
+name = "rust-docx"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fd5f1414c867008b84aebe5d96d8997cfcad1bccb19736114b079f1c3ef530c2"
+dependencies = [
+ "arc-swap",
+ "base64",
+ "base64-simd",
+ "itoa",
+ "libdeflater",
+ "memchr",
+ "miniz_oxide",
+ "quick-xml",
+ "rayon",
+ "regex",
+ "roxmltree",
+ "rust-office-charts",
+ "serde",
+ "serde_bytes",
+ "serde_json",
+ "sha2",
+ "unicode-segmentation",
+ "zlib-rs",
+]
+
+[[package]]
+name = "rust-docx-wasm"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7ce457890f6e8ec8d89cd49df492801f7d1cd9ac5dc1d6afc6f9ff822b186a76"
+dependencies = [
+ "js-sys",
+ "rust-docx",
+ "serde",
+ "serde_json",
+ "wasm-bindgen",
+]
+
+[[package]]
+name = "rust-office-charts"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "544a78d493976e06b684f3f93b641e7ac4aefae6c02fb2f7e10228bbe8de2d01"
+dependencies = [
+ "base64",
+ "miniz_oxide",
+ "roxmltree",
+ "serde",
+]
 
 [[package]]
 name = "rustversion"

@@ -1,1 +1,1 @@
-pub use docx_wasm::*;
+pub use rust_docx_wasm::*;

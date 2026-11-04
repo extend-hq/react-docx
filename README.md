@@ -2,7 +2,7 @@
 
 [![npm version](https://img.shields.io/npm/v/%40extend-ai%2Freact-docx)](https://www.npmjs.com/package/@extend-ai/react-docx)
 [![Monthly npm downloads](https://img.shields.io/npm/dm/%40extend-ai%2Freact-docx)](https://www.npmjs.com/package/@extend-ai/react-docx)
-[![crates.io version](https://img.shields.io/crates/v/extend-docx)](https://crates.io/crates/extend-docx)
+[![crates.io version](https://img.shields.io/crates/v/rust-docx)](https://crates.io/crates/rust-docx)
 
 `react-docx` is a DOCX viewer and editor for JavaScript and React applications, built as a monorepo.
 
@@ -25,17 +25,17 @@ pnpm add @extend-ai/react-docx
 
 For React integrations, also install `react` and `react-dom`. The vanilla entry bundles Preact and does not require React.
 
-For native Rust parsing, structured extraction, and serialization, use [`extend-docx`](https://github.com/extend-hq/extend-office/blob/main/crates/extend-docx/README.md):
+For native Rust parsing, structured extraction, and serialization, use [`rust-docx`](https://github.com/extend-hq/rust-office/blob/main/crates/rust-docx/README.md):
 
 ```bash
-cargo add extend-docx
+cargo add rust-docx
 ```
 
-Import it as `extend_docx` in Rust. The Rust crate and npm packages have independent release versions.
+Import it as `rust_docx` in Rust. The Rust crate and npm packages have independent release versions.
 
 ## Benchmarks and chart accuracy
 
-See [Extend Office](https://github.com/extend-hq/extend-office#packages-benchmarks-and-chart-accuracy) for parser benchmarks, accuracy results, and chart comparisons with Microsoft Word.
+See [Rust Office](https://github.com/extend-hq/rust-office#packages-benchmarks-and-chart-accuracy) for parser benchmarks, accuracy results, and chart comparisons with Microsoft Word.
 
 ## WebAssembly and Vite
 
@@ -473,7 +473,7 @@ const output = serializeDocx(model, pkg);
 
 ## Workspace Layout
 
-- `crates/docx-wasm`: builds the published `extend-docx-wasm` bindings from [extend-office](https://github.com/extend-hq/extend-office) into the viewer’s WebAssembly module
+- `crates/docx-wasm`: builds the published `rust-docx-wasm` bindings from [rust-office](https://github.com/extend-hq/rust-office) into the viewer’s WebAssembly module
 - `packages/react-viewer`: the main published React package, `@extend-ai/react-docx`
 - `packages/ooxml-core`: OOXML package parsing and part graph handling
 - `packages/doc-model`: normalized document model
@@ -546,4 +546,4 @@ pnpm build
 pnpm publish-packages
 ```
 
-The Rust parser and WASM bindings are released from [extend-office](https://github.com/extend-hq/extend-office). See [updating the Rust runtime](docs/rust-publishing.md) to adopt a release in this viewer.
+The Rust parser and WASM bindings are released from [rust-office](https://github.com/extend-hq/rust-office). See [updating the Rust runtime](docs/rust-publishing.md) to adopt a release in this viewer.
