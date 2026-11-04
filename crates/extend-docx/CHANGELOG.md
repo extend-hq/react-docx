@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.5
+
+- Expose native chart series and indexed data points, preserving stored values and sparse categories.
+
 ## 0.1.4
 
 - Return stored comment timestamps from legacy binary Word documents.
