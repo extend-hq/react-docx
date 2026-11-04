@@ -620,7 +620,7 @@ pub(super) fn render(
         };
         write!(
             svg,
-            r#"<circle cx="{cx:.2}" cy="{cy:.2}" r="{radius:.2}" fill="{}" stroke="{}"{shadow_attr}/>"#,
+            r#"<circle cx="{cx:.2}" cy="{cy:.2}" r="{radius:.2}" fill="{}" stroke="{}"{shadow_attr} data-docx-series="{i}"/>"#,
             if z < 0. {
                 "white".into()
             } else {
@@ -651,6 +651,7 @@ pub(super) fn render(
         let wrapped_lines: usize = name_lines.iter().map(|ls| ls.len() - 1).sum();
         let mut wrap_before = 0;
         for (i, (series, point, name)) in entries.iter().enumerate() {
+            write!(svg, r#"<g data-docx-series="{series}">"#).unwrap();
             let lines = &name_lines[i];
             let wrap_line_height = lf * 1.22;
             let (cx, cy) = if side_legend {
@@ -697,6 +698,7 @@ pub(super) fn render(
                     line,
                 );
             }
+            svg.push_str("</g>");
         }
     }
     if !defs.is_empty() {

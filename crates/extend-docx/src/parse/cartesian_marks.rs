@@ -144,6 +144,7 @@ fn bars(
     for (j, (serie, &node)) in series.iter().zip(nodes).enumerate() {
         let shift = (j as f64 - (count - 1.) / 2.) * category_step;
         let ordinal = first + j;
+        write!(svg, r#"<g data-docx-series="{ordinal}">"#).unwrap();
         let data_labels = DataLabels::new(group, node, default_face);
         let invert = flag(node, "invertIfNegative", !colors.legacy_defaults());
         let point_styles: BTreeMap<u32, _> = node
@@ -198,6 +199,7 @@ fn bars(
             let sw = point_style.map_or(base_width, |n| stroke_width(n, base_width));
             write!(svg, r#"<rect x="{x:.2}" y="{y:.2}" width="{w:.2}" height="{h:.2}" fill="{fill}" stroke="{stroke}" stroke-width="{sw:.2}"/>"#).unwrap();
         }
+        svg.push_str("</g>");
     }
 }
 
@@ -325,6 +327,7 @@ pub(super) fn draw(
     let zero = blanks == "zero";
     for (j, (serie, &node)) in series.iter().zip(&nodes).enumerate() {
         let ordinal = first_series + j;
+        write!(svg, r#"<g data-docx-series="{ordinal}">"#).unwrap();
         let mut segments = Vec::new();
         let mut segment = Vec::new();
         let by_index: BTreeMap<_, _> = serie.points.iter().map(|p| (p.index, p)).collect();
@@ -430,6 +433,7 @@ pub(super) fn draw(
             }
         }
         if is_area {
+            svg.push_str("</g>");
             continue;
         }
         let series_marker = child(node, "marker");
@@ -477,6 +481,7 @@ pub(super) fn draw(
                 .map_or(1., |n| stroke_width(n, 1.));
             marker(svg, sample.top, symbol, size, &fill, &stroke, sw);
         }
+        svg.push_str("</g>");
     }
 }
 
@@ -527,7 +532,7 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 marks
-                    .children()
+                    .descendants()
                     .filter(|n| n.tag_name().name() == "path")
                     .count(),
                 paths

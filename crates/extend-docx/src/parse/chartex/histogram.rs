@@ -338,7 +338,7 @@ pub(super) fn render(ctx: &Canvas, out: &mut String) -> Option<()> {
             .rectangle_fill(ctx.paint(0, b.index, 0), 0, [x, ypos, width, h]);
         let _ = write!(
             out,
-            r#"<rect x="{x:.2}" y="{ypos:.2}" width="{width:.2}" height="{h:.2}" fill="{fill}"/>"#
+            r#"<rect x="{x:.2}" y="{ypos:.2}" width="{width:.2}" height="{h:.2}" fill="{fill}" data-docx-series="{}"/>"#, ctx.source_indices[0]
         );
         if let Some(value) = super::drawing::data_label(
             data_labels,
@@ -394,7 +394,7 @@ pub(super) fn render(ctx: &Canvas, out: &mut String) -> Option<()> {
         let fill = ctx.stroke(pareto_series.unwrap_or(0));
         let _ = write!(
             out,
-            r#"<path d="{path}" fill="none" stroke="{fill}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>"#
+            r#"<path d="{path}" fill="none" stroke="{fill}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" data-docx-series="{}"/>"#, ctx.source_indices[pareto_series.unwrap_or(0)]
         );
         if percentage_labels {
             secondary_stroke.line(out, right, top, right, bottom);

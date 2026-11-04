@@ -100,7 +100,22 @@ export interface ImagePaintBounds {
   layoutHeightPx: number;
 }
 
+export interface ChartPoint {
+  index: number;
+  categories?: { level: number; label: string }[];
+  value?: string;
+  x?: string;
+  y?: string;
+  bubbleSize?: string;
+}
+
+export interface ChartData {
+  title?: string | null;
+  series: { name?: string | null; chartType: string; points: ChartPoint[] }[];
+}
+
 export interface ImageRunNode {
+  chartData?: ChartData;
   chartPartName?: string;
   paintBounds?: ImagePaintBounds;
   mathMl?: string;

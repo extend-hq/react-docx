@@ -566,7 +566,7 @@ fn chart_xml_to_svg_data_uri(
     context: &ParseContext<'_, impl std::borrow::Borrow<super::context::ParsedStyleSheet>>,
     width_px: Option<f64>,
     height_px: Option<f64>,
-) -> Option<String> {
+) -> Option<(String, crate::ChartData)> {
     let xml = roxmltree::Document::parse(&context.parts.get(part_name)?.content).ok()?;
     let root = xml.root_element();
     let data = crate::chart::chart_data_from_root(root)?;
@@ -611,7 +611,7 @@ fn chart_xml_to_svg_data_uri(
             )
         })
     }?;
-    Some(svg_data_uri(&colors.with_definitions(svg)))
+    Some((svg_data_uri(&colors.with_definitions(svg)), data))
 }
 
 fn chart_relationship(xml: &str) -> Option<String> {
@@ -2107,6 +2107,7 @@ fn vml_group_image_with_owner(
         canvas.0, canvas.1
     );
     Some(ImageRunNode {
+        chart_data: None,
         chart_part_name: None,
         width_px: Some(if paint_bounds.is_some() { width } else { width_px }),
         height_px: Some(if paint_bounds.is_some() { height } else { height_px }),
@@ -2225,6 +2226,7 @@ pub fn parse_run_image_block(
                 parse_text_box_layout(active_run_xml).as_ref(),
             ));
             return Some(ImageRunNode {
+                chart_data: None,
                 chart_part_name: None,
                 paint_bounds: None,
                 r#type: ImageRunNodeType::Image,
@@ -2286,6 +2288,7 @@ pub fn parse_run_image_block(
             }
         }
         return Some(ImageRunNode {
+            chart_data: None,
             chart_part_name: None,
             paint_bounds: None,
             r#type: ImageRunNodeType::Image,
@@ -2329,11 +2332,12 @@ pub fn parse_run_image_block(
         {
             context.push_warning(format!("Missing chart part {name}"));
         }
-        if let Some(chart_src) = chart_part_name
+        if let Some((chart_src, chart_data)) = chart_part_name
             .as_deref()
             .and_then(|name| chart_xml_to_svg_data_uri(name, context, width_px, height_px))
         {
             return Some(ImageRunNode {
+                chart_data: Some(Box::new(chart_data)),
                 chart_part_name,
                 paint_bounds: None,
                 r#type: ImageRunNodeType::Image,
@@ -2372,6 +2376,7 @@ pub fn parse_run_image_block(
             parse_text_box_layout(active_run_xml).as_ref(),
         ));
         return Some(ImageRunNode {
+            chart_data: None,
             chart_part_name: None,
             paint_bounds: None,
             r#type: ImageRunNodeType::Image,
@@ -2432,6 +2437,9 @@ pub fn parse_run_image_block(
     }
 
     Some(ImageRunNode {
+        chart_data: chart_part_name.as_ref().and_then(|name| {
+            crate::chart::parse_chart_xml(&context.parts.get(name)?.content).map(Box::new)
+        }),
         chart_part_name,
         paint_bounds: None,
         r#type: ImageRunNodeType::Image,

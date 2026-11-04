@@ -451,6 +451,7 @@ impl Plot<'_> {
         let filled = val(Some(self.group), "radarStyle") == Some("filled");
         let default_markers = val(Some(self.group), "radarStyle") == Some("marker") && style <= 16;
         for (i, (s, ser)) in data.series.iter().zip(&self.series).enumerate() {
+            write!(svg, r#"<g data-docx-series="{i}">"#).unwrap();
             let mut path = String::new();
             let mut markers = String::new();
             let bevel = filled.then(|| bevel_width(*ser, style)).flatten();
@@ -523,6 +524,7 @@ impl Plot<'_> {
                 }
                 svg.push_str(&markers);
             }
+            svg.push_str("</g>");
         }
         if let Some(grid) = foreground_grid {
             svg.push_str(&grid);
@@ -681,6 +683,7 @@ impl Plot<'_> {
             }
         }
         for (i, (s, ser)) in data.series.iter().zip(&self.series).enumerate() {
+            write!(svg, r#"<g data-docx-series="{i}">"#).unwrap();
             let mut path = String::new();
             let mut markers = String::new();
             let symbol = marker_symbol(*ser, i, false);
@@ -712,6 +715,7 @@ impl Plot<'_> {
                 .unwrap();
             }
             svg.push_str(&markers);
+            svg.push_str("</g>");
         }
     }
 }

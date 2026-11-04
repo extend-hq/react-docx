@@ -268,6 +268,7 @@ function cloneParagraph(paragraph: ParagraphNode): ParagraphNode {
         blockId: child.blockId,
         semanticKind: child.semanticKind,
         chartPartName: child.chartPartName,
+        chartData: child.chartData && structuredClone(child.chartData),
         mathMl: child.mathMl,
         contentNodes: child.contentNodes?.map(cloneDocNode),
         src: child.src,

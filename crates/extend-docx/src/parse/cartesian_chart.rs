@@ -895,6 +895,7 @@ fn draw_legend(
         (height + title_center_offset - total_height) * 0.5 + size * 0.8
     };
     for (j, e) in entries.iter().enumerate() {
+        write!(svg, r#"<g data-docx-series="{}">"#, e.index).unwrap();
         let (x, y) = if side {
             let x = if pos == "l" {
                 12.
@@ -957,6 +958,7 @@ fn draw_legend(
                 false,
             );
         }
+        svg.push_str("</g>");
         cur += extents[j] + space;
     }
 }

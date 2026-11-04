@@ -305,6 +305,7 @@ pub(super) fn render(ctx: &Canvas, out: &mut String) -> Option<()> {
     }
     write!(out,r#"<defs><clipPath id="box-plot"><rect x="{left}" y="{top}" width="{}" height="{}"/></clipPath></defs><g clip-path="url(#box-plot)">"#,right-left,bottom-top).unwrap();
     for (series_slot, (series_index, groups)) in boxes.into_iter().enumerate() {
+        write!(out, r#"<g data-docx-series="{}">"#, ctx.source_indices[series_index]).unwrap();
         let layout = ctx.series(series_index).and_then(|n| child(n, "layoutPr"));
         let visibility = layout.and_then(|n| child(n, "visibility"));
         let inclusive = layout
@@ -362,6 +363,7 @@ pub(super) fn render(ctx: &Canvas, out: &mut String) -> Option<()> {
                 }
             }
         }
+        out.push_str("</g>");
     }
     out.push_str("</g>");
     Some(())

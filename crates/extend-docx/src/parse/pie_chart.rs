@@ -696,6 +696,7 @@ pub(super) fn render(
         .to_radians()
         - PI / 2.;
     for (ring, i) in ring_order.into_iter().enumerate() {
+        write!(svg, r#"<g data-docx-series="{i}">"#).unwrap();
         let points = &sets[i];
         let series = &data.series[i];
         let all_labels = child(nodes[i], "dLbls").or_else(|| child(group, "dLbls"));
@@ -734,6 +735,7 @@ pub(super) fn render(
             }
             .draw(&mut svg, &mut label_svg, &points.iter().collect::<Vec<_>>());
         }
+        svg.push_str("</g>");
     }
     svg.push_str(&label_svg);
     if title.is_some() {

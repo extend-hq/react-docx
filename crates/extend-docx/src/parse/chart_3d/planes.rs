@@ -284,7 +284,7 @@ pub(super) fn draw(
             colors.fill(*source, None)
         };
         let stroke = colors.outline(*source, None).unwrap_or("none");
-        let mut shapes = String::new();
+        let mut shapes = format!(r#"<g data-docx-series="{source}">"#);
         let mut previous: Option<Strip> = None;
         let shape = setting(xml_series[order], "shape")
             .or_else(|| setting(group, "shape"))
@@ -462,6 +462,7 @@ pub(super) fn draw(
             }
         }
         let depth_order = center * scene.rot_y.to_radians().cos();
+        shapes.push_str("</g>");
         drawn.push((depth_order, shapes));
     }
     drawn.sort_by(|a, b| b.0.total_cmp(&a.0));
