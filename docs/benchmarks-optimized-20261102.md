@@ -55,7 +55,7 @@ An additional 1,088 concurrent parses across 272 inputs, at four and eight calle
 
 The 329 existing Rust tests pass, with one opt-in corpus test ignored. The WASM target check passes, and PR CI passes JavaScript, Rust/package build, browser smoke, and preview deployment. No new unit tests or corpus documents were added.
 
-Complete interactive reports retain all feature tables and selectable complexity/performance axes under `output/doc-actor-perf-20261102/formats`, `holdout`, and `docx1k`. Original release and allocation-only runs are preserved separately. Charts and sanitized numeric data are linked from the [extend-docx README](../crates/extend-docx/README.md#parser-latency-comparisons).
+Complete interactive reports retain all feature tables and selectable complexity/performance axes under `output/doc-actor-perf-20261102/formats`, `holdout`, and `docx1k`. Original release and allocation-only runs are preserved separately. Charts and sanitized numeric data are linked from the [extend-docx README](https://github.com/extend-hq/extend-office/blob/main/crates/extend-docx/README.md#parser-latency-comparisons).
 
 ## Paired before/after measurements
 

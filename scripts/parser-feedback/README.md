@@ -4,6 +4,8 @@ This runner builds a candidate, verifies complete model and structured-block par
 
 ## Freeze the baseline before editing core
 
+The runner uses the published `extend-docx` by default. To measure a local parser change, apply a Cargo `patch.crates-io` override for `extend-docx` pointing to its crate directory in your extend-office checkout. Refresh each harness lockfile before freezing the baseline so the candidate and baseline use the same dependency graph. The reports hash the parser and chart sources Cargo actually selected.
+
 ```sh
 mkdir -p output/parser-next/feedback-loop
 cargo build --locked --release --manifest-path scripts/parser-feedback/Cargo.toml

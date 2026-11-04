@@ -7,7 +7,7 @@ publish = false
 [workspace]
 
 [dependencies]
-extend-docx = { path = "../../crates/extend-docx" }
+extend-docx = "=0.2.3"
 docx-rs = { version = "=0.4.22", default-features = false }
 office_oxide = "=0.1.15"
 undoc = { version = "=0.27.1", default-features = false, features = ["docx", "doc", "codepages"] }

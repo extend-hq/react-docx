@@ -11,6 +11,8 @@ import sys
 import tempfile
 import time
 
+from parser_source import source_identity
+
 
 def sha(path):
     with path.open('rb') as stream:
@@ -64,8 +66,7 @@ def main():
         parser.error('The frozen queue and digest executable must exist before starting a trial')
     directory = work / args.label
     directory.mkdir(parents=True)
-    source_paths = sorted((root / 'crates/extend-docx/src').rglob('*.rs'))
-    source = {str(p.relative_to(root)): sha(p) for p in source_paths}
+    source = source_identity(root / 'scripts/parser-feedback')
     result = {'label': args.label, 'status': 'running', 'started_at': time.time(), 'records': [],
               'scope': 'Targeted tuning, not a random corpus estimate. Fast-profile core builds use identical flags; office_oxide uses the accepted release binary. Full native model and block parity is required. Production release/WASM validation remains separate.',
               'source': source, 'rounds': args.rounds, 'index': args.index, 'count': args.count,

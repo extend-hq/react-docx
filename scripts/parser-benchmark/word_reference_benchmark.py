@@ -15,6 +15,7 @@ from assess import load_native, percentile
 from fidelity_metrics import prf
 from image_occurrences import score_image_occurrences
 from normalize import normalize
+from parser_source import parser_version, source_identity
 from run import ENGINES
 from word_recall import score
 from word_structured import VERSION, read_gzip, save, save_gzip, sha, status
@@ -30,18 +31,13 @@ def scorer_identity():
     return {name: sha(HERE / name) for name in names}
 
 
-def source_identity():
-    paths = [p for root in [ROOT / 'crates/extend-docx/src', HERE / 'src'] for p in root.rglob('*.rs')]
-    paths += [ROOT / 'crates/extend-docx/Cargo.toml', HERE / 'Cargo.toml', HERE / 'Cargo.lock']
-    return {str(p.relative_to(ROOT)): sha(p) for p in sorted(paths)}
-
-
 def prepare_timing(out, baseline, binary):
     previous = json.loads((baseline / 'format-environment.json').read_text())
     target = out / 'bin/current-parser-benchmark'
     shutil.copy2(binary, target)
     save(out / 'build-environment.json', {
-        **{key: previous[key] for key in ['versions', 'timing', 'profile']},
+        **{key: previous[key] for key in ['timing', 'profile']},
+        'versions': {**previous['versions'], 'docx-core': parser_version()},
         'binary_sha256': sha(target), 'source_sha256': source_identity(),
         'git_revision': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip(),
         'rustc': subprocess.check_output(['rustc', '--version'], text=True).strip(),

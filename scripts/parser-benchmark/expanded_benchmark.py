@@ -11,6 +11,7 @@ import subprocess
 import tempfile
 import time
 
+from parser_source import parser_version
 from assess import feature_score, load_native, text_score
 from normalize import core_block_paragraphs, normalize
 from image_occurrences import score_image_occurrences
@@ -126,7 +127,7 @@ def main():
                'repeats': args.repeats, 'timeout_seconds': args.timeout, 'attempted': len(entries),
                'engines': args.engines, 'input_ids': [entry['id'] for entry in entries],
                'started_at': time.time(), 'load_start': os.getloadavg(),
-               'versions': {'docx-core': 'workspace', 'docx-rs': '0.4.22',
+               'versions': {'docx-core': parser_version(), 'docx-rs': '0.4.22',
                             'office_oxide': '0.1.15', 'undoc': '0.27.1'},
                'scope': 'Complete native models; core structured blocks and oxide IR conversion included. Warm timings exclude file reads, JSON serialization and destruction. Accuracy is a separate parse; reference scorer unchanged.'}
     phases = ['timing', 'accuracy'] if args.phase == 'all' else [args.phase]

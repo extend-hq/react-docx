@@ -25,7 +25,7 @@ pnpm add @extend-ai/react-docx
 
 For React integrations, also install `react` and `react-dom`. The vanilla entry bundles Preact and does not require React.
 
-For native Rust parsing, structured extraction, and serialization, use [`extend-docx`](./crates/extend-docx/README.md):
+For native Rust parsing, structured extraction, and serialization, use [`extend-docx`](https://github.com/extend-hq/extend-office/blob/main/crates/extend-docx/README.md):
 
 ```bash
 cargo add extend-docx
@@ -185,7 +185,7 @@ Each cell is **body-text F1 · median / p95 milliseconds**. Accuracy and latency
 - [Word capture/scoring methods, coverage, and unresolved reference limitations](https://github.com/extend-hq/react-docx/blob/main/docs/word-reference-benchmarks.md)
 - [Source-reference accuracy aggregates](https://github.com/extend-hq/react-docx/blob/main/crates/extend-docx/benchmarks/optimized-20261102/accuracy.json), [latency summary](https://github.com/extend-hq/react-docx/blob/main/crates/extend-docx/benchmarks/optimized-20261102/latency.json), and [anonymous scatter data](https://github.com/extend-hq/react-docx/blob/main/crates/extend-docx/benchmarks/optimized-20261102/latency.csv)
 - [Word-reference aggregate precision, recall, F1, and coverage for every measured category](https://github.com/extend-hq/react-docx/blob/main/crates/extend-docx/benchmarks/word-reference-20261103/summary.json)
-- [Per-format distribution and complexity charts](https://github.com/extend-hq/react-docx/blob/main/crates/extend-docx/README.md#per-format-charts) and [historical npm 0.13.0 results](https://github.com/extend-hq/react-docx/blob/main/docs/benchmarks-0.13.0.md)
+- [Per-format distribution and complexity charts](https://github.com/extend-hq/extend-office/blob/main/crates/extend-docx/README.md#per-format-charts) and [historical npm 0.13.0 results](https://github.com/extend-hq/react-docx/blob/main/docs/benchmarks-0.13.0.md)
 
 These are retained completed runs, not new measurements of a documentation release. Source revisions and executable hashes identify each measured build. Historical records use the internal engine identifier `docx-core`; chart and table labels use the published crate name **extend-docx**. Public data contains aggregate counts and anonymous numeric points, without source documents or extracted text.
 
@@ -625,8 +625,7 @@ const output = serializeDocx(model, pkg);
 
 ## Workspace Layout
 
-- `crates/extend-docx`: the published Rust parser, document model, and serializer, `extend-docx`
-- `crates/docx-wasm`: internal WebAssembly bindings for the JavaScript viewer
+- `crates/docx-wasm`: builds the published `extend-docx-wasm` bindings from [extend-office](https://github.com/extend-hq/extend-office) into the viewer’s WebAssembly module
 - `packages/react-viewer`: the main published React package, `@extend-ai/react-docx`
 - `packages/ooxml-core`: OOXML package parsing and part graph handling
 - `packages/doc-model`: normalized document model
@@ -699,4 +698,4 @@ pnpm build
 pnpm publish-packages
 ```
 
-The Rust crate is released independently with `cargo publish -p extend-docx --locked`. See [Rust publishing](docs/rust-publishing.md) for validation and GitHub team ownership.
+The Rust parser and WASM bindings are released from [extend-office](https://github.com/extend-hq/extend-office). See [updating the Rust runtime](docs/rust-publishing.md) to adopt a release in this viewer.

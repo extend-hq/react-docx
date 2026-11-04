@@ -18,6 +18,7 @@ from corpus import ROOT, oracle
 from image_occurrences import score_image_occurrences
 from literal_features import score_literal_features
 from normalize import core_block_paragraphs, normalize
+from parser_source import parser_version, source_identity
 from run import ENGINES
 from fidelity_metrics import VERSION as FIDELITY_VERSION, ordered_text, prf, strict_features
 
@@ -110,13 +111,13 @@ def run(out, repeats):
     rng.shuffle(jobs)
     env = {'binary_sha256': sha(binary), 'manifest_sha256': sha(out / 'format-manifest.json'),
            'git_revision': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip(),
-           'versions': {'docx-core': 'workspace', 'docx-rs': '0.4.22', 'office_oxide': '0.1.15', 'undoc': '0.27.1'},
+           'versions': {'docx-core': parser_version(), 'docx-rs': '0.4.22', 'office_oxide': '0.1.15', 'undoc': '0.27.1'},
            'os': platform.platform(), 'rustc': subprocess.check_output(['rustc', '--version'], text=True).strip(),
            'libreoffice': subprocess.check_output(['soffice', '--version'], text=True).strip(),
            'seed': seed, 'repeats': repeats, 'load_start': os.getloadavg(), 'start_time': time.time(),
            'timing': 'Warm parse plus native model/IR and core structured blocks; excludes input reads, output serialization, destruction, process startup, and reference conversion. Each sample averages adaptive 1–20 parses.',
            'profile': 'release opt-level=3 thin LTO codegen-units=1',
-           'source_sha256': {str(p.relative_to(ROOT)): sha(p) for root in (ROOT / 'crates/extend-docx/src', ROOT / 'scripts/parser-benchmark/src') for p in sorted(root.rglob('*.rs'))},
+           'source_sha256': source_identity(),
            'scorer_sha256': {p.name: sha(p) for p in Path(__file__).parent.glob('*.py')}}
     save(out / 'format-environment.json', env)
     for index, (entry, engine) in enumerate(jobs):
