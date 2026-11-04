@@ -119,7 +119,11 @@ fn series_data(series: Node, chart_type: &str) -> ChartSeries {
 /// Read the literal and cached series data for a figure's chartPartName.
 /// Formula references are not evaluated. A series without cached points remains empty.
 pub fn extract_chart_data(package: &OoxmlPackage, part_name: &str) -> Option<ChartData> {
-    let xml = roxmltree::Document::parse(&package.parts.get(part_name)?.content).ok()?;
+    parse_chart_xml(&package.parts.get(part_name)?.content)
+}
+
+pub(crate) fn parse_chart_xml(content: &str) -> Option<ChartData> {
+    let xml = roxmltree::Document::parse(content).ok()?;
     let chart = child(xml.root_element(), "chart")?;
     let plot = child(chart, "plotArea")?;
     let title = child(chart, "title")

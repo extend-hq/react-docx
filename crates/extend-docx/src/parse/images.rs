@@ -1021,14 +1021,118 @@ fn render_pie_chart_svg(chart: &ParsedChartData, width_px: f64, height_px: f64) 
     )
 }
 
+fn render_bubble_or_empty_chart(xml: &str, width: f64, height: f64) -> Option<String> {
+    use std::fmt::Write;
+    let chart = crate::chart::parse_chart_xml(xml)?;
+    let series = &chart.series;
+    let bubbles = !series.is_empty() && series.iter().all(|s| s.chart_type == "bubble");
+    if !bubbles && (series.is_empty() || series.iter().any(|s| !s.points.is_empty())) {
+        return None;
+    }
+
+    let number = |value: &Option<String>| {
+        value
+            .as_ref()?
+            .trim()
+            .parse::<f64>()
+            .ok()
+            .filter(|n| n.is_finite())
+    };
+    let mut points = Vec::new();
+    let (mut xmin, mut xmax, mut ymin, mut ymax, mut max_size) =
+        (0.0_f64, 0.0_f64, 0.0_f64, 0.0_f64, 0.0_f64);
+    for (i, s) in series.iter().enumerate() {
+        for pt in &s.points {
+            if let (Some(x), Some(y), Some(size)) =
+                (number(&pt.x), number(&pt.y), number(&pt.bubble_size))
+            {
+                if size <= 0.0 {
+                    continue;
+                }
+                xmin = xmin.min(x);
+                xmax = xmax.max(x);
+                ymin = ymin.min(y);
+                ymax = ymax.max(y);
+                max_size = max_size.max(size);
+                points.push((i, x, y, size));
+            }
+        }
+    }
+    if xmin == xmax {
+        xmax = 1.0;
+    }
+    if ymin == ymax {
+        ymax = 1.0;
+    }
+
+    let left = 46.0;
+    let right = width - (width * 0.22).clamp(64.0, 120.0);
+    let top = 36.0;
+    let bottom = height - 32.0;
+    let max_radius = ((bottom - top).min(right - left) * 0.08).clamp(3.0, 22.0);
+    let title = escape_xml_text(chart.title.as_deref().unwrap_or(""));
+    let mut svg = format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" font-family="sans-serif"><rect width="100%" height="100%" fill="white"/><text x="16" y="22" font-size="15" fill="#111827">{title}</text>"##
+    );
+    let padding = if bubbles { max_radius } else { 0.0 };
+    for step in 0..=4 {
+        let fraction = step as f64 / 4.0;
+        let y = bottom - padding - fraction * (bottom - top - 2.0 * padding);
+        let value = ymin * (1.0 - fraction) + ymax * fraction;
+        write!(svg, r##"<path d="M{left} {y}H{right}" stroke="#e5e7eb"/><text x="{}" y="{}" text-anchor="end" font-size="10">{value:.2}</text>"##, left - 5.0, y + 3.0).unwrap();
+        if bubbles {
+            let x = left + padding + fraction * (right - left - 2.0 * padding);
+            let value = xmin * (1.0 - fraction) + xmax * fraction;
+            write!(
+                svg,
+                r#"<text x="{x}" y="{}" text-anchor="middle" font-size="10">{value:.2}</text>"#,
+                bottom + 15.0
+            )
+            .unwrap();
+        }
+    }
+    write!(
+        svg,
+        r##"<path d="M{left} {top}V{bottom}H{right}" fill="none" stroke="#9ca3af"/>"##
+    )
+    .unwrap();
+    let position = |value: f64, min: f64, max: f64| {
+        let scale = min.abs().max(max.abs());
+        (value / scale - min / scale) / (max / scale - min / scale)
+    };
+    for (i, x, y, size) in points {
+        let cx = left + padding + position(x, xmin, xmax) * (right - left - 2.0 * padding);
+        let cy = bottom - padding - position(y, ymin, ymax) * (bottom - top - 2.0 * padding);
+        let radius = max_radius * (size / max_size).sqrt();
+        let color = chart_color(None, i);
+        write!(svg, r#"<circle cx="{cx:.2}" cy="{cy:.2}" r="{radius:.2}" fill="{color}" fill-opacity="0.8"/>"#).unwrap();
+    }
+    if re::get_unchecked(r"(?i)<c:legend\b").is_match(xml) {
+        for (i, s) in series.iter().enumerate() {
+            let y = top + i as f64 * 17.0;
+            let name = s
+                .name
+                .as_deref()
+                .map(escape_xml_text)
+                .unwrap_or_else(|| format!("Series {}", i + 1));
+            let color = chart_color(None, i);
+            write!(svg, r#"<rect x="{}" y="{y}" width="8" height="8" fill="{color}"/><text x="{}" y="{}" font-size="11">{name}</text>"#,right+10.0,right+22.0,y+8.0).unwrap();
+        }
+    }
+    svg.push_str("</svg>");
+    Some(svg)
+}
+
 fn chart_xml_to_svg_data_uri(
     chart_xml: &str,
     width_px: Option<f64>,
     height_px: Option<f64>,
 ) -> Option<String> {
-    let chart = parse_chart_data(chart_xml)?;
     let safe_width = clamp_i64(width_px.unwrap_or(640.0).round() as i64, 240, 1600) as f64;
     let safe_height = clamp_i64(height_px.unwrap_or(360.0).round() as i64, 180, 1200) as f64;
+    let Some(chart) = parse_chart_data(chart_xml) else {
+        return render_bubble_or_empty_chart(chart_xml, safe_width, safe_height).map(|svg| svg_data_uri(&svg));
+    };
     let svg = match chart.kind {
         ChartKind::Pie | ChartKind::Doughnut => {
             render_pie_chart_svg(&chart, safe_width, safe_height)
