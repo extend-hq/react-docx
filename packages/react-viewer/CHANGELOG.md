@@ -1,5 +1,11 @@
 # @extend-ai/react-docx
 
+## 0.13.5
+
+### Patch Changes
+
+- Update the bundled WebAssembly parser to `extend-docx` 0.1.5. Imported charts now retain their source part name in the document model. Legacy Word imports preserve stored comment timestamps and the authors and timestamps of tracked text edits.
+
 ## 0.13.4
 
 ### Patch Changes
