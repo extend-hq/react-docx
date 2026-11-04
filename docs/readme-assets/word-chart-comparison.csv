@@ -1,0 +1,158 @@
+case,group,chart,viewer_image,ink_overlap_percent,color_match_percent
+chart-001,"Bars, lines, areas and pies",Clustered columns,True,98.42,92.67
+chart-002,"Bars, lines, areas and pies",Stacked columns,True,98.6,93.56
+chart-003,"Bars, lines, areas and pies",100% stacked columns,True,96.39,93.53
+chart-004,"Bars, lines, areas and pies",Clustered bars,True,98.05,93.74
+chart-005,"Bars, lines, areas and pies",Stacked bars,True,98.07,94.4
+chart-006,"Bars, lines, areas and pies",100% stacked bars,True,97.19,93.85
+chart-007,"Bars, lines, areas and pies",Standard line,True,88.87,57.65
+chart-008,"Bars, lines, areas and pies",Standard line with markers,True,88.75,58.27
+chart-009,"Bars, lines, areas and pies",Stacked line,True,91.51,61.23
+chart-010,"Bars, lines, areas and pies",Stacked line with markers,True,91.23,61.57
+chart-011,"Bars, lines, areas and pies",100% stacked line,True,62.82,40.31
+chart-012,"Bars, lines, areas and pies",100% stacked line with markers,True,62.96,40.75
+chart-013,"Bars, lines, areas and pies",Standard area,True,99.47,97.47
+chart-014,"Bars, lines, areas and pies",Stacked area,True,99.72,98.64
+chart-015,"Bars, lines, areas and pies",100% stacked area,True,99.8,99.11
+chart-016,"Bars, lines, areas and pies",Pie with percentage labels,True,74.99,71.67
+chart-017,"Bars, lines, areas and pies",Exploded pie,True,86.4,82.66
+chart-018,"Bars, lines, areas and pies",Two rings with a 10% hole,True,98.96,1.34
+chart-019,"Bars, lines, areas and pies",Two rings with a 50% hole,True,98.62,1.8
+chart-020,"Bars, lines, areas and pies",Two rings with a 90% hole,True,94.92,6.57
+chart-021,"Scatter, bubble, radar and stock",Scatter with no lines or markers,True,85.28,45.42
+chart-022,"Scatter, bubble, radar and stock",Scatter with markers only,True,84.51,46.92
+chart-023,"Scatter, bubble, radar and stock",Scatter with straight lines,True,88.69,56.61
+chart-024,"Scatter, bubble, radar and stock",Scatter with straight lines and markers,True,88.58,57.12
+chart-025,"Scatter, bubble, radar and stock",Scatter with smooth lines,True,88.04,55.44
+chart-026,"Scatter, bubble, radar and stock",Scatter with smooth lines and markers,True,87.95,56.08
+chart-027,"Scatter, bubble, radar and stock",Radar lines,True,90.45,63.92
+chart-028,"Scatter, bubble, radar and stock",Radar with markers,True,90.45,63.92
+chart-029,"Scatter, bubble, radar and stock",Filled radar,True,97.67,92.21
+chart-030,"Scatter, bubble, radar and stock",Bubbles sized by area,True,22.13,10.6
+chart-031,"Scatter, bubble, radar and stock",Bubbles sized by diameter,True,24.72,12.17
+chart-032,"Scatter, bubble, radar and stock",Bubbles with a 3D effect,True,22.01,10.53
+chart-033,"Scatter, bubble, radar and stock",high low close,True,87.62,44.15
+chart-034,"Scatter, bubble, radar and stock",open high low close,True,90.65,30.36
+chart-035,"Scatter, bubble, radar and stock",Volume and high low close,False,0.0,0.0
+chart-036,"Scatter, bubble, radar and stock",Volume and open high low close,False,0.0,0.0
+chart-037,"Scatter, bubble, radar and stock",Columns and line on separate axes,True,94.39,87.4
+chart-038,"3D columns, bars, areas and lines",3D columns with box geometry,True,81.86,71.96
+chart-039,"3D columns, bars, areas and lines",3D bars with box geometry,True,68.33,49.89
+chart-040,"3D columns, bars, areas and lines",3D columns with box geometry,True,82.48,74.72
+chart-041,"3D columns, bars, areas and lines",3D columns with box geometry,True,70.36,39.34
+chart-042,"3D columns, bars, areas and lines",3D columns with cylinder geometry,True,79.62,21.62
+chart-043,"3D columns, bars, areas and lines",3D bars with cylinder geometry,True,61.77,11.27
+chart-044,"3D columns, bars, areas and lines",3D columns with cone geometry,True,60.31,15.98
+chart-045,"3D columns, bars, areas and lines",3D bars with cone geometry,True,37.66,7.78
+chart-046,"3D columns, bars, areas and lines",3D columns with coneToMax geometry,True,66.17,18.54
+chart-047,"3D columns, bars, areas and lines",3D bars with coneToMax geometry,True,43.13,8.66
+chart-048,"3D columns, bars, areas and lines",3D columns with pyramid geometry,True,66.83,42.4
+chart-049,"3D columns, bars, areas and lines",3D bars with pyramid geometry,True,42.97,24.32
+chart-050,"3D columns, bars, areas and lines",3D columns with pyramidToMax geometry,True,72.39,50.55
+chart-051,"3D columns, bars, areas and lines",3D bars with pyramidToMax geometry,True,48.89,27.85
+chart-052,"3D columns, bars, areas and lines",3D area with depth,True,85.48,69.14
+chart-053,"3D columns, bars, areas and lines",3D area with stacking,True,81.63,73.97
+chart-054,"3D columns, bars, areas and lines",3D area with 100% stacking,True,84.18,74.14
+chart-055,"3D columns, bars, areas and lines",3D ribbon line,True,47.87,38.18
+chart-056,"3D columns, bars, areas and lines",3D pie,True,99.19,97.68
+chart-057,Surfaces and split pies,Exploded 3D pie,True,89.01,68.27
+chart-058,Surfaces and split pies,Contour with filled bands,True,96.04,90.58
+chart-059,Surfaces and split pies,Contour wireframe,True,16.42,8.44
+chart-060,Surfaces and split pies,3D surface with filled bands,True,68.09,2.05
+chart-061,Surfaces and split pies,3D surface wireframe,True,9.16,5.7
+chart-062,Surfaces and split pies,Pie of pie by position,True,96.41,89.1
+chart-063,Surfaces and split pies,Pie of pie by value,True,19.03,3.66
+chart-064,Surfaces and split pies,Pie of pie by percentage,True,97.53,89.14
+chart-065,Surfaces and split pies,Pie of pie by custom indices,True,95.96,88.85
+chart-066,Surfaces and split pies,Bar of pie by position,True,97.49,92.85
+chart-067,Surfaces and split pies,Bar of pie by value,True,23.84,1.74
+chart-068,Surfaces and split pies,Bar of pie by percentage,True,97.58,92.78
+chart-069,Surfaces and split pies,Bar of pie by custom indices,True,97.51,92.95
+chart-070,"Axes, statistics and missing data",Missing observation as gap,True,91.85,84.38
+chart-071,"Axes, statistics and missing data",Missing observation as zero,True,92.21,81.29
+chart-072,"Axes, statistics and missing data",Missing observation as span,True,92.03,82.46
+chart-073,"Axes, statistics and missing data",Negative zero and positive,True,93.09,89.33
+chart-074,"Axes, statistics and missing data",One slice and one category,True,74.93,73.89
+chart-075,"Axes, statistics and missing data",Zero total in a pie,True,60.79,56.89
+chart-076,"Axes, statistics and missing data",Logarithmic axis over six decades,True,87.45,76.9
+chart-077,"Axes, statistics and missing data",Reversed axis and explicit bounds,True,97.74,93.98
+chart-078,"Axes, statistics and missing data",Duplicate and multilingual labels,True,98.42,92.67
+chart-079,"Axes, statistics and missing data",Data table and legend keys,True,9.38,6.96
+chart-080,"Axes, statistics and missing data",Trendline with linear fit,True,82.44,62.5
+chart-081,"Axes, statistics and missing data",Trendline with exponential fit,True,13.58,9.42
+chart-082,"Axes, statistics and missing data",Trendline with log fit,True,14.22,9.44
+chart-083,"Axes, statistics and missing data",Trendline with power fit,True,83.15,62.82
+chart-084,"Axes, statistics and missing data",Trendline with polynomial fit,True,82.1,62.01
+chart-085,"Axes, statistics and missing data",Trendline with moving average fit,True,86.98,65.59
+chart-086,"Axes, statistics and missing data",Error bars using fixed,True,19.59,13.23
+chart-087,"Axes, statistics and missing data",Error bars using percentage,True,19.71,13.41
+chart-088,"Axes, statistics and missing data",Error bars using standard deviation,True,80.53,33.74
+chart-089,"Axes, statistics and missing data",Error bars using standard error,True,19.78,13.49
+chart-090,"Axes, statistics and missing data",Error bars using custom,True,19.85,13.43
+chart-091,"Fills, colors and markers",Pattern fills 1 to 7,True,98.55,48.21
+chart-092,"Fills, colors and markers",Pattern fills 8 to 14,True,98.97,62.11
+chart-093,"Fills, colors and markers",Pattern fills 15 to 21,True,98.58,53.23
+chart-094,"Fills, colors and markers",Pattern fills 22 to 28,True,98.46,44.42
+chart-095,"Fills, colors and markers",Pattern fills 29 to 35,True,98.7,40.84
+chart-096,"Fills, colors and markers",Pattern fills 36 to 42,True,98.58,51.05
+chart-097,"Fills, colors and markers",Pattern fills 43 to 49,True,98.6,39.59
+chart-098,"Fills, colors and markers",Pattern fills 50 to 54,True,98.9,48.79
+chart-099,"Fills, colors and markers",Six color encodings,True,98.49,93.61
+chart-100,"Fills, colors and markers",Color transforms and opacity,True,98.96,96.36
+chart-101,"Fills, colors and markers",Linear and path gradients,True,99.02,86.62
+chart-102,"Fills, colors and markers",Marker shapes and dashed lines,True,51.79,33.94
+chart-103,Modern charts and filled maps,Treemap,True,99.02,98.48
+chart-104,Modern charts and filled maps,Sunburst,True,97.8,95.29
+chart-105,Modern charts and filled maps,Waterfall,True,88.71,90.25
+chart-106,Modern charts and filled maps,Funnel,True,98.01,96.69
+chart-107,Modern charts and filled maps,Histogram,True,95.45,95.22
+chart-108,Modern charts and filled maps,Pareto,True,88.55,86.38
+chart-109,Modern charts and filled maps,Box and whisker,True,95.14,94.23
+chart-110,Modern charts and filled maps,Filled region map,True,89.63,91.41
+map-001,Map areas and projections,Auto · Automatic area · Values · Default labels,True,87.39,86.29
+map-016,Map areas and projections,Auto · Data regions · Groups · All labels,True,87.14,73.61
+map-017,Map areas and projections,Auto · Postal areas · Values · Default labels,True,13.63,5.29
+map-024,Map areas and projections,Auto · Postal areas · Groups · All labels,True,12.23,3.35
+map-025,Map areas and projections,Auto · Counties · Values · Default labels,True,94.71,91.69
+map-032,Map areas and projections,Auto · Counties · Groups · All labels,True,96.56,90.58
+map-033,Map areas and projections,Auto · States · Values · Default labels,True,68.05,4.99
+map-040,Map areas and projections,Auto · States · Groups · All labels,True,68.08,6.21
+map-049,Map areas and projections,Auto · Country list · Values · Default labels,True,87.39,86.29
+map-064,Map areas and projections,Auto · World · Groups · All labels,True,86.26,84.96
+map-071,Map areas and projections,Mercator · Automatic area · Groups · Best fit,True,92.38,91.11
+map-084,Map areas and projections,Mercator · Postal areas · Values · All labels,True,13.25,5.47
+map-112,Map areas and projections,Mercator · Country · Groups · All labels,True,94.94,93.55
+map-137,Map areas and projections,Miller · Data regions · Values · Default labels,True,81.28,73.22
+map-150,Map areas and projections,Miller · Postal areas · Groups · No labels,True,11.79,3.24
+map-192,Map areas and projections,Miller · World · Groups · All labels,True,89.88,87.06
+map-200,Map areas and projections,Robinson · Automatic area · Groups · All labels,True,91.36,89.75
+map-213,Map areas and projections,Robinson · Postal areas · Groups · Default labels,True,12.23,3.38
+map-256,Map areas and projections,Robinson · World · Groups · All labels,True,86.26,84.96
+map-266,Map areas and projections,Albers · Data regions · Values · No labels,True,83.71,76.84
+map-276,Map areas and projections,Albers · Postal areas · Values · All labels,True,13.53,5.51
+map-300,Map areas and projections,Albers · Country · Values · All labels,True,93.29,91.75
+map-310,Map areas and projections,Albers · Country list · Groups · No labels,True,92.61,91.76
+map-315,Map areas and projections,Albers · World · Values · Best fit,True,81.49,80.1
+map-321,Map data and styling,State sales,True,93.31,91.2
+map-322,Map data and styling,State sales bands,True,96.36,91.03
+map-323,Map data and styling,State gains and losses,True,91.19,85.86
+map-324,Map data and styling,Equal state values,True,97.15,94.85
+map-325,Map data and styling,Missing state observations,True,95.64,95.02
+map-326,Map data and styling,Point color override,True,94.67,90.13
+map-327,Map data and styling,State bands: left legend,True,94.84,88.02
+map-328,Map data and styling,Two color range from 0 to 100,True,94.98,92.06
+map-329,Map data and styling,Three colors with skewed data,True,96.45,93.9
+map-330,Map data and styling,Diverging scale around zero,True,95.82,93.13
+map-331,Map data and styling,Theme accent colors,True,96.66,93.56
+map-332,Map data and styling,Negative values only,True,96.96,94.89
+map-333,Map data and styling,Percent number format,True,94.84,92.13
+map-334,Map data and styling,One region and one observation,True,98.61,97.54
+map-335,Map data and styling,Long categories,True,86.99,83.42
+map-336,Map data and styling,Overlaid legend,True,96.39,93.18
+sdk-001,Independent Open XML SDK sample,3D column with data table,True,50.69,28.73
+sdk-002,Independent Open XML SDK sample,Stacked line,True,56.23,39.33
+sdk-003,Independent Open XML SDK sample,Bar of pie,True,96.27,91.46
+sdk-004,Independent Open XML SDK sample,3D area with date axis,True,82.91,76.16
+sdk-005,Independent Open XML SDK sample,XY scatter,True,53.42,33.25
+sdk-006,Independent Open XML SDK sample,Radar,True,42.24,23.15
+sdk-007,Independent Open XML SDK sample,Bubble,True,76.83,52.57
