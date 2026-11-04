@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.0
+
+- Export native classic, 3D, and extended charts as SVG figures, including region maps drawn from the document’s cached geography. Retain the chart’s data and source attribution.
+
 ## 0.1.5
 
 - Expose native chart series and indexed data points, preserving stored values and sparse categories.

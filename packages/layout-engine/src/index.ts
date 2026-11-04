@@ -44,6 +44,7 @@ export interface LayoutTextRun {
 }
 
 export interface LayoutImageRun {
+  chartData?: ImageRunNode["chartData"];
   kind: "image";
   id: string;
   src?: string;
@@ -249,6 +250,7 @@ function paragraphToLayout(
     return {
       kind: "image",
       id: `${idPrefix}-run-${runIndex}`,
+      chartData: child.chartData,
       src: child.src,
       alt: child.alt,
       widthPx: child.widthPx,

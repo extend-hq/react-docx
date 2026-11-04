@@ -96,11 +96,6 @@ pub fn resolve_drawing_color_from_xml(
 }
 
 fn apply_drawing_color_transforms(color: &str, xml: &str) -> Option<String> {
-    let mut rgb = [0.0; 3];
-    for (index, channel) in rgb.iter_mut().enumerate() {
-        *channel =
-            u8::from_str_radix(color.get(1 + index * 2..3 + index * 2)?, 16).ok()? as f64 / 255.0;
-    }
     let tags = [
         "a:tint", "a:shade", "a:sat", "a:satMod", "a:satOff", "a:lum", "a:lumMod", "a:lumOff",
     ];
@@ -108,18 +103,92 @@ fn apply_drawing_color_transforms(color: &str, xml: &str) -> Option<String> {
     if transforms.is_empty() {
         return Some(color.to_string());
     }
-    for tag in transforms {
-        let Some(value) = crate::xml::get_attribute(&xml[tag.start..tag.end], "val")
-            .and_then(|v| v.parse::<f64>().ok())
-            .filter(|v| v.is_finite())
-        else {
-            continue;
-        };
-        let amount = value / 100_000.0;
-        match tag.tag_name.as_str() {
-            "a:tint" => rgb = rgb.map(|channel| channel * amount + 1.0 - amount),
-            "a:shade" => rgb = rgb.map(|channel| channel * amount),
-            name => {
+    let values = transforms.into_iter().filter_map(|tag| {
+        let value = crate::xml::get_attribute(&xml[tag.start..tag.end], "val")?
+            .parse::<f64>()
+            .ok()?;
+        if !value.is_finite() {
+            return None;
+        }
+        Some((tag.tag_name, value / 100_000.0))
+    });
+    transform_rgb(color, values, false)
+}
+
+fn linear(c: f64) -> f64 {
+    if c <= 0.04045 {
+        c / 12.92
+    } else {
+        ((c + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+pub(super) fn srgb(c: f64) -> f64 {
+    if c <= 0.0031308 {
+        c * 12.92
+    } else {
+        1.055 * c.powf(1. / 2.4) - 0.055
+    }
+}
+
+pub(super) fn hsl_to_rgb(hue: f64, saturation: f64, lightness: f64) -> [f64; 3] {
+    let chroma = (1.0 - (2.0 * lightness - 1.0).abs()) * saturation;
+    let x = chroma * (1.0 - (hue % 2.0 - 1.0).abs());
+    let offset = lightness - chroma / 2.0;
+    match hue as u32 {
+        0 => [chroma, x, 0.0],
+        1 => [x, chroma, 0.0],
+        2 => [0.0, chroma, x],
+        3 => [0.0, x, chroma],
+        4 => [x, 0.0, chroma],
+        _ => [chroma, 0.0, x],
+    }
+    .map(|channel| channel + offset)
+}
+
+pub(super) fn transform_rgb(
+    color: &str,
+    transforms: impl IntoIterator<Item = (impl AsRef<str>, f64)>,
+    linear_tints: bool,
+) -> Option<String> {
+    let mut rgb = [0.0; 3];
+    for (index, channel) in rgb.iter_mut().enumerate() {
+        *channel =
+            u8::from_str_radix(color.get(1 + index * 2..3 + index * 2)?, 16).ok()? as f64 / 255.0;
+    }
+    for (name, amount) in transforms {
+        let name = name.as_ref().trim_start_matches("a:");
+        match name {
+            "tint" | "shade" if linear_tints => {
+                rgb = rgb.map(|c| {
+                    srgb(linear(c) * amount + if name == "tint" { 1. - amount } else { 0. })
+                });
+            }
+            "gamma" => rgb = rgb.map(srgb),
+            "invGamma" => rgb = rgb.map(linear),
+            "inv" => rgb = rgb.map(|c| srgb(1. - linear(c))),
+            "gray" => rgb = [0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]; 3],
+            "red" | "green" | "blue" | "redMod" | "greenMod" | "blueMod" | "redOff"
+            | "greenOff" | "blueOff" => {
+                let i = if name.starts_with("red") {
+                    0
+                } else if name.starts_with("green") {
+                    1
+                } else {
+                    2
+                };
+                rgb[i] = srgb(if name.ends_with("Mod") {
+                    linear(rgb[i]) * amount
+                } else if name.ends_with("Off") {
+                    linear(rgb[i]) + amount
+                } else {
+                    amount
+                });
+            }
+            "tint" => rgb = rgb.map(|channel| channel * amount + 1.0 - amount),
+            "shade" => rgb = rgb.map(|channel| channel * amount),
+            "comp" | "hue" | "hueMod" | "hueOff" | "sat" | "satMod" | "satOff" | "lum"
+            | "lumMod" | "lumOff" => {
                 let max = rgb.into_iter().fold(0.0_f64, f64::max);
                 let min = rgb.into_iter().fold(1.0_f64, f64::min);
                 let delta = max - min;
@@ -138,32 +207,33 @@ fn apply_drawing_color_transforms(color: &str, xml: &str) -> Option<String> {
                 } else {
                     (rgb[0] - rgb[1]) / delta + 4.0
                 };
-                let channel = if name.starts_with("a:sat") {
-                    &mut saturation
+                let hue = if name == "comp" || name.starts_with("hue") {
+                    match name {
+                        "comp" => hue + 3.,
+                        "hue" => amount * 6.,
+                        "hueMod" => hue * amount,
+                        _ => hue + amount * 6.,
+                    }
+                    .rem_euclid(6.)
                 } else {
-                    &mut lightness
+                    let channel = if name.starts_with("sat") {
+                        &mut saturation
+                    } else {
+                        &mut lightness
+                    };
+                    *channel = if name.ends_with("Mod") {
+                        *channel * amount
+                    } else if name.ends_with("Off") {
+                        *channel + amount
+                    } else {
+                        amount
+                    }
+                    .clamp(0., 1.);
+                    hue
                 };
-                *channel = if name.ends_with("Mod") {
-                    *channel * amount
-                } else if name.ends_with("Off") {
-                    *channel + amount
-                } else {
-                    amount
-                };
-                *channel = channel.clamp(0.0, 1.0);
-                let chroma = (1.0 - (2.0 * lightness - 1.0).abs()) * saturation;
-                let x = chroma * (1.0 - (hue % 2.0 - 1.0).abs());
-                let offset = lightness - chroma / 2.0;
-                rgb = match hue as u32 {
-                    0 => [chroma, x, 0.0],
-                    1 => [x, chroma, 0.0],
-                    2 => [0.0, chroma, x],
-                    3 => [0.0, x, chroma],
-                    4 => [x, 0.0, chroma],
-                    _ => [chroma, 0.0, x],
-                }
-                .map(|channel| channel + offset);
+                rgb = hsl_to_rgb(hue, saturation, lightness);
             }
+            _ => continue,
         }
         rgb = rgb.map(|channel| channel.clamp(0.0, 1.0));
     }

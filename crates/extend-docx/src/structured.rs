@@ -272,6 +272,77 @@ fn image_url(image: &ImageRunNode) -> Option<String> {
     Some(url)
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ImagePresentation {
+    left: f64,
+    top: f64,
+    right: f64,
+    bottom: f64,
+    aspect_ratio: f64,
+    opacity: f64,
+}
+
+fn presented_image_url(image: &ImageRunNode, source: &str) -> Option<(String, ImagePresentation)> {
+    let opacity = image
+        .css_opacity
+        .filter(|v| v.is_finite())
+        .unwrap_or(1.0)
+        .clamp(0.0, 1.0);
+    if image.crop.is_none() && opacity == 1.0 {
+        return None;
+    }
+    let mut width = image.width_px.filter(|v| v.is_finite() && *v > 0.0)?;
+    let mut height = image.height_px.filter(|v| v.is_finite() && *v > 0.0)?;
+    let mut image_width = width;
+    let mut image_height = height;
+    let mut x = 0.0;
+    let mut y = 0.0;
+    if let Some(crop) = &image.crop {
+        let edge = |v: Option<f64>| v.unwrap_or(0.0).clamp(0.0, 1.0);
+        let left = edge(crop.left_fraction);
+        let top = edge(crop.top_fraction);
+        let across = 1.0 - left - edge(crop.right_fraction);
+        let down = 1.0 - top - edge(crop.bottom_fraction);
+        if across > 0.0 && down > 0.0 && (across < 1.0 || down < 1.0) {
+            // Cropping snaps the frame, scaled image, and offsets to whole CSS pixels in that order.
+            width = width.round().max(1.0);
+            height = height.round().max(1.0);
+            image_width = (width / across).round().max(1.0);
+            image_height = (height / down).round().max(1.0);
+            x = -(image_width * left).round();
+            y = -(image_height * top).round();
+        }
+    }
+    if (width == image_width && height == image_height && opacity == 1.0)
+        || !image_width.is_finite()
+        || !image_height.is_finite()
+    {
+        return None;
+    }
+    let (header, _) = source.split_once(',')?;
+    let mime = header.split(';').next()?.strip_prefix("data:image/")?;
+    if !matches!(mime, "png" | "jpeg" | "gif" | "webp" | "bmp" | "svg+xml") {
+        return None;
+    }
+    let source = crate::parse::escape_xml_text(source);
+    let presentation = ImagePresentation {
+        left: -x / image_width,
+        top: -y / image_height,
+        right: ((-x + width) / image_width).min(1.0),
+        bottom: ((-y + height) / image_height).min(1.0),
+        aspect_ratio: width / height,
+        opacity,
+    };
+    if !presentation.aspect_ratio.is_finite() {
+        return None;
+    }
+    let svg = crate::parse::svg_data_uri(&format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="{width}" height="{height}" viewBox="0 0 {width} {height}"><image x="{x}" y="{y}" width="{image_width}" height="{image_height}" preserveAspectRatio="none" opacity="{opacity}" xlink:href="{source}"/></svg>"#
+    ));
+    Some((svg, presentation))
+}
+
 fn source_part(model: &DocModel, kind: &str) -> String {
     model
         .metadata
@@ -628,10 +699,14 @@ impl Extractor {
                             .insert("paintBounds".into(), json!(paint_bounds));
                     }
                     if let Some(url) = image_url(image) {
-                        details
-                            .as_object_mut()
-                            .unwrap()
-                            .insert("imageUrl".into(), Value::String(url));
+                        if let Some((rendered, presentation)) = presented_image_url(image, &url) {
+                            details["sourceImageUrl"] = Value::String(url);
+                            details["imageUrl"] = Value::String(rendered);
+                            details["imagePresentation"] = json!(presentation);
+                            details["contentType"] = json!("image/svg+xml");
+                        } else {
+                            details["imageUrl"] = Value::String(url);
+                        }
                     }
                     children.push(self.block(
                         image_id.to_string(),
@@ -928,6 +1003,39 @@ fn extract(
         geometry_status: "requires_layout".into(),
     };
     ReviewedDocument { document, revisions }
+}
+
+#[cfg(test)]
+mod image_presentation_tests {
+    use super::*;
+
+    #[test]
+    fn embedded_crops_snap_to_pixels_without_changing_the_source() {
+        let mut image: ImageRunNode = serde_json::from_value(json!({
+            "type":"image", "widthPx":431.7, "heightPx":264.25,
+            "crop":{"leftFraction":0.17321,"topFraction":0.16321,
+                    "rightFraction":0.10987,"bottomFraction":0.05132},
+            "cssOpacity":0.37654,
+            "src":"data:image/png;base64,AQID"
+        }))
+        .unwrap();
+        let raw = image_url(&image).unwrap();
+        let (url, region) = presented_image_url(&image, &raw).unwrap();
+        assert_eq!((region.left, region.top), (104.0 / 603.0, 55.0 / 336.0));
+        let expected = crate::parse::svg_data_uri(
+            r#"<image x="-104" y="-55" width="603" height="336" preserveAspectRatio="none" opacity="0.37654""#,
+        );
+        assert!(url.contains(expected.split_once(',').unwrap().1));
+        assert_eq!(image_url(&image).unwrap(), raw);
+        assert!(presented_image_url(&image, "https://invalid.test/image.png").is_none());
+        assert!(presented_image_url(&image, "data:text/html,invalid").is_none());
+
+        image.css_opacity = None;
+        image.crop.as_mut().unwrap().left_fraction = Some(1.0);
+        assert!(presented_image_url(&image, &raw).is_none());
+        image.crop = None;
+        assert!(presented_image_url(&image, &raw).is_none());
+    }
 }
 
 #[cfg(test)]

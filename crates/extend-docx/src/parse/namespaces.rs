@@ -20,6 +20,7 @@ pub(crate) fn prefix(uri: &str) -> Option<&'static str> {
         | "http://purl.oclc.org/ooxml/drawingml/picture" => Some("pic"),
         "http://schemas.openxmlformats.org/drawingml/2006/chart"
         | "http://purl.oclc.org/ooxml/drawingml/chart" => Some("c"),
+        crate::chart::CHARTEX_NS => Some("cx"),
         "http://schemas.openxmlformats.org/officeDocument/2006/math"
         | "http://purl.oclc.org/ooxml/officeDocument/math" => Some("m"),
         "http://schemas.openxmlformats.org/markup-compatibility/2006" => Some("mc"),

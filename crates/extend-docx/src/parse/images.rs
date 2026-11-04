@@ -2,6 +2,7 @@ use crate::model::{
     ImageCrop, ImageFloating, ImageHorizontalAlign, ImagePaintBounds, ImageRunNode, ImageRunNodeType,
     ImageVerticalAlign, ImageWrapText, ImageWrapType,
 };
+use crate::parse::chart_colors::ChartColors;
 use crate::parse::colors::normalize_hex_color;
 use crate::parse::context::ParseContext;
 use crate::parse::re;
@@ -11,46 +12,18 @@ use crate::parse::shapes::{
     render_standalone_word_shape_svg, render_text_box_svg,
 };
 use crate::parse::util::{
-    active_xml as prefer_alternate_content_choice, clamp, clamp_i64, emu_to_pixels,
+    active_xml as prefer_alternate_content_choice, clamp, emu_to_pixels,
     escape_xml_text, is_windows_metafile_content_type, rasterize_windows_metafile_to_png_data_uri,
     regex_capture, regex_capture_tag, svg_data_uri, to_image_horizontal_align,
     to_image_vertical_align, windows_metafile_to_svg_data_uri,
 };
 use crate::xml::{
-    decode_xml_entities, extract_balanced_tag_blocks, extract_balanced_tag_blocks_in_order,
+    extract_balanced_tag_blocks, extract_balanced_tag_blocks_in_order,
     get_attribute, get_attribute_ref,
 };
 
-const CHART_COLOR_PALETTE: [&str; 8] = [
-    "#2563eb", "#f97316", "#22c55e", "#eab308", "#a855f7", "#06b6d4", "#ef4444", "#14b8a6",
-];
-
 const CHART_CONTENT_TYPE: &str =
     "application/vnd.openxmlformats-officedocument.drawingml.chart+xml";
-
-#[derive(Clone, Debug)]
-struct ParsedChartSeries {
-    name: String,
-    values: Vec<f64>,
-    categories: Vec<String>,
-    color: String,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ChartKind {
-    Bar,
-    Line,
-    Pie,
-    Doughnut,
-}
-
-#[derive(Clone, Debug)]
-struct ParsedChartData {
-    kind: ChartKind,
-    title: Option<String>,
-    categories: Vec<String>,
-    series: Vec<ParsedChartSeries>,
-}
 
 fn css_length_value_and_unit_to_pixels(value: &str, unit: &str) -> Option<f64> {
     let numeric: f64 = value.parse().ok()?;
@@ -541,573 +514,38 @@ fn parse_vml_floating_anchor_from_style(run_xml: &str, style_value: &str) -> Opt
     })
 }
 
-fn chart_color(raw_color: Option<&str>, index: usize) -> String {
-    normalize_hex_color(raw_color)
-        .unwrap_or_else(|| CHART_COLOR_PALETTE[index % CHART_COLOR_PALETTE.len()].to_string())
-}
-
-fn parse_chart_points(xml: &str) -> Vec<String> {
-    let re = re::get_unchecked(r"(?is)<c:pt\b[\s\S]*?<c:v>([\s\S]*?)</c:v>[\s\S]*?</c:pt>");
-    let values: Vec<String> = re
-        .captures_iter(xml)
-        .map(|caps| {
-            decode_xml_entities(caps.get(1).map(|m| m.as_str()).unwrap_or(""))
-                .trim()
-                .to_string()
-        })
-        .collect();
-    if !values.is_empty() {
-        return values;
-    }
-
-    let fallback_re = re::get_unchecked(r"(?is)<c:v>([\s\S]*?)</c:v>");
-    fallback_re
-        .captures_iter(xml)
-        .map(|caps| {
-            decode_xml_entities(caps.get(1).map(|m| m.as_str()).unwrap_or(""))
-                .trim()
-                .to_string()
-        })
-        .collect()
-}
-
-fn parse_chart_title(chart_xml: &str) -> Option<String> {
-    let title_xml = regex_capture_tag(chart_xml, r"(?is)<c:title\b[\s\S]*?</c:title>")?;
-    let re = re::get_unchecked(r"(?is)<(?:a:t|c:v)\b[^>]*>([\s\S]*?)</(?:a:t|c:v)>");
-    let title = re
-        .captures_iter(&title_xml)
-        .map(|caps| decode_xml_entities(caps.get(1).map(|m| m.as_str()).unwrap_or("")))
-        .collect::<Vec<_>>()
-        .join(" ");
-    let title = re::get_unchecked(r"\s+")
-        .replace_all(title.trim(), " ")
-        .to_string();
-    if title.is_empty() {
-        None
-    } else {
-        Some(title)
-    }
-}
-
-fn parse_chart_type(chart_xml: &str) -> Option<ChartKind> {
-    if re::get_unchecked(r"(?i)<c:barChart\b").is_match(chart_xml) {
-        return Some(ChartKind::Bar);
-    }
-    if re::get_unchecked(r"(?i)<c:lineChart\b").is_match(chart_xml) {
-        return Some(ChartKind::Line);
-    }
-    if re::get_unchecked(r"(?i)<c:pieChart\b").is_match(chart_xml) {
-        return Some(ChartKind::Pie);
-    }
-    if re::get_unchecked(r"(?i)<c:doughnutChart\b").is_match(chart_xml) {
-        return Some(ChartKind::Doughnut);
-    }
-    None
-}
-
-fn parse_chart_number(raw_value: &str) -> f64 {
-    let parsed: f64 = raw_value.replace(',', "").trim().parse().unwrap_or(0.0);
-    if parsed.is_finite() {
-        parsed
-    } else {
-        0.0
-    }
-}
-
-fn parse_chart_data(chart_xml: &str) -> Option<ParsedChartData> {
-    let kind = parse_chart_type(chart_xml)?;
-    let series_blocks = extract_balanced_tag_blocks(chart_xml, "c:ser");
-    let mut series = Vec::new();
-
-    for (index, series_xml) in series_blocks.into_iter().enumerate() {
-        let tx_block =
-            regex_capture_tag(&series_xml, r"(?is)<c:tx\b[\s\S]*?</c:tx>").unwrap_or_default();
-        let name = parse_chart_points(&tx_block)
-            .into_iter()
-            .next()
-            .unwrap_or_else(|| format!("Series {}", index + 1));
-        let val_block =
-            regex_capture_tag(&series_xml, r"(?is)<c:val\b[\s\S]*?</c:val>").unwrap_or_default();
-        let values = parse_chart_points(&val_block)
-            .into_iter()
-            .map(|value| parse_chart_number(&value))
-            .collect::<Vec<_>>();
-        let cat_block =
-            regex_capture_tag(&series_xml, r"(?is)<c:cat\b[\s\S]*?</c:cat>").unwrap_or_default();
-        let categories = parse_chart_points(&cat_block);
-        let color = chart_color(
-            regex_capture(&series_xml, r#"(?i)<a:srgbClr\b[^>]*val="([^"]+)""#).as_deref(),
-            index,
-        );
-
-        if values.is_empty() {
-            continue;
-        }
-
-        series.push(ParsedChartSeries {
-            name: {
-                let trimmed = name.trim();
-                if trimmed.is_empty() {
-                    format!("Series {}", index + 1)
-                } else {
-                    trimmed.to_string()
-                }
-            },
-            values,
-            categories,
-            color,
-        });
-    }
-
-    if series.is_empty() {
-        return None;
-    }
-
-    let point_count = series
-        .iter()
-        .map(|item| item.values.len().max(item.categories.len()))
-        .max()
-        .unwrap_or(0)
-        .max(0);
-    let categories_template = series
-        .iter()
-        .find(|item| !item.categories.is_empty())
-        .map(|item| item.categories.as_slice())
-        .unwrap_or(&[]);
-    let categories = (0..point_count)
-        .map(|index| {
-            let label = categories_template
-                .get(index)
-                .map(String::as_str)
-                .unwrap_or("");
-            let trimmed = label.trim();
-            if trimmed.is_empty() {
-                format!("Item {}", index + 1)
-            } else {
-                trimmed.to_string()
-            }
-        })
-        .collect::<Vec<_>>();
-
-    let series = series
-        .into_iter()
-        .map(|mut item| {
-            item.values = (0..point_count)
-                .map(|index| {
-                    item.values
-                        .get(index)
-                        .copied()
-                        .filter(|value| value.is_finite())
-                        .unwrap_or(0.0)
-                })
-                .collect();
-            item
-        })
-        .collect();
-
-    Some(ParsedChartData {
-        kind,
-        title: parse_chart_title(chart_xml),
-        categories,
-        series,
-    })
-}
-
-fn polar_to_cartesian(cx: f64, cy: f64, radius: f64, angle: f64) -> (f64, f64) {
-    let radians = (angle - 90.0) * std::f64::consts::PI / 180.0;
-    (cx + radius * radians.cos(), cy + radius * radians.sin())
-}
-
-fn render_cartesian_chart_svg(chart: &ParsedChartData, width_px: f64, height_px: f64) -> String {
-    let title = chart
-        .title
-        .as_deref()
-        .map(|title| {
-            format!(
-                r##"<text x="16" y="20" font-size="14" fill="#111827">{}</text>"##,
-                escape_xml_text(title)
-            )
-        })
-        .unwrap_or_default();
-
-    let margin_top = if chart.title.is_some() { 34.0 } else { 22.0 };
-    let margin = (margin_top, 20.0, 54.0, 54.0);
-    let plot_width = (width_px - margin.1 - margin.3).max(40.0);
-    let plot_height = (height_px - margin.0 - margin.2).max(40.0);
-
-    let all_values: Vec<f64> = chart
-        .series
-        .iter()
-        .flat_map(|series| series.values.iter().copied())
-        .collect();
-    let max_value = all_values
-        .into_iter()
-        .chain(std::iter::once(0.0))
-        .fold(1.0_f64, |acc, value| acc.max(value))
-        .max(1.0);
-    let grid_lines = 4;
-    let grid = (0..=grid_lines)
-        .map(|step| {
-            let value = (max_value * (grid_lines - step) as f64) / grid_lines as f64;
-            let y = margin.0 + (plot_height * step as f64) / grid_lines as f64;
-            format!(
-                r##"<line x1="{:.0}" y1="{:.0}" x2="{:.0}" y2="{:.0}" stroke="#e5e7eb" stroke-width="1"/><text x="{:.0}" y="{:.0}" text-anchor="end" font-size="10" fill="#6b7280">{:.1}</text>"##,
-                margin.3,
-                y,
-                margin.3 + plot_width,
-                y,
-                margin.3 - 6.0,
-                y + 4.0,
-                value
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("");
-
-    let category_count = chart.categories.len().max(1) as f64;
-    let group_width = plot_width / category_count;
-    let category_labels = chart
-        .categories
-        .iter()
-        .enumerate()
-        .map(|(index, category)| {
-            let x = margin.3 + group_width * index as f64 + group_width / 2.0;
-            format!(
-                r##"<text x="{:.0}" y="{:.0}" text-anchor="middle" font-size="10" fill="#4b5563">{}</text>"##,
-                x,
-                margin.0 + plot_height + 18.0,
-                escape_xml_text(category)
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("");
-
-    let series_markup = if chart.kind == ChartKind::Bar {
-        let series_count = chart.series.len().max(1) as f64;
-        let bar_group_width = group_width * 0.8;
-        let bar_width = (bar_group_width / series_count - 2.0).max(2.0);
-        chart
-            .series
-            .iter()
-            .enumerate()
-            .map(|(series_index, series)| {
-                series
-                    .values
-                    .iter()
-                    .enumerate()
-                    .map(|(point_index, value)| {
-                        let safe_value = value.max(0.0);
-                        let bar_height = (safe_value / max_value) * plot_height;
-                        let x = margin.3
-                            + point_index as f64 * group_width
-                            + (group_width - bar_group_width) / 2.0
-                            + series_index as f64 * (bar_group_width / series_count);
-                        let y = margin.0 + plot_height - bar_height;
-                        format!(
-                            r#"<rect x="{:.0}" y="{:.0}" width="{:.0}" height="{:.0}" fill="{}" rx="1.5"/>"#,
-                            x,
-                            y,
-                            bar_width,
-                            bar_height.max(1.0),
-                            series.color
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join("")
-            })
-            .collect::<Vec<_>>()
-            .join("")
-    } else {
-        chart
-            .series
-            .iter()
-            .map(|series| {
-                let points: Vec<(f64, f64)> = series
-                    .values
-                    .iter()
-                    .enumerate()
-                    .map(|(index, value)| {
-                        let safe_value = value.max(0.0);
-                        let x = margin.3 + group_width * index as f64 + group_width / 2.0;
-                        let y = margin.0 + plot_height - (safe_value / max_value) * plot_height;
-                        (x, y)
-                    })
-                    .filter(|(x, y)| x.is_finite() && y.is_finite())
-                    .collect();
-                if points.is_empty() {
-                    return String::new();
-                }
-                let path = points
-                    .iter()
-                    .enumerate()
-                    .map(|(index, (x, y))| {
-                        if index == 0 {
-                            format!("M{x} {y}")
-                        } else {
-                            format!("L{x} {y}")
-                        }
-                    })
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                let circles = points
-                    .iter()
-                    .map(|(x, y)| {
-                        format!(
-                            r#"<circle cx="{x:.0}" cy="{y:.0}" r="2.5" fill="{}" />"#,
-                            series.color
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join("");
-                format!(
-                    r#"<path d="{path}" fill="none" stroke="{}" stroke-width="2" />{circles}"#,
-                    series.color
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("")
-    };
-
-    let legend = chart
-        .series
-        .iter()
-        .enumerate()
-        .map(|(index, series)| {
-            let x = margin.3 + index as f64 * 120.0;
-            let y = 8.0;
-            format!(
-                r##"<rect x="{x:.0}" y="{y:.0}" width="10" height="10" rx="2" fill="{}"/><text x="{:.0}" y="{:.0}" font-size="10" fill="#374151">{}</text>"##,
-                series.color,
-                x + 14.0,
-                y + 9.0,
-                escape_xml_text(&series.name)
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("");
-
-    format!(
-        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{width_px:.0}" height="{height_px:.0}" viewBox="0 0 {width_px:.0} {height_px:.0}">
-    <rect x="0" y="0" width="{width_px:.0}" height="{height_px:.0}" fill="#ffffff"/>
-    {title}
-    {grid}
-    <line x1="{:.0}" y1="{:.0}" x2="{:.0}" y2="{:.0}" stroke="#9ca3af"/>
-    <line x1="{:.0}" y1="{:.0}" x2="{:.0}" y2="{:.0}" stroke="#9ca3af"/>
-    {series_markup}
-    {category_labels}
-    {legend}
-  </svg>"##,
-        margin.3,
-        margin.0 + plot_height,
-        margin.3 + plot_width,
-        margin.0 + plot_height,
-        margin.3,
-        margin.0,
-        margin.3,
-        margin.0 + plot_height,
-    )
-}
-
-fn render_pie_chart_svg(chart: &ParsedChartData, width_px: f64, height_px: f64) -> String {
-    let base_series = chart.series.first();
-    let values = base_series
-        .map(|series| series.values.as_slice())
-        .unwrap_or(&[]);
-    let total = values
-        .iter()
-        .map(|value| value.max(0.0))
-        .sum::<f64>()
-        .max(0.0001);
-    let categories = if !chart.categories.is_empty() {
-        chart.categories.clone()
-    } else {
-        (0..values.len())
-            .map(|index| format!("Item {}", index + 1))
-            .collect()
-    };
-    let colors: Vec<String> = if chart.series.len() > 1 {
-        chart.series.iter().map(|item| item.color.clone()).collect()
-    } else {
-        CHART_COLOR_PALETTE
-            .iter()
-            .map(|color| (*color).to_string())
-            .collect()
-    };
-
-    let center_x = (width_px * 0.34).round();
-    let center_y = (height_px * 0.56).round();
-    let outer_radius = ((width_px.min(height_px) * 0.26).round() as i64).clamp(30, 160) as f64;
-    let inner_radius = if chart.kind == ChartKind::Doughnut {
-        (outer_radius * 0.55).round()
-    } else {
-        0.0
-    };
-
-    let mut start_angle = 0.0;
-    let mut slices = Vec::new();
-    for (index, value) in values.iter().enumerate() {
-        let safe_value = value.max(0.0);
-        let angle = (safe_value / total) * 360.0;
-        let end_angle = start_angle + angle.max(0.001);
-        let large_arc_flag = if end_angle - start_angle > 180.0 {
-            1
-        } else {
-            0
-        };
-        let fill = &colors[index % colors.len()];
-
-        let (start_outer_x, start_outer_y) =
-            polar_to_cartesian(center_x, center_y, outer_radius, start_angle);
-        let (end_outer_x, end_outer_y) =
-            polar_to_cartesian(center_x, center_y, outer_radius, end_angle);
-
-        let path = if inner_radius > 0.0 {
-            let (start_inner_x, start_inner_y) =
-                polar_to_cartesian(center_x, center_y, inner_radius, start_angle);
-            let (end_inner_x, end_inner_y) =
-                polar_to_cartesian(center_x, center_y, inner_radius, end_angle);
-            format!(
-                "M {start_outer_x} {start_outer_y} A {outer_radius} {outer_radius} 0 {large_arc_flag} 1 {end_outer_x} {end_outer_y} L {end_inner_x} {end_inner_y} A {inner_radius} {inner_radius} 0 {large_arc_flag} 0 {start_inner_x} {start_inner_y} Z"
-            )
-        } else {
-            format!(
-                "M {center_x} {center_y} L {start_outer_x} {start_outer_y} A {outer_radius} {outer_radius} 0 {large_arc_flag} 1 {end_outer_x} {end_outer_y} Z"
-            )
-        };
-
-        slices.push(format!(
-            r##"<path d="{path}" fill="{fill}" stroke="#ffffff" stroke-width="1"/>"##
-        ));
-        start_angle = end_angle;
-    }
-
-    let title = chart
-        .title
-        .as_deref()
-        .map(|title| {
-            format!(
-                r##"<text x="16" y="20" font-size="14" fill="#111827">{}</text>"##,
-                escape_xml_text(title)
-            )
-        })
-        .unwrap_or_default();
-
-    let legend = categories
-        .iter()
-        .enumerate()
-        .map(|(index, category)| {
-            let x = (width_px * 0.63).round();
-            let y = 36.0 + index as f64 * 18.0;
-            let color = &colors[index % colors.len()];
-            let value = values.get(index).copied().unwrap_or(0.0);
-            format!(
-                r##"<rect x="{x:.0}" y="{:.0}" width="10" height="10" rx="2" fill="{color}"/><text x="{:.0}" y="{y:.0}" font-size="10" fill="#374151">{} ({value})</text>"##,
-                y - 8.0,
-                x + 14.0,
-                escape_xml_text(category)
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("");
-
-    format!(
-        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{width_px:.0}" height="{height_px:.0}" viewBox="0 0 {width_px:.0} {height_px:.0}">
-    <rect x="0" y="0" width="{width_px:.0}" height="{height_px:.0}" fill="#ffffff"/>
-    {title}
-    {}
-    {legend}
-  </svg>"##,
-        slices.join("")
-    )
-}
-
-fn render_bubble_or_empty_chart(xml: &str, width: f64, height: f64) -> Option<String> {
+fn render_empty_chart(
+    chart: &crate::chart::ChartData,
+    legend: bool,
+    width: f64,
+    height: f64,
+    colors: &ChartColors,
+) -> Option<String> {
     use std::fmt::Write;
-    let chart = crate::chart::parse_chart_xml(xml)?;
     let series = &chart.series;
-    let bubbles = !series.is_empty() && series.iter().all(|s| s.chart_type == "bubble");
-    if !bubbles && (series.is_empty() || series.iter().any(|s| !s.points.is_empty())) {
+    if series.is_empty() || series.iter().any(|s| !s.points.is_empty()) {
         return None;
     }
-
-    let number = |value: &Option<String>| {
-        value
-            .as_ref()?
-            .trim()
-            .parse::<f64>()
-            .ok()
-            .filter(|n| n.is_finite())
-    };
-    let mut points = Vec::new();
-    let (mut xmin, mut xmax, mut ymin, mut ymax, mut max_size) =
-        (0.0_f64, 0.0_f64, 0.0_f64, 0.0_f64, 0.0_f64);
-    for (i, s) in series.iter().enumerate() {
-        for pt in &s.points {
-            if let (Some(x), Some(y), Some(size)) =
-                (number(&pt.x), number(&pt.y), number(&pt.bubble_size))
-            {
-                if size <= 0.0 {
-                    continue;
-                }
-                xmin = xmin.min(x);
-                xmax = xmax.max(x);
-                ymin = ymin.min(y);
-                ymax = ymax.max(y);
-                max_size = max_size.max(size);
-                points.push((i, x, y, size));
-            }
-        }
-    }
-    if xmin == xmax {
-        xmax = 1.0;
-    }
-    if ymin == ymax {
-        ymax = 1.0;
-    }
-
     let left = 46.0;
     let right = width - (width * 0.22).clamp(64.0, 120.0);
     let top = 36.0;
     let bottom = height - 32.0;
-    let max_radius = ((bottom - top).min(right - left) * 0.08).clamp(3.0, 22.0);
     let title = escape_xml_text(chart.title.as_deref().unwrap_or(""));
     let mut svg = format!(
         r##"<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" font-family="sans-serif"><rect width="100%" height="100%" fill="white"/><text x="16" y="22" font-size="15" fill="#111827">{title}</text>"##
     );
-    let padding = if bubbles { max_radius } else { 0.0 };
     for step in 0..=4 {
         let fraction = step as f64 / 4.0;
-        let y = bottom - padding - fraction * (bottom - top - 2.0 * padding);
-        let value = ymin * (1.0 - fraction) + ymax * fraction;
+        let y = bottom - fraction * (bottom - top);
+        let value = fraction;
         write!(svg, r##"<path d="M{left} {y}H{right}" stroke="#e5e7eb"/><text x="{}" y="{}" text-anchor="end" font-size="10">{value:.2}</text>"##, left - 5.0, y + 3.0).unwrap();
-        if bubbles {
-            let x = left + padding + fraction * (right - left - 2.0 * padding);
-            let value = xmin * (1.0 - fraction) + xmax * fraction;
-            write!(
-                svg,
-                r#"<text x="{x}" y="{}" text-anchor="middle" font-size="10">{value:.2}</text>"#,
-                bottom + 15.0
-            )
-            .unwrap();
-        }
     }
     write!(
         svg,
         r##"<path d="M{left} {top}V{bottom}H{right}" fill="none" stroke="#9ca3af"/>"##
     )
     .unwrap();
-    let position = |value: f64, min: f64, max: f64| {
-        let scale = min.abs().max(max.abs());
-        (value / scale - min / scale) / (max / scale - min / scale)
-    };
-    for (i, x, y, size) in points {
-        let cx = left + padding + position(x, xmin, xmax) * (right - left - 2.0 * padding);
-        let cy = bottom - padding - position(y, ymin, ymax) * (bottom - top - 2.0 * padding);
-        let radius = max_radius * (size / max_size).sqrt();
-        let color = chart_color(None, i);
-        write!(svg, r#"<circle cx="{cx:.2}" cy="{cy:.2}" r="{radius:.2}" fill="{color}" fill-opacity="0.8"/>"#).unwrap();
-    }
-    if re::get_unchecked(r"(?i)<c:legend\b").is_match(xml) {
+    if legend {
         for (i, s) in series.iter().enumerate() {
             let y = top + i as f64 * 17.0;
             let name = s
@@ -1115,7 +553,7 @@ fn render_bubble_or_empty_chart(xml: &str, width: f64, height: f64) -> Option<St
                 .as_deref()
                 .map(escape_xml_text)
                 .unwrap_or_else(|| format!("Series {}", i + 1));
-            let color = chart_color(None, i);
+            let color = colors.fill(i, None);
             write!(svg, r#"<rect x="{}" y="{y}" width="8" height="8" fill="{color}"/><text x="{}" y="{}" font-size="11">{name}</text>"#,right+10.0,right+22.0,y+8.0).unwrap();
         }
     }
@@ -1124,24 +562,61 @@ fn render_bubble_or_empty_chart(xml: &str, width: f64, height: f64) -> Option<St
 }
 
 fn chart_xml_to_svg_data_uri(
-    chart_xml: &str,
+    part_name: &str,
+    context: &ParseContext<'_, impl std::borrow::Borrow<super::context::ParsedStyleSheet>>,
     width_px: Option<f64>,
     height_px: Option<f64>,
-) -> Option<String> {
-    let safe_width = clamp_i64(width_px.unwrap_or(640.0).round() as i64, 240, 1600) as f64;
-    let safe_height = clamp_i64(height_px.unwrap_or(360.0).round() as i64, 180, 1200) as f64;
-    let Some(chart) = parse_chart_data(chart_xml) else {
-        return render_bubble_or_empty_chart(chart_xml, safe_width, safe_height).map(|svg| svg_data_uri(&svg));
-    };
-    let svg = match chart.kind {
-        ChartKind::Pie | ChartKind::Doughnut => {
-            render_pie_chart_svg(&chart, safe_width, safe_height)
-        }
-        ChartKind::Bar | ChartKind::Line => {
-            render_cartesian_chart_svg(&chart, safe_width, safe_height)
-        }
-    };
-    Some(svg_data_uri(&svg))
+) -> Option<(String, crate::ChartData)> {
+    let xml = roxmltree::Document::parse(&context.parts.get(part_name)?.content).ok()?;
+    let root = xml.root_element();
+    let data = crate::chart::chart_data_from_root(root)?;
+    let colors = ChartColors::new(root, context, part_name, &data);
+    let width = width_px
+        .filter(|v| v.is_finite() && *v > 0.)
+        .unwrap_or(640.);
+    let height = height_px
+        .filter(|v| v.is_finite() && *v > 0.)
+        .unwrap_or(360.);
+    let svg = if root.has_tag_name((crate::chart::CHARTEX_NS, "chartSpace")) {
+        super::chartex::render(root, &data, &colors, width, height, context.styles().theme_fonts.minor_latin.as_deref())
+    } else {
+        let chart = crate::chart::child(root, "chart")?;
+        let plot = crate::chart::child(chart, "plotArea")?;
+        let kind = plot.children().find_map(|node| {
+            let tag = node.tag_name().name();
+            if crate::chart::chart_node(node, tag) {
+                tag.strip_suffix("Chart")
+            } else {
+                None
+            }
+        })?;
+        let render = match kind {
+            "bar" | "line" | "area" | "scatter" => super::cartesian_chart::render,
+            "pie" | "doughnut" | "ofPie" => super::pie_chart::render,
+            "area3D" | "bar3D" | "line3D" | "pie3D" | "surface" | "surface3D" => {
+                super::chart_3d::render
+            }
+            "radar" | "stock" => super::radar_stock::render,
+            "bubble" => super::bubble_chart::render,
+            _ => return None,
+        };
+        let font = context.styles().theme_fonts.minor_latin.as_deref();
+        render(root, &data, width, height, &colors, font).or_else(|| {
+            render_empty_chart(
+                &data,
+                crate::chart::child(chart, "legend").is_some(),
+                width,
+                height,
+                &colors,
+            )
+        })
+    }?;
+    Some((svg_data_uri(&colors.with_definitions(svg)), data))
+}
+
+fn chart_relationship(xml: &str) -> Option<String> {
+    let tag = regex_capture_tag(xml, r"(?i)<(?:c|cx):chart\b[^>]*>")?;
+    get_attribute(&tag, "r:id")
 }
 
 fn resolve_preferred_drawing_relationship_id(run_xml: &str) -> Option<String> {
@@ -2044,7 +1519,7 @@ fn vml_group_image_with_owner(
         }
         let relationship = resolve_preferred_drawing_relationship_id(xml)
             .or_else(|| regex_capture(xml, r#"(?i)<v:imagedata\b[^>]*r:id="([^"]+)""#))
-            .or_else(|| regex_capture(xml, r#"(?i)<c:chart\b[^>]*r:id="([^"]+)""#))?;
+            .or_else(|| chart_relationship(xml))?;
         let part_name = context.relationships.get(&relationship)?;
         context.binary_assets.get(part_name)?;
     }
@@ -2632,6 +2107,7 @@ fn vml_group_image_with_owner(
         canvas.0, canvas.1
     );
     Some(ImageRunNode {
+        chart_data: None,
         chart_part_name: None,
         width_px: Some(if paint_bounds.is_some() { width } else { width_px }),
         height_px: Some(if paint_bounds.is_some() { height } else { height_px }),
@@ -2678,7 +2154,7 @@ pub fn parse_run_image_block(
     let (mut width_px, mut height_px, mut floating) = resolve_run_image_layout(active_run_xml);
     let mut alt = resolve_doc_pr_alt(active_run_xml);
     let mut chart_relationship_id =
-        regex_capture(active_run_xml, r#"(?i)<c:chart\b[^>]*r:id="([^"]+)""#);
+        chart_relationship(active_run_xml);
     let mut relationship_id = resolve_preferred_drawing_relationship_id(active_run_xml)
         .or_else(|| regex_capture(active_run_xml, r#"(?i)<v:imagedata\b[^>]*r:id="([^"]+)""#))
         .or_else(|| chart_relationship_id.clone());
@@ -2686,7 +2162,7 @@ pub fn parse_run_image_block(
     if relationship_id.is_none() && normalized_run_xml != run_xml {
         active_run_xml = run_xml;
         chart_relationship_id =
-            regex_capture(active_run_xml, r#"(?i)<c:chart\b[^>]*r:id="([^"]+)""#);
+            chart_relationship(active_run_xml);
         relationship_id = resolve_preferred_drawing_relationship_id(active_run_xml)
             .or_else(|| regex_capture(active_run_xml, r#"(?i)<v:imagedata\b[^>]*r:id="([^"]+)""#))
             .or_else(|| chart_relationship_id.clone());
@@ -2718,7 +2194,7 @@ pub fn parse_run_image_block(
         || part_name
             .as_deref()
             .is_some_and(|name| name.contains("/charts/"))
-        || content_type.as_deref() == Some(CHART_CONTENT_TYPE);
+        || matches!(content_type.as_deref(), Some(CHART_CONTENT_TYPE | "application/vnd.ms-office.chartex+xml"));
 
     let chart_part_name = if likely_chart_part {
         chart_relationship_id
@@ -2750,6 +2226,7 @@ pub fn parse_run_image_block(
                 parse_text_box_layout(active_run_xml).as_ref(),
             ));
             return Some(ImageRunNode {
+                chart_data: None,
                 chart_part_name: None,
                 paint_bounds: None,
                 r#type: ImageRunNodeType::Image,
@@ -2811,6 +2288,7 @@ pub fn parse_run_image_block(
             }
         }
         return Some(ImageRunNode {
+            chart_data: None,
             chart_part_name: None,
             paint_bounds: None,
             r#type: ImageRunNodeType::Image,
@@ -2848,20 +2326,18 @@ pub fn parse_run_image_block(
     }
 
     if likely_chart_part {
-        let chart_xml = chart_part_name
+        if let Some(name) = chart_part_name
             .as_deref()
-            .and_then(|name| context.parts.get(name))
-            .map(|part| part.content.as_str());
-        if chart_xml.is_none() {
-            if let Some(name) = part_name.as_deref() {
-                context.push_warning(format!("Missing chart part {name}"));
-            }
+            .filter(|name| !context.parts.contains_key(*name))
+        {
+            context.push_warning(format!("Missing chart part {name}"));
         }
-
-        if let Some(chart_src) =
-            chart_xml.and_then(|xml| chart_xml_to_svg_data_uri(xml, width_px, height_px))
+        if let Some((chart_src, chart_data)) = chart_part_name
+            .as_deref()
+            .and_then(|name| chart_xml_to_svg_data_uri(name, context, width_px, height_px))
         {
             return Some(ImageRunNode {
+                chart_data: Some(Box::new(chart_data)),
                 chart_part_name,
                 paint_bounds: None,
                 r#type: ImageRunNodeType::Image,
@@ -2900,6 +2376,7 @@ pub fn parse_run_image_block(
             parse_text_box_layout(active_run_xml).as_ref(),
         ));
         return Some(ImageRunNode {
+            chart_data: None,
             chart_part_name: None,
             paint_bounds: None,
             r#type: ImageRunNodeType::Image,
@@ -2960,6 +2437,9 @@ pub fn parse_run_image_block(
     }
 
     Some(ImageRunNode {
+        chart_data: chart_part_name.as_ref().and_then(|name| {
+            crate::chart::parse_chart_xml(&context.parts.get(name)?.content).map(Box::new)
+        }),
         chart_part_name,
         paint_bounds: None,
         r#type: ImageRunNodeType::Image,
@@ -2994,18 +2474,74 @@ pub fn parse_run_images(
         .collect()
 }
 
+fn alternate_chart_previews(run_xml: &str) -> std::collections::HashMap<usize, (&str, &str)> {
+    let mut previews = std::collections::HashMap::new();
+    // Image and text tokens use offsets after alternate selection.
+    let mut removed = 0;
+    for range in crate::xml::extract_balanced_tag_ranges(run_xml, "mc:AlternateContent") {
+        let alternate = &run_xml[range.start..range.end];
+        let selected = prefer_alternate_content_choice(alternate);
+        let offset = range.start - removed;
+        removed += alternate.len().saturating_sub(selected.len());
+        let Some(choice) = crate::xml::direct_child_tag(alternate, "mc:Choice") else {
+            continue;
+        };
+        let Some(drawing) = crate::xml::direct_child_tag(choice, "w:drawing") else {
+            continue;
+        };
+        if selected.trim() != drawing {
+            continue;
+        }
+        let Some(fallback) = crate::xml::direct_child_tag(alternate, "mc:Fallback") else {
+            continue;
+        };
+        let ranges = crate::xml::extract_direct_child_tag_ranges(fallback);
+        if let [item] = ranges.as_slice() {
+            if matches!(item.tag_name.as_str(), "w:drawing" | "w:pict") {
+                let start = offset + selected.len() - selected.trim_start().len();
+                previews.insert(start, (alternate, &fallback[item.start..item.end]));
+            }
+        }
+    }
+    previews
+}
+
+fn region_map_preview(
+    part_name: &str,
+    fallback: &str,
+    context: &ParseContext<'_, impl std::borrow::Borrow<super::context::ParsedStyleSheet>>,
+) -> Option<ImageRunNode> {
+    use crate::chart::{cx_child, CHARTEX_NS};
+    let xml = roxmltree::Document::parse(&context.parts.get(part_name)?.content).ok()?;
+    let root = xml.root_element();
+    if !root.has_tag_name((CHARTEX_NS, "chartSpace")) {
+        return None;
+    }
+    let plot = cx_child(cx_child(cx_child(root, "chart")?, "plotArea")?, "plotAreaRegion")?;
+    if !plot.children().any(|series| {
+        series.has_tag_name((CHARTEX_NS, "series")) && series.attribute("layoutId") == Some("regionMap")
+    }) {
+        return None;
+    }
+    parse_run_image_block(fallback, context).filter(|preview| {
+        preview.src.as_deref().is_some_and(|url| url.starts_with("data:image/"))
+            && preview.data.as_ref().is_some_and(|bytes| !bytes.is_empty())
+    })
+}
+
 pub fn parse_run_image_tokens(
     run_xml: &str,
     context: &ParseContext<'_, impl std::borrow::Borrow<super::context::ParsedStyleSheet>>,
 ) -> Vec<(usize, ImageRunNode)> {
     if !memchr::memchr_iter(b'<', run_xml.as_bytes()).any(|position| {
         let tag = &run_xml[position + 1..];
-        ["a:", "wp:", "v:", "c:", "wps:", "wpg:", "w:txbxContent"]
+        ["a:", "wp:", "v:", "c:", "cx:", "wps:", "wpg:", "w:txbxContent"]
             .iter()
             .any(|prefix| super::scan::starts_with_ignore_ascii_case(tag, prefix))
     }) {
         return Vec::new();
     }
+    let original_run = run_xml;
     let active_run_xml = prefer_alternate_content_choice(run_xml);
     let run_xml = active_run_xml.as_ref();
     let candidate_ranges = extract_balanced_tag_blocks_in_order(
@@ -3022,10 +2558,29 @@ pub fn parse_run_image_tokens(
     };
 
     let mut images = Vec::new();
+    let mut previews = None;
     for (source_start, candidate_xml) in candidate_xml_blocks {
-        let Some(image) = parse_run_image_block(candidate_xml, context) else {
+        let Some(mut image) = parse_run_image_block(candidate_xml, context) else {
             continue;
         };
+        if image.src.is_none() && run_xml.len() < original_run.len() {
+            let preview = image.chart_part_name.as_deref().and_then(|part| {
+                let &(alternate, fallback) = previews
+                    .get_or_insert_with(|| alternate_chart_previews(original_run))
+                    .get(&source_start)?;
+                Some((alternate, region_map_preview(part, fallback, context)?))
+            });
+            if let Some((alternate, preview)) = preview {
+                image.src = preview.src;
+                image.data = preview.data;
+                image.part_name = preview.part_name;
+                image.content_type = preview.content_type;
+                image.crop = preview.crop;
+                image.css_filter = preview.css_filter;
+                image.css_opacity = preview.css_opacity;
+                image.source_xml = Some(alternate.to_owned());
+            }
+        }
         images.push((source_start, image));
     }
 

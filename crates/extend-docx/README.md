@@ -16,7 +16,7 @@ Native builds enable `native-deflate` by default, using libdeflate for whole-buf
 
 ```toml
 [dependencies]
-extend-docx = { version = "0.1", default-features = false }
+extend-docx = { version = "0.2", default-features = false }
 ```
 
 ## Usage
@@ -46,7 +46,7 @@ A native chart figure carries `details.chartPartName` in structured blocks and `
 
 Paragraph-derived blocks, including those in tables and auxiliary stories, then include `words`. Each word has an ID, its parent `blockId`, original `content`, and document-bound source references with UTF-16 `start`/`end` offsets into the paragraph block's content. Segmentation uses Unicode word boundaries and includes punctuation and symbols; whitespace-only segments are omitted. It is not dictionary-based linguistic segmentation. Styled run boundaries do not split a word, and capitalization formatting does not rewrite its source text. Word rectangles are resolved by the viewer after layout, just like block rectangles.
 
-The versioned output uses Extend's 15 block type names. Each block retains document-bound source references; paragraphs retain styled inline content, tables retain cells and spans, and text boxes retain nested content. Header/footer stories, notes, comments, form controls, and equations are represented where supported by the parser. Image blocks expose their render payload through `details.imageUrl`, including SVG composites, charts, text boxes, and converted images. Existing `details.asset` values continue to identify source package parts. A data URI carries its payload with the block; external URLs remain references and are never fetched during extraction. If an imported model has image bytes but no nonblank URL, extraction encodes those bytes as a data URI. Empty payloads do not create an `imageUrl` field. Original image bytes remain available in the parsed package.
+The versioned output uses Extend's 15 block type names. Each block retains document-bound source references; paragraphs retain styled inline content, tables retain cells and spans, and text boxes retain nested content. Header/footer stories, notes, comments, form controls, and equations are represented where supported by the parser. Image blocks expose their render payload through `details.imageUrl`, including SVG composites, charts, text boxes, and converted images. Existing `details.asset` values continue to identify source package parts. A data URI carries its payload with the block; external URLs remain references and are never fetched during extraction. If an imported model has image bytes but no nonblank URL, extraction encodes those bytes as a data URI. Empty payloads do not create an `imageUrl` field. When an embedded image is cropped or translucent, `imageUrl` preserves its displayed appearance and `details.sourceImageUrl` retains its original render payload. `details.imagePresentation` identifies the visible source rectangle (fractional left, top, right and bottom edges), rendered aspect ratio, and opacity. Original image bytes remain available in the parsed package.
 
 `document_source_graph(&package)` provides an optional namespace-aware tree of XML elements, attributes, text, and an asset manifest. Original XML and binary assets remain in `package`. XML byte ranges refer to the decoded UTF-8 strings. For legacy DOC, the graph describes the adapter's OOXML output; keep the original DOC bytes to preserve unsupported binary structures.
 
