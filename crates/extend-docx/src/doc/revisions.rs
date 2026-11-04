@@ -1,4 +1,8 @@
-use super::{comments::xst, fmt::escape_xml, sprm};
+use super::{
+    comments::xst,
+    fmt::{dttm_to_iso, escape_xml},
+    sprm,
+};
 
 pub(super) fn authors(table: &[u8]) -> Vec<String> {
     if table.len() < 6 || table[..2] != [0xff, 0xff] {
@@ -39,22 +43,12 @@ impl Mark {
         {
             xml.push_str(&format!(r#" w:author="{}""#, escape_xml(author)));
         }
-        if let Some(date) = self.date.and_then(date_time) {
+        if let Some(date) = self.date.and_then(dttm_to_iso) {
             xml.push_str(&format!(r#" w:date="{date}""#));
         }
         xml.push('>');
         xml
     }
-}
-
-fn date_time(value: u32) -> Option<String> {
-    let minute = value & 63;
-    let hour = value >> 6 & 31;
-    let day = value >> 11 & 31;
-    let month = value >> 16 & 15;
-    let year = 1900 + (value >> 20 & 511);
-    (minute < 60 && hour < 24 && (1..=31).contains(&day) && (1..=12).contains(&month))
-        .then(|| format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:00"))
 }
 
 pub(super) fn marks(properties: &[u8], deleted: bool) -> (Option<Mark>, Option<Mark>) {
@@ -97,6 +91,6 @@ mod tests {
             insertion.unwrap().open("ins", 8, &names),
             r#"<w:ins w:id="8" w:author="A" w:date="2025-12-31T16:35:00">"#
         );
-        assert!(date_time(0).is_none());
+        assert!(dttm_to_iso(0).is_none());
     }
 }

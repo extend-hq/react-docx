@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.4
+
+- Return stored comment timestamps from legacy binary Word documents.
+
 ## 0.1.3
 
 - Add opt-in typed revision extraction with source block references and UTF-16 text ranges.

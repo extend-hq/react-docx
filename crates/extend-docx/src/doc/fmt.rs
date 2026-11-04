@@ -1,6 +1,16 @@
 //! Shared primitives for mapping binary formatting structures (colors, borders,
 //! shading) onto their OOXML equivalents, plus XML string helpers.
 
+pub(super) fn dttm_to_iso(value: u32) -> Option<String> {
+    let minute = value & 63;
+    let hour = value >> 6 & 31;
+    let day = value >> 11 & 31;
+    let month = value >> 16 & 15;
+    let year = 1900 + (value >> 20 & 511);
+    (minute < 60 && hour < 24 && (1..=31).contains(&day) && (1..=12).contains(&month))
+        .then(|| format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:00"))
+}
+
 pub fn escape_xml(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     escape_xml_into(text, &mut out);

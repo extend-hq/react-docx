@@ -42,6 +42,7 @@ pub mod fcidx {
     pub const PLCF_HDR_TXBX_TXT: usize = 58;
     pub const PLF_LST: usize = 73;
     pub const PLF_LFO: usize = 74;
+    pub const ATRD_EXTRA: usize = 112;
 }
 
 #[derive(Debug, Default, Clone, Copy)]

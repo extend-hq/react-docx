@@ -6,6 +6,7 @@ pub(super) struct Comment {
     pub text_end: u32,
     pub author: String,
     pub initials: String,
+    pub date: Option<String>,
 }
 
 fn u16_at(bytes: &[u8], offset: usize) -> Option<u16> {
@@ -42,6 +43,10 @@ pub(super) fn parse(doc: &DocFile) -> Vec<Comment> {
         return Vec::new();
     };
     let count = payload / 34;
+    let extended = doc
+        .fib
+        .table_slice(&doc.table, fcidx::ATRD_EXTRA)
+        .unwrap_or_default();
     let owners = doc
         .fib
         .table_slice(&doc.table, fcidx::GRP_XST_ATN_OWNERS)
@@ -80,7 +85,28 @@ pub(super) fn parse(doc: &DocFile) -> Vec<Comment> {
                 text_end: base + end,
                 author,
                 initials,
+                date: timestamp(extended, index),
             })
         })
         .collect()
+}
+
+fn timestamp(extended: &[u8], index: usize) -> Option<String> {
+    let start = index.checked_mul(18)?;
+    let data = extended.get(start..start.checked_add(18)?)?;
+    super::fmt::dttm_to_iso(u32_at(data, 0)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::timestamp;
+    #[test]
+    fn dates_follow_the_comment_index_and_require_a_complete_record() {
+        let mut data = vec![0; 36];
+        let dttm = ((2026u32 - 1900) << 20) | (1 << 16) | (15 << 11) | (17 << 6) | 34;
+        data[18..22].copy_from_slice(&dttm.to_le_bytes());
+        assert_eq!(timestamp(&data, 0), None);
+        assert_eq!(timestamp(&data, 1).as_deref(), Some("2026-01-15T17:34:00"));
+        assert_eq!(timestamp(&data[..35], 1), None);
+    }
 }

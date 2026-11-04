@@ -1636,11 +1636,14 @@ impl<'a> DocBuilder<'a> {
             format!(r#"<w:comments xmlns:w="{W_NS}" xmlns:r="{R_NS}" xmlns:wp="{WP_NS}">"#);
         for index in 0..self.comments.len() {
             let comment = &self.comments[index];
-            let attrs = format!(
+            let mut attrs = format!(
                 r#"w:id="{index}" w:author="{}" w:initials="{}""#,
                 escape_xml(&comment.author),
                 escape_xml(&comment.initials)
             );
+            if let Some(date) = &comment.date {
+                attrs.push_str(&format!(r#" w:date="{date}""#));
+            }
             let (start, end) = (comment.text_start, comment.text_end);
             let paragraphs = self.build_paragraphs(start, end, &NoteContext::Body);
             let body = self.assemble_blocks(&paragraphs);
