@@ -225,9 +225,9 @@ checksum = "00d174d5400e5e8fd687ad1049e2f578285fa914201b1af7e8b112a4546bd826"
 
 [[package]]
 name = "extend-docx"
-version = "0.2.1"
+version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8c744579db7b5fc3ea368d764cf2e284a30a64b1da98cf4c4c71a7748a4a49a9"
+checksum = "d53792e5449fe512dc7ad64d15c00670cfc8a3a353da02b1fb8a80b254e78ef0"
 dependencies = [
  "arc-swap",
  "base64",
