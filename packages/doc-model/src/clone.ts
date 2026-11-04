@@ -267,6 +267,7 @@ function cloneParagraph(paragraph: ParagraphNode): ParagraphNode {
         type: "image" as const,
         blockId: child.blockId,
         semanticKind: child.semanticKind,
+        chartPartName: child.chartPartName,
         mathMl: child.mathMl,
         contentNodes: child.contentNodes?.map(cloneDocNode),
         src: child.src,

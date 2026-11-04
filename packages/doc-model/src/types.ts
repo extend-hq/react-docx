@@ -101,6 +101,7 @@ export interface ImagePaintBounds {
 }
 
 export interface ImageRunNode {
+  chartPartName?: string;
   paintBounds?: ImagePaintBounds;
   mathMl?: string;
   blockId?: string;

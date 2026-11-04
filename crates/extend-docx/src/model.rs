@@ -454,6 +454,8 @@ pub struct ImagePaintBounds {
 #[serde(rename_all = "camelCase")]
 pub struct ImageRunNode {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chart_part_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub paint_bounds: Option<Box<ImagePaintBounds>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub math_ml: Option<String>,
