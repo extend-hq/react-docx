@@ -76,7 +76,7 @@ fn stops(node: Node, theme: &ThemeColorMap) -> Vec<(f64, String)> {
     values
 }
 
-fn rgba(hex: &str) -> Option<[u8; 4]> {
+pub(in crate::parse) fn rgba(hex: &str) -> Option<[u8; 4]> {
     if !hex.starts_with('#') || !matches!(hex.len(), 7 | 9) {
         return None;
     }

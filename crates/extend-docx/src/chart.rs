@@ -202,12 +202,27 @@ fn extended_text(node: Node) -> Option<String> {
     (!text.is_empty()).then_some(text)
 }
 
-fn extended_points(data: Node) -> Vec<ChartPoint> {
+pub(crate) fn map_color_dimension<'a>(data: Node<'a, 'a>) -> Option<Node<'a, 'a>> {
+    data.children().find(|n| {
+        (n.has_tag_name((CHARTEX_NS, "numDim")) && n.attribute("type") == Some("colorVal"))
+            || (n.has_tag_name((CHARTEX_NS, "strDim")) && n.attribute("type") == Some("colorStr"))
+    })
+}
+
+fn extended_points(data: Node, layout: &str) -> Vec<ChartPoint> {
     let mut points = BTreeMap::new();
+    let color_dimension = if layout == "regionMap" { map_color_dimension(data) } else { None };
     for dimension in data.children().filter(|n| {
         n.has_tag_name((CHARTEX_NS, "strDim")) || n.has_tag_name((CHARTEX_NS, "numDim"))
     }) {
         let role = dimension.attribute("type").unwrap_or_default();
+        let role = if Some(dimension) == color_dimension {
+            "val"
+        } else if color_dimension.is_some() && matches!(role, "val" | "size") {
+            continue;
+        } else {
+            role
+        };
         if !matches!(role, "cat" | "val" | "size" | "x" | "y") {
             continue;
         }
@@ -258,15 +273,16 @@ fn extended_data(root: Node) -> Option<ChartData> {
         .children()
         .filter(|n| n.has_tag_name((CHARTEX_NS, "series")))
         .filter_map(|s| {
+            let layout = s.attribute("layoutId")?;
             let id = cx_child(s, "dataId")
                 .and_then(|d| d.attribute("val"))
                 .and_then(|id| id.parse::<u32>().ok());
             Some(ChartSeries {
-                chart_type: s.attribute("layoutId")?.to_owned(),
+                chart_type: layout.to_owned(),
                 name: extended_text(s),
                 points: id
                     .and_then(|id| datasets.get(&id))
-                    .map(|&d| extended_points(d))
+                    .map(|&d| extended_points(d, layout))
                     .unwrap_or_default(),
             })
         })

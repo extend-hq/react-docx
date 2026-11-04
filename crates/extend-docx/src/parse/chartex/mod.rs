@@ -7,8 +7,11 @@ use std::fmt::Write;
 mod box_plot;
 mod drawing;
 mod flow;
+mod geo_cache;
 mod hierarchy;
 mod histogram;
+mod map_projection;
+mod region_map;
 
 struct VisibleData<'a> {
     title: Option<&'a str>,
@@ -88,6 +91,7 @@ pub(super) fn render(
     colors: &ChartColors,
     width: f64,
     height: f64,
+    minor_font: Option<&str>,
 ) -> Option<String> {
     if !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 0.0 {
         return None;
@@ -115,7 +119,13 @@ pub(super) fn render(
     let kind = visible_kind.as_deref().unwrap_or(&first_kind);
     if !matches!(
         kind,
-        "treemap" | "sunburst" | "waterfall" | "funnel" | "clusteredColumn" | "boxWhisker"
+        "treemap"
+            | "sunburst"
+            | "waterfall"
+            | "funnel"
+            | "clusteredColumn"
+            | "boxWhisker"
+            | "regionMap"
     ) {
         return None;
     }
@@ -136,7 +146,8 @@ pub(super) fn render(
         r#"<rect width="{width}" height="{height}" fill="{background}" stroke="{border}"/>"#
     )
     .unwrap();
-    let title_bottom = render_title(&mut svg, chart, data, colors, width, height);
+    let map_font = (kind == "regionMap").then_some(minor_font.unwrap_or("Cambria"));
+    let title_bottom = render_title(&mut svg, chart, data, colors, width, height, map_font);
     let data = VisibleData {
         title: data.title.as_deref(),
         series: source_indices
@@ -144,7 +155,9 @@ pub(super) fn render(
             .filter_map(|i| data.series.get(*i))
             .collect(),
     };
-    if data.series.iter().all(|s| s.points.is_empty()) {
+    if data.series.is_empty()
+        || (kind != "regionMap" && data.series.iter().all(|s| s.points.is_empty()))
+    {
         svg.push_str("</svg>");
         return Some(svg);
     }
@@ -211,6 +224,7 @@ pub(super) fn render(
         "waterfall" | "funnel" => flow::render(&ctx, &mut svg),
         "clusteredColumn" => histogram::render(&ctx, &mut svg),
         "boxWhisker" => box_plot::render(&ctx, &mut svg),
+        "regionMap" => region_map::render(&ctx, map_font?, &mut svg),
         _ => return None,
     }?;
     svg.push_str("</svg>");
@@ -224,9 +238,11 @@ fn render_title(
     colors: &ChartColors,
     width: f64,
     height: f64,
+    map_font: Option<&str>,
 ) -> f64 {
+    let inset = if map_font.is_some() { 7. } else { 8. };
     let Some((title, value)) = cx_child(chart, "title").zip(data.title.as_deref()) else {
-        return 8.;
+        return inset;
     };
     let properties = title
         .descendants()
@@ -236,7 +252,9 @@ fn render_title(
         .find_map(|n| n.attribute("sz")?.parse::<u32>().ok())
         .map(|v| f64::from(v) / 75.)
         .filter(|p| *p > 0.)
-        .unwrap_or(56. / 3.);
+        .or_else(|| map_font.and_then(|_| colors.style_font_size("title")))
+        .unwrap_or(56. / 3.)
+        .clamp(1., 512.);
     let fill = properties
         .clone()
         .find_map(|n| colors.shape_fill(n))
@@ -250,7 +268,13 @@ fn render_title(
                 .attribute("typeface")
         })
         .filter(|font| !font.starts_with('+'))
-        .unwrap_or("Calibri");
+        .unwrap_or(map_font.unwrap_or("Calibri"));
+    let fallback =
+        if map_font.is_some() && matches!(font, "Cambria" | "Georgia" | "Times New Roman") {
+            "Georgia, Times New Roman, serif"
+        } else {
+            "Carlito, Arial, sans-serif"
+        };
     let bold = properties
         .clone()
         .any(|n| matches!(n.attribute("b"), Some("1" | "true")));
@@ -259,20 +283,20 @@ fn render_title(
         .any(|n| matches!(n.attribute("i"), Some("1" | "true")));
     let bottom = title.attribute("pos") == Some("b");
     let (x, anchor) = match title.attribute("align") {
-        Some("l") => (8., "start"),
-        Some("r") => (width - 8., "end"),
+        Some("l") => (inset, "start"),
+        Some("r") => (width - inset, "end"),
         _ => (width / 2., "middle"),
     };
     let y = if bottom {
-        height - 8.
+        height - inset
     } else {
-        8. + size * 0.94
+        inset + size * if map_font.is_some() { 0.96 } else { 0.94 }
     };
-    write!(svg, r#"<text x="{x:.3}" y="{y:.3}" text-anchor="{anchor}" font-family="{}, Carlito, Arial, sans-serif" font-size="{size:.3}" font-weight="{}" font-style="{}" fill="{fill}">{}</text>"#,
+    write!(svg, r#"<text x="{x:.3}" y="{y:.3}" text-anchor="{anchor}" font-family="{}, {fallback}" font-size="{size:.3}" font-weight="{}" font-style="{}" fill="{fill}">{}</text>"#,
         escape_xml_text(font), if bold {"bold"} else {"normal"}, if italic {"italic"} else {"normal"},escape_xml_text(value)).unwrap();
     if bottom || matches!(title.attribute("overlay"), Some("1" | "true")) {
-        8.
+        inset
     } else {
-        8. + size * 1.46
+        inset + size * if map_font.is_some() { 1.44 } else { 1.46 }
     }
 }

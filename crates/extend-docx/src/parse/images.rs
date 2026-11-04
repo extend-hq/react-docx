@@ -578,7 +578,7 @@ fn chart_xml_to_svg_data_uri(
         .filter(|v| v.is_finite() && *v > 0.)
         .unwrap_or(360.);
     let svg = if root.has_tag_name((crate::chart::CHARTEX_NS, "chartSpace")) {
-        super::chartex::render(root, &data, &colors, width, height)
+        super::chartex::render(root, &data, &colors, width, height, context.styles().theme_fonts.minor_latin.as_deref())
     } else {
         let chart = crate::chart::child(root, "chart")?;
         let plot = crate::chart::child(chart, "plotArea")?;
@@ -2466,6 +2466,61 @@ pub fn parse_run_images(
         .collect()
 }
 
+fn alternate_chart_previews(run_xml: &str) -> std::collections::HashMap<usize, (&str, &str)> {
+    let mut previews = std::collections::HashMap::new();
+    // Image and text tokens use offsets after alternate selection.
+    let mut removed = 0;
+    for range in crate::xml::extract_balanced_tag_ranges(run_xml, "mc:AlternateContent") {
+        let alternate = &run_xml[range.start..range.end];
+        let selected = prefer_alternate_content_choice(alternate);
+        let offset = range.start - removed;
+        removed += alternate.len().saturating_sub(selected.len());
+        let Some(choice) = crate::xml::direct_child_tag(alternate, "mc:Choice") else {
+            continue;
+        };
+        let Some(drawing) = crate::xml::direct_child_tag(choice, "w:drawing") else {
+            continue;
+        };
+        if selected.trim() != drawing {
+            continue;
+        }
+        let Some(fallback) = crate::xml::direct_child_tag(alternate, "mc:Fallback") else {
+            continue;
+        };
+        let ranges = crate::xml::extract_direct_child_tag_ranges(fallback);
+        if let [item] = ranges.as_slice() {
+            if matches!(item.tag_name.as_str(), "w:drawing" | "w:pict") {
+                let start = offset + selected.len() - selected.trim_start().len();
+                previews.insert(start, (alternate, &fallback[item.start..item.end]));
+            }
+        }
+    }
+    previews
+}
+
+fn region_map_preview(
+    part_name: &str,
+    fallback: &str,
+    context: &ParseContext<'_, impl std::borrow::Borrow<super::context::ParsedStyleSheet>>,
+) -> Option<ImageRunNode> {
+    use crate::chart::{cx_child, CHARTEX_NS};
+    let xml = roxmltree::Document::parse(&context.parts.get(part_name)?.content).ok()?;
+    let root = xml.root_element();
+    if !root.has_tag_name((CHARTEX_NS, "chartSpace")) {
+        return None;
+    }
+    let plot = cx_child(cx_child(cx_child(root, "chart")?, "plotArea")?, "plotAreaRegion")?;
+    if !plot.children().any(|series| {
+        series.has_tag_name((CHARTEX_NS, "series")) && series.attribute("layoutId") == Some("regionMap")
+    }) {
+        return None;
+    }
+    parse_run_image_block(fallback, context).filter(|preview| {
+        preview.src.as_deref().is_some_and(|url| url.starts_with("data:image/"))
+            && preview.data.as_ref().is_some_and(|bytes| !bytes.is_empty())
+    })
+}
+
 pub fn parse_run_image_tokens(
     run_xml: &str,
     context: &ParseContext<'_, impl std::borrow::Borrow<super::context::ParsedStyleSheet>>,
@@ -2478,6 +2533,7 @@ pub fn parse_run_image_tokens(
     }) {
         return Vec::new();
     }
+    let original_run = run_xml;
     let active_run_xml = prefer_alternate_content_choice(run_xml);
     let run_xml = active_run_xml.as_ref();
     let candidate_ranges = extract_balanced_tag_blocks_in_order(
@@ -2494,10 +2550,29 @@ pub fn parse_run_image_tokens(
     };
 
     let mut images = Vec::new();
+    let mut previews = None;
     for (source_start, candidate_xml) in candidate_xml_blocks {
-        let Some(image) = parse_run_image_block(candidate_xml, context) else {
+        let Some(mut image) = parse_run_image_block(candidate_xml, context) else {
             continue;
         };
+        if image.src.is_none() && run_xml.len() < original_run.len() {
+            let preview = image.chart_part_name.as_deref().and_then(|part| {
+                let &(alternate, fallback) = previews
+                    .get_or_insert_with(|| alternate_chart_previews(original_run))
+                    .get(&source_start)?;
+                Some((alternate, region_map_preview(part, fallback, context)?))
+            });
+            if let Some((alternate, preview)) = preview {
+                image.src = preview.src;
+                image.data = preview.data;
+                image.part_name = preview.part_name;
+                image.content_type = preview.content_type;
+                image.crop = preview.crop;
+                image.css_filter = preview.css_filter;
+                image.css_opacity = preview.css_opacity;
+                image.source_xml = Some(alternate.to_owned());
+            }
+        }
         images.push((source_start, image));
     }
 

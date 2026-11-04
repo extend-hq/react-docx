@@ -5,6 +5,8 @@ mod paint;
 #[path = "chart_style_palette.rs"]
 mod style_palette;
 
+pub(super) use paint::rgba;
+
 use super::colors::{default_drawing_scheme_colors, normalize_hex_color, transform_rgb};
 use super::context::{ParseContext, ParsedStyleSheet, ThemeColorMap};
 use crate::chart::{chart_node, child, cx_child, CHARTEX_NS};
@@ -411,6 +413,14 @@ impl ChartColors {
         self.style.as_ref()?.stroke(entry, automatic)
     }
 
+    pub fn style_stroke_width(&self, entry: &str) -> Option<f64> {
+        self.style.as_ref()?.stroke_width(entry)
+    }
+
+    pub fn style_font_size(&self, entry: &str) -> Option<f64> {
+        self.style.as_ref()?.font_size(entry)
+    }
+
     pub fn style_text(&self, entry: &str, automatic: &str) -> Option<String> {
         self.style.as_ref()?.text(entry, automatic)
     }
@@ -434,6 +444,10 @@ impl ChartColors {
 
     pub fn shape_fill(&self, properties: Node) -> Option<String> {
         self.servers.fill(properties, &self.theme)
+    }
+
+    pub fn solid_color(&self, container: Node) -> Option<String> {
+        container.children().find_map(|node| color(node, &self.theme))
     }
 
     pub fn shape_stroke(&self, properties: Node) -> Option<String> {

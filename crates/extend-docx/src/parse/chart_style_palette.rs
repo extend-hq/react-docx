@@ -110,7 +110,9 @@ impl Paint {
 struct Entry {
     fill: Option<Paint>,
     stroke: Option<Paint>,
+    stroke_width: Option<f64>,
     text: Option<Paint>,
+    font_size: Option<f64>,
 }
 
 struct Brush {
@@ -245,13 +247,18 @@ impl StylePaint {
             .filter(|n| n.is_element() && n.tag_name().namespace() == Some(NS))
             .map(|n| {
                 let prop = cs_child(n, "spPr");
+                let line = prop.and_then(|p| drawing_child(p, "ln"));
+                let text = cs_child(n, "defRPr");
                 let entry = Entry {
                     fill: paint(prop, cs_child(n, "fillRef")),
-                    stroke: paint(
-                        prop.and_then(|p| drawing_child(p, "ln")),
-                        cs_child(n, "lnRef"),
-                    ),
-                    text: paint(cs_child(n, "defRPr"), cs_child(n, "fontRef")),
+                    stroke: paint(line, cs_child(n, "lnRef")),
+                    stroke_width: line
+                        .and_then(|p| p.attribute("w")?.parse::<u32>().ok())
+                        .map(|w| f64::from(w) / 9525.),
+                    text: paint(text, cs_child(n, "fontRef")),
+                    font_size: text
+                        .and_then(|p| p.attribute("sz")?.parse::<u32>().ok())
+                        .map(|s| f64::from(s) / 75.),
                 };
                 (n.tag_name().name().to_owned(), entry)
             })
@@ -295,6 +302,14 @@ impl StylePaint {
             id
         };
         Some(format!("url(#cpL{id})"))
+    }
+
+    pub(super) fn stroke_width(&self, entry: &str) -> Option<f64> {
+        self.entries.get(entry)?.stroke_width
+    }
+
+    pub(super) fn font_size(&self, entry: &str) -> Option<f64> {
+        self.entries.get(entry)?.font_size
     }
 
     pub(super) fn rectangle_fill<'a>(

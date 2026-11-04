@@ -28,6 +28,16 @@ pub(super) struct Font {
 
 impl Font {
     pub(super) fn new(ctx: &Canvas, element: Option<Node>, fallback: &str) -> Self {
+        Self::with_defaults(ctx, element, fallback, "Cambria", 12.)
+    }
+
+    pub(super) fn with_defaults(
+        ctx: &Canvas,
+        element: Option<Node>,
+        fallback: &str,
+        default_face: &str,
+        default_size: f64,
+    ) -> Self {
         let properties = element
             .and_then(|e| child(e, "txPr"))
             .into_iter()
@@ -36,7 +46,7 @@ impl Font {
         let size = properties
             .clone()
             .find_map(|n| numeric(n.attribute("sz")))
-            .map_or(12., |n| (n / 75.).clamp(1., 256.));
+            .map_or(default_size, |n| (n / 75.).clamp(1., 256.));
         let face = properties
             .clone()
             .find_map(|p| {
@@ -45,7 +55,7 @@ impl Font {
                     .attribute("typeface")
             })
             .filter(|s| !s.starts_with('+'))
-            .unwrap_or("Cambria");
+            .unwrap_or(default_face);
         let fill = properties
             .clone()
             .find_map(|p| ctx.colors.shape_fill(p))
@@ -69,6 +79,9 @@ impl Font {
     }
     pub(super) fn width(&self, s: &str) -> f64 {
         label_width(s, self.size, &self.face)
+    }
+    pub(super) fn face(&self) -> &str {
+        &self.face
     }
 }
 
