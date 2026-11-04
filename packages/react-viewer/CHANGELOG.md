@@ -1,5 +1,9 @@
 # @extend-ai/react-docx
 
+## 0.14.1
+
+- Use the published Extend Office parser to include visible heading numbers and list markers in structured paragraph details.
+
 ## 0.14.0
 
 ### Minor Changes
