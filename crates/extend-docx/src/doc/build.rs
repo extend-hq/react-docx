@@ -128,6 +128,7 @@ pub struct DocBuilder<'a> {
     footnote_ranges: Vec<(u32, u32)>,
     endnote_ranges: Vec<(u32, u32)>,
     comments: Vec<super::comments::Comment>,
+    revision_authors: Vec<String>,
     field_instructions: HashMap<u32, String>,
     phonetic_results: HashMap<u32, String>,
     spanning_links: Vec<super::fields::LinkRange>,
@@ -189,6 +190,9 @@ impl<'a> DocBuilder<'a> {
             footnote_ranges: Vec::new(),
             endnote_ranges: Vec::new(),
             comments: super::comments::parse(doc),
+            revision_authors: super::revisions::authors(
+                doc.fib.table_slice(&doc.table, fcidx::STTBF_RMARK).unwrap_or_default(),
+            ),
             field_instructions: field_text.instructions,
             phonetic_results: field_text.phonetic_results,
             spanning_links: super::fields::spanning_links(doc),
@@ -720,7 +724,12 @@ impl<'a> DocBuilder<'a> {
             let rpr = chp.to_rpr_xml(&|istd| self.styles.style_id(istd), &|ftc| {
                 self.fonts.name(ftc)
             });
-            if chp.deleted {
+            let (insertion, deletion) = super::revisions::marks(grpprl, chp.deleted);
+            if let Some(mark) = &insertion {
+                xml.push_str(&mark.open("ins", start, &self.revision_authors));
+            }
+            if let Some(mark) = deletion {
+                xml.push_str(&mark.open("del", start, &self.revision_authors));
                 let mut deleted = String::new();
                 let mut deleted_fields = fields.clone();
                 self.emit_run_content(
@@ -735,7 +744,8 @@ impl<'a> DocBuilder<'a> {
                 let deleted = deleted
                     .replace("<w:t ", "<w:delText ")
                     .replace("</w:t>", "</w:delText>");
-                xml.push_str(&format!(r#"<w:del w:id="{start}">{deleted}</w:del>"#));
+                xml.push_str(&deleted);
+                xml.push_str("</w:del>");
             } else {
                 self.emit_run_content(
                     &mut xml,
@@ -746,6 +756,9 @@ impl<'a> DocBuilder<'a> {
                     fields,
                     context,
                 );
+            }
+            if insertion.is_some() {
+                xml.push_str("</w:ins>");
             }
             if instruction.is_some() {
                 xml.push_str("</w:fldSimple>");

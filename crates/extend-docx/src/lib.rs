@@ -5,6 +5,7 @@ pub mod emf;
 pub mod model;
 pub mod package;
 pub mod parse;
+pub mod revisions;
 pub mod serialize;
 pub mod source_graph;
 pub mod structured;
@@ -18,11 +19,16 @@ pub use doc::{is_doc_format, parse_doc};
 pub use model::*;
 pub use package::*;
 pub use parse::build_doc_model;
+pub use revisions::{
+    DocumentRevision, ReviewedDocument, RevisionKind, RevisionProperties, RevisionScope,
+    WordProperty,
+};
 pub use source_graph::{document_source_graph, DocumentSourceGraph};
 pub use structured::{
-    extract_document_blocks, extract_document_blocks_with_options, BlockDetails, BlockType,
-    DocumentBlock, DocumentWord, ExtractDocumentBlocksOptions, ParagraphDetails, ParagraphInline,
-    SourceRef, StructuredDocument, TableCellDetails,
+    extract_document_blocks, extract_document_blocks_with_options,
+    extract_document_blocks_with_revisions, BlockDetails, BlockType, DocumentBlock, DocumentWord,
+    ExtractDocumentBlocksOptions, ParagraphDetails, ParagraphInline, SourceRef, StructuredDocument,
+    TableCellDetails,
 };
 
 pub fn parse_document_blocks(bytes: &[u8]) -> Result<StructuredDocument, String> {
@@ -39,6 +45,19 @@ pub fn parse_document_blocks_with_options(
         options,
     ))
 }
+
+/// Parse Word bytes and return current blocks together with their tracked revisions.
+pub fn parse_document_blocks_with_revisions(
+    bytes: &[u8],
+    options: ExtractDocumentBlocksOptions,
+) -> Result<ReviewedDocument, String> {
+    let package = parse_document_bytes(bytes)?;
+    Ok(extract_document_blocks_with_revisions(
+        &build_doc_model(&package),
+        options,
+    ))
+}
+
 pub use serialize::{
     can_preserve_image_paint_source, model_to_document_xml, serialize_doc_model, serialize_docx,
     try_serialize_doc_model, validate_image_paint_bounds,

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.3
+
+- Add opt-in typed revision extraction with source block references and UTF-16 text ranges.
+- Preserve authors and timestamps on tracked text insertions and deletions from binary Word documents.
+
 ## 0.1.2
 
 - Preserve ellipse outlines in DrawingML shape images.

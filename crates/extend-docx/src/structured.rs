@@ -7,6 +7,7 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use crate::model::*;
 use crate::package::OoxmlPackage;
+use crate::revisions::{ReviewedDocument, RevisionCollector};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -410,6 +411,7 @@ struct Extractor {
     part_name: String,
     story: String,
     include_words: bool,
+    review: Option<RevisionCollector>,
 }
 
 impl Extractor {
@@ -472,9 +474,9 @@ impl Extractor {
             .collect()
     }
 
-    fn story_block(&self, nodes: &[DocNode], kind: BlockType) -> DocumentBlock {
+    fn story_block(&mut self, nodes: &[DocNode], kind: BlockType) -> DocumentBlock {
         let id = format!("docx:{}/{}/story", self.document_id, self.part_name);
-        let children = self.nodes(nodes, Some(&id));
+        let children = self.story_nodes(nodes, Some(&id));
         let content = joined_block_content(&children, "\n");
         let refs = children
             .iter()
@@ -485,7 +487,16 @@ impl Extractor {
         block
     }
 
-    fn nodes(&self, nodes: &[DocNode], parent: Option<&str>) -> Vec<DocumentBlock> {
+    fn story_nodes(&mut self, nodes: &[DocNode], parent: Option<&str>) -> Vec<DocumentBlock> {
+        let moves = self.review.as_mut().map(|r| std::mem::take(&mut r.moves));
+        let blocks = self.nodes(nodes, parent);
+        if let (Some(review), Some(moves)) = (&mut self.review, moves) {
+            review.moves = moves;
+        }
+        blocks
+    }
+
+    fn nodes(&mut self, nodes: &[DocNode], parent: Option<&str>) -> Vec<DocumentBlock> {
         nodes
             .iter()
             .enumerate()
@@ -499,7 +510,7 @@ impl Extractor {
             .collect()
     }
 
-    fn paragraph(&self, p: &ParagraphNode, fallback: &str, parent: Option<&str>) -> DocumentBlock {
+    fn paragraph(&mut self, p: &ParagraphNode, fallback: &str, parent: Option<&str>) -> DocumentBlock {
         let id = p.block_id.as_deref().unwrap_or(fallback);
         let style = p.style.as_ref();
         let style_id = style.and_then(|s| s.style_id.as_deref()).unwrap_or("");
@@ -591,7 +602,7 @@ impl Extractor {
                     let nested = image
                         .content_nodes
                         .as_ref()
-                        .map(|nodes| self.nodes(nodes, Some(image_id)))
+                        .map(|nodes| self.story_nodes(nodes, Some(image_id)))
                         .unwrap_or_default();
                     let text = if nested.is_empty() {
                         image
@@ -641,14 +652,29 @@ impl Extractor {
             inlines: inline,
         };
         let mut block = self.block(id.to_string(), kind, content, details, children, parent);
+        if let (Some(review), Some(xml)) = (&mut self.review, &p.source_xml) {
+            review.paragraph(xml, &block);
+        }
         if self.include_words {
             block.words = Some(self.words(id, &block.content));
         }
         block
     }
 
-    fn table(&self, table: &TableNode, fallback: &str, parent: Option<&str>) -> DocumentBlock {
+    fn table(&mut self, table: &TableNode, fallback: &str, parent: Option<&str>) -> DocumentBlock {
         let id = table.block_id.as_deref().unwrap_or(fallback);
+        if let (Some(review), Some(xml)) = (&mut self.review, &table.source_xml) {
+            let source = SourceRef {
+                document_id: self.document_id.clone(),
+                node_id: id.to_owned(),
+                part_name: self.part_name.clone(),
+                story: self.story.clone(),
+                start: None,
+                end: None,
+                offset_encoding: "utf-16".into(),
+            };
+            review.table(xml, &source, table);
+        }
         let mut children = Vec::new();
         let mut row_text = String::new();
         let mut column_count = 0;
@@ -737,14 +763,18 @@ fn block_has_visible_text(block: &DocumentBlock) -> bool {
     })
 }
 
-fn without_empty_blocks(mut blocks: Vec<DocumentBlock>, parent: Option<&str>) -> Vec<DocumentBlock> {
+fn without_empty_blocks(
+    mut blocks: Vec<DocumentBlock>,
+    parent: Option<&str>,
+    anchors: &HashSet<&str>,
+) -> Vec<DocumentBlock> {
     let mut needs_flattening = false;
     blocks.retain_mut(|block| {
-        block.children = without_empty_blocks(std::mem::take(&mut block.children), Some(&block.id));
+        block.children = without_empty_blocks(std::mem::take(&mut block.children), Some(&block.id), anchors);
         if block.parent_block_id.as_deref() != parent {
             block.parent_block_id = parent.map(str::to_string);
         }
-        if block_has_visible_text(block) || matches!(block.r#type,
+        if anchors.contains(block.id.as_str()) || block_has_visible_text(block) || matches!(block.r#type,
             BlockType::Figure | BlockType::Formula | BlockType::Barcode
                 | BlockType::Watermark | BlockType::KeyValue)
         {
@@ -764,7 +794,7 @@ fn without_empty_blocks(mut blocks: Vec<DocumentBlock>, parent: Option<&str>) ->
     }
     let mut retained = Vec::with_capacity(blocks.len());
     for mut block in blocks {
-        if matches!(block.r#type, BlockType::Text) && !block_has_visible_text(&block) {
+        if matches!(block.r#type, BlockType::Text) && !block_has_visible_text(&block) && !anchors.contains(block.id.as_str()) {
             for child in &mut block.children {
                 if child.parent_block_id.as_deref() != parent {
                     child.parent_block_id = parent.map(str::to_string);
@@ -786,6 +816,23 @@ pub fn extract_document_blocks_with_options(
     model: &DocModel,
     options: ExtractDocumentBlocksOptions,
 ) -> StructuredDocument {
+    extract(model, options, false).document
+}
+
+/// Extract the current document and the tracked edits present in its Word source.
+/// Source references use the same identities and UTF-16 coordinates as the blocks.
+pub fn extract_document_blocks_with_revisions(
+    model: &DocModel,
+    options: ExtractDocumentBlocksOptions,
+) -> ReviewedDocument {
+    extract(model, options, true)
+}
+
+fn extract(
+    model: &DocModel,
+    options: ExtractDocumentBlocksOptions,
+    include_revisions: bool,
+) -> ReviewedDocument {
     let document_id = model
         .metadata
         .document_id
@@ -796,8 +843,21 @@ pub fn extract_document_blocks_with_options(
         part_name: source_part(model, "document"),
         story: "body".into(),
         include_words: options.include_words,
+        review: include_revisions.then(RevisionCollector::default),
     };
-    let mut blocks = extractor.nodes(&model.nodes, None);
+    let mut blocks = extractor.story_nodes(&model.nodes, None);
+    if let (Some(review), Some(section), Some(source)) = (
+        &mut extractor.review,
+        model.metadata.section_properties_xml.as_deref(),
+        blocks.last().and_then(|b| b.source_refs.first()),
+    ) {
+        // A terminal section can also be the last paragraph's section break.
+        let in_paragraph = matches!(model.nodes.last(), Some(DocNode::Paragraph(p))
+            if p.source_xml.as_deref().is_some_and(|xml| xml.contains(section)));
+        if !in_paragraph {
+            review.final_section(section, source);
+        }
+    }
     let mut seen = HashSet::new();
     let headers = model.metadata.header_sections.iter().chain(
         model
@@ -839,7 +899,7 @@ pub fn extract_document_blocks_with_options(
         extractor.story = kind.into();
         for note in notes.iter().flatten() {
             if let Some(nodes) = &note.nodes {
-                blocks.extend(extractor.nodes(nodes, None));
+                blocks.extend(extractor.story_nodes(nodes, None));
             }
         }
     }
@@ -847,17 +907,24 @@ pub fn extract_document_blocks_with_options(
     extractor.story = "comment".into();
     for comment in model.metadata.comments.iter().flatten() {
         if let Some(nodes) = &comment.nodes {
-            blocks.extend(extractor.nodes(nodes, None));
+            blocks.extend(extractor.story_nodes(nodes, None));
         }
     }
-    StructuredDocument {
+    let revisions = extractor.review.map(|review| review.records).unwrap_or_default();
+    let anchors = revisions
+        .iter()
+        .flat_map(|revision| revision.source_refs.iter().map(|source| source.node_id.as_str()))
+        .collect();
+    let blocks = without_empty_blocks(blocks, None, &anchors);
+    let document = StructuredDocument {
         schema_version: 1,
         parser_version: env!("CARGO_PKG_VERSION").into(),
         document_id,
-        blocks: without_empty_blocks(blocks, None),
+        blocks,
         warnings: model.metadata.warnings.clone(),
         geometry_status: "requires_layout".into(),
-    }
+    };
+    ReviewedDocument { document, revisions }
 }
 
 #[cfg(test)]
@@ -945,7 +1012,7 @@ mod inplace_block_cleanup_tests {
         use super::*;
         let extractor = Extractor {
             document_id: "document".into(), part_name: "part".into(),
-            story: "body".into(), include_words: false,
+            story: "body".into(), include_words: false, review: None,
         };
         let figure = extractor.block("figure".into(), BlockType::Figure, String::new(),
             json!({}), Vec::new(), Some("container"));
@@ -956,13 +1023,13 @@ mod inplace_block_cleanup_tests {
             json!({}), Vec::new(), None);
         let text = extractor.block("text".into(), BlockType::Text, "content".into(),
             json!({}), Vec::new(), Some("stale"));
-        let result = without_empty_blocks(vec![container, empty, text], Some("parent"));
+        let result = without_empty_blocks(vec![container, empty, text], Some("parent"), &HashSet::new());
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].id, "figure");
         assert_eq!(result[0].source_refs, source_refs);
         assert_eq!(result[1].content, "content");
         assert!(result.iter().all(|block| block.parent_block_id.as_deref() == Some("parent")));
-        let root = without_empty_blocks(result, None);
+        let root = without_empty_blocks(result, None, &HashSet::new());
         assert!(root.iter().all(|block| block.parent_block_id.is_none()));
     }
 }

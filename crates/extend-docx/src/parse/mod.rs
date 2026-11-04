@@ -56,6 +56,7 @@ pub use numbering::{
     parse_css_point_value, parse_numbering_definitions, parse_numbering_level_definition,
     parse_numbering_picture_bullet_definitions, points_to_pixels,
 };
+pub(crate) use paragraph::run_text_xml;
 pub use paragraph::{
     parse_paragraph, parse_paragraph_form_field_tokens, parse_paragraph_runs,
     parse_run_active_x_checkbox_field, parse_run_text, parse_run_text_tokens,

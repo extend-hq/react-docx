@@ -309,7 +309,7 @@ fn indexed_plain_paragraph(xml: &str) -> Option<Vec<IndexedPlainParagraphRun<'_>
     Some(runs)
 }
 
-fn run_text_xml(run_xml: &str) -> std::borrow::Cow<'_, str> {
+pub(crate) fn run_text_xml(run_xml: &str) -> std::borrow::Cow<'_, str> {
     let mut active = prefer_alternate_content_choice(run_xml);
     for range in extract_balanced_tag_ranges(&active, "w:txbxContent")
         .into_iter()

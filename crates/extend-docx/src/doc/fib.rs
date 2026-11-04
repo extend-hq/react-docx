@@ -37,6 +37,7 @@ pub mod fcidx {
     pub const PLCFEND_REF: usize = 46;
     pub const PLCFEND_TXT: usize = 47;
     pub const DGG_INFO: usize = 50;
+    pub const STTBF_RMARK: usize = 51;
     pub const PLCF_TXBX_TXT: usize = 56;
     pub const PLCF_HDR_TXBX_TXT: usize = 58;
     pub const PLF_LST: usize = 73;

@@ -71,6 +71,14 @@ Serde serializes the complete underlying formatting object transparently. JSON a
 
 See the repository's structured-block design document for the viewer contract, integration steps, validation evidence, and remaining coverage gaps.
 
+## Tracked revisions
+
+Call `parse_document_blocks_with_revisions(bytes, options)` or `extract_document_blocks_with_revisions(&model, options)` to get a `ReviewedDocument`. Its `document` contains the current blocks and its `revisions` contains the edits recorded in the source. The JSON representation adds a `revisions` array alongside `blocks`. The existing block extraction functions keep their original output.
+
+Each revision has an opaque ID unique to the input document, its kind and scope, and source references to affected blocks. The original Word revision ID, author, timestamp, and move name are optional. Source ranges use half-open UTF-16 offsets in the current paragraph text. A deletion retains the removed text and a point at its former position. Review extraction keeps otherwise empty blocks that anchor edits. A block-level reference has no offsets when the change is structural or its source text cannot be aligned with the current model.
+
+OOXML supports insertions, deletions, move sources and destinations, paragraph marks, and changes to run, paragraph, section, table, row and cell properties. Property changes carry the previous and current direct Word properties. The two sides of a move can share an explicit move name. Legacy binary Word input preserves text insertions and deletions where the character properties record them. Binary timestamps carry minute precision and no time zone. This API reads revisions retained in the input document.
+
 ## Third-party notices
 
 The symbol-font Unicode mapping is derived from `dingbat-to-unicode` 1.0.1 by Michael Williamson, distributed under the BSD 2-Clause license. The complete notice is in `third-party/dingbat-to-unicode-LICENSE` and is included in the WASM and viewer distributions.

@@ -18,6 +18,7 @@ pub mod images;
 pub mod lists;
 pub mod pap;
 pub mod pieces;
+mod revisions;
 pub mod sep;
 pub mod sprm;
 pub mod stsh;

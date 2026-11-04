@@ -20,7 +20,7 @@ fn u32_at(bytes: &[u8], offset: usize) -> Option<u32> {
     ))
 }
 
-fn xst(bytes: &[u8], offset: usize) -> Option<(String, usize)> {
+pub(super) fn xst(bytes: &[u8], offset: usize) -> Option<(String, usize)> {
     let count = u16_at(bytes, offset)? as usize;
     let end = offset.checked_add(2 + count * 2)?;
     let units = bytes
