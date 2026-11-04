@@ -1,5 +1,6 @@
 //! Native and WebAssembly-compatible Word document parsing, modeling, and serialization.
 
+pub mod chart;
 pub mod doc;
 pub mod emf;
 pub mod model;
@@ -15,6 +16,7 @@ pub mod xml;
 mod xml_index;
 pub mod zip;
 
+pub use chart::{extract_chart_data, ChartCategory, ChartData, ChartPoint, ChartSeries};
 pub use doc::{is_doc_format, parse_doc};
 pub use model::*;
 pub use package::*;

@@ -618,6 +618,9 @@ impl Extractor {
                             .join("\n")
                     };
                     let mut details = json!({"kind":image.semantic_kind.as_deref().unwrap_or(if image.synthetic_text_box == Some(true) {"text_box"} else {"image"}), "mathMl":image.math_ml, "asset":image.part_name, "alt":image.alt, "contentType":image.content_type, "width":image.width_px, "height":image.height_px, "floating":image.floating});
+                    if let Some(part_name) = &image.chart_part_name {
+                        details["chartPartName"] = json!(part_name);
+                    }
                     if let Some(paint_bounds) = image.paint_bounds.as_ref() {
                         details
                             .as_object_mut()

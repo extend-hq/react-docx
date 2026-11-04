@@ -2528,6 +2528,7 @@ fn vml_group_image_with_owner(
         canvas.0, canvas.1
     );
     Some(ImageRunNode {
+        chart_part_name: None,
         width_px: Some(if paint_bounds.is_some() { width } else { width_px }),
         height_px: Some(if paint_bounds.is_some() { height } else { height_px }),
         paint_bounds,
@@ -2615,6 +2616,16 @@ pub fn parse_run_image_block(
             .is_some_and(|name| name.contains("/charts/"))
         || content_type.as_deref() == Some(CHART_CONTENT_TYPE);
 
+    let chart_part_name = if likely_chart_part {
+        chart_relationship_id
+            .as_ref()
+            .and_then(|id| context.relationships.get(id))
+            .or(part_name.as_ref())
+            .cloned()
+    } else {
+        None
+    };
+
     let standalone_shape_svg =
         render_standalone_word_shape_svg(active_run_xml, width_px, height_px, context);
     let contains_grouped_or_standalone_shape =
@@ -2635,6 +2646,7 @@ pub fn parse_run_image_block(
                 parse_text_box_layout(active_run_xml).as_ref(),
             ));
             return Some(ImageRunNode {
+                chart_part_name: None,
                 paint_bounds: None,
                 r#type: ImageRunNodeType::Image,
                 block_id: None,
@@ -2695,6 +2707,7 @@ pub fn parse_run_image_block(
             }
         }
         return Some(ImageRunNode {
+            chart_part_name: None,
             paint_bounds: None,
             r#type: ImageRunNodeType::Image,
             block_id: None,
@@ -2731,7 +2744,7 @@ pub fn parse_run_image_block(
     }
 
     if likely_chart_part {
-        let chart_xml = part_name
+        let chart_xml = chart_part_name
             .as_deref()
             .and_then(|name| context.parts.get(name))
             .map(|part| part.content.as_str());
@@ -2745,6 +2758,7 @@ pub fn parse_run_image_block(
             chart_xml.and_then(|xml| chart_xml_to_svg_data_uri(xml, width_px, height_px))
         {
             return Some(ImageRunNode {
+                chart_part_name,
                 paint_bounds: None,
                 r#type: ImageRunNodeType::Image,
                 block_id: None,
@@ -2782,6 +2796,7 @@ pub fn parse_run_image_block(
             parse_text_box_layout(active_run_xml).as_ref(),
         ));
         return Some(ImageRunNode {
+            chart_part_name: None,
             paint_bounds: None,
             r#type: ImageRunNodeType::Image,
             block_id: None,
@@ -2841,6 +2856,7 @@ pub fn parse_run_image_block(
     }
 
     Some(ImageRunNode {
+        chart_part_name,
         paint_bounds: None,
         r#type: ImageRunNodeType::Image,
         block_id: None,
