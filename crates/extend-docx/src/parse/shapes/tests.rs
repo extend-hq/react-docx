@@ -1,5 +1,13 @@
 use super::*;
 
+#[test]
+fn ellipse_preset_uses_both_radii() {
+    assert_eq!(
+        drawing_preset_path_data(Some("ellipse"), 33, 12).as_deref(),
+        Some("M0 6 A16.5 6 0 1 0 33 6 A16.5 6 0 1 0 0 6 Z")
+    );
+}
+
 mod tiled_bitmap_tests {
     use super::*;
     use crate::parse::empty_style_sheet;

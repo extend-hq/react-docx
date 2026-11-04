@@ -1657,6 +1657,12 @@ fn drawing_shape_resolved_path_data(
 
 fn drawing_preset_path_data(preset: Option<&str>, width_px: i64, height_px: i64) -> Option<String> {
     match preset?.trim() {
+        "ellipse" => {
+            let rx = width_px.max(1) as f64 / 2.0;
+            let ry = height_px.max(1) as f64 / 2.0;
+            let width = 2.0 * rx;
+            Some(format!("M0 {ry} A{rx} {ry} 0 1 0 {width} {ry} A{rx} {ry} 0 1 0 0 {ry} Z"))
+        }
         "flowChartDelay" => {
             let safe_width = width_px.max(1);
             let safe_height = height_px.max(1);

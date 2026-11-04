@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.2
+
+- Preserve ellipse outlines in DrawingML shape images.
+
 ## 0.1.1
 
 - Expand the package overview with native latency, scatter plots, feature recall, and Microsoft Word reference comparisons.
