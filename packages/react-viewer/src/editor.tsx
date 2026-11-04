@@ -6723,6 +6723,8 @@ interface ParagraphPretextLayoutRun {
   style?: TextRunNode["style"];
   link?: string;
   image?: ImageRunNode;
+  trackedChange?: ParagraphTrackedInlineChange;
+  commentIds?: number[];
   tabWidthPx?: number;
 }
 
@@ -7112,7 +7114,8 @@ export function resolveParagraphForeignOnlyWrappedTextLayout(
   lineHeightPx: number,
   foreignExclusions: PretextExclusionRect[],
   lineOptions?: number | ParagraphPretextLineOptions,
-  typography?: DocxTypographyOptions
+  typography?: DocxTypographyOptions,
+  review?: Pick<ParagraphRunRenderOptions, "showTrackedChanges" | "showCommentHighlights">
 ): ParagraphDualWrappedTextLayout | undefined {
   const options = typeof lineOptions === "number"
     ? { minimumLineHeightPx: lineOptions } : lineOptions;
@@ -7123,7 +7126,7 @@ export function resolveParagraphForeignOnlyWrappedTextLayout(
     return undefined;
   }
 
-  const source = buildParagraphPretextLayoutSource(paragraph, undefined, typography);
+  const source = buildParagraphPretextLayoutSource(paragraph, review, typography);
   if (!source) {
     return undefined;
   }
@@ -8047,6 +8050,8 @@ function resolveFloatingForImageWrapMode(
 export function buildParagraphPretextLayoutSource(
   paragraph: ParagraphNode,
   options?: {
+    showTrackedChanges?: boolean;
+    showCommentHighlights?: boolean;
     allowExplicitLineBreakText?: boolean;
     expandTabsForLayout?: boolean;
     defaultTabStopTwips?: number;
@@ -8056,7 +8061,7 @@ export function buildParagraphPretextLayoutSource(
   if (options?.defaultTabStopTwips !== undefined) {
     paragraph = paragraphWithDefaultTabStop(paragraph, options.defaultTabStopTwips);
   }
-  const cacheKey = `${options?.allowExplicitLineBreakText ? 1 : 0}|${options?.expandTabsForLayout ? 1 : 0}|${defaultTabStopPxForNode(paragraph)}|ot:${typography?.enableOpenTypeFeatures !== false}`;
+  const cacheKey = `${options?.showTrackedChanges === true}|${options?.showCommentHighlights === true}|${options?.allowExplicitLineBreakText ? 1 : 0}|${options?.expandTabsForLayout ? 1 : 0}|${defaultTabStopPxForNode(paragraph)}|ot:${typography?.enableOpenTypeFeatures !== false}`;
   const cachedVariants = paragraphPretextLayoutSourceCache.get(paragraph);
   const cachedSource = cachedVariants?.get(cacheKey);
   if (cachedSource !== undefined) {
@@ -8100,6 +8105,25 @@ export function buildParagraphPretextLayoutSource(
   let lastTextStyle: TextRunNode["style"] | undefined =
     firstRunStyle(paragraph);
 
+  const trackedMarkup = options?.showTrackedChanges ? resolveParagraphTrackedMarkup(paragraph) : undefined;
+  const commentMarkup = options?.showCommentHighlights ? resolveParagraphCommentMarkup(paragraph) : undefined;
+  const appendDeletedRuns = (childIndex: number, fallbackStyle?: TextRunNode["style"]) => {
+    const segments = trackedMarkup?.deletedSegmentsByVisibleChildIndex.get(childIndex);
+    segments?.forEach((segment, index) => {
+      const startOffset = combinedText.length;
+      combinedText += segment.text;
+      runs.push({
+        kind: "text",
+        key: `deletion-${childIndex}-${index}`,
+        text: segment.text,
+        startOffset,
+        endOffset: combinedText.length,
+        style: segment.style ?? fallbackStyle,
+        trackedChange: segment.change,
+      });
+    });
+  };
+
   for (
     let childIndex = 0;
     childIndex < paragraph.children.length;
@@ -8109,6 +8133,7 @@ export function buildParagraphPretextLayoutSource(
     if (!child) {
       continue;
     }
+    if (trackedMarkup) appendDeletedRuns(childIndex, child.type === "text" ? child.style : lastTextStyle);
     if (child.type === "image") {
       if (child.floating) {
         continue;
@@ -8204,6 +8229,8 @@ export function buildParagraphPretextLayoutSource(
       endOffset: combinedText.length,
       style: child.style,
       link: child.link,
+      trackedChange: trackedMarkup?.inlineChangeByVisibleChildIndex[childIndex],
+      commentIds: commentMarkup?.commentIdsByVisibleChildIndex[childIndex],
     });
     approximateLineWidthPx = updateEstimatedLineWidthPxForText(
       approximateLineWidthPx,
@@ -8214,6 +8241,7 @@ export function buildParagraphPretextLayoutSource(
     lastTextStyle = child.style ?? lastTextStyle;
   }
 
+  if (trackedMarkup) appendDeletedRuns(paragraph.children.length, lastTextStyle);
   if (combinedText.length === 0 && !paragraphEmptyMarkMetricStyle(paragraph)) {
     return storeCachedSource(undefined);
   }
@@ -8467,8 +8495,12 @@ function pretextWordBreakModeForText(text: string): "normal" | "keep-all" {
   return mode;
 }
 
+function isDeletedLayoutRun(run: ParagraphPretextLayoutRun): boolean {
+  return run.trackedChange?.kind === "deletion" || run.trackedChange?.kind === "move-from";
+}
+
 function pretextBlockTextOffset(source: ParagraphPretextLayoutSource, offset: number): number {
-  return offset - source.runs.reduce((removed, run) => run.kind === "image"
+  return offset - source.runs.reduce((removed, run) => run.kind === "image" || isDeletedLayoutRun(run)
     ? removed + Math.max(0, Math.min(offset, run.endOffset) - run.startOffset)
     : removed, 0);
 }
@@ -19534,7 +19566,32 @@ function mergeTextDecorations(
     .filter(Boolean)
     .forEach((token) => tokens.add(token));
 
+  tokens.delete("none");
   return tokens.size > 0 ? Array.from(tokens).join(" ") : "none";
+}
+
+function annotationAttributes(
+  trackedInlineChange?: ParagraphTrackedInlineChange,
+  commentIds?: number[]
+): Record<string, string> {
+  const attributes: Record<string, string> = {};
+  if (trackedInlineChange) {
+    const deleted = trackedInlineChange.kind === "deletion" || trackedInlineChange.kind === "move-from";
+    attributes["data-docx-tracked-change"] = deleted ? "deletion" : trackedInlineChange.kind;
+    if (deleted) {
+      attributes.title = trackedInlineChange.author ? `${trackedInlineChange.author} deleted` : "Deleted";
+    }
+    attributes["data-docx-tracked-change-id"] = trackedInlineChange.id;
+  }
+
+  if (commentIds && commentIds.length > 0) {
+    attributes["data-docx-comment-ids"] = commentIds.join(" ");
+    if (commentIds.length === 1) {
+      attributes["data-docx-comment-id"] = String(commentIds[0]);
+    }
+  }
+
+  return attributes;
 }
 
 function trackedInlineStyle(
@@ -22302,13 +22359,7 @@ function renderParagraphRuns(
       target.push(
         <span
           key={`${keySeed}-tracked-del-${trackedVisibleChildCursor}-${segmentIndex}`}
-          data-docx-tracked-change="deletion"
-          data-docx-tracked-change-id={segment.change.id}
-          title={
-            segment.change.author
-              ? `${segment.change.author} deleted`
-              : "Deleted"
-          }
+          {...annotationAttributes(segment.change)}
           style={trackedDeletedStyle(
             documentTheme,
             segment.style ?? fallbackStyle,
@@ -22336,26 +22387,8 @@ function renderParagraphRuns(
     }
     return commentHighlightStyle(documentTheme, commentIds[0]);
   };
-  const currentAnnotationAttributes = (
-    trackedInlineChange: ParagraphTrackedInlineChange | undefined
-  ): Record<string, string> => {
-    const attributes: Record<string, string> = {};
-    if (trackedInlineChange) {
-      attributes["data-docx-tracked-change"] = trackedInlineChange.kind;
-      attributes["data-docx-tracked-change-id"] = trackedInlineChange.id;
-    }
-
-    const commentIds =
-      commentMarkup?.commentIdsByVisibleChildIndex[trackedVisibleChildCursor];
-    if (commentIds && commentIds.length > 0) {
-      attributes["data-docx-comment-ids"] = commentIds.join(" ");
-      if (commentIds.length === 1) {
-        attributes["data-docx-comment-id"] = String(commentIds[0]);
-      }
-    }
-
-    return attributes;
-  };
+  const currentAnnotationAttributes = (change?: ParagraphTrackedInlineChange) =>
+    annotationAttributes(change, commentMarkup?.commentIdsByVisibleChildIndex[trackedVisibleChildCursor]);
   const consumeTrackedVisibleChild = (
     child: ParagraphNode["children"][number]
   ): void => {
@@ -54513,7 +54546,7 @@ export function DocxEditorViewer({
             return undefined;
           }
 
-          const textStyle = run.link
+          const baseStyle = run.link
             ? {
                 ...linkStyleToCss(
                   run.style,
@@ -54531,6 +54564,15 @@ export function DocxEditorViewer({
                 whiteSpace: "pre",
               };
 
+          const deleted = isDeletedLayoutRun(run);
+          const textStyle = deleted
+            ? { ...baseStyle, ...trackedDeletedStyle(documentContentTheme, run.style, renderedSlice, typography) }
+            : trackedInlineStyle(baseStyle, run.trackedChange);
+          if (run.commentIds?.length) {
+            Object.assign(textStyle, commentHighlightStyle(documentContentTheme, run.commentIds[0]));
+          }
+          const changeAttributes = (run.trackedChange || run.commentIds) &&
+            annotationAttributes(run.trackedChange, run.commentIds);
           if (fragment.horizontalScale !== undefined && fragment.horizontalScale !== 1) {
             textStyle.letterSpacing = `${(run.style?.characterSpacingTwips ?? 0) / TWIPS_PER_PIXEL / fragment.horizontalScale}px`;
           }
@@ -54555,6 +54597,7 @@ export function DocxEditorViewer({
           return run.link ? (
             <a
               key={`${keyPrefix}-fragment-${lineIndex}-${run.key}-${overlapStart}`}
+              {...changeAttributes}
                 data-docx-text-start={pretextBlockTextOffset(source, overlapStart)}
                 data-docx-text-end={pretextBlockTextOffset(source, overlapEnd)}
               href={run.link}
@@ -54586,6 +54629,7 @@ export function DocxEditorViewer({
           ) : (
             <span
               key={`${keyPrefix}-fragment-${lineIndex}-${run.key}-${overlapStart}`}
+              {...changeAttributes}
                 data-docx-text-start={pretextBlockTextOffset(source, overlapStart)}
                 data-docx-text-end={pretextBlockTextOffset(source, overlapEnd)}
               style={textStyle}
@@ -56122,13 +56166,53 @@ export function DocxEditorViewer({
       const paragraphHasCommentAnchors =
         commentsEnabled &&
         /commentRange|commentReference/i.test(paragraph.sourceXml ?? "");
-      if (
-        (isReadOnly || !paragraphHasFormField(paragraph)) &&
-        (trackedChangesEnabled ||
-          useSpecialTabLayout ||
-          paragraphHasCommentAnchors) &&
-        !hasFixedPositionWrappedImage
-      ) {
+      const paragraphLineHeightPx = lineRange?.lineHeightPx ??
+        (location.kind === "table-cell"
+          ? tableCellParagraphLineHeightPx(paragraph, paragraphGridPitchPx, disableGridSnap)
+          : estimateParagraphLineHeightPx(paragraph, paragraphGridPitchPx, disableGridSnap));
+      const usesMarkupRuns = (isReadOnly || !paragraphHasFormField(paragraph)) &&
+        (trackedChangesEnabled || useSpecialTabLayout || paragraphHasCommentAnchors) &&
+        !hasFixedPositionWrappedImage;
+      const wrapReviewText =
+        isReadOnly && (trackedChangesEnabled || paragraphHasCommentAnchors) &&
+        !useSpecialTabLayout &&
+        Boolean(options?.pageFlowForeignExclusions?.length) &&
+        paragraph.children.every(child =>
+          child.type === "text" && !child.noteReference && !child.text.includes("\t")
+        );
+      const manualDualWrappedLayout = !usesMarkupRuns && !numberingLabel && !paragraphHasFormField(paragraph)
+        ? resolveParagraphDualWrappedTextLayout(
+            paragraph,
+            paragraphRenderTextWidthPx,
+            paragraphLineHeightPx,
+            {
+              minimumLineHeightPx: paragraphMinimumLineHeightPx, gridLinePitchPx: resolveParagraphDocGridLinePitchPx(paragraph, paragraphGridPitchPx, disableGridSnap),
+              excludedImageIndex: objectWrapDragPreview?.imageKey?.startsWith(`${paragraphLocationKey(location)}:`)
+                ? Number(objectWrapDragPreview.imageKey.split(":").at(-1)) : undefined,
+              widthPxByImageIndex: resizedWidthPxByImageIndex,
+              heightPxByImageIndex: resizedHeightPxByImageIndex,
+              paragraphTopPx: paragraphPageFlowTopPx,
+              pageMarginTopPx: paragraphPageLayout.marginsPx.top,
+              foreignExclusions: options?.pageFlowForeignExclusions?.map(exclusion => ({ ...exclusion, top: exclusion.top + sliceTop, bottom: exclusion.bottom + sliceTop })),
+              movePreviewByImageIndex,
+              allowNegativeImageTop: movePreviewByImageIndex.size > 0,
+            }, typography
+          )
+        : undefined;
+      const foreignOnlyWrappedLayout =
+        (!usesMarkupRuns || wrapReviewText) && !numberingLabel && !manualDualWrappedLayout
+          ? resolveParagraphForeignOnlyWrappedTextLayout(
+              paragraph,
+              paragraphRenderTextWidthPx,
+              paragraphLineHeightPx,
+              (options?.pageFlowForeignExclusions ?? []).map(exclusion => ({ ...exclusion, top: exclusion.top + sliceTop, bottom: exclusion.bottom + sliceTop })),
+              { minimumLineHeightPx: paragraphMinimumLineHeightPx, gridLinePitchPx: resolveParagraphDocGridLinePitchPx(paragraph, paragraphGridPitchPx, disableGridSnap) }, typography,
+              wrapReviewText ? { showTrackedChanges: trackedChangesEnabled, showCommentHighlights: commentsEnabled } : undefined
+            )
+          : undefined;
+      const activeDualWrappedLayout =
+        manualDualWrappedLayout ?? foreignOnlyWrappedLayout;
+      if (usesMarkupRuns && !activeDualWrappedLayout) {
         return renderParagraphRuns(
           paragraph,
           keyPrefix,
@@ -56154,41 +56238,6 @@ export function DocxEditorViewer({
         );
       }
 
-      const paragraphLineHeightPx = lineRange?.lineHeightPx ??
-        (location.kind === "table-cell"
-          ? tableCellParagraphLineHeightPx(paragraph, paragraphGridPitchPx, disableGridSnap)
-          : estimateParagraphLineHeightPx(paragraph, paragraphGridPitchPx, disableGridSnap));
-      const manualDualWrappedLayout = !numberingLabel && !paragraphHasFormField(paragraph)
-        ? resolveParagraphDualWrappedTextLayout(
-            paragraph,
-            paragraphRenderTextWidthPx,
-            paragraphLineHeightPx,
-            {
-              minimumLineHeightPx: paragraphMinimumLineHeightPx, gridLinePitchPx: resolveParagraphDocGridLinePitchPx(paragraph, paragraphGridPitchPx, disableGridSnap),
-              excludedImageIndex: objectWrapDragPreview?.imageKey?.startsWith(`${paragraphLocationKey(location)}:`)
-                ? Number(objectWrapDragPreview.imageKey.split(":").at(-1)) : undefined,
-              widthPxByImageIndex: resizedWidthPxByImageIndex,
-              heightPxByImageIndex: resizedHeightPxByImageIndex,
-              paragraphTopPx: paragraphPageFlowTopPx,
-              pageMarginTopPx: paragraphPageLayout.marginsPx.top,
-              foreignExclusions: options?.pageFlowForeignExclusions?.map(exclusion => ({ ...exclusion, top: exclusion.top + sliceTop, bottom: exclusion.bottom + sliceTop })),
-              movePreviewByImageIndex,
-              allowNegativeImageTop: movePreviewByImageIndex.size > 0,
-            }, typography
-          )
-        : undefined;
-      const foreignOnlyWrappedLayout =
-        !numberingLabel && !manualDualWrappedLayout
-          ? resolveParagraphForeignOnlyWrappedTextLayout(
-              paragraph,
-              paragraphRenderTextWidthPx,
-              paragraphLineHeightPx,
-              (options?.pageFlowForeignExclusions ?? []).map(exclusion => ({ ...exclusion, top: exclusion.top + sliceTop, bottom: exclusion.bottom + sliceTop })),
-              { minimumLineHeightPx: paragraphMinimumLineHeightPx, gridLinePitchPx: resolveParagraphDocGridLinePitchPx(paragraph, paragraphGridPitchPx, disableGridSnap) }, typography
-            )
-          : undefined;
-      const activeDualWrappedLayout =
-        manualDualWrappedLayout ?? foreignOnlyWrappedLayout;
       if (activeDualWrappedLayout) {
         const manualGeometryImageIndexes = new Set(
           activeDualWrappedLayout.geometries.map(
