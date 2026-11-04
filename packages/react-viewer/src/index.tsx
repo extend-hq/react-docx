@@ -1244,3 +1244,5 @@ export * from "@extend-ai/react-docx-layout-core";
 export * from "@extend-ai/react-docx-serializer";
 
 export { initWasm, setWasmSource, type WasmSource } from "./wasm-source";
+
+export { resolveDocxCommentLinks, type DocxCommentLink } from "./editor";

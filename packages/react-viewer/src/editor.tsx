@@ -49,6 +49,7 @@ import {
   resolveTableGridSkipCount,
   tableRowGridSkipCount,
   type DocModel,
+  type DocNode,
   type DocumentNoteDefinition,
   type FooterSection,
   type FormFieldRunNode,
@@ -21408,7 +21409,7 @@ function resolveParagraphCommentMarkup(
   const rangeStartById = new Map<number, number>();
   const rangeEndById = new Map<number, number>();
   for (const match of sourceXml.matchAll(
-    /<w:commentRangeStart\b[^>]*w:id="(-?\d+)"[^>]*\/?>/gi
+    /<w:commentRangeStart\b[^>]*w:id\s*=\s*["'](-?\d+)["'][^>]*\/?>/gi
   )) {
     const commentId = Number.parseInt(match[1] ?? "", 10);
     if (Number.isFinite(commentId) && match.index !== undefined) {
@@ -21416,7 +21417,7 @@ function resolveParagraphCommentMarkup(
     }
   }
   for (const match of sourceXml.matchAll(
-    /<w:commentRangeEnd\b[^>]*w:id="(-?\d+)"[^>]*\/?>/gi
+    /<w:commentRangeEnd\b[^>]*w:id\s*=\s*["'](-?\d+)["'][^>]*\/?>/gi
   )) {
     const commentId = Number.parseInt(match[1] ?? "", 10);
     if (Number.isFinite(commentId) && match.index !== undefined) {
@@ -21482,6 +21483,98 @@ function resolveParagraphCommentMarkup(
   const resolved: ParagraphCommentMarkup = { commentIdsByVisibleChildIndex };
   setCacheEntry(paragraphCommentMarkupBySourceXml, sourceXml, resolved);
   return resolved;
+}
+
+export interface DocxCommentLink {
+  id: number;
+  parentId?: number;
+  resolved?: boolean;
+  blockIds: string[];
+  targets: { blockId: string; start?: number; end?: number }[];
+}
+
+/** Resolve review ranges against stable model IDs, independently of gutter visibility. */
+export function resolveDocxCommentLinks(model: DocModel): DocxCommentLink[] {
+  const links = new Map<number, DocxCommentLink>();
+  const pointAnchors = new Map<number, string>();
+  const walk = (nodes: readonly DocNode[], visit: (node: DocNode) => void): void => {
+    for (const node of nodes) {
+      visit(node);
+      if (node.type === "table") {
+        for (const row of node.rows) for (const cell of row.cells) walk(cell.nodes, visit);
+      }
+    }
+  };
+  for (const comment of model.metadata.comments ?? []) {
+    const blockIds: string[] = [];
+    walk(comment.nodes ?? [], node => {
+      if (node.blockId) blockIds.push(node.blockId);
+      if (node.type === "paragraph") {
+        for (const child of node.children) if (child.type === "image" && child.blockId) blockIds.push(child.blockId);
+      }
+    });
+    links.set(comment.id, { id: comment.id, parentId: comment.parentId, resolved: comment.resolved, blockIds, targets: [] });
+  }
+  if (!links.size) return [];
+
+  const visitStory = (nodes: readonly DocNode[]): void => {
+    const active = new Set<number>();
+    walk(nodes, node => {
+      if (node.type !== "paragraph" || !node.blockId) return;
+      for (const child of node.children) {
+        if (child.type === "image" && child.contentNodes?.length) visitStory(child.contentNodes);
+      }
+      const xml = stripTextBoxContentFromRunXml(node.sourceXml ?? "");
+      if (!active.size && !xml.includes("comment")) return;
+
+      // A middle paragraph in a range has no local markers.
+      const spanning = new Set(active);
+      const markers = xml.matchAll(/<w:(commentRangeStart|commentRangeEnd|commentReference)\b[^>]*?\bw:id\s*=\s*["'](-?\d+)["'][^>]*>/g);
+      for (const [, kind, rawId] of markers) {
+        const id = Number(rawId);
+        if (!links.has(id)) continue;
+        if (kind === "commentReference") pointAnchors.set(id, node.blockId);
+        else {
+          spanning.delete(id);
+          if (kind === "commentRangeStart") active.add(id);
+          else active.delete(id);
+        }
+      }
+      const local = resolveParagraphCommentMarkup(xml === node.sourceXml ? node : { ...node, sourceXml: xml });
+      let cursor = 0;
+      let offset = 0;
+      for (const [index, child] of node.children.entries()) {
+        const ids = new Set([...spanning, ...(local?.commentIdsByVisibleChildIndex[cursor] ?? [])]);
+        if (child.type !== "form-field") cursor++;
+        const length = child.type === "text" ? child.text.length : child.type === "form-field" ? (child.value?.length ?? 0) : 0;
+        for (const id of ids) {
+          const link = links.get(id);
+          if (!link) continue;
+          const target = child.type === "text" ? { blockId: node.blockId, start: offset, end: offset + length } :
+            { blockId: child.type === "image" && child.blockId ? child.blockId : node.blockId + "/child/" + index };
+          const last = link.targets[link.targets.length - 1];
+          if (target.start !== undefined && last?.blockId === target.blockId && last.end === target.start) last.end = target.end;
+          else link.targets.push(target);
+        }
+        offset += length;
+      }
+    });
+  };
+  visitStory(model.nodes);
+  const parts = new Set<string>();
+  for (const section of [model.metadata, ...(model.metadata.sections ?? [])]) {
+    for (const part of [...(section.headerSections ?? []), ...(section.footerSections ?? [])]) {
+      if (parts.has(part.partName)) continue;
+      parts.add(part.partName);
+      visitStory(part.nodes);
+    }
+  }
+  for (const note of [...(model.metadata.footnotes ?? []), ...(model.metadata.endnotes ?? [])]) visitStory(note.nodes ?? []);
+  for (const [id, blockId] of pointAnchors) {
+    const link = links.get(id)!;
+    if (!link.targets.length) link.targets.push({ blockId });
+  }
+  return [...links.values()];
 }
 
 function instructionTextToPageFieldKind(

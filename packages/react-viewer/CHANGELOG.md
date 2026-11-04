@@ -1,5 +1,11 @@
 # @extend-ai/react-docx
 
+## 0.13.2
+
+### Patch Changes
+
+- Preserve the editing hook context when rendering floating text boxes. Expose comment ranges and their target block IDs through the React and vanilla entry points.
+
 ## 0.13.1
 
 ### Patch Changes

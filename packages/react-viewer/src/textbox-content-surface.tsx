@@ -24,7 +24,7 @@ type TextBoxContentSurfaceProps = Omit<
 };
 
 function EditableSurface({
-  children,
+  markup,
   contentEditable,
   value,
   onTextCommit,
@@ -36,8 +36,7 @@ function EditableSurface({
   registerPendingDraft,
   resetRevision,
   ...attributes
-}: Omit<TextBoxContentSurfaceProps, "structured">): React.ReactElement {
-  const markup = renderToStaticMarkup(<>{children}</>);
+}: Omit<TextBoxContentSurfaceProps, "structured" | "children"> & { markup: string }): React.ReactElement {
   const initialMarkup = React.useRef({ __html: markup });
   const elementRef = React.useRef<HTMLDivElement>(null);
   const focused = React.useRef(false);
@@ -175,5 +174,7 @@ export function TextBoxContentSurface({
     const { value: _value, onTextCommit: _onTextCommit, registerPendingDraft: _registerPendingDraft, resetRevision: _resetRevision, ...attributes } = props;
     return <div {...attributes} contentEditable={false} />;
   }
-  return <EditableSurface {...props} />;
+  const { children, ...attributes } = props;
+  // Keep nested static rendering outside the component that owns the editing hooks.
+  return <EditableSurface {...attributes} markup={renderToStaticMarkup(<>{children}</>)} />;
 }

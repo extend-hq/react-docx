@@ -378,3 +378,5 @@ export function createDocxViewer(
 ): DocxViewer {
   return new DocxViewer(container, options);
 }
+
+export { resolveDocxCommentLinks, type DocxCommentLink } from "./editor";

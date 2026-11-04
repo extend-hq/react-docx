@@ -5,6 +5,7 @@ import type { DocModel } from "@extend-ai/react-docx-doc-model";
 import {
   DocxEditorViewer,
   defaultStarterModel,
+  resolveDocxCommentLinks,
   useDocxComments,
   useDocxEditor,
   type DocxComment,
@@ -126,4 +127,26 @@ describe("docx comments", () => {
     expect(markup).not.toContain("rgba(143, 106, 200");
     expect(hiddenComments).toHaveLength(1);
   });
+});
+
+it("links a range across paragraphs to text offsets and the selected image", () => {
+  const model: DocModel = {
+    ...defaultStarterModel,
+    metadata: {
+      ...defaultStarterModel.metadata,
+      comments: [{ id: 0, text: "Review", nodes: [{ type: "paragraph", blockId: "note", children: [] }] }],
+    },
+    nodes: [
+      { type: "paragraph", blockId: "first", children: [{ type: "text", text: "A" }, { type: "text", text: "B" }],
+        sourceXml: '<w:p><w:r><w:t>A</w:t></w:r><w:commentRangeStart w:id="0"/><w:r><w:t>B</w:t></w:r></w:p>' },
+      { type: "paragraph", blockId: "middle", children: [{ type: "text", text: "😀" }] },
+      { type: "paragraph", blockId: "last", children: [{ type: "image", blockId: "selected" }, { type: "image", blockId: "outside" }],
+        sourceXml: '<w:p><w:r><w:drawing/></w:r><w:commentRangeEnd w:id="0"/><w:r><w:drawing/></w:r><w:r><w:commentReference w:id="0"/></w:r></w:p>' },
+    ],
+  };
+  expect(resolveDocxCommentLinks(model)).toEqual([{
+    id: 0, blockIds: ["note"], targets: [
+      { blockId: "first", start: 1, end: 2 }, { blockId: "middle", start: 0, end: 2 }, { blockId: "selected" },
+    ],
+  }]);
 });
