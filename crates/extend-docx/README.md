@@ -16,7 +16,7 @@ Native builds enable `native-deflate` by default, using libdeflate for whole-buf
 
 ```toml
 [dependencies]
-extend-docx = { version = "0.1", default-features = false }
+extend-docx = { version = "0.2", default-features = false }
 ```
 
 ## Usage

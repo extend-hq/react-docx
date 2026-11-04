@@ -1,5 +1,11 @@
 # @extend-ai/react-docx
 
+## 0.14.0
+
+### Minor Changes
+
+- Render native classic, 3D, and extended Word charts, including filled maps with embedded boundaries, numeric and categorical color scales, legends, and source attribution.
+
 ## 0.13.6
 
 ### Patch Changes
