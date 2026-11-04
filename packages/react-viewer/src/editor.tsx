@@ -23291,6 +23291,7 @@ function renderParagraphRuns(
     target.push(
       <span
         key={numberingKey}
+        data-docx-numbering-label="true"
         style={numberingMarkerStyle(
           paragraph,
           options?.numberingDefinitions,

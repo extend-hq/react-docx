@@ -51,6 +51,23 @@ for (const zoom of [0.75, 1, 1.5]) {
       };
       const headingGeometry = geometry("heading");
       const word = api.resolveDocxSourceGeometry(root, [{ ...source("heading"), start: 2, end: 9 }]);
+      const list = paragraph("list", "Item");
+      const label = document.createElement("span");
+      label.dataset.docxNumberingLabel = "true";
+      label.textContent = "1.a)";
+      Object.assign(label.style, { display: "inline-block", width: "60px" });
+      list.prepend(label);
+      const listGeometry = geometry("list");
+      const listWord = api.resolveDocxWordGeometries(root, [{
+        id: "list-word", blockId: "list", content: "Item",
+        sourceRefs: [{ ...source("list"), start: 0, end: 4 }],
+      }]).get("list-word");
+      const picture = document.createElement("img");
+      picture.width = 12;
+      picture.height = 12;
+      picture.setAttribute("aria-hidden", "true");
+      label.replaceChildren(picture);
+      const pictureListGeometry = geometry("list");
       const wrapped = paragraph("wrapped", "Alpha beta gamma delta epsilon zeta eta theta");
       wrapped.style.width = "150px";
       wrapped.style.lineHeight = "30px";
@@ -97,7 +114,7 @@ for (const zoom of [0.75, 1, 1.5]) {
       second.textContent = "Second fragment";
       makePage(1).append(second);
       const result = {
-        heading: headingGeometry, expected, word, wrapped: geometry("wrapped"),
+        heading: headingGeometry, expected, word, listGeometry, listWord, pictureListGeometry, wrapped: geometry("wrapped"),
         mark: markGeometry, markAdvance, clippedMark: geometry("clipped-mark"),
         formatControl: geometry("format-control"), variationSelector: geometry("variation-selector"),
         empty: geometry("empty"), nested, table: geometry("table"), cell: geometry("cell"),
@@ -108,6 +125,14 @@ for (const zoom of [0.75, 1, 1.5]) {
       return result;
     }, { modulePath: `/@fs${path.resolve("packages/react-viewer/src/block-geometry.tsx")}`, zoom });
 
+    const [label, item] = result.listGeometry.fragments;
+    expect(result.listGeometry.fragments).toHaveLength(2);
+    expect(label.boundingBox.right).toBeLessThan(item.boundingBox.left);
+    expect(result.listWord.status).toBe("rendered");
+    expect(result.listWord.fragments.map((fragment: { boundingBox: unknown }) => fragment.boundingBox)).toEqual([item.boundingBox]);
+    expect(result.pictureListGeometry.fragments).toHaveLength(2);
+    const picture = result.pictureListGeometry.fragments[0].boundingBox;
+    expect(picture.right - picture.left).toBeCloseTo(12, 1);
     expect(result.heading.status).toBe("rendered");
     expect(result.heading.fragments).toHaveLength(1);
     const heading = result.heading.fragments[0].boundingBox;

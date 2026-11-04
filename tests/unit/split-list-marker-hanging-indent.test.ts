@@ -69,12 +69,12 @@ const SENTENCE =
 // pretext path — the code path this regression covers.
 const ITEM_TEXT = SENTENCE.repeat(16);
 
-function buildNumberedListModel(itemCount: number): DocModel {
+function buildNumberedListModel(itemCount: number, text = ITEM_TEXT): DocModel {
   return {
     nodes: Array.from({ length: itemCount }, () => ({
       type: "paragraph" as const,
       style: { numbering: { numId: 1, ilvl: 0 } },
-      children: [{ type: "text" as const, text: ITEM_TEXT }],
+      children: [{ type: "text" as const, text }],
     })),
     metadata: {
       sourceParts: 1,
@@ -87,9 +87,9 @@ function buildNumberedListModel(itemCount: number): DocModel {
   };
 }
 
-function NumberedListViewer({ model }: { model: DocModel }): React.JSX.Element {
+function NumberedListViewer({ model, showTrackedChanges }: { model: DocModel; showTrackedChanges?: boolean }): React.JSX.Element {
   const editor = useDocxEditor({ starterModel: model });
-  return React.createElement(DocxEditorViewer, { editor, mode: "read-only" });
+  return React.createElement(DocxEditorViewer, { editor, mode: "read-only", showTrackedChanges });
 }
 
 function renderList(itemCount: number): string {
@@ -126,4 +126,12 @@ describe("split hanging-indent list marker", () => {
       /data-docx-paragraph-partial-line-range="true"[^>]*text-indent:0(?![.\d])/
     );
   });
+});
+
+it.each([false, true])("identifies inline list labels with tracked changes set to %s", (showTrackedChanges) => {
+  const html = renderToStaticMarkup(React.createElement(NumberedListViewer, {
+    model: buildNumberedListModel(1, "Item"),
+    showTrackedChanges,
+  }));
+  expect(html).toMatch(/<span[^>]*data-docx-numbering-label="true"[^>]*>\(1\)/);
 });

@@ -94,16 +94,18 @@ export function resolveDocxSourceGeometry(
   return resolveSourceGeometry(root, refs);
 }
 
-function textNodes(element: HTMLElement, owner: HTMLElement): Text[] {
+function textNodes(element: HTMLElement, includeNumbering = false): Text[] {
   const nodes: Text[] = [];
+  const ignored = "[data-docx-generated-text],[data-docx-pagination-ignore],button,textarea,select,[aria-hidden='true']";
+  const excluded = includeNumbering ? ignored : `[data-docx-numbering-label],${ignored}`;
   const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
   while (walker.nextNode()) {
     const node = walker.currentNode as Text;
     const parent = node.parentElement;
-    if (!parent || parent.closest("[data-docx-numbering-label],[data-docx-generated-text],[data-docx-pagination-ignore],button,textarea,select,[aria-hidden='true']")) continue;
+    if (!parent || parent.closest(excluded)) continue;
     const source = parent.closest<HTMLElement>("[data-docx-source-id]");
-    if (source && source !== owner) {
-      const prefix = `${owner.dataset.docxSourceId}/child/`;
+    if (source && source !== element) {
+      const prefix = `${element.dataset.docxSourceId}/child/`;
       const id = source.dataset.docxSourceId ?? "";
       if (!id.startsWith(prefix) || !/^\d+$/.test(id.slice(prefix.length))) continue;
       if (source.matches("[data-docx-image-location],[role='math']") || parent.closest("svg")) continue;
@@ -160,7 +162,7 @@ function textRangeIndex(element: HTMLElement, cache: GeometryCache): TextRangeIn
   }]));
   const fallback = { offset: 0, end: Number.POSITIVE_INFINITY };
   const entries: TextRangeEntry[] = [];
-  for (const node of textNodes(element, element)) {
+  for (const node of textNodes(element)) {
     const chunk = annotated.length
       ? chunks.get(node.parentElement!.closest<HTMLElement>(selector)!)
       : fallback;
@@ -272,7 +274,12 @@ function paragraphTextBoxes(
 ): BlockBoundingBox[] {
   const boxes: BlockBoundingBox[] = [];
   let previousExtent: BlockBoundingBox | undefined;
-  const nodes = textNodes(element, element);
+  const nodes = textNodes(element, true);
+  for (const picture of element.querySelectorAll<HTMLElement>("[data-docx-numbering-label] img")) {
+    if (picture.closest("[data-docx-source-id]") !== element) continue;
+    const box = cachedVisibleBox(picture, surface, cache);
+    if (box) boxes.push(box);
+  }
   const marksOnly = nodes.every(node => !node.data.trim() || /^\p{M}+$/u.test(node.data.trim()));
   for (const node of nodes) {
     const start = node.data.search(/\S/u);

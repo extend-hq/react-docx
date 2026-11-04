@@ -1,5 +1,11 @@
 # @extend-ai/react-docx
 
+## 0.13.3
+
+### Patch Changes
+
+- Include visible list markers in paragraph bounding boxes across review modes and keep generated numbering out of word offsets.
+
 ## 0.13.2
 
 ### Patch Changes
