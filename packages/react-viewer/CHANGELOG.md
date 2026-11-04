@@ -1,5 +1,11 @@
 # @extend-ai/react-docx
 
+## 0.13.4
+
+### Patch Changes
+
+- Preserve fixed picture crops, ellipse outlines, and the positioning of overlapping Word drawings.
+
 ## 0.13.3
 
 ### Patch Changes

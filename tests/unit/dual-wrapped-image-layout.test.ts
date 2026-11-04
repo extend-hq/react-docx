@@ -69,6 +69,22 @@ describe("dual wrapped image layout", () => {
     expect(shrunkHeightPx).toBeLessThan(baselineHeightPx);
   });
 
+  it("keeps an anchor column beside a fixed picture even when neither band fits prose", async () => {
+    const { resolveDualWrappedFloatingImageGeometry } = await import("../../packages/react-viewer/src/editor");
+    const geometry = (widthPx: number) => resolveDualWrappedFloatingImageGeometry({
+      type: "image",
+      widthPx,
+      heightPx: 90,
+      floating: {
+        wrapType: "square", wrapText: "bothSides", horizontalRelativeTo: "margin",
+        verticalRelativeTo: "margin", xPx: 20, yPx: 80, distLPx: 5, distRPx: 5,
+      },
+    }, 300);
+    expect(geometry(240)?.exclusion.anchorColumnLeftPx).toBe(265);
+    expect(geometry(270)?.exclusion.anchorColumnLeftPx).toBe(0);
+    expect(geometry(240)?.exclusion.right).toBe(300);
+  });
+
   it("detects an interior both-sides wrapped image exclusion box", async () => {
     const { resolveDualWrappedFloatingImageGeometry } = await import(
       "../../packages/react-viewer/src/editor"

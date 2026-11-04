@@ -6081,6 +6081,13 @@ function paragraphNeedsPageWidthAnchorHost(paragraph: ParagraphNode): boolean {
   });
 }
 
+function paragraphContainsOnlyFixedFloatAnchors(paragraph: ParagraphNode): boolean {
+  if (!paragraphIsFloatingImageAnchorOnly(paragraph)) return false;
+  const images = paragraph.children.filter(child => child.type === "image");
+  return images.some(isPageOrMarginAnchoredWrappedFloatingImage) &&
+    images.every(image => isPageOrMarginAnchoredWrappedFloatingImage(image) || shouldRenderAbsoluteFloatingImage(image));
+}
+
 function paragraphHasAbsoluteFloatingImage(paragraph: ParagraphNode): boolean {
   return paragraph.children.some((child) => {
     const image = paragraphChildImage(child);
@@ -6914,6 +6921,7 @@ export function resolveForeignWrapExclusionsForFlowRange(
     }
 
     foreignExclusions.push({
+      anchorColumnLeftPx: obstacle.anchorColumnLeftPx,
       left: obstacle.left,
       right: obstacle.right,
       top: Math.max(0, Math.round(obstacle.top - pageFlowTopPx)),
@@ -7043,6 +7051,7 @@ export function collectPageFlowWrapObstaclesForParagraph(
       coveredImageIndexes.add(geometry.imageIndex);
       obstacles.push({
         sourceNodeIndex: nodeIndex,
+        anchorColumnLeftPx: geometry.exclusion.anchorColumnLeftPx,
         left: geometry.exclusion.left,
         right: geometry.exclusion.right,
         top: pageFlowTopPx + geometry.exclusion.top,
@@ -7086,6 +7095,7 @@ export function collectPageFlowWrapObstaclesForParagraph(
 
     obstacles.push({
       sourceNodeIndex: nodeIndex,
+      anchorColumnLeftPx: geometry.exclusion.anchorColumnLeftPx,
       left: geometry.exclusion.left,
       right: geometry.exclusion.right,
       top: pageFlowTopPx + geometry.exclusion.top,
@@ -7106,7 +7116,10 @@ export function resolveParagraphForeignOnlyWrappedTextLayout(
 ): ParagraphDualWrappedTextLayout | undefined {
   const options = typeof lineOptions === "number"
     ? { minimumLineHeightPx: lineOptions } : lineOptions;
-  if (foreignExclusions.length === 0) {
+  if (foreignExclusions.length === 0) return undefined;
+  const firstLineBands = foreignExclusions.filter(rect => rect.top < lineHeightPx && rect.bottom > 0);
+  if (paragraphRendersTextFreeLine(paragraph) && firstLineBands.length > 0 &&
+      firstLineBands.every(rect => rect.anchorColumnLeftPx !== undefined)) {
     return undefined;
   }
 
@@ -9291,12 +9304,19 @@ export function resolveDualWrappedFloatingImageGeometry(
     exclusionRightPx = safeContainerWidthPx;
   }
 
+  let anchorColumnLeftPx: number | undefined;
   if (!isInlinePreview && wrapType !== "topAndBottom") {
     const leftBandWidthPx = exclusionLeftPx;
     const rightBandWidthPx = Math.max(
       0,
       safeContainerWidthPx - exclusionRightPx
     );
+    if (wrapType === "square" && isPageOrMarginAnchoredWrappedFloatingImage(image) &&
+        (leftBandWidthPx > 0 || rightBandWidthPx > 0)) {
+      // An empty anchor line can occupy a side band too narrow for a word.
+      anchorColumnLeftPx = leftBandWidthPx >= MIN_DUAL_WRAPPED_INTERIOR_BAND_PX || leftBandWidthPx >= rightBandWidthPx
+        ? 0 : exclusionRightPx;
+    }
     if (leftBandWidthPx < MIN_DUAL_WRAPPED_INTERIOR_BAND_PX)
       exclusionLeftPx = 0;
     if (rightBandWidthPx < MIN_DUAL_WRAPPED_INTERIOR_BAND_PX)
@@ -9312,6 +9332,7 @@ export function resolveDualWrappedFloatingImageGeometry(
     imageWidthPx,
     imageHeightPx,
     exclusion: {
+      anchorColumnLeftPx,
       left: exclusionLeftPx,
       right: exclusionRightPx,
       top: imageTopPx,
@@ -11226,11 +11247,17 @@ function calibrateAutoLineSpacingMultiple(
 function paragraphNaturalLineHeightPx(paragraph: ParagraphNode): number | undefined {
   const baseFontPx = paragraphBaseFontSizePx(paragraph);
   const style = paragraphEmptyMarkMetricStyle(paragraph) ?? firstRunStyle(paragraph);
-  return measureFontNaturalLineHeightPx(resolveMeasureFontForFamily(
+  const family = paragraphDominantFontFamily(paragraph);
+  const measured = measureFontNaturalLineHeightPx(resolveMeasureFontForFamily(
     { ...style, fontSizePt: baseFontPx * 72 / 96, verticalAlign: undefined },
     baseFontPx,
-    paragraphDominantFontFamily(paragraph)
+    family
   ));
+  // Calibri's horizontal header defines 2500 units of line height per 2048 units per em.
+  // Keep its nominal strut when the browser substitutes a shorter system font.
+  return normalizeFontFamilyToken(family) === "calibri"
+    ? Math.max(measured ?? 0, baseFontPx * 2500 / 2048)
+    : measured;
 }
 
 function autoRunLineHeightPx(
@@ -12606,7 +12633,8 @@ function estimateParagraphHeightPx(
   typography?: DocxTypographyOptions
 ): number {
   const excludeWrappedFloatingImageFootprint =
-    options?.excludeWrappedFloatingImageFootprint === true;
+    options?.excludeWrappedFloatingImageFootprint === true ||
+    paragraphContainsOnlyFixedFloatAnchors(paragraph);
   const sourceXml = paragraph.sourceXml;
   const baseWidthKey = heightEstimateCacheKeyPx(
     availableWidthPx,
@@ -55971,6 +55999,9 @@ export function DocxEditorViewer({
               paragraphPageLayout.marginsPx.bottom
           )
       );
+      const wrappedColumnLeftPx = paragraphIsFloatingImageAnchorOnly(paragraph)
+        ? Math.max(0, ...(options?.pageFlowForeignExclusions ?? []).filter(rect => rect.top <= 0 && rect.bottom > 0).map(rect => rect.anchorColumnLeftPx ?? 0))
+        : 0;
       const interactiveBodyFloatingPageOriginPx =
         paragraphNeedsPageAnchoredAbsolutePositioningContext(paragraph) ||
         paragraphNeedsPageWidthAnchorHost(paragraph) ||
@@ -56104,7 +56135,9 @@ export function DocxEditorViewer({
           documentContentTheme,
           numberingLabel,
           scrollToBookmark,
-          interactiveBodyFloatingPageOriginPx,
+          wrappedColumnLeftPx
+            ? { left: 0, top: 0, ...interactiveBodyFloatingPageOriginPx, columnLeft: (interactiveBodyFloatingPageOriginPx?.columnLeft ?? 0) + wrappedColumnLeftPx }
+            : interactiveBodyFloatingPageOriginPx,
           noteMarkerIndexes,
           undefined,
           undefined,
@@ -56324,6 +56357,90 @@ export function DocxEditorViewer({
           );
         };
 
+        const renderManualImageVisual = (
+          manualImage: ImageRunNode,
+          renderableImageSrc: string,
+          widthPx: number | undefined,
+          heightPx: number | undefined
+        ) => {
+          const cropLayout = imageCropLayout(
+            manualImage,
+            widthPx,
+            heightPx
+          );
+          const imageVisualStyle: React.CSSProperties = {
+            filter: appendCssFilters(
+              manualImage.cssFilter,
+              documentContentFilter
+            ),
+            opacity: manualImage.cssOpacity,
+          };
+          const imageTransformStyle = resolveImageRenderTransformStyle(
+            manualImage,
+            {
+              frameWidthPx: cropLayout?.frameWidthPx ?? widthPx,
+              frameHeightPx: cropLayout?.frameHeightPx ?? heightPx,
+              baseTransform: cropLayout
+                ? `translate(${-cropLayout.offsetXPx}px, ${-cropLayout.offsetYPx}px)`
+                : undefined,
+            }
+          );
+
+          if (cropLayout) {
+            return (
+              <span
+                style={{
+                  width: `${cropLayout.frameWidthPx}px`,
+                  height: `${cropLayout.frameHeightPx}px`,
+                  overflow: "clip",
+                  display: "block",
+                }}
+              >
+                <PaintBoundsImage
+                  image={manualImage}
+                  widthPx={cropLayout.imageWidthPx}
+                  heightPx={cropLayout.imageHeightPx}
+                  src={renderableImageSrc}
+                  alt={manualImage.alt ?? "DOCX image"}
+                  draggable={false}
+                  style={{
+                    width: `${cropLayout.imageWidthPx}px`,
+                    height: `${cropLayout.imageHeightPx}px`,
+                    maxWidth: "none",
+                    verticalAlign: "middle",
+                    display: "block",
+                    cursor: isReadOnly ? "default" : "move",
+                    ...imageVisualStyle,
+                    ...imageTransformStyle,
+                  }}
+                />
+              </span>
+            );
+          }
+
+          return (
+            <PaintBoundsImage
+              image={manualImage}
+              widthPx={widthPx}
+              heightPx={heightPx}
+              src={renderableImageSrc}
+              alt={manualImage.alt ?? "DOCX image"}
+              draggable={false}
+              style={{
+                width: widthPx ? `${widthPx}px` : undefined,
+                height: heightPx ? `${heightPx}px` : undefined,
+                verticalAlign: "middle",
+                display: "block",
+                cursor: isReadOnly ? "default" : "move",
+                ...imageVisualStyle,
+                ...resolveImageRenderTransformStyle(manualImage, {
+                  frameWidthPx: widthPx,
+                  frameHeightPx: heightPx,
+                }),
+              }}
+            />
+          );
+        };
         const renderManualImage = (
           geometry: DualWrappedFloatingImageGeometry
         ): React.ReactNode => {
@@ -56420,85 +56537,7 @@ export function DocxEditorViewer({
               }}
             >
               {renderableImageSrc && !showsUnsupportedFallback ? (
-                (() => {
-                  const cropLayout = imageCropLayout(
-                    manualImage,
-                    widthPx,
-                    heightPx
-                  );
-                  const imageVisualStyle: React.CSSProperties = {
-                    filter: appendCssFilters(
-                      manualImage.cssFilter,
-                      documentContentFilter
-                    ),
-                    opacity: manualImage.cssOpacity,
-                  };
-                  const imageTransformStyle = resolveImageRenderTransformStyle(
-                    manualImage,
-                    {
-                      frameWidthPx: cropLayout?.frameWidthPx ?? widthPx,
-                      frameHeightPx: cropLayout?.frameHeightPx ?? heightPx,
-                      baseTransform: cropLayout
-                        ? `translate(${-cropLayout.offsetXPx}px, ${-cropLayout.offsetYPx}px)`
-                        : undefined,
-                    }
-                  );
-
-                  if (cropLayout) {
-                    return (
-                      <span
-                        style={{
-                          width: `${cropLayout.frameWidthPx}px`,
-                          height: `${cropLayout.frameHeightPx}px`,
-                          overflow: "clip",
-                          display: "block",
-                        }}
-                      >
-                        <PaintBoundsImage
-                          image={manualImage}
-                          widthPx={cropLayout.imageWidthPx}
-                          heightPx={cropLayout.imageHeightPx}
-                          src={renderableImageSrc}
-                          alt={manualImage.alt ?? "DOCX image"}
-                          draggable={false}
-                          style={{
-                            width: `${cropLayout.imageWidthPx}px`,
-                            height: `${cropLayout.imageHeightPx}px`,
-                            maxWidth: "none",
-                            verticalAlign: "middle",
-                            display: "block",
-                            cursor: isReadOnly ? "default" : "move",
-                            ...imageVisualStyle,
-                            ...imageTransformStyle,
-                          }}
-                        />
-                      </span>
-                    );
-                  }
-
-                  return (
-                    <PaintBoundsImage
-                      image={manualImage}
-                      widthPx={widthPx}
-                      heightPx={heightPx}
-                      src={renderableImageSrc}
-                      alt={manualImage.alt ?? "DOCX image"}
-                      draggable={false}
-                      style={{
-                        width: widthPx ? `${widthPx}px` : undefined,
-                        height: heightPx ? `${heightPx}px` : undefined,
-                        verticalAlign: "middle",
-                        display: "block",
-                        cursor: isReadOnly ? "default" : "move",
-                        ...imageVisualStyle,
-                        ...resolveImageRenderTransformStyle(manualImage, {
-                          frameWidthPx: widthPx,
-                          frameHeightPx: heightPx,
-                        }),
-                      }}
-                    />
-                  );
-                })()
+                renderManualImageVisual(manualImage, renderableImageSrc, widthPx, heightPx)
               ) : showsUnsupportedFallback ? (
                 <span
                   role="img"
@@ -56736,24 +56775,7 @@ export function DocxEditorViewer({
               }}
             >
               {renderableImageSrc && !showsUnsupportedFallback ? (
-                <img
-                  src={renderableImageSrc}
-                  alt={manualImage.alt ?? "DOCX image"}
-                  draggable={false}
-                  style={{
-                    width: widthPx ? `${widthPx}px` : undefined,
-                    height: heightPx ? `${heightPx}px` : undefined,
-                    maxWidth: "none",
-                    verticalAlign: "middle",
-                    display: "block",
-                    cursor: isReadOnly ? "default" : "move",
-                    filter: appendCssFilters(
-                      manualImage.cssFilter,
-                      documentContentFilter
-                    ),
-                    opacity: manualImage.cssOpacity,
-                  }}
-                />
+                renderManualImageVisual(manualImage, renderableImageSrc, widthPx, heightPx)
               ) : showsUnsupportedFallback ? (
                 <span
                   role="img"
@@ -57179,7 +57201,8 @@ export function DocxEditorViewer({
           layout: lineRange ? sliceLayoutToLineRange(activeWrappedLayout, lineRange.startLineIndex,
             lineRange.endLineIndex >= lineRange.totalLineCount ? activeWrappedLayout.lineCount : lineRange.endLineIndex) : activeWrappedLayout,
           lineHeightPx: activeDualWrappedLayout.lineHeightPx,
-          blockHeightPx: lineRange ? undefined : Math.max(
+          blockHeightPx: lineRange ? undefined : location.kind === "paragraph" && paragraphContainsOnlyFixedFloatAnchors(previewParagraph)
+            ? paragraphLineHeightPx : Math.max(
             location.kind === "table-cell"
               ? tableCellWrappedImageBottomPx(activeDualWrappedLayout.geometries) : 0,
             resolveDragPreviewAwareWrapBlockHeightPx(
@@ -57368,7 +57391,7 @@ export function DocxEditorViewer({
                   marginOriginTop:
                     interactiveBodyFloatingPageOriginPx?.marginTop ?? 0,
                   columnOriginLeft:
-                    interactiveBodyFloatingPageOriginPx?.columnLeft ?? 0,
+                    (interactiveBodyFloatingPageOriginPx?.columnLeft ?? 0) + wrappedColumnLeftPx,
                   columnOriginTop:
                     interactiveBodyFloatingPageOriginPx?.columnTop ?? 0,
                   paragraphOriginLeft: bodyParagraphOriginLeftPx,
@@ -60100,6 +60123,7 @@ export function DocxEditorViewer({
         : undefined;
       const paragraphStyle: React.CSSProperties = {
         ...baseParagraphStyle,
+        ...(paragraphIsFloatingImageAnchorOnly(node) ? { zIndex: "auto" } : undefined),
         ...(useExplicitLineLayout && shouldRenderParagraphSegmentWithPretext
           ? { textIndent: 0 }
           : undefined),

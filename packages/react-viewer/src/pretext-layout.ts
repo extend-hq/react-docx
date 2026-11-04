@@ -80,6 +80,7 @@ export interface PretextParagraphLineOptions {
 }
 
 export interface PretextExclusionRect {
+  anchorColumnLeftPx?: number;
   left: number;
   right: number;
   top: number;
