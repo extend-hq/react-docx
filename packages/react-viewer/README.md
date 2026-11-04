@@ -19,13 +19,9 @@ pnpm add @extend-ai/react-docx
 
 For the React entry, install `react` and `react-dom` as well. The vanilla entry bundles Preact and does not require React.
 
-## Parser benchmarks
+## Benchmarks and chart accuracy
 
-The shared Rust parser is published as **extend-docx**. The [repository benchmark summary](https://github.com/extend-hq/react-docx#benchmarks) includes four-library latency and accuracy tables, feature-recall denominators, scatter plots, format coverage, and a separate Microsoft Word reference sample.
-
-On the November 2, 2026 native comparison, extend-docx measured **0.673 ms median / 5.080 ms p95** across 999 shared successful DOCX inputs. The source-XML accuracy cohort contains 1,000 inputs, with **99.983% body-text F1** and **1,069/1,069 payload-matched image occurrences**. These measure native parsing and extraction; browser loading, layout, and editing are outside their scope. The [methods and limitations](https://github.com/extend-hq/react-docx/blob/main/docs/benchmarks-optimized-20261102.md) describe the measured revisions, timing protocol, and reference checks.
-
-![Native DOCX parser median and p95 latency for four libraries](https://raw.githubusercontent.com/extend-hq/react-docx/main/docs/readme-assets/docx-core-optimized-20261102-latency-docx-summary.png)
+See [Extend Office](https://github.com/extend-hq/extend-office#packages-benchmarks-and-chart-accuracy) for parser benchmarks, accuracy results, and chart comparisons with Microsoft Word.
 
 ## WebAssembly Asset
 
