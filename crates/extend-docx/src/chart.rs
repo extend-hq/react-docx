@@ -41,6 +41,14 @@ pub struct ChartCategory {
     pub label: String,
 }
 
+pub(crate) const CHARTEX_NS: &str = "http://schemas.microsoft.com/office/drawing/2014/chartex";
+
+pub(crate) fn cx_child<'a>(parent: Node<'a, 'a>, name: &str) -> Option<Node<'a, 'a>> {
+    parent
+        .children()
+        .find(|n| n.has_tag_name((CHARTEX_NS, name)))
+}
+
 pub(crate) fn chart_node(node: Node, name: &str) -> bool {
     node.tag_name().name() == name
         && matches!(
@@ -128,6 +136,9 @@ pub(crate) fn parse_chart_xml(content: &str) -> Option<ChartData> {
 }
 
 pub(crate) fn chart_data_from_root(root: Node) -> Option<ChartData> {
+    if root.has_tag_name((CHARTEX_NS, "chartSpace")) {
+        return extended_data(root);
+    }
     let chart = child(root, "chart")?;
     let plot = child(chart, "plotArea")?;
     let title = child(chart, "title")
@@ -161,4 +172,143 @@ pub(crate) fn chart_data_from_root(root: Node) -> Option<ChartData> {
         }
     }
     Some(ChartData { title, series })
+}
+
+fn extended_text(node: Node) -> Option<String> {
+    let value = cx_child(node, "tx")
+        .and_then(|tx| cx_child(tx, "txData"))
+        .and_then(|d| cx_child(d, "v"))
+        .and_then(|v| v.text());
+    if let Some(value) = value.filter(|v| !v.is_empty()) {
+        return Some(value.to_owned());
+    }
+    let rich = cx_child(node, "tx")
+        .and_then(|tx| cx_child(tx, "rich"))
+        .or_else(|| cx_child(node, "txPr"))?;
+    let text: String = rich
+        .descendants()
+        .filter(|n| {
+            n.tag_name().name() == "t"
+                && matches!(
+                    n.tag_name().namespace(),
+                    Some(
+                        "http://schemas.openxmlformats.org/drawingml/2006/main"
+                            | "http://purl.oclc.org/ooxml/drawingml/main"
+                    )
+                )
+        })
+        .filter_map(|n| n.text())
+        .collect();
+    (!text.is_empty()).then_some(text)
+}
+
+fn extended_points(data: Node) -> Vec<ChartPoint> {
+    let mut points = BTreeMap::new();
+    for dimension in data.children().filter(|n| {
+        n.has_tag_name((CHARTEX_NS, "strDim")) || n.has_tag_name((CHARTEX_NS, "numDim"))
+    }) {
+        let role = dimension.attribute("type").unwrap_or_default();
+        if !matches!(role, "cat" | "val" | "size" | "x" | "y") {
+            continue;
+        }
+        for (level, cache) in dimension
+            .children()
+            .filter(|n| n.has_tag_name((CHARTEX_NS, "lvl")))
+            .enumerate()
+        {
+            for pt in cache
+                .children()
+                .filter(|n| n.has_tag_name((CHARTEX_NS, "pt")))
+            {
+                let Some(index) = pt.attribute("idx").and_then(|v| v.parse::<u32>().ok()) else {
+                    continue;
+                };
+                let point = points.entry(index).or_insert_with(|| ChartPoint {
+                    index,
+                    ..Default::default()
+                });
+                let value = pt.text().unwrap_or_default().to_owned();
+                match role {
+                    "cat" => point.categories.push(ChartCategory {
+                        level,
+                        label: value,
+                    }),
+                    "val" | "size" => point.value = Some(value),
+                    "x" => point.x = Some(value),
+                    "y" => point.y = Some(value),
+                    _ => unreachable!(),
+                }
+            }
+        }
+    }
+    points.into_values().collect()
+}
+
+fn extended_data(root: Node) -> Option<ChartData> {
+    let chart = cx_child(root, "chart")?;
+    let plot = cx_child(cx_child(chart, "plotArea")?, "plotAreaRegion")?;
+    let data = cx_child(root, "chartData");
+    let datasets: BTreeMap<_, _> = data
+        .into_iter()
+        .flat_map(|d| d.children())
+        .filter(|n| n.has_tag_name((CHARTEX_NS, "data")))
+        .filter_map(|n| Some((n.attribute("id")?.parse::<u32>().ok()?, n)))
+        .collect();
+    let series = plot
+        .children()
+        .filter(|n| n.has_tag_name((CHARTEX_NS, "series")))
+        .filter_map(|s| {
+            let id = cx_child(s, "dataId")
+                .and_then(|d| d.attribute("val"))
+                .and_then(|id| id.parse::<u32>().ok());
+            Some(ChartSeries {
+                chart_type: s.attribute("layoutId")?.to_owned(),
+                name: extended_text(s),
+                points: id
+                    .and_then(|id| datasets.get(&id))
+                    .map(|&d| extended_points(d))
+                    .unwrap_or_default(),
+            })
+        })
+        .collect();
+    Some(ChartData {
+        title: cx_child(chart, "title").and_then(extended_text),
+        series,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extended_cache_uses_data_ids_and_preserves_sparse_hierarchy_levels() {
+        let xml = r#"<x:chartSpace xmlns:x="http://schemas.microsoft.com/office/drawing/2014/chartex" xmlns:t="http://purl.oclc.org/ooxml/drawingml/main">
+            <x:chartData><x:data id="9">
+                <x:strDim type="cat"><x:lvl ptCount="4"><x:pt idx="1">A</x:pt><x:pt idx="3">B</x:pt></x:lvl><x:lvl ptCount="4"><x:pt idx="1">Group</x:pt></x:lvl></x:strDim>
+                <x:numDim type="size"><x:lvl ptCount="4"><x:pt idx="3">12.00</x:pt></x:lvl></x:numDim>
+            </x:data></x:chartData>
+            <x:chart><x:title><x:tx><x:txData><x:v>Title</x:v></x:txData></x:tx><x:txPr><t:p><t:r><t:t>Title</t:t></t:r></t:p></x:txPr></x:title>
+            <x:plotArea><x:plotAreaRegion><x:series layoutId="treemap"><x:tx><x:txData><x:v>Series</x:v></x:txData></x:tx><x:dataId val="9"/></x:series><x:series layoutId="treemap"><x:dataId val="33"/></x:series></x:plotAreaRegion></x:plotArea>
+            </x:chart></x:chartSpace>"#;
+        let chart = parse_chart_xml(xml).unwrap();
+        assert_eq!(chart.title.as_deref(), Some("Title"));
+        let series = &chart.series[0];
+        assert_eq!(series.name.as_deref(), Some("Series"));
+        assert_eq!(series.chart_type, "treemap");
+        assert_eq!(
+            series.points.iter().map(|p| p.index).collect::<Vec<_>>(),
+            [1, 3]
+        );
+        assert_eq!(
+            series.points[0].categories[1],
+            ChartCategory {
+                level: 1,
+                label: "Group".into()
+            }
+        );
+        assert_eq!(series.points[0].value, None);
+        assert_eq!(series.points[1].value.as_deref(), Some("12.00"));
+        assert!(chart.series[1].points.is_empty());
+    }
 }

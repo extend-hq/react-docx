@@ -1,9 +1,13 @@
 #[path = "chart_base_color.rs"]
 mod base_color;
+#[path = "chart_paint.rs"]
+mod paint;
+#[path = "chart_style_palette.rs"]
+mod style_palette;
 
 use super::colors::{default_drawing_scheme_colors, normalize_hex_color, transform_rgb};
 use super::context::{ParseContext, ParsedStyleSheet, ThemeColorMap};
-use crate::chart::{chart_node, child};
+use crate::chart::{chart_node, child, cx_child, CHARTEX_NS};
 use roxmltree::Node;
 use std::collections::HashMap;
 
@@ -100,40 +104,34 @@ fn color(node: Node, theme: &ThemeColorMap) -> Option<String> {
     transformed(&base, &transforms(node))
 }
 
-fn fill(properties: Node, theme: &ThemeColorMap) -> Option<String> {
-    if drawing_child(properties, "noFill").is_some() {
-        return Some("none".into());
-    }
-    drawing_child(properties, "solidFill")?
-        .children()
-        .find_map(|n| color(n, theme))
-}
-
 #[derive(Default)]
 struct Properties {
     fill: Option<String>,
     outline: Option<String>,
     marker: Option<String>,
+    marker_outline: Option<String>,
 }
 
 impl Properties {
-    fn parse(node: Node, theme: &ThemeColorMap) -> Self {
-        let properties = child(node, "spPr");
+    fn parse(node: Node, theme: &ThemeColorMap, servers: &paint::PaintServers) -> Self {
+        let properties = child(node, "spPr").or_else(|| cx_child(node, "spPr"));
+        let marker = child(node, "marker").and_then(|m| child(m, "spPr"));
         Self {
-            fill: properties.and_then(|p| fill(p, theme)),
+            fill: properties.and_then(|p| servers.fill(p, theme)),
             outline: properties
                 .and_then(|p| drawing_child(p, "ln"))
-                .and_then(|p| fill(p, theme)),
-            marker: child(node, "marker")
-                .and_then(|m| child(m, "spPr"))
-                .and_then(|p| fill(p, theme)),
+                .and_then(|p| servers.fill(p, theme)),
+            marker: marker.and_then(|p| servers.fill(p, theme)),
+            marker_outline: marker
+                .and_then(|m| drawing_child(m, "ln"))
+                .and_then(|p| servers.fill(p, theme)),
         }
     }
 }
 
 struct Series {
     index: usize,
-    vary: bool,
+    vary_by_point: bool,
     paint: Properties,
     points: HashMap<u32, Properties>,
 }
@@ -190,12 +188,28 @@ impl Palette {
     }
 }
 
+fn default_line_transforms(xml: &str) -> Option<Vec<Transform>> {
+    let document = roxmltree::Document::parse(xml).ok()?;
+    let styles = document
+        .root_element()
+        .descendants()
+        .find(|n| drawing(*n) && n.tag_name().name() == "lnStyleLst")?;
+    let line = drawing_child(styles, "ln")?;
+    let scheme = drawing_child(drawing_child(line, "solidFill")?, "schemeClr")?;
+    (scheme.attribute("val") == Some("phClr")).then(|| transforms(scheme))
+}
+
 pub(super) struct ChartColors {
+    legacy_defaults: bool,
+    servers: paint::PaintServers,
     palette: Palette,
+    style_palette: Option<style_palette::StylePalette>,
+    style: Option<style_palette::StylePaint>,
     theme: ThemeColorMap,
     series: Vec<Series>,
     highest_series: usize,
     highest_point: usize,
+    line_transforms: Vec<Transform>,
 }
 
 impl ChartColors {
@@ -232,7 +246,7 @@ impl ChartColors {
                 }
             }
         }
-        let mapping = child(root, "clrMapOvr");
+        let mapping = child(root, "clrMapOvr").or_else(|| cx_child(root, "clrMapOvr"));
         let mut mapped = theme.clone();
         for (token, base) in [
             ("bg1", "lt1"),
@@ -253,7 +267,20 @@ impl ChartColors {
                 mapped.insert(token.to_ascii_lowercase(), value.clone());
             }
         }
+        let servers = paint::PaintServers::new(root, &mapped);
         let palette = Palette::legacy(root, &mapped);
+        let style_palette = (root.tag_name().namespace() == Some(CHARTEX_NS))
+            .then(|| related_xml(ctx, part_name, "chartColorStyle"))
+            .flatten()
+            .and_then(|xml| style_palette::StylePalette::parse(xml, &mapped));
+        let style = if root.tag_name().namespace() == Some(CHARTEX_NS) {
+            related_xml(ctx, part_name, "chartStyle").and_then(|xml| {
+                style_palette::StylePaint::parse(xml, &mapped, style_palette.as_ref())
+            })
+        } else {
+            None
+        };
+        let legacy_defaults = super::chart_svg::legacy_defaults(ctx.parts);
         let mut series = Vec::new();
 
         if let Some(plot) = child(root, "chart").and_then(|c| child(c, "plotArea")) {
@@ -261,10 +288,14 @@ impl ChartColors {
                 .children()
                 .filter(|n| n.tag_name().name().ends_with("Chart"))
             {
-                let vary = child(group, "varyColors").map_or_else(
-                    || matches!(group.tag_name().name(), "pieChart" | "doughnutChart"),
-                    |n| !matches!(n.attribute("val"), Some("false" | "0" | "off")),
+                let circular = matches!(
+                    group.tag_name().name(),
+                    "pieChart" | "pie3DChart" | "doughnutChart" | "ofPieChart"
                 );
+                let vary_by_point = (circular || data.series.len() == 1)
+                    && child(group, "varyColors").map_or(!legacy_defaults, |n| {
+                        !matches!(n.attribute("val"), Some("false" | "0" | "off"))
+                    });
                 for s in group.children().filter(|n| chart_node(*n, "ser")) {
                     let index = child(s, "idx")
                         .and_then(|n| n.attribute("val"))
@@ -275,39 +306,139 @@ impl ChartColors {
                         .filter(|n| chart_node(*n, "dPt"))
                         .filter_map(|n| {
                             let idx = child(n, "idx")?.attribute("val")?.parse().ok()?;
-                            Some((idx, Properties::parse(n, &mapped)))
+                            Some((idx, Properties::parse(n, &mapped, &servers)))
                         })
                         .collect();
                     series.push(Series {
                         index,
-                        vary,
+                        vary_by_point,
                         points,
-                        paint: Properties::parse(s, &mapped),
+                        paint: Properties::parse(s, &mapped, &servers),
                     });
                 }
             }
         }
+        if root.tag_name().namespace() == Some(CHARTEX_NS) {
+            for s in root
+                .descendants()
+                .filter(|n| n.has_tag_name((CHARTEX_NS, "series")))
+            {
+                let points = s
+                    .children()
+                    .filter(|n| n.has_tag_name((CHARTEX_NS, "dataPt")))
+                    .filter_map(|pt| {
+                        Some((
+                            pt.attribute("idx")?.parse().ok()?,
+                            Properties::parse(pt, &mapped, &servers),
+                        ))
+                    })
+                    .collect();
+                series.push(Series {
+                    index: series.len(),
+                    vary_by_point: false,
+                    points,
+                    paint: Properties::parse(s, &mapped, &servers),
+                });
+            }
+        }
         let highest_point = data
             .series
-            .first()
-            .and_then(|s| s.points.last())
-            .map_or(0, |p| p.index as usize);
+            .iter()
+            .filter_map(|s| s.points.last())
+            .map(|p| p.index as usize)
+            .max()
+            .unwrap_or(0);
+        let main_part =
+            crate::package::relationship_target_from_parts(ctx.parts, "", "officeDocument")
+                .unwrap_or_else(|| "word/document.xml".into());
+        let theme_xml = related_xml(ctx, &main_part, "theme").or_else(|| {
+            ctx.parts
+                .get("word/theme/theme1.xml")
+                .map(|p| p.content.as_str())
+        });
+        let line_transforms = related_xml(ctx, part_name, "themeOverride")
+            .and_then(default_line_transforms)
+            .or_else(|| theme_xml.and_then(default_line_transforms))
+            .unwrap_or_default();
         let highest_series = series.iter().map(|s| s.index).max().unwrap_or(0);
         Self {
+            legacy_defaults,
             series,
+            servers,
             palette,
+            style_palette,
+            style,
             theme: mapped,
             highest_series,
             highest_point,
+            line_transforms,
         }
     }
 
+    pub fn legacy_defaults(&self) -> bool {
+        self.legacy_defaults
+    }
+
+    pub fn palette(&self, index: usize, highest: usize) -> String {
+        if let Some(palette) = &self.style_palette {
+            palette.at(index, highest.saturating_add(1))
+        } else {
+            self.palette.at(index, highest)
+        }
+    }
+
+    pub fn rectangle_fill<'a>(
+        &self,
+        fill: &'a str,
+        category: usize,
+        bounds: [f64; 4],
+    ) -> std::borrow::Cow<'a, str> {
+        match &self.style {
+            Some(style) => style.rectangle_fill(fill, category, bounds),
+            None => std::borrow::Cow::Borrowed(fill),
+        }
+    }
+
+    pub fn style_point_fill(&self, automatic: &str) -> Option<String> {
+        self.style.as_ref()?.point_fill(automatic)
+    }
+
+    pub fn style_fill(&self, entry: &str, automatic: &str) -> Option<String> {
+        self.style.as_ref()?.fill(entry, automatic)
+    }
+
+    pub fn style_stroke(&self, entry: &str, automatic: &str) -> Option<String> {
+        self.style.as_ref()?.stroke(entry, automatic)
+    }
+
+    pub fn style_text(&self, entry: &str, automatic: &str) -> Option<String> {
+        self.style.as_ref()?.text(entry, automatic)
+    }
+
+    pub fn vary_by_point(&self, i: usize) -> bool {
+        self.series.get(i).is_some_and(|s| s.vary_by_point)
+    }
+
+    pub fn with_definitions(&self, mut svg: String) -> String {
+        let mut defs = self.servers.defs();
+        if let Some(style) = self.style.as_ref() {
+            defs.push_str(&style.defs());
+        }
+        if !defs.is_empty() {
+            if let Some(pos) = svg.find('>') {
+                svg.insert_str(pos + 1, &defs);
+            }
+        }
+        svg
+    }
+
     pub fn shape_fill(&self, properties: Node) -> Option<String> {
-        fill(properties, &self.theme)
+        self.servers.fill(properties, &self.theme)
     }
 
     pub fn shape_stroke(&self, properties: Node) -> Option<String> {
-        fill(drawing_child(properties, "ln")?, &self.theme)
+        self.servers
+            .fill(drawing_child(properties, "ln")?, &self.theme)
     }
 
     fn explicit(
@@ -324,19 +455,23 @@ impl ChartColors {
     }
 
     fn automatic(&self, i: usize, point: Option<u32>) -> String {
-        if self.series.len() == 1 && self.series[0].vary {
+        if self.vary_by_point(i) {
             if let Some(i) = point {
-                return self.palette.at(i as usize, self.highest_point);
+                return self.palette(i as usize, self.highest_point);
             }
         }
-        self.palette.at(
+        self.palette(
             self.series.get(i).map_or(i, |s| s.index),
             self.highest_series,
         )
     }
 
-    pub fn fill(&self, i: usize, point: Option<u32>) -> String {
+    pub fn explicit_fill(&self, i: usize, point: Option<u32>) -> Option<&str> {
         self.explicit(i, point, |p| p.fill.as_deref())
+    }
+
+    pub fn fill(&self, i: usize, point: Option<u32>) -> String {
+        self.explicit_fill(i, point)
             .map(str::to_owned)
             .unwrap_or_else(|| self.automatic(i, point))
     }
@@ -345,15 +480,77 @@ impl ChartColors {
         self.explicit(i, point, |p| p.outline.as_deref())
     }
 
-    pub fn line(&self, i: usize) -> String {
-        self.outline(i, None)
+    fn default_stroke(&self, i: usize, point: Option<u32>) -> String {
+        let base = self.automatic(i, point);
+        transformed(&base, &self.line_transforms).unwrap_or(base)
+    }
+
+    pub fn line_at(&self, i: usize, point: Option<u32>) -> String {
+        self.outline(i, point)
             .map(str::to_owned)
-            .unwrap_or_else(|| self.automatic(i, None))
+            .unwrap_or_else(|| self.default_stroke(i, point))
+    }
+
+    pub fn line(&self, i: usize) -> String {
+        self.line_at(i, None)
+    }
+
+    pub fn marker_outline(&self, i: usize, point: Option<u32>) -> String {
+        self.explicit(i, point, |p| p.marker_outline.as_deref())
+            .map(str::to_owned)
+            .unwrap_or_else(|| self.default_stroke(i, point))
     }
 
     pub fn marker(&self, i: usize, point: Option<u32>) -> String {
         self.explicit(i, point, |p| p.marker.as_deref())
             .map(str::to_owned)
             .unwrap_or_else(|| self.automatic(i, point))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rings_select_colors_by_source_category_and_honor_no_fill() {
+        let xml = r#"<chartSpace xmlns="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><chart><plotArea><doughnutChart>
+        <ser><idx val="0"/><val><numLit><pt idx="0"><v>8</v></pt><pt idx="2"><v>6</v></pt></numLit></val></ser>
+        <ser><idx val="1"/><dPt><idx val="0"/><spPr><a:noFill/></spPr></dPt><val><numLit><pt idx="0"><v>3</v></pt><pt idx="2"><v>1</v></pt></numLit></val></ser>
+        </doughnutChart></plotArea></chart></chartSpace>"#;
+        let document = roxmltree::Document::parse(xml).unwrap();
+        let root = document.root_element();
+        let data = crate::chart::chart_data_from_root(root).unwrap();
+        let context = ParseContext {
+            relationships: Default::default(),
+            content_types: Default::default(),
+            parts: &Default::default(),
+            binary_assets: &Default::default(),
+            style_sheet: crate::parse::empty_style_sheet(),
+            warnings: Default::default(),
+        };
+        let colors = ChartColors::new(root, &context, "chart.xml", &data);
+        assert_eq!(colors.fill(0, Some(0)), "#156082");
+        assert_eq!(colors.fill(1, Some(0)), "none");
+        assert_eq!(colors.fill(0, Some(2)), "#196B24");
+        assert_eq!(colors.fill(1, Some(2)), colors.fill(0, Some(2)));
+
+        let key = "docProps/app.xml";
+        let parts = HashMap::from([(key.into(), crate::OoxmlPart {
+            name: key.into(),
+            content: r#"<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties"><AppVersion>12.0000</AppVersion></Properties>"#.into(),
+        })]);
+        let older = ChartColors::new(
+            root,
+            &ParseContext {
+                parts: &parts,
+                ..context
+            },
+            "chart.xml",
+            &data,
+        );
+        assert_eq!(older.fill(1, Some(0)), "none");
+        assert_eq!(older.fill(0, Some(2)), "#156082");
+        assert_eq!(older.fill(1, Some(2)), "#E97132");
     }
 }
