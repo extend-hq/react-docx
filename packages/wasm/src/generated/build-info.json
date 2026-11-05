@@ -1,0 +1,6 @@
+{
+  "rustSourceSha256": "3fa68c39d93fe06394d9a12f204ae2941c45d4033cd3fffcba110efb44af5d54",
+  "wasmSha256": "182a1f649ac2535bae4e0db054915cd6ac1a3179357c86f67e13419a1d2791f6",
+  "rustc": "rustc 1.93.1 (01f6ddf75 2026-02-11)",
+  "rustRevision": "aaa70ca"
+}

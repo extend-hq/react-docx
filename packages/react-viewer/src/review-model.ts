@@ -170,7 +170,11 @@ export function reviewDisplayModel(model: DocModel): { model: DocModel; rowIndex
   const markRemoved = (nodes: DocNode[], revision: DocumentRevision, root: string): DocNode[] => nodes.map((node, index) => {
     const blockId = `${root}/${index}`;
     if (node.type === "paragraph") {
-      const paragraph = { ...node, blockId, sourceXml: undefined, reviewContent: undefined };
+      const paragraph: ParagraphNode = { ...node, blockId, sourceXml: undefined, reviewContent: undefined,
+        children: node.children.map(child => child.type === "image" ? child : {
+          ...child, style: { ...child.style, color: "#b91c1c", strike: true },
+        }),
+      };
       const data: ParagraphReview = { revisions: [], comments: [], containerRevision: revision };
       paragraphs.set(paragraph, data);
       paragraphSources.set(paragraphKey(paragraph), data);

@@ -9999,12 +9999,11 @@ function paragraphIsEffectivelyEmpty(paragraph: ParagraphNode): boolean {
 }
 
 function paragraphHasDeletedParagraphMark(paragraph: ParagraphNode): boolean {
-  if (paragraph.paragraphMarkDeleted === true) {
-    return true;
+  if (paragraph.paragraphMarkDeleted !== undefined) {
+    return paragraph.paragraphMarkDeleted;
   }
-
-  const sourceXml = paragraph.sourceXml ?? "";
-  return /<w:pPr\b[\s\S]*?<w:rPr\b[\s\S]*?<w:del\b/i.test(sourceXml);
+  return paragraphReview(paragraph).revisions.some(revision =>
+    revision.kind === "deletion" && revision.scope === "paragraph_mark");
 }
 
 function paragraphCollapsesIntoPreviousParagraph(
@@ -55449,7 +55448,7 @@ export function DocxEditorViewer({
       // layouts already use in edit mode).
       const paragraphHasCommentAnchors =
         commentsEnabled &&
-        /commentRange|commentReference/i.test(paragraph.sourceXml ?? "");
+        paragraphReview(paragraph).comments.length > 0;
       const paragraphLineHeightPx = lineRange?.lineHeightPx ??
         (location.kind === "table-cell"
           ? tableCellParagraphLineHeightPx(paragraph, paragraphGridPitchPx, disableGridSnap)
@@ -59175,7 +59174,7 @@ export function DocxEditorViewer({
         (node.style?.align === undefined || node.style.align === "left" || useScaledTextLayout) &&
         !hasImage &&
         !paragraphHasTrackedInlineMarkup(node) &&
-        !(commentsEnabled && /commentRange|commentReference/i.test(node.sourceXml ?? "")) &&
+        !(commentsEnabled && paragraphReview(node).comments.length > 0) &&
         !paragraphUsesTabLeaders(node) &&
         paragraphAnchoredTabLayout(node) === "none";
       const shouldLayoutParagraphWithPretext =
