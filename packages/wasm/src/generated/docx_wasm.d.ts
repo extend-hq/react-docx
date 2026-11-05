@@ -44,7 +44,7 @@ export interface InitOutput {
     readonly parse_docx_wasm: (a: number, b: number, c: number) => void;
     readonly serialize_docx_from_json_wasm: (a: number, b: number, c: number, d: number) => void;
     readonly serialize_docx_wasm: (a: number, b: number, c: number) => void;
-    readonly __wasm_bindgen_func_elem_5110: (a: number, b: number, c: number, d: number) => number;
+    readonly __wasm_bindgen_func_elem_5316: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_export: (a: number, b: number) => number;
     readonly __wbindgen_export2: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_export3: (a: number) => void;

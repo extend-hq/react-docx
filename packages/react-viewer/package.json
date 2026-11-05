@@ -1,6 +1,6 @@
 {
   "name": "@extend-ai/react-docx",
-  "version": "0.14.2",
+  "version": "0.14.3",
   "description": "JavaScript and React viewers for DOCX documents",
   "license": "MIT",
   "type": "module",
@@ -69,7 +69,8 @@
   "devDependencies": {
     "@tanstack/react-virtual": "^3.14.14",
     "preact": "^10.29.8",
-    "preact-render-to-string": "^6.6.6"
+    "preact-render-to-string": "^6.6.6",
+    "@extend-ai/office-fonts": "https://github.com/extend-hq/rust-office/releases/download/office-fonts-v0.1.0/extend-ai-office-fonts-0.1.0.tgz"
   },
   "scripts": {
     "build": "tsup --config tsup.config.ts",

@@ -378,6 +378,8 @@ Try the experimental editor with document formatting, tracked changes, and expor
 
 ## Caller fonts
 
+The viewer prepares shared fallbacks for Calibri, Arial, Times New Roman, Courier New, Aptos and Aptos Narrow before pagination. It loads only requested families, preserving embedded and installed originals. Chart SVG images embed the supported font families they use because image documents cannot inherit the page's fonts. Font payloads are lazy chunks; deploy them alongside the viewer. Redistribution notices are in `dist/Office-Font-Licenses.txt`.
+
 Fonts embedded in a DOCX load automatically by default. Caller-provided fonts
 must be available in `document.fonts` before layout uses them. When adding or
 removing fonts after parsing or mounting, call `refreshDocxFontMetrics()` after

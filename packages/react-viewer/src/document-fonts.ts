@@ -1,5 +1,7 @@
+import { loadOfficeFonts, embedOfficeFonts } from "@extend-ai/office-fonts";
 import type {
   DocModel,
+  ImageRunNode,
   DocNode,
   NumberingLevelDefinition,
   ParagraphNode,
@@ -9,6 +11,7 @@ import { segmentTextByDocxScriptFont } from "./script-fonts";
 
 interface DocumentFontRequest {
   font: string;
+  family: string;
   characters: Set<string>;
 }
 
@@ -22,7 +25,7 @@ function fontFamilyCss(family: string): string {
   return `"${normalized.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/[\n\r\f]/g, " ")}"`;
 }
 
-function collectDocumentFontRequests(model: DocModel): DocumentFontRequest[] {
+function collectDocumentFontRequests(model: DocModel, images: ImageRunNode[]): DocumentFontRequest[] {
   const requests = new Map<string, DocumentFontRequest>();
   const seenNodes = new Set<DocNode>();
   const usedNumberingIds = new Set<number>();
@@ -42,7 +45,7 @@ function collectDocumentFontRequests(model: DocModel): DocumentFontRequest[] {
       let request = requests.get(key);
       if (!request) {
         // Include the strut probe and generated numeric text before layout.
-        request = { font, characters: new Set(" M0123456789") };
+        request = { font, family, characters: new Set(" M0123456789") };
         requests.set(key, request);
       }
       for (const character of segment.text) {
@@ -66,6 +69,7 @@ function collectDocumentFontRequests(model: DocModel): DocumentFontRequest[] {
     }
     for (const child of paragraph.children) {
       if (child.type === "image") {
+        if (child.chartPartName) images.push(child);
         visitNodes(child.contentNodes ?? []);
         if (child.textBoxText && !child.contentNodes?.length) {
           collectText(child.textBoxText, inheritedStyle);
@@ -147,10 +151,28 @@ function collectDocumentFontRequests(model: DocModel): DocumentFontRequest[] {
 
 export async function awaitDocumentFonts(model: DocModel): Promise<void> {
   if (typeof document === "undefined" || !document.fonts) return;
+  const images: ImageRunNode[] = [];
+  const requests = collectDocumentFontRequests(model, images);
+  await Promise.allSettled([
+    loadOfficeFonts(document, requests.map(({ family }) => family)),
+    ...images.map(async (image) => {
+      const source = image.src;
+      if (!source?.startsWith("data:image/svg+xml")) return;
+      const separator = source.indexOf(",");
+      if (separator < 0) return;
+      const svg = /;base64$/i.test(source.slice(0, separator))
+        ? new TextDecoder().decode(Uint8Array.from(atob(source.slice(separator + 1)), (character) => character.charCodeAt(0)))
+        : decodeURIComponent(source.slice(separator + 1));
+      const embedded = await embedOfficeFonts(svg);
+      if (embedded !== svg && image.src === source) {
+        image.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(embedded)}`;
+      }
+    }),
+  ]);
   const fonts = document.fonts;
   if (fonts.size !== 0 && typeof fonts.load === "function") {
     await Promise.allSettled(
-      collectDocumentFontRequests(model).map(async ({ font, characters }) => {
+      requests.map(async ({ font, characters }) => {
         // Distinct code points cover unicode-range faces without retaining runs.
         await fonts.load(font, [...characters].join(""));
       })

@@ -1,3 +1,4 @@
+import { safeHyperlink } from "./safe-hyperlink";
 import { isWordFileName, wordDownloadFormat, wordDownloadName } from "./word-formats";
 import { prepareImagePaintBoundsForExport } from "./image-paint-export";
 import { PaintBoundsImage } from "./paint-bounds-image";
@@ -22749,7 +22750,7 @@ function renderParagraphRuns(
         target.push(linkHref ? (
           <a
             key={key}
-            href={linkHref}
+            href={safeHyperlink(linkHref)}
             target={linkHref.startsWith("#") ? undefined : "_blank"}
             rel={linkHref.startsWith("#") ? undefined : "noreferrer noopener"}
             style={trackedLinkStyle(child.style, trackedInlineChange, text)}
@@ -22773,7 +22774,7 @@ function renderParagraphRuns(
           <a
             key={key} data-docx-source-id={paragraph.blockId ? `${paragraph.blockId}/child/${childIndex}` : undefined}
             {...annotationAttributes}
-            href={linkHref}
+            href={safeHyperlink(linkHref)}
             target={isInternalLink ? undefined : "_blank"}
             rel={isInternalLink ? undefined : "noreferrer noopener"}
             onMouseDown={(event) => {
@@ -23284,7 +23285,7 @@ function renderParagraphRuns(
         <a
           key={key}
           {...annotationAttributes}
-          href={linkHref}
+          href={safeHyperlink(linkHref)}
           target={isInternalLink ? undefined : "_blank"}
           rel={isInternalLink ? undefined : "noreferrer noopener"}
           onMouseDown={(event) => {
@@ -54600,7 +54601,7 @@ export function DocxEditorViewer({
               {...changeAttributes}
                 data-docx-text-start={pretextBlockTextOffset(source, overlapStart)}
                 data-docx-text-end={pretextBlockTextOffset(source, overlapEnd)}
-              href={run.link}
+              href={safeHyperlink(run.link)}
               target={run.link.startsWith("#") ? undefined : "_blank"}
               rel={run.link.startsWith("#") ? undefined : "noreferrer noopener"}
               onMouseDown={(event) => {
@@ -56338,7 +56339,7 @@ export function DocxEditorViewer({
                   key={`${keyPrefix}-dual-line-${lineIndex}-${run.key}-${overlapStart}`}
                 data-docx-text-start={pretextBlockTextOffset(activeDualWrappedLayout.source, overlapStart)}
                 data-docx-text-end={pretextBlockTextOffset(activeDualWrappedLayout.source, overlapEnd)}
-                  href={run.link}
+                  href={safeHyperlink(run.link)}
                   target={run.link.startsWith("#") ? undefined : "_blank"}
                   rel={
                     run.link.startsWith("#") ? undefined : "noreferrer noopener"
@@ -58649,7 +58650,7 @@ export function DocxEditorViewer({
             nodes.push(
               <a
                 key={runKey}
-                href={linkHref}
+                href={safeHyperlink(linkHref)}
                 target={isInternalLink ? undefined : "_blank"}
                 rel={isInternalLink ? undefined : "noreferrer noopener"}
                 contentEditable={isInternalLink ? false : undefined}

@@ -233,6 +233,9 @@ importers:
         specifier: ^3.1.0
         version: 3.1.0
     devDependencies:
+      '@extend-ai/office-fonts':
+        specifier: https://github.com/extend-hq/rust-office/releases/download/office-fonts-v0.1.0/extend-ai-office-fonts-0.1.0.tgz
+        version: https://github.com/extend-hq/rust-office/releases/download/office-fonts-v0.1.0/extend-ai-office-fonts-0.1.0.tgz
       '@tanstack/react-virtual':
         specifier: ^3.14.14
         version: 3.14.14(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
@@ -818,6 +821,10 @@ packages:
     engines: {node: '>=18'}
     cpu: [x64]
     os: [win32]
+
+  '@extend-ai/office-fonts@https://github.com/extend-hq/rust-office/releases/download/office-fonts-v0.1.0/extend-ai-office-fonts-0.1.0.tgz':
+    resolution: {tarball: https://github.com/extend-hq/rust-office/releases/download/office-fonts-v0.1.0/extend-ai-office-fonts-0.1.0.tgz}
+    version: 0.1.0
 
   '@floating-ui/core@1.7.4':
     resolution: {integrity: sha512-C3HlIdsBxszvm5McXlB8PeOEWfBhcGBTZGkGlWc2U0KFY5IwG5OQEuQ8rq52DZmcHDlPLd+YFBK+cZcytwIFWg==}
@@ -4777,6 +4784,8 @@ snapshots:
 
   '@esbuild/win32-x64@0.27.3':
     optional: true
+
+  '@extend-ai/office-fonts@https://github.com/extend-hq/rust-office/releases/download/office-fonts-v0.1.0/extend-ai-office-fonts-0.1.0.tgz': {}
 
   '@floating-ui/core@1.7.4':
     dependencies:

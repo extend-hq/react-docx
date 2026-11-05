@@ -4,6 +4,7 @@ import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 
 const bundledWorkspacePackages = [
+  "@extend-ai/office-fonts",
   "@extend-ai/react-docx-doc-model",
   "@extend-ai/react-docx-editor-ops",
   "@extend-ai/react-docx-layout-core",
@@ -93,6 +94,7 @@ export default defineConfig([
     onSuccess: async () => {
       await copyFile("../wasm/src/docx_wasm_bg.wasm", "dist/docx_wasm_bg.wasm");
       await copyFile("src/pretext-license.txt", "dist/pretext-license.txt");
+      await copyFile(createRequire(import.meta.url).resolve("@extend-ai/office-fonts/FONT-LICENSES.txt"), "dist/Office-Font-Licenses.txt");
       await copyFile("node_modules/preact/LICENSE", "dist/preact-license.txt");
       await copyFile("node_modules/preact-render-to-string/LICENSE", "dist/preact-render-to-string-license.txt");
       await copyFile("node_modules/@tanstack/react-virtual/LICENSE", "dist/tanstack-virtual-license.txt");

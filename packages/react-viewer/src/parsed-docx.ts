@@ -266,6 +266,10 @@ export async function parseDocxForViewer(
     return fontLoadPromise;
   };
 
+  if (options.loadEmbeddedFonts === false || options.loadEmbeddedFonts === "defer") {
+    await awaitDocumentFonts(importResult.model);
+  }
+
   if (
     options.loadEmbeddedFonts !== false &&
     options.loadEmbeddedFonts !== "defer"

@@ -1,3 +1,4 @@
+import { safeHyperlink } from "./safe-hyperlink";
 import * as React from "react";
 import { flushSync } from "react-dom";
 import type { Root } from "react-dom/client";
@@ -532,7 +533,7 @@ function renderParagraphRuns(block: LayoutParagraphBlock, page: LayoutPageFrame)
       return (
         <a
           key={run.id}
-          href={run.link}
+          href={safeHyperlink(run.link)}
           target={run.link.startsWith("#") ? undefined : "_blank"}
           rel={run.link.startsWith("#") ? undefined : "noreferrer noopener"}
           style={linkRunTextStyle(run)}
