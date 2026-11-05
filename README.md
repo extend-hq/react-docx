@@ -2,7 +2,6 @@
 
 [![npm version](https://img.shields.io/npm/v/%40extend-ai%2Freact-docx)](https://www.npmjs.com/package/@extend-ai/react-docx)
 [![Monthly npm downloads](https://img.shields.io/npm/dm/%40extend-ai%2Freact-docx)](https://www.npmjs.com/package/@extend-ai/react-docx)
-[![crates.io version](https://img.shields.io/crates/v/rust-docx)](https://crates.io/crates/rust-docx)
 
 `react-docx` is a DOCX viewer and editor for JavaScript and React applications, built as a monorepo.
 
@@ -547,3 +546,11 @@ pnpm publish-packages
 ```
 
 The Rust parser and WASM bindings are released from [rust-office](https://github.com/extend-hq/rust-office). See [updating the Rust runtime](docs/rust-publishing.md) to adopt a release in this viewer.
+
+### Shared document review
+
+`extractDocumentReview(model)` returns the Rust parser’s versioned revision and comment records, including source anchors, direct formatting before/after properties, move names and preserved deleted content. The viewer uses those records for review cards, highlights and deleted-content layout. `resolveDocxCommentLinks(model)` remains available as a compatibility adapter.
+
+Review rendering preserves the original model for editing and export. Existing accept/reject operations remain limited to supported text revisions; structural and formatting revisions can be inspected without enabling unsupported mutations.
+
+JavaScript builds validate and use the bundled WASM artifact. To rebuild it from a matching Rust checkout, run `RUST_DOCX_WORKSPACE=/path/to/extend-office pnpm --filter @extend-ai/react-docx-wasm build:wasm`. The build records the Rust source and binary hashes for playground provenance.

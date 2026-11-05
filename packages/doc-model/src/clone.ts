@@ -4,6 +4,8 @@ import type {
   FooterSection,
   FormFieldSourcePreview,
   HeaderSection,
+  ImagePresentation,
+  ImagePropertyNode,
   ImageRunNode,
   NumberingDefinitionSet,
   ParagraphBorderSet,
@@ -147,9 +149,31 @@ export function cloneTableNode(table: TableNode): TableNode {
   return cloneTable(table);
 }
 
+function cloneImagePropertyNode(node: ImagePropertyNode): ImagePropertyNode {
+  return {
+    ...node,
+    attributes: node.attributes?.map((attribute) => ({ ...attribute })),
+    children: node.children?.map(cloneImagePropertyNode),
+  };
+}
+
+function cloneImagePresentation(presentation: ImagePresentation): ImagePresentation {
+  return {
+    ...presentation,
+    assets: presentation.assets?.map((asset) => ({ ...asset })),
+    transform: presentation.transform ? { ...presentation.transform } : undefined,
+    sourceRectangle: presentation.sourceRectangle ? { ...presentation.sourceRectangle } : undefined,
+    fillRectangle: presentation.fillRectangle ? { ...presentation.fillRectangle } : undefined,
+    tile: presentation.tile ? { ...presentation.tile } : undefined,
+    properties: presentation.properties?.map(cloneImagePropertyNode),
+  };
+}
+
 function cloneImageRun(image: ImageRunNode): ImageRunNode {
   return {
     ...image,
+    chartData: image.chartData && structuredClone(image.chartData),
+    presentation: image.presentation ? cloneImagePresentation(image.presentation) : undefined,
     contentNodes: image.contentNodes?.map(cloneDocNode),
     data: image.data ? new Uint8Array(image.data) : undefined,
     crop: image.crop ? { ...image.crop } : undefined,
@@ -177,6 +201,10 @@ function cloneParagraph(paragraph: ParagraphNode): ParagraphNode {
     sourceParagraphMarkPropertiesXml: paragraph.sourceParagraphMarkPropertiesXml,
     paragraphMarkDeleted: paragraph.paragraphMarkDeleted,
     sourceXml: paragraph.sourceXml,
+    reviewContent: paragraph.reviewContent?.map((fragment) => ({
+      sourceXml: fragment.sourceXml,
+      children: cloneParagraph({ type: "paragraph", children: fragment.children }).children,
+    })),
     sourceTextPatch: paragraph.sourceTextPatch
       ? {
           runs: paragraph.sourceTextPatch.runs.map((run) => ({
@@ -263,30 +291,7 @@ function cloneParagraph(paragraph: ParagraphNode): ParagraphNode {
         };
       }
 
-      return {
-        type: "image" as const,
-        blockId: child.blockId,
-        semanticKind: child.semanticKind,
-        chartPartName: child.chartPartName,
-        chartData: child.chartData && structuredClone(child.chartData),
-        mathMl: child.mathMl,
-        contentNodes: child.contentNodes?.map(cloneDocNode),
-        src: child.src,
-        alt: child.alt,
-        widthPx: child.widthPx,
-        heightPx: child.heightPx,
-        partName: child.partName,
-        contentType: child.contentType,
-        data: child.data ? new Uint8Array(child.data) : undefined,
-        sourceXml: child.sourceXml,
-        crop: child.crop ? { ...child.crop } : undefined,
-        paintBounds: child.paintBounds ? { ...child.paintBounds } : undefined,
-        cssFilter: child.cssFilter,
-        cssOpacity: child.cssOpacity,
-        floating: child.floating ? { ...child.floating } : undefined,
-        syntheticTextBox: child.syntheticTextBox,
-        textBoxText: child.textBoxText,
-      };
+      return cloneImageRun(child);
     }),
   };
 }
@@ -394,6 +399,10 @@ function cloneTable(table: TableNode): TableNode {
     type: "table",
     blockId: table.blockId,
     sourceXml: table.sourceXml,
+    reviewRows: table.reviewRows?.map((fragment) => ({
+      ...fragment,
+      row: cloneTable({ type: "table", rows: [fragment.row] }).rows[0],
+    })),
     sourceTextPatches: table.sourceTextPatches?.map((patch) => ({
       sourceParagraphXml: patch.sourceParagraphXml,
       paragraph: cloneParagraph(patch.paragraph),

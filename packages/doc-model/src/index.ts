@@ -12,6 +12,7 @@ import type { DocModel } from "./types";
 export * from "./types";
 export { resolveImagePaintBounds, type ImagePaintRect } from "./image-paint";
 export * from "./blocks";
+export * from "./review";
 export { resolveTableGridSkipCount, tableGridColumnBound, tableRowGridSkipCount } from "./table-grid";
 export {
   projectCollapsedTableGrid,

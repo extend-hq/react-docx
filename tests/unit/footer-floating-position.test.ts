@@ -124,7 +124,8 @@ describe("footer floating positioning", () => {
     expect(html).toContain("position:absolute;left:0;right:0;top:0;bottom:0");
     expect(html).toContain("align-content:end");
     expect(html).toContain("padding-bottom:56px;pointer-events:auto");
-    expect(html).toContain("left:120px;top:900px");
+    expect(html).toContain("left:calc(var(--docx-mixed-page-origin-x, 0px) + 120px)");
+    expect(html).toContain("top:calc(var(--docx-mixed-page-origin-y, 0px) + 900px)");
   });
 
   it("does not let inactive full-page footer overlays intercept body clicks in edit mode", () => {

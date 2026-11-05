@@ -114,7 +114,64 @@ export interface ChartData {
   series: { name?: string | null; chartType: string; points: ChartPoint[] }[];
 }
 
+export interface ImagePropertyAttribute {
+  name: string;
+  value: string;
+}
+
+export interface ImagePropertyNode {
+  name: string;
+  attributes?: ImagePropertyAttribute[];
+  children?: ImagePropertyNode[];
+  text?: string;
+}
+
+export interface ImageAssetReference {
+  element: string;
+  kind: string;
+  relationshipId?: string;
+  target?: string;
+  embeddedAssetAvailable: boolean;
+}
+
+export interface ImageTransform {
+  rotationDegrees?: number;
+  flipHorizontal?: boolean;
+  flipVertical?: boolean;
+  offsetXEmu?: number;
+  offsetYEmu?: number;
+  widthEmu?: number;
+  heightEmu?: number;
+}
+
+export interface ImageTile {
+  offsetXEmu?: number;
+  offsetYEmu?: number;
+  scaleX?: number;
+  scaleY?: number;
+  alignment?: string;
+  flip?: string;
+}
+
+export interface ImageCrop {
+  leftFraction?: number;
+  topFraction?: number;
+  rightFraction?: number;
+  bottomFraction?: number;
+}
+
+export interface ImagePresentation {
+  transformApplied?: boolean;
+  assets?: ImageAssetReference[];
+  transform?: ImageTransform;
+  sourceRectangle?: ImageCrop;
+  fillRectangle?: ImageCrop;
+  tile?: ImageTile;
+  properties?: ImagePropertyNode[];
+}
+
 export interface ImageRunNode {
+  presentation?: ImagePresentation;
   chartData?: ChartData;
   chartPartName?: string;
   paintBounds?: ImagePaintBounds;
@@ -131,12 +188,7 @@ export interface ImageRunNode {
   contentType?: string;
   data?: Uint8Array;
   sourceXml?: string;
-  crop?: {
-    leftFraction?: number;
-    topFraction?: number;
-    rightFraction?: number;
-    bottomFraction?: number;
-  };
+  crop?: ImageCrop;
   cssFilter?: string;
   cssOpacity?: number;
   floating?: {
@@ -336,6 +388,7 @@ export interface ParagraphMarkFormattingSource {
 }
 
 export interface ParagraphNode {
+  reviewContent?: { sourceXml: string; children: ParagraphChildNode[] }[];
   type: "paragraph";
   /** Stable identity for measurement caches; survives edits via cloneParagraph. */
   blockId?: string;
@@ -507,6 +560,7 @@ export interface TableStyle {
 }
 
 export interface TableNode {
+  reviewRows?: { sourceIndex: number; sourceXml: string; row: TableRowNode }[];
   type: "table";
   /** Stable identity for measurement caches; survives edits via cloneTable. */
   blockId?: string;

@@ -108,7 +108,9 @@ describe("footer TIFF image rendering", () => {
     const model = await buildImportedModel();
     const html = renderToStaticMarkup(React.createElement(ImportedFooterViewer, { model }));
 
-    expect(html).toContain("data:image/png;base64,");
+    const imageSource = html.match(/<img[^>]+src="([^"]+)"/)?.[1];
+    expect(imageSource).toBeDefined();
+    expect(decodeURIComponent(imageSource ?? "")).toContain("data:image/png;base64,");
     expect(html).not.toContain(">TIFF<");
     expect(html).not.toContain(">e<");
   });

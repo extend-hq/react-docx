@@ -13,6 +13,10 @@ export function extract_document_blocks_wasm(model_json: string): string;
 
 export function extract_document_blocks_with_options_wasm(model_json: string, options_json: string): string;
 
+export function extract_document_blocks_with_revisions_wasm(model_json: string): string;
+
+export function extract_document_review_wasm(model_json: string): string;
+
 export function inspect_document_source_wasm(bytes: Uint8Array): string;
 
 export function model_to_document_xml_from_json_wasm(model_json: string, base_package?: any | null): string;
@@ -37,6 +41,8 @@ export interface InitOutput {
     readonly can_preserve_image_paint_source_wasm: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly extract_document_blocks_wasm: (a: number, b: number, c: number) => void;
     readonly extract_document_blocks_with_options_wasm: (a: number, b: number, c: number, d: number, e: number) => void;
+    readonly extract_document_blocks_with_revisions_wasm: (a: number, b: number, c: number) => void;
+    readonly extract_document_review_wasm: (a: number, b: number, c: number) => void;
     readonly inspect_document_source_wasm: (a: number, b: number, c: number) => void;
     readonly model_to_document_xml_from_json_wasm: (a: number, b: number, c: number, d: number) => void;
     readonly model_to_document_xml_wasm: (a: number, b: number, c: number) => void;
@@ -44,7 +50,7 @@ export interface InitOutput {
     readonly parse_docx_wasm: (a: number, b: number, c: number) => void;
     readonly serialize_docx_from_json_wasm: (a: number, b: number, c: number, d: number) => void;
     readonly serialize_docx_wasm: (a: number, b: number, c: number) => void;
-    readonly __wasm_bindgen_func_elem_5316: (a: number, b: number, c: number, d: number) => number;
+    readonly __wasm_bindgen_func_elem_247: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_export: (a: number, b: number) => number;
     readonly __wbindgen_export2: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_export3: (a: number) => void;

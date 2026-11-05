@@ -1,5 +1,8 @@
 import type { InitInput, InitOutput } from "./generated/docx_wasm.js";
 import wasmInit, {
+  initSync,
+  extract_document_review_wasm,
+  extract_document_blocks_with_revisions_wasm,
   build_doc_model_from_bytes,
   build_doc_model_from_package,
   build_doc_model_from_package_js,
@@ -18,6 +21,7 @@ export type WasmSource = InitInput;
 
 let initPromise: Promise<InitOutput> | undefined;
 let overrideSource: WasmSource | undefined;
+let initialized: InitOutput | undefined;
 
 /**
  * Override where the `docx_wasm_bg.wasm` binary is loaded from (URL, Response,
@@ -74,6 +78,7 @@ export async function initWasm(source?: WasmSource): Promise<InitOutput> {
     const chosen = source ?? overrideSource;
     initPromise = (chosen !== undefined ? Promise.resolve(chosen) : defaultWasmSource())
       .then((module_or_path) => wasmInit({ module_or_path }))
+      .then((output) => (initialized = output))
       .catch((error: unknown) => {
         if (error instanceof WebAssembly.CompileError) {
           throw new Error(
@@ -87,6 +92,40 @@ export async function initWasm(source?: WasmSource): Promise<InitOutput> {
       });
   }
   return initPromise;
+}
+
+export function wasmReviewReady(): boolean {
+  return initialized !== undefined;
+}
+
+function initReviewSync(): void {
+  if (initialized) return;
+  const runtime = (globalThis as { process?: { getBuiltinModule?: (id: string) => unknown } }).process;
+  const fs = runtime?.getBuiltinModule?.("fs") as { readFileSync(path: URL): Uint8Array } | undefined;
+  if (!fs || initPromise) {
+    throw new Error("Initialize WASM before resolving document review synchronously.");
+  }
+  const source = overrideSource ?? fs.readFileSync(new URL("./docx_wasm_bg.wasm", import.meta.url));
+  if (!(source instanceof Uint8Array || source instanceof ArrayBuffer || source instanceof WebAssembly.Module)) {
+    throw new Error("Synchronous document review requires WASM bytes or a compiled module.");
+  }
+  initialized = initSync({ module: source });
+  initPromise = Promise.resolve(initialized);
+}
+
+export function wasmExtractDocumentReviewSync(model: unknown): unknown {
+  initReviewSync();
+  return JSON.parse(extract_document_review_wasm(JSON.stringify(model, (key, value) => key === "data" ? undefined : value)));
+}
+
+export async function wasmExtractDocumentReview(model: unknown): Promise<unknown> {
+  await initWasm();
+  return wasmExtractDocumentReviewSync(model);
+}
+
+export async function wasmExtractDocumentBlocksWithRevisions(model: unknown): Promise<unknown> {
+  await initWasm();
+  return JSON.parse(extract_document_blocks_with_revisions_wasm(JSON.stringify(model, (key, value) => key === "data" ? undefined : value)));
 }
 
 export interface WasmOoxmlPart {

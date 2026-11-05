@@ -66,6 +66,10 @@ function normalizeDocNode(node: DocNode, invalidated: Set<object>): DocNode {
     const stateChanged = invalidated.size > 0 && children.some((child) => invalidated.has(child));
     const normalized = {
       ...node,
+      reviewContent: node.reviewContent?.map((fragment) => ({
+        ...fragment,
+        children: fragment.children.map((child) => normalizeParagraphChild(child, invalidated)),
+      })),
       ...(stateChanged ? { sourceXml: undefined, sourceTextPatch: undefined } : {}),
       children
     };
@@ -83,6 +87,10 @@ function normalizeDocNode(node: DocNode, invalidated: Set<object>): DocNode {
   const stateChanged = invalidated.size > 0 && rows.some((row) => row.cells.some((cell) => cell.nodes.some((content) => invalidated.has(content))));
   const normalized = {
     ...node,
+    reviewRows: node.reviewRows?.map((fragment) => ({
+      ...fragment,
+      row: (normalizeDocNode({ type: "table", rows: [fragment.row] }, invalidated) as typeof node).rows[0],
+    })),
     ...(stateChanged ? { sourceXml: undefined, sourceTextPatches: undefined } : {}),
     rows
   };

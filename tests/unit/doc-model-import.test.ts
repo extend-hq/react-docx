@@ -2166,14 +2166,16 @@ describe("doc-model import", () => {
       const image = firstParagraph.children.find((child) => child.type === "image");
       expect(image?.type).toBe("image");
       if (image?.type === "image") {
-        expect(image.crop?.topFraction).toBeCloseTo(0.03196, 5);
-        expect(image.crop?.bottomFraction).toBeCloseTo(0.12653, 5);
-        expect(image.cssOpacity).toBeCloseTo(0.57, 5);
+        expect(image.presentation?.sourceRectangle?.topFraction).toBeCloseTo(0.03196, 5);
+        expect(image.presentation?.sourceRectangle?.bottomFraction).toBeCloseTo(0.12653, 5);
+        expect(image.presentation?.transformApplied).toBe(true);
+        expect(image.crop).toBeUndefined();
+        expect(image.cssOpacity).toBeUndefined();
         expect(image.cssFilter).toBeUndefined();
         const decodedSvg = decodeURIComponent(
           (image.src ?? "").replace(/^data:image\/svg\+xml;charset=utf-8,/, "")
         );
-        expect(decodedSvg).toContain('id="duotone"');
+        expect(decodedSvg).toContain('<feFuncA type="linear" slope="0.57"');
         expect(decodedSvg).toContain("feComponentTransfer");
       }
     }
