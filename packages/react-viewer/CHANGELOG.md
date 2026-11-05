@@ -1,5 +1,12 @@
 # @extend-ai/react-docx
 
+## 0.14.4
+
+- Use the aligned Rust DOCX/WASM 0.2.9 release with shared OfficeArt pictures, shapes, connectors and saved SmartArt drawings.
+- Preserve cached diagram labels and independent text frames, drawing spacing, pattern placement and supported WordArt text effects.
+- Expose original 3D model assets through the opt-in `include3dModels` parser option while retaining saved previews.
+- Improve tracked-review presentation and preserve the source editor for review actions.
+
 ## 0.14.2
 
 - Use the Rust Office crates by Extend and refresh the bundled WebAssembly.

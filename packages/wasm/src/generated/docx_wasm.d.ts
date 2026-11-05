@@ -1,11 +1,11 @@
 /* tslint:disable */
 /* eslint-disable */
 
-export function build_doc_model_from_bytes(bytes: Uint8Array): any;
+export function build_doc_model_from_bytes(bytes: Uint8Array, options?: any | null): any;
 
-export function build_doc_model_from_package(_package: any): string;
+export function build_doc_model_from_package(_package: any, options?: any | null): string;
 
-export function build_doc_model_from_package_js(_package: any): any;
+export function build_doc_model_from_package_js(_package: any, options?: any | null): any;
 
 export function can_preserve_image_paint_source_wasm(image: any, base_package?: any | null, owner_part_name?: string | null): boolean;
 
@@ -35,9 +35,9 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
-    readonly build_doc_model_from_bytes: (a: number, b: number, c: number) => void;
-    readonly build_doc_model_from_package: (a: number, b: number) => void;
-    readonly build_doc_model_from_package_js: (a: number, b: number) => void;
+    readonly build_doc_model_from_bytes: (a: number, b: number, c: number, d: number) => void;
+    readonly build_doc_model_from_package: (a: number, b: number, c: number) => void;
+    readonly build_doc_model_from_package_js: (a: number, b: number, c: number) => void;
     readonly can_preserve_image_paint_source_wasm: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly extract_document_blocks_wasm: (a: number, b: number, c: number) => void;
     readonly extract_document_blocks_with_options_wasm: (a: number, b: number, c: number, d: number, e: number) => void;
@@ -50,7 +50,7 @@ export interface InitOutput {
     readonly parse_docx_wasm: (a: number, b: number, c: number) => void;
     readonly serialize_docx_from_json_wasm: (a: number, b: number, c: number, d: number) => void;
     readonly serialize_docx_wasm: (a: number, b: number, c: number) => void;
-    readonly __wasm_bindgen_func_elem_6808: (a: number, b: number, c: number, d: number) => number;
+    readonly __wasm_bindgen_func_elem_7055: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_export: (a: number, b: number) => number;
     readonly __wbindgen_export2: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_export3: (a: number) => void;

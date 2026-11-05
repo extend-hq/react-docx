@@ -194,6 +194,7 @@ export async function parseDocxForViewer(
     signal: options.signal,
     transferBuffer: options.transferBuffer ?? !(source instanceof ArrayBuffer),
     useWorker: options.useWorker,
+    include3dModels: options.include3dModels,
   });
   const importFinishedAt = now();
   let faces: FontFace[] = [];

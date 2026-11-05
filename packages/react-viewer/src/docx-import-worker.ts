@@ -46,7 +46,7 @@ self.addEventListener(
         setWasmSource(request.wasmSource);
       }
       const startedAt = performanceNow();
-      const result = await buildDocModelFromBytes(request.buffer);
+      const result = await buildDocModelFromBytes(request.buffer, request.parseOptions);
       const finishedAt = performanceNow();
       const timings: DocxImportWorkerTimings = {
         totalMs: finishedAt - startedAt,

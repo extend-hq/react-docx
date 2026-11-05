@@ -1,4 +1,4 @@
-import type { DocModel } from "@extend-ai/react-docx-doc-model";
+import type { DocModel, DocxParseOptions } from "@extend-ai/react-docx-doc-model";
 import type { OoxmlPackage } from "@extend-ai/react-docx-ooxml-core";
 import {
   canUseConfiguredWasmSourceInWorker,
@@ -13,7 +13,7 @@ export interface DocxImportResult {
   timings?: DocxImportWorkerTimings;
 }
 
-export interface DocxImportOptions {
+export interface DocxImportOptions extends DocxParseOptions {
   signal?: AbortSignal;
   transferBuffer?: boolean;
   useWorker?: boolean | "required";
@@ -30,6 +30,7 @@ export interface DocxImportWorkerRequest {
   type: "import-docx";
   buffer: ArrayBuffer;
   wasmSource?: WorkerWasmSource;
+  parseOptions?: DocxParseOptions;
 }
 
 export interface DocxImportWorkerSuccessResponse {
@@ -93,8 +94,9 @@ function createDocxImportWorker(): Worker {
 
 async function importDocxOnMainThread(
   buffer: ArrayBuffer,
-  signal?: AbortSignal
+  options: DocxImportOptions
 ): Promise<DocxImportResult> {
+  const { signal } = options;
   if (signal?.aborted) {
     throw createAbortError();
   }
@@ -107,7 +109,7 @@ async function importDocxOnMainThread(
     throw createAbortError();
   }
 
-  const result = await buildDocModelFromBytes(buffer);
+  const result = await buildDocModelFromBytes(buffer, { include3dModels: options.include3dModels });
   const model = ensureDocModelBlockIds(result.model);
   const finishedAt = performanceNow();
   if (signal?.aborted) {
@@ -145,7 +147,7 @@ export async function importDocxBuffer(
     if (options.useWorker === "required") {
       throw new Error("DOCX import requires a Web Worker and a worker-compatible WASM source");
     }
-    return importDocxOnMainThread(buffer, options.signal);
+    return importDocxOnMainThread(buffer, options);
   }
 
   let worker: Worker;
@@ -155,7 +157,7 @@ export async function importDocxBuffer(
     if (options.useWorker === "required") {
       throw new Error("Unable to start the DOCX import worker", { cause: error });
     }
-    return importDocxOnMainThread(buffer, options.signal);
+    return importDocxOnMainThread(buffer, options);
   }
 
   const requestId = nextImportWorkerRequestId;
@@ -230,6 +232,7 @@ export async function importDocxBuffer(
         type: "import-docx",
         buffer,
         wasmSource: getConfiguredWorkerWasmSource(),
+        parseOptions: { include3dModels: options.include3dModels },
       };
       const transfer = options.transferBuffer ? [buffer] : [];
       worker.postMessage(request, transfer);

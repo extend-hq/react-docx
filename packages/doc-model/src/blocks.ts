@@ -36,6 +36,7 @@ export interface DocxSourceRef {
 
 export interface ExtractDocumentBlocksOptions {
   includeWords?: boolean;
+  include3dModels?: boolean;
 }
 
 export interface DocumentWord {

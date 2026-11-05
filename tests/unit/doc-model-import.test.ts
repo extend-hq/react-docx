@@ -2123,7 +2123,7 @@ describe("doc-model import", () => {
         const decodedSvg = decodeURIComponent(
           (flowchartImage.src ?? "").replace(/^data:image\/svg\+xml;charset=utf-8,/, "")
         );
-        const matrix = decodedSvg.match(/<use[^>]*transform="matrix\(([^)]+)\)"/)?.[1]
+        const matrix = decodedSvg.match(/<(?:g|use)\b[^>]*transform="matrix\(([^)]+)\)"/)?.[1]
           .trim().split(/[\s,]+/).map(Number);
         expect(matrix).toHaveLength(6);
         const [a, b, c, d, e, f] = matrix!;

@@ -29,6 +29,8 @@ export type TextLigatures =
   | "all";
 
 export interface TextStyle {
+  textShadow?: TextShadow;
+  textOutline?: TextOutline;
   bold?: boolean;
   italic?: boolean;
   underline?: boolean;
@@ -78,6 +80,25 @@ export interface TextStyle {
   contextualAlternates?: boolean;
   verticalAlign?: "superscript" | "subscript";
   runBorder?: TextRunBorderStyle;
+}
+
+export interface TextShadow {
+  color: string;
+  opacity: number;
+  offsetXPx: number;
+  offsetYPx: number;
+  blurRadiusPx: number;
+  sourceXml?: string;
+  sourceColor?: string;
+}
+
+export interface TextOutline {
+  color: string;
+  opacity: number;
+  widthPx: number;
+  lineJoin: "round" | "bevel" | "miter";
+  sourceXml?: string;
+  sourceColor?: string;
 }
 
 export interface TextRunNode {
@@ -170,7 +191,25 @@ export interface ImagePresentation {
   properties?: ImagePropertyNode[];
 }
 
+export interface OfficeModel3D {
+  modelRelationshipId?: string;
+  linkedModelRelationshipId?: string;
+  asset?: {
+    partName: string;
+    contentType: string;
+    data?: Uint8Array;
+  };
+  preview?: {
+    modelRelationshipId?: string | null;
+    rasterRelationshipId: string;
+    renderer?: string | null;
+    rendererVersion?: string | null;
+  };
+  sourceXml: string;
+}
+
 export interface ImageRunNode {
+  model3d?: OfficeModel3D;
   presentation?: ImagePresentation;
   chartData?: ChartData;
   chartPartName?: string;

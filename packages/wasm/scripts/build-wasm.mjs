@@ -37,7 +37,7 @@ export function sourceInfo(workspace, binary) {
       rustSourceDirty: Boolean(execFileSync("git", ["status", "--porcelain", "--", ...files], { cwd: workspace, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim()) };
   } catch {}
   return { source: "workspace", rustDocxVersion: version("rust-docx"), rustDocxWasmVersion: version("rust-docx-wasm"), ...gitInfo,
-    rustSourceSha256: source.digest("hex"), wasmSha256: hash(readFileSync(binary)),
+    rustSourceSha256: source.digest("hex"), ...(binary ? { wasmSha256: hash(readFileSync(binary)) } : {}),
     rustc: execFileSync("rustc", ["--version"], { encoding: "utf8" }).trim() };
 }
 
@@ -67,6 +67,7 @@ if (workspace || registry) {
   if (!existsSync(path.join(crate, "Cargo.toml"))) throw new Error("RUST_DOCX_WORKSPACE must point to the Rust workspace containing rust-docx-wasm.");
   const output = mkdtempSync(path.join(tmpdir(), "react-docx-wasm-"));
   try {
+    const inputHash = workspace ? sourceInfo(path.resolve(workspace)).rustSourceSha256 : undefined;
     execFileSync("wasm-pack", ["build", crate, "--target", "web", "--out-name", "docx_wasm", "--out-dir", output, "--", "--locked"], {
       cwd: root, stdio: "inherit",
       env: { ...process.env, RUSTFLAGS: process.env.RUSTFLAGS ?? "-C target-feature=+simd128" },
@@ -75,6 +76,7 @@ if (workspace || registry) {
     if (required.some(name => !declarations.includes(`function ${name}(`))) throw new Error("The selected Rust workspace does not expose shared document review.");
     const builtBinary = path.join(output, "docx_wasm_bg.wasm");
     const provenance = registry ? registrySourceInfo(builtBinary) : sourceInfo(path.resolve(workspace), builtBinary);
+    if (inputHash && provenance.rustSourceSha256 !== inputHash) throw new Error("Rust inputs changed during the build; rebuild before recording provenance.");
     mkdirSync(generated, { recursive: true });
     for (const name of ["docx_wasm.js", "docx_wasm.d.ts", "docx_wasm_bg.wasm.d.ts"]) copyFileSync(path.join(output, name), path.join(generated, name));
     copyFileSync(builtBinary, binary);

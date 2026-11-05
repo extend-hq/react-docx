@@ -19,6 +19,10 @@ import wasmInit, {
 
 export type WasmSource = InitInput;
 
+export interface DocxParseOptions {
+  include3dModels?: boolean;
+}
+
 let initPromise: Promise<InitOutput> | undefined;
 let overrideSource: WasmSource | undefined;
 let initialized: InitOutput | undefined;
@@ -217,9 +221,9 @@ export async function wasmParseDocx(bytes: ArrayBuffer | Uint8Array): Promise<Wa
   return parse_docx_wasm(payload) as WasmOoxmlPackage;
 }
 
-export async function wasmBuildDocModelFromPackage(pkg: WasmOoxmlPackage): Promise<unknown> {
+export async function wasmBuildDocModelFromPackage(pkg: WasmOoxmlPackage, options?: DocxParseOptions): Promise<unknown> {
   await initWasm();
-  return build_doc_model_from_package_js(pkg) as unknown;
+  return build_doc_model_from_package_js(pkg, options) as unknown;
 }
 
 export async function wasmInspectDocumentSource(bytes: ArrayBuffer | Uint8Array): Promise<unknown> {
@@ -229,23 +233,36 @@ export async function wasmInspectDocumentSource(bytes: ArrayBuffer | Uint8Array)
 
 export async function wasmExtractDocumentBlocks(
   model: unknown,
-  options: { includeWords?: boolean } = {}
+  options: { includeWords?: boolean; include3dModels?: boolean } = {}
 ): Promise<unknown> {
   await initWasm();
-  const json = JSON.stringify(model, (key, value) => key === "data" || key === "src" ? undefined : value);
-  return JSON.parse(options.includeWords
+  const modelAssets = new WeakSet<object>();
+  const json = JSON.stringify(model, function (key, value) {
+    if (key === "model3d") {
+      if (!options.include3dModels) return undefined;
+      if (value?.asset && typeof value.asset === "object") modelAssets.add(value.asset);
+    }
+    if (key === "src") return undefined;
+    if (key === "data") {
+      return modelAssets.has(this) && (value instanceof Uint8Array || Array.isArray(value))
+        ? Array.from(value)
+        : undefined;
+    }
+    return value;
+  });
+  return JSON.parse(options.includeWords || options.include3dModels
     ? extract_document_blocks_with_options_wasm(json, JSON.stringify(options))
     : extract_document_blocks_wasm(json));
 }
 
-export async function wasmBuildDocModelFromBytes(bytes: ArrayBuffer | Uint8Array): Promise<{
+export async function wasmBuildDocModelFromBytes(bytes: ArrayBuffer | Uint8Array, options?: DocxParseOptions): Promise<{
   package: WasmOoxmlPackage;
   model: unknown;
   timings: { parseMs: number; buildModelMs: number };
 }> {
   await initWasm();
   const payload = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
-  return build_doc_model_from_bytes(payload) as {
+  return build_doc_model_from_bytes(payload, options) as {
     package: WasmOoxmlPackage;
     model: unknown;
     timings: { parseMs: number; buildModelMs: number };

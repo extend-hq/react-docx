@@ -554,3 +554,13 @@ The Rust parser and WASM bindings are released from [rust-office](https://github
 Review rendering preserves the original model for editing and export. Existing accept/reject operations remain limited to supported text revisions; structural and formatting revisions can be inspected without enabling unsupported mutations.
 
 JavaScript builds validate and use the bundled WASM artifact. To rebuild it from a matching Rust checkout, run `RUST_DOCX_WORKSPACE=/path/to/extend-office pnpm --filter @extend-ai/react-docx-wasm build:wasm`. The build records the Rust source and binary hashes for playground provenance.
+
+`DocxEditorViewer` defaults to `revisionDisplay="balloons"`: removed text appears in the margin, inserted text remains inline, and move pairs use double decorations. Set `revisionDisplay="inline"` to show removed content in the body. Revision colors are assigned consistently by author within a document; Word's per-installation color preferences are not stored in a DOCX. Custom change cards can render `props.content` to retain rich deleted content and images instead of a plain-text snippet.
+
+After updating the exact `rust-docx-wasm` version and Cargo lockfile for a new release, run `pnpm --filter @extend-ai/react-docx-wasm exec node scripts/build-wasm.mjs --registry` to rebuild from those published crates. The build rejects runtimes without the shared review exports. The generated provenance records both Rust crate versions, the source hash, and the actual bundled WASM hash; ordinary JavaScript builds do not silently replace it.
+
+### OfficeArt and original 3D assets
+
+The bundled Rust runtime renders saved SmartArt drawings through shared OfficeArt geometry and paint. Inline drawing effect extents contribute to document flow, while paint bounds retain artwork outside the layout frame. Full SmartArt layout generation and warped WordArt glyphs remain limited; the [shared renderer coverage](https://github.com/extend-hq/rust-office/blob/main/docs/picture-coverage.md) distinguishes rendered features from preserved previews.
+
+Use `parseDocxForViewer(source, { include3dModels: true })` to include each embedded 3D object's original asset bytes and scene XML in `image.model3d`. The option defaults to `false`; saved image previews continue to display in either mode. This exposes the original model without reconstructing Office's 3D lighting or rendering a new camera view.

@@ -1,5 +1,6 @@
 import * as React from "react";
 import { resolveImagePaintBounds, type ImageRunNode } from "@extend-ai/react-docx-doc-model";
+import { observePagePatternPaint } from "./page-pattern-paint";
 
 interface PaintBoundsImageProps extends React.ImgHTMLAttributes<HTMLImageElement> {
   image: Pick<ImageRunNode, "paintBounds" | "widthPx" | "heightPx">;
@@ -25,6 +26,10 @@ export function PaintBoundsImage({
   const imageElementRef = React.useRef<HTMLImageElement>(null);
   const reference = paint ? image.paintBounds : undefined;
   React.useLayoutEffect(() => {
+    const element = imageElementRef.current;
+    if (element && props.src) return observePagePatternPaint(element, props.src);
+  }, [props.src, reference, widthPx, heightPx]);
+  React.useLayoutEffect(() => {
     const frame = frameElementRef.current, element = imageElementRef.current;
     if (!frame || !element || !reference) return;
     const applySize = (width: number, height: number): void => {
@@ -45,8 +50,13 @@ export function PaintBoundsImage({
     if (typeof frameRef === "function") frameRef(element);
     else if (frameRef) (frameRef as React.MutableRefObject<HTMLElement | null>).current = element;
   }, [frameRef]);
+  const registerImage = React.useCallback((element: HTMLImageElement | null): void => {
+    imageElementRef.current = element;
+    if (typeof frameRef === "function") frameRef(element);
+    else if (frameRef) (frameRef as React.MutableRefObject<HTMLElement | null>).current = element;
+  }, [frameRef]);
   if (!paint || !reference || !widthPx || !heightPx) return (
-    <img {...props} ref={frameRef as React.Ref<HTMLImageElement>} style={style}
+    <img {...props} ref={registerImage} style={style}
       data-docx-source-id={sourceId} data-docx-header-footer-overlay={headerFooterOverlay} />
   );
   return (

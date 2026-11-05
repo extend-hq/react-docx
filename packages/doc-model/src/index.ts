@@ -3,13 +3,15 @@ import {
   mapsToWasmPackage,
   wasmBuildDocModelFromBytes,
   wasmBuildDocModelFromPackage,
-  wasmPackageToMaps
+  wasmPackageToMaps,
+  type DocxParseOptions
 } from "@extend-ai/react-docx-wasm";
 
 import { normalizeDocModel } from "./normalize";
 import type { DocModel } from "./types";
 
 export * from "./types";
+export type { DocxParseOptions } from "@extend-ai/react-docx-wasm";
 export { resolveImagePaintBounds, type ImagePaintRect } from "./image-paint";
 export * from "./blocks";
 export * from "./review";
@@ -32,23 +34,23 @@ export { invalidateFormFieldSource, resolveFormFieldSourcePreview } from "./form
 export { deepFreezeDocModel } from "./freeze";
 export { normalizeDocModel } from "./normalize";
 
-export async function buildDocModel(pkg: OoxmlPackage): Promise<DocModel> {
+export async function buildDocModel(pkg: OoxmlPackage, options?: DocxParseOptions): Promise<DocModel> {
   const wasmPackage = mapsToWasmPackage({
     parts: pkg.parts,
     binaryAssets: pkg.binaryAssets,
     warnings: pkg.warnings
   });
-  const model = (await wasmBuildDocModelFromPackage(wasmPackage)) as DocModel;
+  const model = (await wasmBuildDocModelFromPackage(wasmPackage, options)) as DocModel;
   return normalizeDocModel(model);
 }
 
-export async function buildDocModelFromBytes(bytes: ArrayBuffer | Uint8Array): Promise<{
+export async function buildDocModelFromBytes(bytes: ArrayBuffer | Uint8Array, options?: DocxParseOptions): Promise<{
   package: OoxmlPackage;
   model: DocModel;
   timings: { parseMs: number; buildModelMs: number; totalMs: number };
 }> {
   const startedAt = performance.now();
-  const result = await wasmBuildDocModelFromBytes(bytes);
+  const result = await wasmBuildDocModelFromBytes(bytes, options);
   const builtAt = performance.now();
   const { parts, binaryAssets, warnings } = wasmPackageToMaps(result.package);
   const pkg = { parts, binaryAssets, ...(warnings.length > 0 ? { warnings } : {}) };

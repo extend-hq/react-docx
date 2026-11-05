@@ -125,6 +125,8 @@ function cloneTextStyle(style?: TextStyle): TextStyle | undefined {
     ? {
         ...style,
         runBorder: style.runBorder ? { ...style.runBorder } : undefined,
+        textShadow: style.textShadow ? { ...style.textShadow } : undefined,
+        textOutline: style.textOutline ? { ...style.textOutline } : undefined,
       }
     : undefined;
 }
@@ -173,6 +175,7 @@ function cloneImageRun(image: ImageRunNode): ImageRunNode {
   return {
     ...image,
     chartData: image.chartData && structuredClone(image.chartData),
+    model3d: image.model3d && structuredClone(image.model3d),
     presentation: image.presentation ? cloneImagePresentation(image.presentation) : undefined,
     contentNodes: image.contentNodes?.map(cloneDocNode),
     data: image.data ? new Uint8Array(image.data) : undefined,

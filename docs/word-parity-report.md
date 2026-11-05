@@ -1,4 +1,16 @@
-# Word parity evaluation — expanded sample, 2026-10-13
+# Word parity evaluation
+
+## Shared review rendering — 2026-11-05
+
+The shared Rust review model was compared with Microsoft Word for Mac 16.106.1 in All Markup / Show Revisions in Balloons. Three synthetic documents contain **29 records covering all six shared revision kinds and all eight shared scopes**. This is finite coverage of the current shared model, not proof of support for every Word revision category or pixel equality. [Native and viewer comparisons](../output/playwright/revision-word-parity/report.html).
+
+The viewer now separates balloon and inline presentation, preserves rich removed content, renders both move endpoints, uses double move decorations, joins body paragraphs across deleted paragraph marks, highlights changed table cells, and anchors deleted rows even when a whole table disappears. Deletion connectors use thin dashes and a diagonal margin approach; formatting, move, and cell-change connectors appear on hover or focus. Margin bars also cover insertions. Toggling presentation preserves the source-model digest, and the existing annotation export/reopen checks pass.
+
+Visual parity remains incomplete. Balloon packing, author-color assignment, dates and controls differ from Word. The formatting document produces 11 shared records and viewer balloons versus nine Word balloons; Word suppresses two table-level records and resolves inherited property defaults differently. Table and other-story paragraph joins, conflict/reconciliation, style-definition, numbering-change, actual field-display and deprecated split-cell revision behavior have not been qualified. Modern Word comments use a separate sidebar, whereas the viewer shares its review gutter. The numeric replacement in the captured text document is not a field-display revision. The generator subsequently removes an ambiguous label and a duplicate spacing property; the captured input hashes in the report identify the original Word references.
+
+Validation: **967 existing unit tests, 46 Word-oracle contract tests, 14 existing Chrome browser tests, workspace/Playground typechecks, and viewer builds**. No unit tests were added. The registry build option validates shared-review exports and records both crate versions and artifact hashes; bundled provenance identifies the actual parser source until the new crates are published.
+
+## Expanded sample — 2026-10-13
 
 An additional **1,000 distinct DOCX documents** were sampled, with no ID or byte-hash overlap against the prior 1,392 inputs. This pass retains six general parser/layout fixes and preserves the earlier local work. All changes remain local and uncommitted. Full Word parity is still incomplete.
 

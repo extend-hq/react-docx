@@ -1,7 +1,8 @@
+import { assignReviewAuthorColors, copyReviewRevisionColor, reviewCellFill, reviewFormattingDescription, reviewRevisionColor } from "./review-presentation";
 import {
   extractDocumentReviewSync,
   type DocModel, type DocNode, type ParagraphNode, type TableNode,
-  type DocumentReview, type DocumentRevision, type DocumentComment, type WordProperty,
+  type DocumentReview, type DocumentRevision, type DocumentComment,
 } from "@extend-ai/react-docx-doc-model";
 import { initWasm, wasmReviewReady } from "@extend-ai/react-docx-wasm";
 
@@ -28,6 +29,7 @@ export function documentReview(model: DocModel): DocumentReview {
   if (cached) return cached;
   if (!wasmReviewReady() && typeof window !== "undefined") return emptyReview;
   const review = extractDocumentReviewSync(model);
+  assignReviewAuthorColors(review.revisions);
   const byId = new Map<string, DocNode>();
   const allParagraphs: ParagraphNode[] = [];
   const walk = (nodes: readonly DocNode[], root: string): void => {
@@ -129,35 +131,19 @@ export function reviewChangeText(revision: DocumentRevision): string | undefined
       else node.rows.forEach(row => row.cells.forEach(cell => visit(cell.nodes)));
     });
     visit(revision.content ?? []);
-    return text.filter(Boolean).join(" ") || (revision.scope === "paragraph_mark" ? "Paragraph mark" : revision.scope.replaceAll("_", " "));
+    return text.filter(Boolean).join(" ") || (revision.scope === "paragraph_mark" ? "¶" : revision.scope.replaceAll("_", " "));
   }
-  const labels: Record<string, string> = {
-    "w:rFonts": "font", "w:sz": "size", "w:color": "color", "w:highlight": "highlight",
-    "w:b": "bold", "w:bCs": "bold", "w:i": "italic", "w:iCs": "italic", "w:u": "underline",
-    "w:strike": "strikethrough", "w:vertAlign": "baseline", "w:ind": "margins/indent",
-    "w:spacing": "line spacing", "w:jc": "alignment", "w:tabs": "tabs", "w:numPr": "numbering",
-    "w:pBdr": "borders", "w:shd": "shading", "w:rPr": "text style", "w:tblW": "width",
-    "w:tcW": "width", "w:gridSpan": "width", "w:tblLayout": "layout", "w:tblInd": "indent",
-    "w:tblCellMar": "margins", "w:tcMar": "margins", "w:tblBorders": "borders", "w:tcBorders": "borders",
-    "w:trBorders": "borders", "w:trHeight": "row height", "w:vAlign": "vertical align",
-  };
-  const features = new Set<string>();
-  const visit = (properties: WordProperty[]) => properties.forEach(property => {
-    if (labels[property.name]) features.add(labels[property.name]);
-    visit(property.children ?? []);
-  });
-  visit(revision.properties?.before ?? []);
-  visit(revision.properties?.after ?? []);
-  const names: Record<DocumentRevision["scope"], string> = { text: "Run", paragraph: "Paragraph", paragraph_mark: "Paragraph mark", section: "Section", table: "Table", table_grid: "Table grid", table_row: "Row", table_cell: "Cell" };
-  const prefix = `${names[revision.scope]} formatting`;
-  return features.size ? `${prefix}: ${[...features].join(", ")}` : prefix;
+  return reviewFormattingDescription(revision);
 }
 
-const displayDocuments = new WeakMap<DocModel, { model: DocModel; rowIndexes: Map<number, number[]> }>();
+interface ReviewDisplay { model: DocModel; rowIndexes: Map<number, number[]>; paragraphIndexes: Map<number, number> }
+const displayDocuments = new WeakMap<DocModel, Map<string, ReviewDisplay>>();
+const collapsedParagraphs = new WeakSet<ParagraphNode>();
+export const reviewParagraphCollapsed = (paragraph: ParagraphNode): boolean => collapsedParagraphs.has(paragraph);
 
-export function reviewDisplayModel(model: DocModel): { model: DocModel; rowIndexes: Map<number, number[]> } {
-  if (!wasmReviewReady() && typeof window !== "undefined") return { model, rowIndexes: new Map() };
-  const cached = displayDocuments.get(model);
+export function reviewDisplayModel(model: DocModel, display: "balloons" | "inline" = "inline"): ReviewDisplay {
+  if (!wasmReviewReady() && typeof window !== "undefined") return { model, rowIndexes: new Map(), paragraphIndexes: new Map() };
+  const cached = displayDocuments.get(model)?.get(display);
   if (cached) return cached;
   const review = documentReview(model);
   const removed = new Map<string, DocumentRevision[]>();
@@ -166,13 +152,28 @@ export function reviewDisplayModel(model: DocModel): { model: DocModel; rowIndex
     const id = revision.sourceRefs[0]?.nodeId;
     if (id) removed.set(id, [...(removed.get(id) ?? []), revision]);
   }
+  const offsetRevision = (revision: DocumentRevision, offset: number): DocumentRevision => {
+    const shifted = { ...revision,
+      childStart: revision.childStart === undefined ? undefined : revision.childStart + offset,
+      childEnd: revision.childEnd === undefined ? undefined : revision.childEnd + offset,
+    };
+    copyReviewRevisionColor(revision, shifted);
+    return shifted;
+  };
   const rowIndexes = new Map<number, number[]>();
+  const paragraphIndexes = new Map<number, number>();
+  const cellFills = new Map<string, string>();
+  for (const revision of review.revisions) {
+    if (revision.scope !== "table_cell" && revision.scope !== "table_row") continue;
+    const fill = reviewCellFill(revision);
+    if (fill) for (const source of revision.sourceRefs) cellFills.set(source.nodeId, fill);
+  }
   const markRemoved = (nodes: DocNode[], revision: DocumentRevision, root: string): DocNode[] => nodes.map((node, index) => {
     const blockId = `${root}/${index}`;
     if (node.type === "paragraph") {
       const paragraph: ParagraphNode = { ...node, blockId, sourceXml: undefined, reviewContent: undefined,
         children: node.children.map(child => child.type === "image" ? child : {
-          ...child, style: { ...child.style, color: "#b91c1c", strike: true },
+          ...child, style: { ...child.style, color: reviewRevisionColor(revision), strike: true },
         }),
       };
       const data: ParagraphReview = { revisions: [], comments: [], containerRevision: revision };
@@ -187,13 +188,15 @@ export function reviewDisplayModel(model: DocModel): { model: DocModel; rowIndex
   const project = (node: DocNode, topIndex?: number): DocNode => {
     if (node.type === "paragraph") return node;
     let changed = false;
-    const rows = node.rows.map(row => ({ ...row, cells: row.cells.map(cell => {
+    const rows: TableNode["rows"] = node.rows.map((row, ri) => ({ ...row, cells: row.cells.map((cell, ci) => {
       const nodes = cell.nodes.map(n => project(n));
       if (nodes.some((n, i) => n !== cell.nodes[i])) changed = true;
-      return { ...cell, nodes };
+      const fill = cellFills.get(`${node.blockId}/row/${ri}/cell/${ci}`);
+      if (fill) changed = true;
+      return { ...cell, nodes, style: fill ? { ...cell.style, backgroundColor: fill } : cell.style };
     }) }));
     const indexes = rows.map((_, index) => index);
-    for (const revision of (removed.get(node.blockId ?? "") ?? []).sort((a, b) => a.sourceIndex! - b.sourceIndex!)) {
+    for (const revision of (display === "inline" ? removed.get(node.blockId ?? "") ?? [] : []).sort((a, b) => a.sourceIndex! - b.sourceIndex!)) {
       const table = revision.content?.find((n): n is TableNode => n.type === "table");
       const row = table?.rows[0];
       if (!row) continue;
@@ -209,7 +212,36 @@ export function reviewDisplayModel(model: DocModel): { model: DocModel; rowIndex
     return { ...node, rows };
   };
   const nodes = model.nodes.map((node, index) => project(node, index));
-  const result = { model: nodes.every((node, i) => node === model.nodes[i]) ? model : { ...model, nodes }, rowIndexes };
-  displayDocuments.set(model, result);
+  if (display === "balloons") {
+    let owner = -1;
+    for (let index = 0; index < nodes.length; index++) {
+      const current = nodes[index];
+      const previous = model.nodes[index - 1];
+      if (current.type !== "paragraph" || previous?.type !== "paragraph" ||
+          !paragraphReview(previous).revisions.some(r => r.kind === "deletion" && r.scope === "paragraph_mark")) {
+        owner = index;
+        continue;
+      }
+      const first = nodes[owner];
+      if (first?.type !== "paragraph") continue;
+      const offset = first.children.length;
+      const firstReview = paragraphReview(first), nextReview = paragraphReview(current);
+      const joined: ParagraphNode = { ...first, children: [...first.children, ...current.children], style: current.style, paragraphMarkDeleted: true };
+      const joinedReview: ParagraphReview = { revisions: [...firstReview.revisions.map(r => r.scope === "paragraph_mark" && r.childStart === undefined ? { ...r, childStart: offset, childEnd: offset } : r), ...nextReview.revisions.map(r => offsetRevision(r, offset))], comments: [...firstReview.comments, ...nextReview.comments.map(c => ({ ...c, childStart: c.childStart + offset, childEnd: c.childEnd + offset }))] };
+      paragraphs.set(joined, joinedReview);
+      paragraphSources.set(paragraphKey(joined), joinedReview);
+      nodes[owner] = joined;
+      const empty: ParagraphNode = { ...current, children: [] };
+      collapsedParagraphs.add(empty);
+      paragraphs.set(empty, emptyParagraph);
+      paragraphSources.set(paragraphKey(empty), emptyParagraph);
+      nodes[index] = empty;
+      paragraphIndexes.set(index, owner);
+    }
+  }
+  const result = { model: nodes.every((node, i) => node === model.nodes[i]) ? model : { ...model, nodes }, rowIndexes, paragraphIndexes };
+  const variants = displayDocuments.get(model) ?? new Map();
+  variants.set(display, result);
+  displayDocuments.set(model, variants);
   return result;
 }

@@ -2,14 +2,15 @@
 
 /**
  * @param {Uint8Array} bytes
+ * @param {any | null} [options]
  * @returns {any}
  */
-export function build_doc_model_from_bytes(bytes) {
+export function build_doc_model_from_bytes(bytes, options) {
     try {
         const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
         const ptr0 = passArray8ToWasm0(bytes, wasm.__wbindgen_export);
         const len0 = WASM_VECTOR_LEN;
-        wasm.build_doc_model_from_bytes(retptr, ptr0, len0);
+        wasm.build_doc_model_from_bytes(retptr, ptr0, len0, isLikeNone(options) ? 0 : addHeapObject(options));
         var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
         var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
         var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
@@ -24,14 +25,15 @@ export function build_doc_model_from_bytes(bytes) {
 
 /**
  * @param {any} _package
+ * @param {any | null} [options]
  * @returns {string}
  */
-export function build_doc_model_from_package(_package) {
+export function build_doc_model_from_package(_package, options) {
     let deferred2_0;
     let deferred2_1;
     try {
         const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
-        wasm.build_doc_model_from_package(retptr, addBorrowedObject(_package));
+        wasm.build_doc_model_from_package(retptr, addBorrowedObject(_package), isLikeNone(options) ? 0 : addHeapObject(options));
         var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
         var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
         var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
@@ -54,12 +56,13 @@ export function build_doc_model_from_package(_package) {
 
 /**
  * @param {any} _package
+ * @param {any | null} [options]
  * @returns {any}
  */
-export function build_doc_model_from_package_js(_package) {
+export function build_doc_model_from_package_js(_package, options) {
     try {
         const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
-        wasm.build_doc_model_from_package_js(retptr, addBorrowedObject(_package));
+        wasm.build_doc_model_from_package_js(retptr, addBorrowedObject(_package), isLikeNone(options) ? 0 : addHeapObject(options));
         var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
         var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
         var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
@@ -520,7 +523,7 @@ function __wbg_get_imports() {
             const ret = new Uint8Array(getArrayU8FromWasm0(arg0, arg1));
             return addHeapObject(ret);
         },
-        __wbg_now_966ab9c7a2aa3041: function() {
+        __wbg_now_c6d1c3a5f75e19ad: function() {
             const ret = performance.now();
             return ret;
         },
@@ -548,8 +551,8 @@ function __wbg_get_imports() {
             return addHeapObject(ret);
         }, arguments); },
         __wbindgen_cast_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref, Externref], shim_idx: 1378, ret: Externref, inner_ret: Some(Externref) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, __wasm_bindgen_func_elem_6808);
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref, Externref], shim_idx: 1398, ret: Externref, inner_ret: Some(Externref) }, mutable: true }) -> Externref`.
+            const ret = makeMutClosure(arg0, arg1, __wasm_bindgen_func_elem_7055);
             return addHeapObject(ret);
         },
         __wbindgen_cast_0000000000000002: function(arg0) {
@@ -576,8 +579,8 @@ function __wbg_get_imports() {
     };
 }
 
-function __wasm_bindgen_func_elem_6808(arg0, arg1, arg2, arg3) {
-    const ret = wasm.__wasm_bindgen_func_elem_6808(arg0, arg1, addHeapObject(arg2), addHeapObject(arg3));
+function __wasm_bindgen_func_elem_7055(arg0, arg1, arg2, arg3) {
+    const ret = wasm.__wasm_bindgen_func_elem_7055(arg0, arg1, addHeapObject(arg2), addHeapObject(arg3));
     return takeObject(ret);
 }
 

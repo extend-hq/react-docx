@@ -125,7 +125,7 @@ function cloneTextRun(run: TextRunNode): TextRunNode {
   return {
     type: "text",
     text: run.text,
-    style: run.style ? { ...run.style } : undefined,
+    style: cloneTextStyle(run.style),
     link: run.link,
     noteReference: run.noteReference ? { ...run.noteReference } : undefined,
   };
@@ -195,6 +195,7 @@ function cloneFormFieldRun(run: FormFieldRunNode): FormFieldRunNode {
 function cloneImageRun(run: ImageRunNode): ImageRunNode {
   return {
     type: "image",
+    model3d: run.model3d && structuredClone(run.model3d),
     blockId: run.blockId,
     semanticKind: run.semanticKind,
     mathMl: run.mathMl,
@@ -261,6 +262,8 @@ function cloneTextStyle(style?: TextStyle): TextStyle | undefined {
     ? {
         ...style,
         runBorder: style.runBorder ? { ...style.runBorder } : undefined,
+        textShadow: style.textShadow ? { ...style.textShadow } : undefined,
+        textOutline: style.textOutline ? { ...style.textOutline } : undefined,
       }
     : undefined;
 }

@@ -1,9 +1,9 @@
 /* tslint:disable */
 /* eslint-disable */
 export const memory: WebAssembly.Memory;
-export const build_doc_model_from_bytes: (a: number, b: number, c: number) => void;
-export const build_doc_model_from_package: (a: number, b: number) => void;
-export const build_doc_model_from_package_js: (a: number, b: number) => void;
+export const build_doc_model_from_bytes: (a: number, b: number, c: number, d: number) => void;
+export const build_doc_model_from_package: (a: number, b: number, c: number) => void;
+export const build_doc_model_from_package_js: (a: number, b: number, c: number) => void;
 export const can_preserve_image_paint_source_wasm: (a: number, b: number, c: number, d: number, e: number) => void;
 export const extract_document_blocks_wasm: (a: number, b: number, c: number) => void;
 export const extract_document_blocks_with_options_wasm: (a: number, b: number, c: number, d: number, e: number) => void;
@@ -16,7 +16,7 @@ export const package_to_array_buffer_wasm: (a: number, b: number) => void;
 export const parse_docx_wasm: (a: number, b: number, c: number) => void;
 export const serialize_docx_from_json_wasm: (a: number, b: number, c: number, d: number) => void;
 export const serialize_docx_wasm: (a: number, b: number, c: number) => void;
-export const __wasm_bindgen_func_elem_6808: (a: number, b: number, c: number, d: number) => number;
+export const __wasm_bindgen_func_elem_7055: (a: number, b: number, c: number, d: number) => number;
 export const __wbindgen_export: (a: number, b: number) => number;
 export const __wbindgen_export2: (a: number, b: number, c: number, d: number) => number;
 export const __wbindgen_export3: (a: number) => void;

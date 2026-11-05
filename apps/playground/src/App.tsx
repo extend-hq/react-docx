@@ -1863,6 +1863,7 @@ function PlaygroundApp(): React.JSX.Element {
     useDocxBorders(editor);
   const { selectedFormField, updateSelectedFormFieldWidget } =
     useDocxFormFields(editor);
+  const [revisionDisplay, setRevisionDisplay] = React.useState<"balloons" | "inline">("balloons");
   const { showTrackedChanges, setShowTrackedChanges } =
     useDocxTrackChanges(editor);
   const { comments, showComments, setShowComments } = useDocxComments(editor);
@@ -2616,56 +2617,19 @@ function PlaygroundApp(): React.JSX.Element {
     documentTheme === "dark" ? "#9ca3af" : "#6b7280";
   const pageGapBackgroundColor = "hsl(var(--background))";
   const renderTrackedChangeCard = React.useCallback(
-    (props: DocxTrackedChangeCardRenderProps): React.ReactNode => {
-      const noteBackground = isDark
-        ? "rgba(15, 23, 42, 0.94)"
-        : "rgba(255, 255, 255, 0.9)";
-      const borderColor = isDark
-        ? "rgba(148, 163, 184, 0.22)"
-        : "rgba(15, 23, 42, 0.1)";
-      const secondaryColor = isDark ? "#94a3b8" : "#64748b";
-      const snippetStyle: React.CSSProperties = {
-        color: isDark ? "#cbd5e1" : "#334155",
-        display: "-webkit-box",
-        WebkitBoxOrient: "vertical",
-        WebkitLineClamp: 2,
-        overflow: "hidden",
-      };
-
-      return (
-        <div
-          className="pointer-events-none overflow-hidden rounded-sm px-1.5 py-1 text-[9px] leading-3"
-          style={{
-            ...props.style,
-            border: `1px solid ${borderColor}`,
-            borderLeft: `2px solid ${props.accentColor}`,
-            backgroundColor: noteBackground,
-            color: isDark ? "#f8fafc" : "#111827",
-            boxShadow: isDark
-              ? "0 1px 3px rgba(2, 6, 23, 0.45)"
-              : "0 1px 2px rgba(15, 23, 42, 0.08)",
-          }}
-        >
-          <div className="flex items-start justify-between gap-2">
-            <p className="m-0 min-w-0 flex-1 truncate font-semibold">
-              {props.change.author?.trim() || "Unknown author"}
-            </p>
-            {props.formattedDate ? (
-              <span className="shrink-0" style={{ color: secondaryColor }}>
-                {props.formattedDate}
-              </span>
-            ) : null}
-          </div>
-          <p className="m-0 mt-0.5" style={snippetStyle}>
-            <span style={{ color: props.accentColor, fontWeight: 700 }}>
-              {props.kindLabel}:{" "}
-            </span>
-            {props.snippet}
-          </p>
+    (props: DocxTrackedChangeCardRenderProps): React.ReactNode => (
+      <div style={{ ...props.style, padding: "4px 8px", borderLeft: `2px solid ${props.accentColor}`,
+        color: isDark ? "#f8fafc" : "#111111", fontFamily: '"Times New Roman", serif', fontSize: 11,
+        lineHeight: 1.15, boxSizing: "border-box" }}>
+        <div className="flex items-start justify-between gap-2">
+          <strong>{props.change.author?.trim() || "Unknown author"}</strong>
+          {props.formattedDate ? <span style={{ fontSize: 10 }}>{props.formattedDate}</span> : null}
         </div>
-      );
-    },
-    [isDark]
+        <p style={{ margin: "2px 0 0", whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
+          <strong>{props.kindLabel}{props.content || props.snippet ? ":" : ""}</strong>{" "}{props.content ?? props.snippet}
+        </p>
+      </div>
+    ), [isDark]
   );
   const renderCommentCard = React.useCallback(
     (props: DocxCommentCardRenderProps): React.ReactNode => {
@@ -3524,6 +3488,13 @@ function PlaygroundApp(): React.JSX.Element {
                     checked={showTrackedChanges}
                     onCheckedChange={setShowTrackedChanges}
                   />
+                  {showTrackedChanges ? (
+                    <select aria-label="Revision display" value={revisionDisplay}
+                      onChange={event => setRevisionDisplay(event.target.value as "balloons" | "inline")}
+                      className="rounded border bg-background px-2 py-1 text-xs">
+                      <option value="balloons">Balloons</option><option value="inline">Inline</option>
+                    </select>
+                  ) : null}
                 </div>
                 <Separator orientation="vertical" className="h-6" />
                 <div className="flex items-center gap-2 px-2">
@@ -3586,6 +3557,7 @@ function PlaygroundApp(): React.JSX.Element {
                 pageVirtualization={{}}
                 mode={isReadOnly ? "read-only" : "edit"}
                 showTrackedChanges={showTrackedChanges}
+                revisionDisplay={revisionDisplay}
                 renderTrackedChangeCard={renderTrackedChangeCard}
                 showComments={showComments}
                 renderCommentCard={renderCommentCard}

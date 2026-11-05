@@ -45,13 +45,19 @@ function normalizeParagraphChild(
 
   const image = child as ImageRunNode;
   const data = normalizeUint8Array(image.data);
-  if (data === image.data && !image.contentNodes) {
+  const modelAsset = image.model3d?.asset;
+  const modelData = normalizeUint8Array(modelAsset?.data);
+  const model3d = modelAsset && modelData !== modelAsset.data
+    ? { ...image.model3d!, asset: { ...modelAsset, data: modelData } }
+    : image.model3d;
+  if (data === image.data && model3d === image.model3d && !image.contentNodes) {
     return child;
   }
 
   return {
     ...image,
     data,
+    model3d,
     contentNodes: image.contentNodes?.map((node) => normalizeDocNode(node, invalidated))
   };
 }
