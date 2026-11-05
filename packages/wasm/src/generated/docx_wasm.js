@@ -48,7 +48,28 @@ export function build_doc_model_from_package(_package) {
     } finally {
         wasm.__wbindgen_add_to_stack_pointer(16);
         heap[stack_pointer++] = undefined;
-        wasm.__wbindgen_export4(deferred2_0, deferred2_1, 1);
+        wasm.__wbindgen_export5(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
+ * @param {any} _package
+ * @returns {any}
+ */
+export function build_doc_model_from_package_js(_package) {
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        wasm.build_doc_model_from_package_js(retptr, addBorrowedObject(_package));
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+        if (r2) {
+            throw takeObject(r1);
+        }
+        return takeObject(r0);
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+        heap[stack_pointer++] = undefined;
     }
 }
 
@@ -104,7 +125,7 @@ export function extract_document_blocks_wasm(model_json) {
         return getStringFromWasm0(ptr2, len2);
     } finally {
         wasm.__wbindgen_add_to_stack_pointer(16);
-        wasm.__wbindgen_export4(deferred3_0, deferred3_1, 1);
+        wasm.__wbindgen_export5(deferred3_0, deferred3_1, 1);
     }
 }
 
@@ -138,7 +159,7 @@ export function extract_document_blocks_with_options_wasm(model_json, options_js
         return getStringFromWasm0(ptr3, len3);
     } finally {
         wasm.__wbindgen_add_to_stack_pointer(16);
-        wasm.__wbindgen_export4(deferred4_0, deferred4_1, 1);
+        wasm.__wbindgen_export5(deferred4_0, deferred4_1, 1);
     }
 }
 
@@ -169,7 +190,7 @@ export function inspect_document_source_wasm(bytes) {
         return getStringFromWasm0(ptr2, len2);
     } finally {
         wasm.__wbindgen_add_to_stack_pointer(16);
-        wasm.__wbindgen_export4(deferred3_0, deferred3_1, 1);
+        wasm.__wbindgen_export5(deferred3_0, deferred3_1, 1);
     }
 }
 
@@ -201,7 +222,7 @@ export function model_to_document_xml_from_json_wasm(model_json, base_package) {
         return getStringFromWasm0(ptr2, len2);
     } finally {
         wasm.__wbindgen_add_to_stack_pointer(16);
-        wasm.__wbindgen_export4(deferred3_0, deferred3_1, 1);
+        wasm.__wbindgen_export5(deferred3_0, deferred3_1, 1);
     }
 }
 
@@ -232,7 +253,7 @@ export function model_to_document_xml_wasm(model, base_package) {
     } finally {
         wasm.__wbindgen_add_to_stack_pointer(16);
         heap[stack_pointer++] = undefined;
-        wasm.__wbindgen_export4(deferred2_0, deferred2_1, 1);
+        wasm.__wbindgen_export5(deferred2_0, deferred2_1, 1);
     }
 }
 
@@ -252,7 +273,7 @@ export function package_to_array_buffer_wasm(_package) {
             throw takeObject(r2);
         }
         var v1 = getArrayU8FromWasm0(r0, r1).slice();
-        wasm.__wbindgen_export4(r0, r1 * 1, 1);
+        wasm.__wbindgen_export5(r0, r1 * 1, 1);
         return v1;
     } finally {
         wasm.__wbindgen_add_to_stack_pointer(16);
@@ -301,7 +322,7 @@ export function serialize_docx_from_json_wasm(model_json, base_package) {
             throw takeObject(r2);
         }
         var v2 = getArrayU8FromWasm0(r0, r1).slice();
-        wasm.__wbindgen_export4(r0, r1 * 1, 1);
+        wasm.__wbindgen_export5(r0, r1 * 1, 1);
         return v2;
     } finally {
         wasm.__wbindgen_add_to_stack_pointer(16);
@@ -325,7 +346,7 @@ export function serialize_docx_wasm(model, base_package) {
             throw takeObject(r2);
         }
         var v1 = getArrayU8FromWasm0(r0, r1).slice();
-        wasm.__wbindgen_export4(r0, r1 * 1, 1);
+        wasm.__wbindgen_export5(r0, r1 * 1, 1);
         return v1;
     } finally {
         wasm.__wbindgen_add_to_stack_pointer(16);
@@ -365,6 +386,9 @@ function __wbg_get_imports() {
         },
         __wbg___wbindgen_throw_bbadd78c1bac3a77: function(arg0, arg1) {
             throw new Error(getStringFromWasm0(arg0, arg1));
+        },
+        __wbg__wbg_cb_unref_c2301a3c9b78104b: function(arg0) {
+            getObject(arg0)._wbg_cb_unref();
         },
         __wbg_create_00e11a7cefe80760: function(arg0) {
             const ret = Object.create(getObject(arg0));
@@ -434,7 +458,7 @@ function __wbg_get_imports() {
             const ret = new Uint8Array(getArrayU8FromWasm0(arg0, arg1));
             return addHeapObject(ret);
         },
-        __wbg_now_6ce9e91220aac74c: function() {
+        __wbg_now_2652b4b75cddf6bf: function() {
             const ret = performance.now();
             return ret;
         },
@@ -453,18 +477,31 @@ function __wbg_get_imports() {
             const ret = Reflect.set(getObject(arg0), getObject(arg1), getObject(arg2));
             return ret;
         }, arguments); },
+        __wbg_stringify_4408512926f9a81c: function() { return handleError(function (arg0, arg1) {
+            const ret = JSON.stringify(getObject(arg0), getObject(arg1));
+            return addHeapObject(ret);
+        }, arguments); },
         __wbg_stringify_a42c95ea9a7591c9: function() { return handleError(function (arg0) {
             const ret = JSON.stringify(getObject(arg0));
             return addHeapObject(ret);
         }, arguments); },
-        __wbindgen_cast_0000000000000001: function(arg0) {
+        __wbindgen_cast_0000000000000001: function(arg0, arg1) {
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref, Externref], shim_idx: 861, ret: Externref, inner_ret: Some(Externref) }, mutable: true }) -> Externref`.
+            const ret = makeMutClosure(arg0, arg1, __wasm_bindgen_func_elem_5110);
+            return addHeapObject(ret);
+        },
+        __wbindgen_cast_0000000000000002: function(arg0) {
             // Cast intrinsic for `F64 -> Externref`.
             const ret = arg0;
             return addHeapObject(ret);
         },
-        __wbindgen_cast_0000000000000002: function(arg0, arg1) {
+        __wbindgen_cast_0000000000000003: function(arg0, arg1) {
             // Cast intrinsic for `Ref(String) -> Externref`.
             const ret = getStringFromWasm0(arg0, arg1);
+            return addHeapObject(ret);
+        },
+        __wbindgen_object_clone_ref: function(arg0) {
+            const ret = getObject(arg0);
             return addHeapObject(ret);
         },
         __wbindgen_object_drop_ref: function(arg0) {
@@ -475,6 +512,11 @@ function __wbg_get_imports() {
         __proto__: null,
         "./docx_wasm_bg.js": import0,
     };
+}
+
+function __wasm_bindgen_func_elem_5110(arg0, arg1, arg2, arg3) {
+    const ret = wasm.__wasm_bindgen_func_elem_5110(arg0, arg1, addHeapObject(arg2), addHeapObject(arg3));
+    return takeObject(ret);
 }
 
 function addHeapObject(obj) {
@@ -491,6 +533,10 @@ function addBorrowedObject(obj) {
     heap[--stack_pointer] = obj;
     return stack_pointer;
 }
+
+const CLOSURE_DTORS = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(state => wasm.__wbindgen_export4(state.a, state.b));
 
 function debugString(val) {
     // primitive types
@@ -605,6 +651,34 @@ let heap_next = heap.length;
 
 function isLikeNone(x) {
     return x === undefined || x === null;
+}
+
+function makeMutClosure(arg0, arg1, f) {
+    const state = { a: arg0, b: arg1, cnt: 1 };
+    const real = (...args) => {
+
+        // First up with a closure we increment the internal reference
+        // count. This ensures that the Rust closure environment won't
+        // be deallocated while we're invoking it.
+        state.cnt++;
+        const a = state.a;
+        state.a = 0;
+        try {
+            return f(a, state.b, ...args);
+        } finally {
+            state.a = a;
+            real._wbg_cb_unref();
+        }
+    };
+    real._wbg_cb_unref = () => {
+        if (--state.cnt === 0) {
+            wasm.__wbindgen_export4(state.a, state.b);
+            state.a = 0;
+            CLOSURE_DTORS.unregister(state);
+        }
+    };
+    CLOSURE_DTORS.register(real, state, state);
+    return real;
 }
 
 function passArray8ToWasm0(arg, malloc) {

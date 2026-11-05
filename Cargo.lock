@@ -364,9 +364,9 @@ dependencies = [
 
 [[package]]
 name = "rust-docx-wasm"
-version = "0.2.3"
+version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7ce457890f6e8ec8d89cd49df492801f7d1cd9ac5dc1d6afc6f9ff822b186a76"
+checksum = "ce96e4bce698f1bbca835c09b3257ea8251a0490c9f43d988fc884eabb2bbb32"
 dependencies = [
  "js-sys",
  "rust-docx",

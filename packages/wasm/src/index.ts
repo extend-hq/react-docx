@@ -2,6 +2,7 @@ import type { InitInput, InitOutput } from "./generated/docx_wasm.js";
 import wasmInit, {
   build_doc_model_from_bytes,
   build_doc_model_from_package,
+  build_doc_model_from_package_js,
   can_preserve_image_paint_source_wasm,
   extract_document_blocks_wasm,
   extract_document_blocks_with_options_wasm,
@@ -179,8 +180,7 @@ export async function wasmParseDocx(bytes: ArrayBuffer | Uint8Array): Promise<Wa
 
 export async function wasmBuildDocModelFromPackage(pkg: WasmOoxmlPackage): Promise<unknown> {
   await initWasm();
-  const json = build_doc_model_from_package(pkg);
-  return JSON.parse(json) as unknown;
+  return build_doc_model_from_package_js(pkg) as unknown;
 }
 
 export async function wasmInspectDocumentSource(bytes: ArrayBuffer | Uint8Array): Promise<unknown> {
@@ -251,6 +251,7 @@ export async function wasmPackageToArrayBuffer(pkg: WasmOoxmlPackage): Promise<A
 export {
   build_doc_model_from_bytes,
   build_doc_model_from_package,
+  build_doc_model_from_package_js,
   model_to_document_xml_from_json_wasm,
   package_to_array_buffer_wasm,
   parse_docx_wasm,
