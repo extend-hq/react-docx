@@ -2123,7 +2123,18 @@ describe("doc-model import", () => {
         const decodedSvg = decodeURIComponent(
           (flowchartImage.src ?? "").replace(/^data:image\/svg\+xml;charset=utf-8,/, "")
         );
-        expect(decodedSvg).toContain("rotate(90.000");
+        const matrix = decodedSvg.match(/<use[^>]*transform="matrix\(([^)]+)\)"/)?.[1]
+          .trim().split(/[\s,]+/).map(Number);
+        expect(matrix).toHaveLength(6);
+        const [a, b, c, d, e, f] = matrix!;
+        expect(a).toBeCloseTo(0);
+        expect(b).toBeCloseTo(1);
+        expect(c).toBeCloseTo(-1);
+        expect(d).toBeCloseTo(0);
+        const centerX = 3865880 / 9525 / 2;
+        const centerY = 3528060 / 9525 / 2;
+        expect(a * centerX + c * centerY + e).toBeCloseTo(centerX, 3);
+        expect(b * centerX + d * centerY + f).toBeCloseTo(centerY, 3);
         expect(decodedSvg).toContain('fill="#ffffff"');
       }
 
@@ -2137,7 +2148,9 @@ describe("doc-model import", () => {
           (freeformImage.src ?? "").replace(/^data:image\/svg\+xml;charset=utf-8,/, "")
         );
         expect(decodedSvg).toContain("<linearGradient");
-        expect(decodedSvg).toContain('fill="url(#shape-fill)"');
+        const gradientId = decodedSvg.match(/<linearGradient[^>]*id="([^"]+)"/)?.[1];
+        expect(gradientId).toBeTruthy();
+        expect(decodedSvg).toContain(`fill="url(#${gradientId})"`);
         expect(decodedSvg).toContain("<path d=");
       }
     }

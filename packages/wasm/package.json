@@ -17,7 +17,7 @@
   "files": ["dist", "pkg"],
   "scripts": {
     "build:wasm": "node scripts/build-wasm.mjs",
-    "build:js": "tsup src/index.ts --format esm,cjs --dts --sourcemap --clean --shims && cp src/docx_wasm_bg.wasm dist/docx_wasm_bg.wasm && cp dingbat-to-unicode-LICENSE dist/dingbat-to-unicode-LICENSE",
+    "build:js": "tsup src/index.ts --format esm,cjs --dts --sourcemap --clean --shims && cp src/docx_wasm_bg.wasm dist/docx_wasm_bg.wasm && cp dingbat-to-unicode-LICENSE dist/dingbat-to-unicode-LICENSE && cp OfficeArt-NOTICES.txt dist/OfficeArt-NOTICES.txt",
     "build": "pnpm run build:wasm && pnpm run build:js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "clean": "rm -rf dist pkg"

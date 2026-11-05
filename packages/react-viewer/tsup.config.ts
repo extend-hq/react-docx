@@ -102,6 +102,7 @@ export default defineConfig([
       const requireFromUtif = createRequire(createRequire(import.meta.url).resolve("utif/package.json"));
       await copyFile(join(dirname(requireFromUtif.resolve("pako/package.json")), "LICENSE"), "dist/pako-license.txt");
       await copyFile("../wasm/dingbat-to-unicode-LICENSE", "dist/dingbat-to-unicode-LICENSE");
+      await copyFile("../wasm/OfficeArt-NOTICES.txt", "dist/OfficeArt-NOTICES.txt");
     },
   },
 ]);

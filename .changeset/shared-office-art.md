@@ -3,4 +3,4 @@
 "@extend-ai/react-docx-doc-model": patch
 ---
 
-Render picture appearance through the shared Rust OfficeArt renderer, preserve image presentation during cloning, and position page-anchored images using measured page origins.
+Use the aligned Rust DOCX 0.2.8 runtime with shared OfficeArt pictures, shapes, connectors and saved SmartArt rendering, preserving image presentation and measured page origins.
