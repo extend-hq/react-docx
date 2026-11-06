@@ -13,7 +13,41 @@ const registry = process.argv.includes("--registry");
 if (workspace && registry) throw new Error("Choose either a Rust workspace or the locked registry build.");
 const required = ["extract_document_review_wasm", "extract_document_blocks_with_revisions_wasm"];
 const manifestPath = path.join(generated, "build-info.json");
+const noticesPath = path.join(root, "packages/wasm/OfficeArt-NOTICES.txt");
 const hash = bytes => createHash("sha256").update(bytes).digest("hex");
+
+function runtimeNotices(directory) {
+  const metadata = JSON.parse(execFileSync("cargo", ["metadata", "--locked", "--format-version", "1", "--filter-platform", "wasm32-unknown-unknown"], { cwd: directory, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 }));
+  const graph = new Map(metadata.resolve.nodes.map(node => [node.id, node]));
+  const reached = new Set();
+  const visit = id => {
+    if (reached.has(id)) return;
+    reached.add(id);
+    for (const dependency of graph.get(id)?.deps ?? []) {
+      if (dependency.dep_kinds.some(kind => kind.kind !== "dev")) visit(dependency.pkg);
+    }
+  };
+  visit(metadata.packages.find(pkg => pkg.name === "rust-docx-wasm").id);
+  const isNotice = name => /(?:^|[-_.])(licen[cs]e|copying|copyright|notice|unlicense)(?:$|[-_.])/i.test(name);
+  const notices = metadata.packages.filter(pkg => reached.has(pkg.id)).sort((a, b) => a.name.localeCompare(b.name)).map(pkg => {
+    const directory = path.dirname(pkg.manifest_path);
+    const paths = new Set([pkg.license_file].filter(Boolean));
+    const collect = (relative, recursive) => {
+      for (const entry of readdirSync(path.join(directory, relative), { withFileTypes: true })) {
+        const name = path.join(relative, entry.name);
+        if (entry.isFile() && isNotice(entry.name)) paths.add(name);
+        else if (recursive && entry.isDirectory()) collect(name, true);
+      }
+    };
+    collect("", false);
+    if (["rust-office-art", "rust-office-charts"].includes(pkg.name)) collect("src", true);
+    if (pkg.name === "rust-office-art") paths.add("src/geometry_data/SOURCE.md");
+    if (!paths.size) throw new Error(`Missing license text for ${pkg.name}.`);
+    const text = [...paths].sort().map(name => readFileSync(path.join(directory, name), "utf8").replace(/\r\n/g, "\n").replace(/[ \t]+$/gm, "")).join("\n\n");
+    return `${pkg.name} ${pkg.version}\n${pkg.license ?? ""}\n${pkg.repository ?? ""}\n\n${text}`;
+  });
+  return "Scope: non-development Cargo dependencies of rust-docx-wasm for wasm32-unknown-unknown, including bundled geometry, map and font data.\n\n" + notices.join("\n\n--------------------\n\n").trimEnd() + "\n";
+}
 
 export function sourceInfo(workspace, binary) {
   const files = ["Cargo.toml", "Cargo.lock"];
@@ -37,6 +71,7 @@ export function sourceInfo(workspace, binary) {
       rustSourceDirty: Boolean(execFileSync("git", ["status", "--porcelain", "--", ...files], { cwd: workspace, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim()) };
   } catch {}
   return { source: "workspace", rustDocxVersion: version("rust-docx"), rustDocxWasmVersion: version("rust-docx-wasm"), ...gitInfo,
+    rustOfficeArtVersion: version("rust-office-art"), rustOfficeChartsVersion: version("rust-office-charts"),
     rustSourceSha256: source.digest("hex"), ...(binary ? { wasmSha256: hash(readFileSync(binary)) } : {}),
     rustc: execFileSync("rustc", ["--version"], { encoding: "utf8" }).trim() };
 }
@@ -57,6 +92,8 @@ function registrySourceInfo(binary) {
   }
   return { source: "registry", rustDocxVersion: crates.find(p => p.name === "rust-docx")?.version,
     rustDocxWasmVersion: crates.find(p => p.name === "rust-docx-wasm")?.version,
+    rustOfficeArtVersion: crates.find(p => p.name === "rust-office-art")?.version,
+    rustOfficeChartsVersion: crates.find(p => p.name === "rust-office-charts")?.version,
     rustSourceSha256: source.digest("hex"), wasmSha256: hash(readFileSync(binary)),
     cargoLockSha256: hash(readFileSync(path.join(root, "Cargo.lock"))),
     rustc: execFileSync("rustc", ["--version"], { encoding: "utf8" }).trim() };
@@ -80,6 +117,8 @@ if (workspace || registry) {
     mkdirSync(generated, { recursive: true });
     for (const name of ["docx_wasm.js", "docx_wasm.d.ts", "docx_wasm_bg.wasm.d.ts"]) copyFileSync(path.join(output, name), path.join(generated, name));
     copyFileSync(builtBinary, binary);
+    writeFileSync(noticesPath, runtimeNotices(workspace ? path.resolve(workspace) : root));
+    provenance.noticesSha256 = hash(readFileSync(noticesPath));
     writeFileSync(manifestPath, `${JSON.stringify(provenance, null, 2)}\n`);
   } finally {
     rmSync(output, { recursive: true, force: true });
@@ -90,4 +129,8 @@ const module = new WebAssembly.Module(readFileSync(binary));
 const exports = new Set(WebAssembly.Module.exports(module).map(entry => entry.name));
 if (required.some(name => !exports.has(name))) throw new Error("Rebuild shared document review with RUST_DOCX_WORKSPACE set to the matching Rust workspace.");
 if (existsSync(manifestPath) && JSON.parse(readFileSync(manifestPath, "utf8")).wasmSha256 !== hash(readFileSync(binary))) throw new Error("The bundled WASM does not match its source manifest.");
+if (existsSync(manifestPath)) {
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  if (manifest.noticesSha256 && manifest.noticesSha256 !== hash(readFileSync(noticesPath))) throw new Error("The bundled runtime notices do not match their source manifest.");
+}
 console.log(workspace || registry ? "Built shared Rust document review." : "Validated bundled WASM; set RUST_DOCX_WORKSPACE to rebuild from Rust source.");

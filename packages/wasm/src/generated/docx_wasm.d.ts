@@ -9,6 +9,8 @@ export function build_doc_model_from_package_js(_package: any, options?: any | n
 
 export function can_preserve_image_paint_source_wasm(image: any, base_package?: any | null, owner_part_name?: string | null): boolean;
 
+export function export_document_wasm(request_json: string): string;
+
 export function extract_document_blocks_wasm(model_json: string): string;
 
 export function extract_document_blocks_with_options_wasm(model_json: string, options_json: string): string;
@@ -25,6 +27,8 @@ export function model_to_document_xml_wasm(model: any, base_package?: any | null
 
 export function package_to_array_buffer_wasm(_package: any): Uint8Array;
 
+export function parse_document_bundle_wasm(bytes: Uint8Array, options_json: string): string;
+
 export function parse_docx_wasm(bytes: Uint8Array): any;
 
 export function serialize_docx_from_json_wasm(model_json: string, base_package?: any | null): Uint8Array;
@@ -39,6 +43,7 @@ export interface InitOutput {
     readonly build_doc_model_from_package: (a: number, b: number, c: number) => void;
     readonly build_doc_model_from_package_js: (a: number, b: number, c: number) => void;
     readonly can_preserve_image_paint_source_wasm: (a: number, b: number, c: number, d: number, e: number) => void;
+    readonly export_document_wasm: (a: number, b: number, c: number) => void;
     readonly extract_document_blocks_wasm: (a: number, b: number, c: number) => void;
     readonly extract_document_blocks_with_options_wasm: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly extract_document_blocks_with_revisions_wasm: (a: number, b: number, c: number) => void;
@@ -47,10 +52,11 @@ export interface InitOutput {
     readonly model_to_document_xml_from_json_wasm: (a: number, b: number, c: number, d: number) => void;
     readonly model_to_document_xml_wasm: (a: number, b: number, c: number) => void;
     readonly package_to_array_buffer_wasm: (a: number, b: number) => void;
+    readonly parse_document_bundle_wasm: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly parse_docx_wasm: (a: number, b: number, c: number) => void;
     readonly serialize_docx_from_json_wasm: (a: number, b: number, c: number, d: number) => void;
     readonly serialize_docx_wasm: (a: number, b: number, c: number) => void;
-    readonly __wasm_bindgen_func_elem_7055: (a: number, b: number, c: number, d: number) => number;
+    readonly __wasm_bindgen_func_elem_7905: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_export: (a: number, b: number) => number;
     readonly __wbindgen_export2: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_export3: (a: number) => void;
