@@ -14,6 +14,30 @@ The main package is [`@extend-ai/react-docx`](./packages/react-viewer), which gi
 - A dark read-only night-reader mode that inverts document content while preserving image hues
 - Lower-level OOXML, model, layout, and serialization exports for custom pipelines
 
+<details open>
+<summary><strong>Microsoft Word chart comparisons</strong></summary>
+
+[![Microsoft Word chart comparisons side by side](https://raw.githubusercontent.com/extend-hq/rust-office/7d8d3e2d13ae2076c5e4e23333f2f5725b67c85f/docs/readme-assets/word-chart-overview.png)](https://github.com/extend-hq/rust-office/blob/7d8d3e2d13ae2076c5e4e23333f2f5725b67c85f/docs/chart-comparisons.md)
+
+The overview shows 28 side-by-side chart and map comparisons from a **157-chart** corpus. React DOCX **0.14.0** rendered 155 of 157 charts in the November 4, 2026 capture. These retained measurements include visible differences and missing charts.
+
+[All galleries, measurements and capture method](https://github.com/extend-hq/rust-office/blob/7d8d3e2d13ae2076c5e4e23333f2f5725b67c85f/docs/chart-comparisons.md)
+
+</details>
+
+<details open>
+<summary><strong>Office Art comparisons — SmartArt, WordArt, 3D, icons and ink</strong></summary>
+
+[![Microsoft Word and Rust Office Art: SmartArt, WordArt, 3D model previews, shapes, icons and ink](https://raw.githubusercontent.com/extend-hq/rust-office/7d8d3e2d13ae2076c5e4e23333f2f5725b67c85f/docs/readme-assets/word-officeart-expanded-overview.png)](https://github.com/extend-hq/rust-office/blob/7d8d3e2d13ae2076c5e4e23333f2f5725b67c85f/docs/office-art-comparisons.md)
+
+The **30-case gallery** covers SmartArt, WordArt fills and warps, extruded text and shapes, 3D model and emoji previews, SVG icons, and ink. The November 6, 2026 capture uses the native DOCX adapter and shared Rust Office Art renderer. It measures generated artwork and saved previews, not this npm release's bundled runtime or pagination.
+
+3D models use saved Office previews. Font substitution, curved-text fitting, fine 3D shading and pencil texture remain visible limitations.
+
+[WordArt and 3D shapes](https://raw.githubusercontent.com/extend-hq/rust-office/7d8d3e2d13ae2076c5e4e23333f2f5725b67c85f/docs/readme-assets/word-officeart-expanded-wordart-and-3d.png) · [Models and SmartArt](https://raw.githubusercontent.com/extend-hq/rust-office/7d8d3e2d13ae2076c5e4e23333f2f5725b67c85f/docs/readme-assets/word-officeart-expanded-models-and-smartart.png) · [Icons and ink](https://raw.githubusercontent.com/extend-hq/rust-office/7d8d3e2d13ae2076c5e4e23333f2f5725b67c85f/docs/readme-assets/word-officeart-expanded-icons-shapes-and-ink.png) · [Method and remaining gaps](https://github.com/extend-hq/rust-office/blob/7d8d3e2d13ae2076c5e4e23333f2f5725b67c85f/docs/office-art-comparisons.md)
+
+</details>
+
 ## What To Install
 
 For application code, you usually want the main package:
