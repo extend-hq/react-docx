@@ -93,6 +93,7 @@ export default defineConfig([
     noExternal: bundledWorkspacePackages,
     onSuccess: async () => {
       await copyFile("../wasm/src/docx_wasm_bg.wasm", "dist/docx_wasm_bg.wasm");
+      await copyFile("../wasm/src/generated/build-info.json", "dist/rust-runtime-build-info.json");
       await copyFile("src/pretext-license.txt", "dist/pretext-license.txt");
       await copyFile(createRequire(import.meta.url).resolve("@extend-ai/office-fonts/FONT-LICENSES.txt"), "dist/Office-Font-Licenses.txt");
       await copyFile("node_modules/preact/LICENSE", "dist/preact-license.txt");
