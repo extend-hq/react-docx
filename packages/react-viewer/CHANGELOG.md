@@ -1,5 +1,11 @@
 # @extend-ai/react-docx
 
+## 0.14.7
+
+### Patch Changes
+
+- Fix `getDocxBytes()` failing with `RuntimeError: unreachable` when a document contains an image part of about 64 MiB or more (#42). Saving now passes the editor model to the Rust DOCX/WASM 0.2.16 object API, which keeps image bytes out of the model JSON: a 67 MB image now saves in about 0.4 s using about 400 MiB of WebAssembly memory instead of exhausting it. Saved archives now compress XML and uncompressed media such as BMP; already-compressed images such as PNG and JPEG are stored as-is. Also picks up rust-office-art 0.1.5 and rust-office-charts 0.1.7.
+
 ## 0.14.6
 
 ### Patch Changes
