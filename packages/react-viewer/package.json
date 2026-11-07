@@ -1,6 +1,6 @@
 {
   "name": "@extend-ai/react-docx",
-  "version": "0.14.5",
+  "version": "0.14.6",
   "description": "JavaScript and React viewers for DOCX documents",
   "license": "MIT",
   "type": "module",
@@ -61,7 +61,7 @@
     }
   },
   "dependencies": {
-    "@chenglou/pretext": "^0.0.8",
+    "@chenglou/pretext": "1.0.0",
     "csstype": "^3.1.0",
     "fast-png": "^8.0.0",
     "utif": "^3.1.0"

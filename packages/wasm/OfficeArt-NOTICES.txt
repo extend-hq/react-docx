@@ -10202,7 +10202,7 @@ SOFTWARE.
 
 --------------------
 
-rust-docx 0.2.11
+rust-docx 0.2.14
 MIT
 https://github.com/extend-hq/rust-office
 
@@ -10231,7 +10231,7 @@ SOFTWARE.
 
 --------------------
 
-rust-docx-wasm 0.2.11
+rust-docx-wasm 0.2.14
 MIT
 https://github.com/extend-hq/rust-office
 

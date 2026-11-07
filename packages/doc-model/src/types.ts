@@ -104,6 +104,8 @@ export interface TextOutline {
 export interface TextRunNode {
   type: "text";
   text: string;
+  /** Raw instruction retained when a dynamic field has no cached result. */
+  fieldInstruction?: string;
   style?: TextStyle;
   link?: string;
   noteReference?: {

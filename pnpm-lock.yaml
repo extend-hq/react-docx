@@ -10,9 +10,9 @@ overrides:
   vite: 6.4.5
 
 patchedDependencies:
-  '@chenglou/pretext@0.0.8':
-    hash: 4bpai3ljegzxf3kheyn3xjnikm
-    path: patches/@chenglou__pretext@0.0.8.patch
+  '@chenglou/pretext@1.0.0':
+    hash: idlgqtqihtwzefwsi6g3jlnsmi
+    path: patches/@chenglou__pretext@1.0.0.patch
 
 importers:
 
@@ -51,6 +51,9 @@ importers:
       '@types/react-dom':
         specifier: ^19.1.5
         version: 19.2.3(@types/react@19.2.14)
+      diff:
+        specifier: 8.0.3
+        version: 8.0.3
       react:
         specifier: ^19.1.0
         version: 19.2.4
@@ -215,8 +218,8 @@ importers:
   packages/react-viewer:
     dependencies:
       '@chenglou/pretext':
-        specifier: ^0.0.8
-        version: 0.0.8(patch_hash=4bpai3ljegzxf3kheyn3xjnikm)
+        specifier: 1.0.0
+        version: 1.0.0(patch_hash=idlgqtqihtwzefwsi6g3jlnsmi)
       csstype:
         specifier: ^3.1.0
         version: 3.2.3
@@ -494,8 +497,8 @@ packages:
   '@changesets/write@0.4.0':
     resolution: {integrity: sha512-CdTLvIOPiCNuH71pyDu3rA+Q0n65cmAbXnwWH84rKGiFumFzkmHNT8KHTMEchcxN+Kl8I54xGUhJ7l3E7X396Q==}
 
-  '@chenglou/pretext@0.0.8':
-    resolution: {integrity: sha512-yqm2GMxnPI7VHcHwe84P8ZF0JK/2d2DMKPqMN+s95jQhwDMYYXKVFVJUMEaVWckQStdsjdLav/0Vu+d9YbtGxA==}
+  '@chenglou/pretext@1.0.0':
+    resolution: {integrity: sha512-BxKiDMxWJhyzL8asvcgg3T9YnUU7OUFsKO8oRaR2SYAPX4Sh2wM9gqTBjrBaZ4fnl84cEQ8czC0Q1M83z3chsA==}
 
   '@date-fns/tz@1.4.1':
     resolution: {integrity: sha512-P5LUNhtbj6YfI3iJjw5EL9eUAG6OitD0W3fWQcpQjDRc/QIsL0tRNuO1PcDvPccWL1fSTXXdE1ds+l95DV/OFA==}
@@ -4609,7 +4612,7 @@ snapshots:
       human-id: 4.1.3
       prettier: 2.8.8
 
-  '@chenglou/pretext@0.0.8(patch_hash=4bpai3ljegzxf3kheyn3xjnikm)': {}
+  '@chenglou/pretext@1.0.0(patch_hash=idlgqtqihtwzefwsi6g3jlnsmi)': {}
 
   '@date-fns/tz@1.4.1': {}
 

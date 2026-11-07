@@ -580,9 +580,9 @@ checksum = "6c20b6793b5c2fa6553b250154b78d6d0db37e72700ae35fad9387a46f487c97"
 
 [[package]]
 name = "rust-docx"
-version = "0.2.11"
+version = "0.2.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a01fc85dce8aa900e93b6f71652a7ff60ef24260e754c28039de06b78eff46f1"
+checksum = "7458a99f6d5e0ebaadae82723f8b3140c26d04952a729cdc434232720db24dfc"
 dependencies = [
  "arc-swap",
  "base64",
@@ -607,9 +607,9 @@ dependencies = [
 
 [[package]]
 name = "rust-docx-wasm"
-version = "0.2.11"
+version = "0.2.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7b547a7467e11687037f389c286529ec61baf86af6fa7364183c49a4cceb166f"
+checksum = "664d516796ee1662c77af495a022383da09defaafdae924fdc9fc98fff9d77a2"
 dependencies = [
  "js-sys",
  "rust-docx",

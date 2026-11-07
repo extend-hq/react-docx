@@ -125,6 +125,7 @@ function cloneTextRun(run: TextRunNode): TextRunNode {
   return {
     type: "text",
     text: run.text,
+    fieldInstruction: run.fieldInstruction,
     style: cloneTextStyle(run.style),
     link: run.link,
     noteReference: run.noteReference ? { ...run.noteReference } : undefined,
@@ -279,6 +280,8 @@ function mergeAdjacentRuns(runs: TextRunNode[]): TextRunNode[] {
     const previous = merged[merged.length - 1];
     if (
       previous &&
+      previous.fieldInstruction === undefined &&
+      run.fieldInstruction === undefined &&
       textStylesEqual(previous.style, run.style) &&
       previous.link === run.link &&
       noteReferencesEqual(previous.noteReference, run.noteReference)
@@ -364,6 +367,8 @@ function sourceTextPatchForUpdate(
     return (
       Boolean(nextRun) &&
       Boolean(provenanceRun) &&
+      run.fieldInstruction === undefined &&
+      nextRun.fieldInstruction === undefined &&
       run.noteReference === undefined &&
       nextRun.noteReference === undefined &&
       provenanceRun.noteReference === undefined &&
@@ -392,10 +397,13 @@ function paragraphTextEditIsFailClosed(
 ): boolean {
   return (
     paragraphEditableText(paragraph) !== text &&
-    Boolean(
-      paragraph.sourceXml &&
-        FAIL_CLOSED_SOURCE_TEXT_EDIT_XML.test(paragraph.sourceXml)
-    )
+    (paragraph.children.some(
+      (child) => child.type === "text" && child.fieldInstruction !== undefined
+    ) ||
+      Boolean(
+        paragraph.sourceXml &&
+          FAIL_CLOSED_SOURCE_TEXT_EDIT_XML.test(paragraph.sourceXml)
+      ))
   );
 }
 
@@ -572,6 +580,7 @@ function splitRunsAtOffset(
       left.push({
         type: "text",
         text: before,
+        fieldInstruction: run.fieldInstruction,
         style: cloneTextStyle(run.style),
         link: run.link,
         noteReference: run.noteReference ? { ...run.noteReference } : undefined,
@@ -581,6 +590,7 @@ function splitRunsAtOffset(
       right.push({
         type: "text",
         text: after,
+        fieldInstruction: run.fieldInstruction,
         style: cloneTextStyle(run.style),
         link: run.link,
         noteReference: run.noteReference ? { ...run.noteReference } : undefined,
@@ -1668,6 +1678,7 @@ export function serializeParagraphsForClipboard(
           ? {
               type: "text" as const,
               text: run.text,
+              fieldInstruction: run.fieldInstruction,
               style: run.style ?? undefined,
               link: run.link,
             }
@@ -1725,6 +1736,10 @@ export function parseParagraphsFromClipboard(
           children.push({
             type: "text",
             text: run.text,
+            fieldInstruction:
+              typeof run.fieldInstruction === "string"
+                ? run.fieldInstruction
+                : undefined,
             style: run.style ? { ...run.style } : undefined,
             link: typeof run.link === "string" ? run.link : undefined,
           });

@@ -235,6 +235,7 @@ function cloneParagraph(paragraph: ParagraphNode): ParagraphNode {
         return {
           type: "text" as const,
           text: child.text,
+          fieldInstruction: child.fieldInstruction,
           style: cloneTextStyle(child.style),
           link: child.link,
           noteReference: child.noteReference

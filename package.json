@@ -51,6 +51,7 @@
     "@types/node": "^22.15.3",
     "@types/react": "^19.1.6",
     "@types/react-dom": "^19.1.5",
+    "diff": "8.0.3",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "tsup": "^8.5.0",
@@ -65,7 +66,7 @@
       "vite": "6.4.5"
     },
     "patchedDependencies": {
-      "@chenglou/pretext@0.0.8": "patches/@chenglou__pretext@0.0.8.patch"
+      "@chenglou/pretext@1.0.0": "patches/@chenglou__pretext@1.0.0.patch"
     }
   },
   "engines": {

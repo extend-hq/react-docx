@@ -7,7 +7,7 @@ import {
 function sectionPageNumberOverride(properties?: string): number | undefined {
   const tag = properties?.match(/<w:pgNumType\b[^>]*\/?>/i)?.[0];
   const value = Number(tag?.match(/\bw:start="(\d+)"/i)?.[1]);
-  return Number.isFinite(value) && value > 0 ? Math.round(value) : undefined;
+  return Number.isInteger(value) && value >= 0 ? value : undefined;
 }
 
 function sectionPageParity(properties?: string): number | undefined {

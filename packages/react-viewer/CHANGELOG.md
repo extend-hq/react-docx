@@ -1,5 +1,11 @@
 # @extend-ai/react-docx
 
+## 0.14.6
+
+### Patch Changes
+
+- Upgrade to Pretext 1.0.0 for paragraph-wide line breaking while preserving document typography and source ranges, paint selected discretionary hyphens, and use consistent line measurements for indents and supported wrapped left tabs. Adopt upstream parser corrections for legacy cell padding, footer story boundaries, and uncached page-number fields, preserve explicit zero page-number starts, and allow initial rendering to settle when merged table fragments cannot provide reusable whole-row measurements.
+
 ## 0.14.4
 
 - Use the aligned Rust DOCX/WASM 0.2.9 release with shared OfficeArt pictures, shapes, connectors and saved SmartArt drawings.

@@ -8,14 +8,18 @@ import type {
 const DEFAULT_TAB_STOP_TWIPS = 720;
 const TWIPS_PER_PIXEL = 15;
 const resolvedTabStop = Symbol("resolved-default-tab-stop");
-type ContextualNode = { [resolvedTabStop]?: number };
-const nodeViews = new WeakMap<object, Map<number, DocNode>>();
+const resolvedWrappedTabRefit = Symbol("resolved-wrapped-tab-refit");
+type ContextualNode = {
+  [resolvedTabStop]?: number;
+  [resolvedWrappedTabRefit]?: boolean;
+};
+const nodeViews = new WeakMap<object, Map<string, DocNode>>();
 const originalNodes = new WeakMap<object, DocNode>();
-const documentViews = new WeakMap<DocModel, Map<number, DocModel>>();
-const resolvedDocuments = new WeakMap<DocModel, number>();
+const documentViews = new WeakMap<DocModel, Map<string, DocModel>>();
+const resolvedDocuments = new WeakMap<DocModel, string>();
 const metadataViews = new WeakMap<
   DocModel["metadata"],
-  Map<number, DocModel["metadata"]>
+  Map<string, DocModel["metadata"]>
 >();
 
 export function resolveDefaultTabStopPx(defaultTabStopTwips?: number): number {
@@ -29,6 +33,10 @@ export function defaultTabStopPxForNode(node: object): number {
   return (node as ContextualNode)[resolvedTabStop] ?? resolveDefaultTabStopPx();
 }
 
+export function allowsWrappedLeftTabRefit(node: object): boolean {
+  return (node as ContextualNode)[resolvedWrappedTabRefit] !== false;
+}
+
 export function tabPositionTwipsToPx(positionTwips?: number): number {
   return (positionTwips ?? Number.NaN) / TWIPS_PER_PIXEL;
 }
@@ -40,11 +48,17 @@ export function nextDefaultTabStopPx(
   return (Math.floor((positionPx + 1e-7) / intervalPx) + 1) * intervalPx;
 }
 
-function contextualNode(node: DocNode, intervalPx: number): DocNode {
+function contextualNode(
+  node: DocNode,
+  intervalPx: number,
+  allowWrappedTabRefit = true
+): DocNode {
+  const contextKey = `${intervalPx}|refit:${allowWrappedTabRefit}`;
   let original = originalNodes.get(node) ?? node;
-  if (intervalPx === resolveDefaultTabStopPx()) {
-    if ((original as ContextualNode)[resolvedTabStop] !== undefined) {
-      const { [resolvedTabStop]: _interval, ...plain } = original as DocNode &
+  if (intervalPx === resolveDefaultTabStopPx() && allowWrappedTabRefit) {
+    if ((original as ContextualNode)[resolvedTabStop] !== undefined ||
+      (original as ContextualNode)[resolvedWrappedTabRefit] !== undefined) {
+      const { [resolvedTabStop]: _interval, [resolvedWrappedTabRefit]: _refit, ...plain } = original as DocNode &
         ContextualNode;
       original = plain;
     }
@@ -55,7 +69,7 @@ function contextualNode(node: DocNode, intervalPx: number): DocNode {
         const children = cell.nodes.map(
           (child): TableCellContentNode =>
             child.type === "paragraph" || child.type === "table"
-              ? contextualNode(child, intervalPx)
+              ? contextualNode(child, intervalPx, allowWrappedTabRefit)
               : child
         );
         return children.every((child, index) => child === cell.nodes[index])
@@ -71,7 +85,7 @@ function contextualNode(node: DocNode, intervalPx: number): DocNode {
       : { ...table, rows };
   }
   let variants = nodeViews.get(original);
-  const cached = variants?.get(intervalPx);
+  const cached = variants?.get(contextKey);
   if (cached) return cached;
   if (!variants) {
     variants = new Map();
@@ -79,10 +93,11 @@ function contextualNode(node: DocNode, intervalPx: number): DocNode {
   }
   const next: DocNode & ContextualNode =
     original.type === "paragraph"
-      ? { ...original, [resolvedTabStop]: intervalPx }
+      ? { ...original, [resolvedTabStop]: intervalPx, [resolvedWrappedTabRefit]: allowWrappedTabRefit }
       : {
           ...original,
           [resolvedTabStop]: intervalPx,
+          [resolvedWrappedTabRefit]: allowWrappedTabRefit,
           rows: original.rows.map((row) => ({
             ...row,
             cells: row.cells.map((cell) => ({
@@ -90,13 +105,13 @@ function contextualNode(node: DocNode, intervalPx: number): DocNode {
               nodes: cell.nodes.map(
                 (child): TableCellContentNode =>
                   child.type === "paragraph" || child.type === "table"
-                    ? contextualNode(child, intervalPx)
+                    ? contextualNode(child, intervalPx, allowWrappedTabRefit)
                     : child
               ),
             })),
           })),
         };
-  variants.set(intervalPx, next);
+  variants.set(contextKey, next);
   originalNodes.set(next, original);
   return next;
 }
@@ -107,19 +122,24 @@ export function paragraphWithDefaultTabStop(
 ): ParagraphNode {
   return contextualNode(
     paragraph,
-    resolveDefaultTabStopPx(defaultTabStopTwips)
+    resolveDefaultTabStopPx(defaultTabStopTwips),
+    allowsWrappedLeftTabRefit(paragraph)
   ) as ParagraphNode;
 }
 
-export function documentWithDefaultTabLayout(model: DocModel): DocModel {
+export function documentWithDefaultTabLayout(
+  model: DocModel,
+  allowBodyWrappedTabRefit = true
+): DocModel {
   const intervalPx = resolveDefaultTabStopPx(
     model.metadata.defaultTabStopTwips
   );
-  if (resolvedDocuments.get(model) === intervalPx) return model;
-  const cached = documentViews.get(model)?.get(intervalPx);
+  const contextKey = `${intervalPx}|body-refit:${allowBodyWrappedTabRefit}`;
+  if (resolvedDocuments.get(model) === contextKey) return model;
+  const cached = documentViews.get(model)?.get(contextKey);
   if (cached) return cached;
-  const nodes = (values: DocNode[]) => {
-    const next = values.map((node) => contextualNode(node, intervalPx));
+  const nodes = (values: DocNode[], allowWrappedTabRefit = true) => {
+    const next = values.map((node) => contextualNode(node, intervalPx, allowWrappedTabRefit));
     return next.every((node, index) => node === values[index]) ? values : next;
   };
   const sections = <T extends { nodes: DocNode[] }>(values: T[]): T[] => {
@@ -144,7 +164,7 @@ export function documentWithDefaultTabLayout(model: DocModel): DocModel {
     return next.every((note, index) => note === values[index]) ? values : next;
   };
   const metadata = model.metadata;
-  const nextNodes = nodes(model.nodes);
+  const nextNodes = nodes(model.nodes, allowBodyWrappedTabRefit);
   const headerSections = sections(metadata.headerSections);
   const footerSections = sections(metadata.footerSections);
   const resolvedSections = metadata.sections?.map((section) => {
@@ -164,13 +184,14 @@ export function documentWithDefaultTabLayout(model: DocModel): DocModel {
   const endnotes = notes(metadata.endnotes);
   const unchanged =
     intervalPx === resolveDefaultTabStopPx() &&
+    allowBodyWrappedTabRefit &&
     nextNodes === model.nodes &&
     headerSections === metadata.headerSections &&
     footerSections === metadata.footerSections &&
     documentSections === metadata.sections &&
     footnotes === metadata.footnotes &&
     endnotes === metadata.endnotes;
-  let resolvedMetadata = metadataViews.get(metadata)?.get(intervalPx);
+  let resolvedMetadata = metadataViews.get(metadata)?.get(contextKey);
   if (!resolvedMetadata) {
     resolvedMetadata = unchanged
       ? metadata
@@ -187,7 +208,7 @@ export function documentWithDefaultTabLayout(model: DocModel): DocModel {
       variants = new Map();
       metadataViews.set(metadata, variants);
     }
-    variants.set(intervalPx, resolvedMetadata);
+    variants.set(contextKey, resolvedMetadata);
   }
   const result = unchanged
     ? model
@@ -197,7 +218,7 @@ export function documentWithDefaultTabLayout(model: DocModel): DocModel {
     variants = new Map();
     documentViews.set(model, variants);
   }
-  variants.set(intervalPx, result);
-  resolvedDocuments.set(result, intervalPx);
+  variants.set(contextKey, result);
+  resolvedDocuments.set(result, contextKey);
   return result;
 }

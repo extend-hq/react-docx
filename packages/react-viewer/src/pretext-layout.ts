@@ -7,6 +7,14 @@ import {
   type LayoutLine,
   type PreparedTextWithSegments,
 } from "@chenglou/pretext";
+import {
+  layoutNextRichInlineLineRange,
+  materializeRichInlineLineRange,
+  prepareRichInline,
+  type PreparedRichInline,
+  type RichInlineCursor,
+  type RichInlineLine,
+} from "@chenglou/pretext/rich-inline";
 import { registerFontMetricCache } from "./font-metrics";
 import { canvasFontAdvanceScale } from "./font-advances";
 import type { FontKerningMode } from "./font-kerning";
@@ -21,7 +29,7 @@ const LAYOUT_CACHE_MAX_ENTRIES = 4096;
 const LINE_COUNT_CACHE_MAX_ENTRIES = 16384;
 
 const preparedTextByKey = new Map<string, PreparedTextWithSegments>();
-let advanceScaleByPreparedText = new WeakMap<PreparedTextWithSegments, number>();
+const preparedRichTextByKey = new Map<string, PreparedRichInline>();
 let sourceOffsetsByPreparedText = new WeakMap<PreparedTextWithSegments, number[]>();
 const layoutByKey = new Map<string, PretextVariableWidthLayout>();
 const lineCountByKey = new Map<string, number>();
@@ -35,7 +43,7 @@ const fontLineMetricsByKey = new Map<string, LineElementMetrics>();
 registerFontMetricCache(() => {
   clearCache();
   preparedTextByKey.clear();
-  advanceScaleByPreparedText = new WeakMap();
+  preparedRichTextByKey.clear();
   sourceOffsetsByPreparedText = new WeakMap();
   layoutByKey.clear();
   lineCountByKey.clear();
@@ -100,6 +108,7 @@ export interface PretextLineFragment {
   startOffset: number;
   endOffset: number;
   hardBreakOffset?: number;
+  discretionaryHyphenOffset?: number;
   font?: string;
   strutFont?: string;
   letterSpacingPx?: number;
@@ -236,27 +245,6 @@ let measureCanvasContext:
   | null
   | undefined;
 let graphemeSegmenter: Intl.Segmenter | undefined;
-
-interface PretextItemCursor {
-  itemIndex: number;
-  segmentIndex: number;
-  graphemeIndex: number;
-}
-
-interface InternalPretextItemLineFragment {
-  itemIndex: number;
-  text: string;
-  width: number;
-  font: string;
-  start: LayoutCursor;
-  end: LayoutCursor;
-}
-
-interface InternalPretextItemLine {
-  end: PretextItemCursor;
-  fragments: InternalPretextItemLineFragment[];
-  endsAtHardBreak: boolean;
-}
 
 function canUsePretext(): boolean {
   return (
@@ -939,6 +927,54 @@ function layoutCacheKey(
   return `${fontMetricProfileKey()}\u0000${layoutSignature}\u0000${containerWidthPx}\u0000${lineHeightPx}\u0000${exclusionsKey}`;
 }
 
+function trackedLigatureDomAdvances(
+  font: string,
+  fragment: PretextLineFragment,
+  lastOffset: number
+): number[] | undefined {
+  if (!fragment.letterSpacingPx ||
+    !/["'](?:liga|clig|dlig|hlig)["'](?:\s+(?:on|[1-9]\d*))?\s*(?:,|$)/i.test(fragment.fontFeatureSettings ?? "") ||
+    typeof document === "undefined" || !document.documentElement ||
+    typeof document.createElement !== "function" || typeof document.createRange !== "function") return undefined;
+  const element = document.createElement("span");
+  try {
+    const scale = validHorizontalScale(fragment.horizontalScale);
+    const rootZoomValue = typeof window !== "undefined" && typeof window.getComputedStyle === "function"
+      ? Number.parseFloat(window.getComputedStyle(document.documentElement).zoom)
+      : 1;
+    const rootZoom = Number.isFinite(rootZoomValue) && rootZoomValue > 0 ? rootZoomValue : 1;
+    element.style.cssText = "all:initial;position:fixed;left:0;top:0;visibility:hidden;pointer-events:none;white-space:pre;display:inline-block";
+    element.style.font = fragment.font ?? font;
+    element.style.fontKerning = fragment.fontKerning ?? "auto";
+    element.style.fontFeatureSettings = fragment.fontFeatureSettings ?? "normal";
+    element.style.letterSpacing = `${fragment.letterSpacingPx / scale}px`;
+    element.style.textTransform = fragment.textTransform ?? "none";
+    element.textContent = fragment.text;
+    document.documentElement.appendChild(element);
+    const textNode = element.firstChild;
+    if (!textNode) return undefined;
+    const range = document.createRange();
+    range.setStart(textNode, 0);
+    const advances = new Array<number>(lastOffset + 1);
+    const visibleEnd = fragment.hardBreakOffset === undefined
+      ? fragment.text.length
+      : fragment.hardBreakOffset - fragment.startOffset;
+    for (let offset = 0; offset <= lastOffset; offset += 1) {
+      if (offset === 0) advances[offset] = 0;
+      else if (offset >= visibleEnd) advances[offset] = fragment.width;
+      else {
+        range.setEnd(textNode, offset);
+        advances[offset] = range.getBoundingClientRect().width * scale / rootZoom;
+      }
+    }
+    return advances;
+  } catch {
+    return undefined;
+  } finally {
+    element.remove();
+  }
+}
+
 function cachedFragmentOffsetAdvances(
   defaultFont: string,
   fragment: PretextLineFragment
@@ -951,6 +987,11 @@ function cachedFragmentOffsetAdvances(
   const lastOffset = fragment.hardBreakOffset === undefined
     ? fragment.text.length
     : fragment.endOffset - fragment.startOffset;
+  const domAdvances = trackedLigatureDomAdvances(defaultFont, fragment, lastOffset);
+  if (domAdvances) {
+    fragmentOffsetAdvancesByFragment.set(fragment, domAdvances);
+    return domAdvances;
+  }
   const advances = new Array<number>(lastOffset + 1);
   for (
     let localOffset = 0;
@@ -1059,40 +1100,12 @@ function prepareCached(
     const prepared = prepareWithSegments(text, font, {
       whiteSpace: "pre-wrap",
       wordBreak,
-      letterSpacing: letterSpacingPx / (advanceScale * resolvedScale),
+      letterSpacing: letterSpacingPx,
       fontKerning,
       fontFeatureSettings,
+      textTransform,
+      horizontalScale: advanceScale * resolvedScale,
     });
-    if (context && textTransform === "uppercase") {
-      context.font = font;
-      if (typeof context.letterSpacing === "string") context.letterSpacing = "0px";
-      if (typeof context.wordSpacing === "string") context.wordSpacing = "0px";
-      const spacing = letterSpacingPx / (advanceScale * resolvedScale);
-      prepared.segments.forEach((segment, index) => {
-        const displayed = segment.toUpperCase();
-        if (displayed === segment) return;
-        const displayedCount = countGraphemes(displayed);
-        const width = context.measureText(displayed).width + Math.max(0, displayedCount - 1) * spacing;
-        prepared.widths[index] = width;
-        prepared.lineEndFitAdvances[index] = width + (displayedCount > 0 ? spacing : 0);
-        prepared.lineEndPaintAdvances[index] = width;
-        if (spacing !== 0) prepared.spacingGraphemeCounts[index] = displayedCount;
-        if (prepared.breakableFitAdvances[index]) {
-          const offsets = graphemeCodeUnitOffsets(segment);
-          let previousWidth = 0;
-          let previousCount = 0;
-          prepared.breakableFitAdvances[index] = offsets.slice(1).map((offset) => {
-            const prefix = segment.slice(0, offset).toUpperCase();
-            const prefixWidth = context.measureText(prefix).width;
-            const prefixCount = countGraphemes(prefix);
-            const advance = prefixWidth - previousWidth + Math.max(0, prefixCount - previousCount - 1) * spacing;
-            previousWidth = prefixWidth;
-            previousCount = prefixCount;
-            return advance;
-          });
-        }
-      });
-    }
     let sourceOffset = 0;
     const sourceOffsets = prepared.segments.map((segment, index) => {
       const startOffset = sourceOffset;
@@ -1104,7 +1117,6 @@ function prepareCached(
     });
     sourceOffsets.push(sourceOffset);
     sourceOffsetsByPreparedText.set(prepared, sourceOffsets);
-    advanceScaleByPreparedText.set(prepared, advanceScale * resolvedScale);
     preparedTextByKey.set(cacheKey, prepared);
     trimCache(preparedTextByKey, PREPARED_TEXT_CACHE_MAX_ENTRIES);
     return prepared;
@@ -1118,15 +1130,7 @@ function layoutNextLine(
   cursor: LayoutCursor,
   maxWidth: number
 ): LayoutLine | null {
-  const advanceScale = advanceScaleByPreparedText.get(prepared) ?? 1;
-  const line = layoutNextLineWithCanvasAdvances(
-    prepared,
-    cursor,
-    maxWidth / advanceScale
-  );
-  return line && advanceScale !== 1
-    ? { ...line, width: line.width * advanceScale }
-    : line;
+  return layoutNextLineWithCanvasAdvances(prepared, maxWidth, cursor);
 }
 
 /**
@@ -1174,10 +1178,9 @@ export function measurePretextPlainTextLineCount(
   }
 
   try {
-    const advanceScale = advanceScaleByPreparedText.get(prepared) ?? 1;
     const lineCount = measureLineStats(
       prepared,
-      safeWidth / advanceScale
+      safeWidth
     ).lineCount + (prepared.kinds[prepared.kinds.length - 1] === "hard-break" ? 1 : 0);
     lineCountByKey.set(cacheKey, lineCount);
     trimCache(lineCountByKey, LINE_COUNT_CACHE_MAX_ENTRIES);
@@ -1187,475 +1190,86 @@ export function measurePretextPlainTextLineCount(
   }
 }
 
-function cloneItemCursor(cursor: PretextItemCursor): PretextItemCursor {
-  return {
-    itemIndex: cursor.itemIndex,
-    segmentIndex: cursor.segmentIndex,
-    graphemeIndex: cursor.graphemeIndex,
-  };
-}
-
-function itemCursorAtStart(cursor: PretextItemCursor): boolean {
-  return cursor.segmentIndex === 0 && cursor.graphemeIndex === 0;
-}
-
-function normalizeItemCursor(
-  preparedItems: Array<PreparedTextWithSegments | undefined>,
-  cursor: PretextItemCursor
-): PretextItemCursor {
-  const nextCursor = cloneItemCursor(cursor);
-  while (nextCursor.itemIndex < preparedItems.length) {
-    const prepared = preparedItems[nextCursor.itemIndex];
-    if (!prepared || nextCursor.segmentIndex >= prepared.segments.length) {
-      nextCursor.itemIndex += 1;
-      nextCursor.segmentIndex = 0;
-      nextCursor.graphemeIndex = 0;
-      continue;
-    }
-    break;
+function prepareRichItems(
+  items: PretextLayoutItem[],
+  cacheKey: string
+): PreparedRichInline | undefined {
+  const cached = getCachedValue(preparedRichTextByKey, cacheKey);
+  if (cached) return cached;
+  try {
+    const context = getMeasureContext();
+    const prepared = prepareRichInline(items.map((item) => {
+      if (item.break === "never" && Number.isFinite(item.widthPx)) {
+        return { width: Math.max(0, item.widthPx!) };
+      }
+      if (context) {
+        setCanvasFontFeatureSettings(context, item.fontFeatureSettings);
+        if ("fontKerning" in context) context.fontKerning = item.fontKerning ?? "auto";
+      }
+      const advanceScale = context ? canvasFontAdvanceScale(context, item.font) : 1;
+      return {
+        text: item.text,
+        font: item.font,
+        break: item.break,
+        letterSpacing: item.letterSpacingPx,
+        fontKerning: item.fontKerning,
+        fontFeatureSettings: item.fontFeatureSettings,
+        textTransform: item.textTransform,
+        horizontalScale: advanceScale * validHorizontalScale(item.horizontalScale),
+      };
+    }), { whiteSpace: "pre-wrap", wordBreak: items[0]?.wordBreak ?? "normal" });
+    preparedRichTextByKey.set(cacheKey, prepared);
+    trimCache(preparedRichTextByKey, PREPARED_TEXT_CACHE_MAX_ENTRIES);
+    return prepared;
+  } catch {
+    return undefined;
   }
-  return nextCursor;
 }
 
-function itemCursorIsDone(
-  preparedItems: Array<PreparedTextWithSegments | undefined>,
-  cursor: PretextItemCursor
+function nextRichLine(
+  prepared: PreparedRichInline,
+  cursor: RichInlineCursor,
+  width: number
+): RichInlineLine | null {
+  const range = layoutNextRichInlineLineRange(prepared, Math.max(1, width), cursor);
+  return range ? materializeRichInlineLineRange(prepared, range) : null;
+}
+
+function laterIntervalKeepsLeadingText(
+  prepared: PreparedRichInline,
+  items: PretextLayoutItem[],
+  cursor: RichInlineCursor,
+  line: RichInlineLine,
+  intervals: Array<{ width: number }>
 ): boolean {
-  return (
-    normalizeItemCursor(preparedItems, cursor).itemIndex >= preparedItems.length
-  );
-}
-
-function wholeRemainingItemLine(
-  prepared: PreparedTextWithSegments,
-  cursor: LayoutCursor
-): LayoutLine | null {
-  return layoutNextLine(prepared, cursor, Number.POSITIVE_INFINITY);
-}
-
-interface PretextLexicalSpan {
-  startOffset: number;
-  endOffset: number;
-}
-
-function richTextLexicalSpans(
-  text: string,
-  items: PretextLayoutItem[]
-): PretextLexicalSpan[] {
-  if (items.length < 2 || !items[0]) return [];
-  const prepared = prepareCached(text, items[0].font, items[0].wordBreak, 0, items[0].fontKerning, items[0].fontFeatureSettings);
-  if (!prepared) return [];
-  const sourceOffsets = sourceOffsetsByPreparedText.get(prepared);
-  if (!sourceOffsets && prepared.segments.join("") !== text) return [];
-
-  const spans: PretextLexicalSpan[] = [];
-  let sourceOffset = 0;
-  prepared.segments.forEach((segment, segmentIndex) => {
-    sourceOffset = sourceOffsets?.[segmentIndex] ?? sourceOffset;
-    const kind = prepared.kinds[segmentIndex];
-    if (kind === "text" || kind === "glue") {
-      const ends = [
-        ...(prepared.breakablePreferredBreaks[segmentIndex] ?? []).map(
-          (offset) => codeUnitOffsetAtGrapheme(segment, offset)
-        ),
-        segment.length,
-      ].filter((offset, index, all) =>
-        offset > 0 && offset <= segment.length && all.indexOf(offset) === index
-      ).sort((a, b) => a - b);
-      let localStart = 0;
-      for (const localEnd of ends) {
-        spans.push({
-          startOffset: sourceOffset + localStart,
-          endOffset: sourceOffset + localEnd,
-        });
-        localStart = localEnd;
-      }
-    }
-    sourceOffset += segment.length;
+  const first = line.fragments[0];
+  const item = first && items[first.itemIndex];
+  if (!first || !item || item.break === "never" || first.sourceStart > 0 ||
+    first.sourceEnd >= item.text.length || intervals.length === 0) return false;
+  const firstWordEnd = item.text.slice(first.sourceStart).search(/[ \t\r\n]/u);
+  const minimumEnd = firstWordEnd < 0 ? item.text.length : first.sourceStart + firstWordEnd;
+  return intervals.some((interval) => {
+    const candidate = nextRichLine(prepared, cursor, interval.width);
+    const fragment = candidate?.fragments[0];
+    return fragment?.itemIndex === first.itemIndex &&
+      (fragment.sourceEnd === item.text.length ||
+        (first.sourceEnd < minimumEnd && fragment.sourceEnd >= minimumEnd));
   });
-  return spans;
 }
 
-function preparedCursorAtCodeUnitOffset(
-  prepared: PreparedTextWithSegments,
-  offset: number
-): LayoutCursor | undefined {
-  let segmentStart = 0;
-  const sourceOffsets = sourceOffsetsByPreparedText.get(prepared);
-  for (
-    let segmentIndex = 0;
-    segmentIndex < prepared.segments.length;
-    segmentIndex += 1
-  ) {
-    segmentStart = sourceOffsets?.[segmentIndex] ?? segmentStart;
-    const segment = prepared.segments[segmentIndex] ?? "";
-    if (offset === segmentStart) return { segmentIndex, graphemeIndex: 0 };
-    if (offset < segmentStart + segment.length) {
-      const graphemeIndex = graphemeCodeUnitOffsets(segment).indexOf(
-        offset - segmentStart
-      );
-      if (graphemeIndex > 0 && prepared.breakableFitAdvances[segmentIndex] === null) {
-        return undefined;
-      }
-      return graphemeIndex >= 0 ? { segmentIndex, graphemeIndex } : undefined;
-    }
-    segmentStart += segment.length;
-  }
-  segmentStart = sourceOffsets?.[prepared.segments.length] ?? segmentStart;
-  return offset === segmentStart
-    ? { segmentIndex: prepared.segments.length, graphemeIndex: 0 }
-    : undefined;
+function selectedHyphenOffset(source: string, materialized: string): number | undefined {
+  if (!materialized.endsWith("-")) return undefined;
+  const offset = source.lastIndexOf("\u00ad");
+  return offset >= 0 && /^[\u00ad\u200b]*$/.test(source.slice(offset + 1)) ? offset : undefined;
 }
 
-function richItemCursorSourceOffset(
-  items: PretextLayoutItem[],
-  preparedItems: Array<PreparedTextWithSegments | undefined>,
-  cursor: PretextItemCursor
-): number {
-  const item = items[cursor.itemIndex];
-  const prepared = preparedItems[cursor.itemIndex];
-  return item && prepared
-    ? item.startOffset + cursorAdvanceCodeUnits(
-        prepared,
-        { segmentIndex: 0, graphemeIndex: 0 },
-        cursor
-      )
-    : items[items.length - 1]?.endOffset ?? 0;
+function sourceFragmentText(source: string, materialized: string): string {
+  const offset = selectedHyphenOffset(source, materialized);
+  return offset === undefined ? source : source.slice(0, offset) + "-" + source.slice(offset + 1);
 }
 
-function rollbackRichLineToLegalBreak(
-  items: PretextLayoutItem[],
-  preparedItems: Array<PreparedTextWithSegments | undefined>,
-  start: PretextItemCursor,
-  line: InternalPretextItemLine,
-  lexicalSpans: PretextLexicalSpan[]
-): InternalPretextItemLine {
-  const sourceStart = richItemCursorSourceOffset(items, preparedItems, start);
-  const sourceEnd = richItemCursorSourceOffset(items, preparedItems, line.end);
-  let low = 0;
-  let high = lexicalSpans.length;
-  while (low < high) {
-    const middle = Math.floor((low + high) / 2);
-    if (lexicalSpans[middle]!.endOffset <= sourceEnd) low = middle + 1;
-    else high = middle;
-  }
-  const span = lexicalSpans[low];
-  if (
-    !span || span.startOffset <= sourceStart ||
-    span.startOffset >= sourceEnd || sourceEnd >= span.endOffset
-  ) {
-    return line;
-  }
-
-  if (items.some((item) =>
-    item.startOffset < span.endOffset && item.endOffset > span.startOffset &&
-    (item.break === "never" || item.endOffset - item.startOffset !== item.text.length)
-  )) {
-    return line;
-  }
-
-  const fragments: InternalPretextItemLineFragment[] = [];
-  let end: PretextItemCursor | undefined;
-  for (const fragment of line.fragments) {
-    const item = items[fragment.itemIndex];
-    const prepared = preparedItems[fragment.itemIndex];
-    if (!item || !prepared) return line;
-    const fragmentStart = item.startOffset + cursorAdvanceCodeUnits(
-      prepared, { segmentIndex: 0, graphemeIndex: 0 }, fragment.start
-    );
-    if (fragmentStart >= span.startOffset) break;
-    const fragmentEnd = item.startOffset + cursorAdvanceCodeUnits(
-      prepared, { segmentIndex: 0, graphemeIndex: 0 }, fragment.end
-    );
-    if (fragmentEnd <= span.startOffset) {
-      fragments.push(fragment);
-      end = { itemIndex: fragment.itemIndex, ...fragment.end };
-      continue;
-    }
-    const trimmedEnd = preparedCursorAtCodeUnitOffset(
-      prepared, span.startOffset - item.startOffset
-    );
-    if (!trimmedEnd || fragmentEnd - fragmentStart !== fragment.text.length) {
-      return line;
-    }
-    const text = fragment.text.slice(0, span.startOffset - fragmentStart);
-    fragments.push({
-      ...fragment,
-      text,
-      end: trimmedEnd,
-      width: measureTextWidthPx(item.font, text, item.letterSpacingPx, item.fontKerning, item.fontFeatureSettings, item.textTransform, item.horizontalScale),
-    });
-    end = { itemIndex: fragment.itemIndex, ...trimmedEnd };
-    break;
-  }
-  return fragments.some((fragment) =>
-    fragment.width > 1e-7 && /\S/u.test(fragment.text)
-  ) && end
-    ? {
-        fragments,
-        end: normalizeItemCursor(preparedItems, end),
-        endsAtHardBreak: false,
-      }
-    : line;
-}
-
-function layoutNextItemLine(
-  items: PretextLayoutItem[],
-  preparedItems: Array<PreparedTextWithSegments | undefined>,
-  start: PretextItemCursor,
-  maxWidth: number,
-  lexicalSpans: PretextLexicalSpan[]
-): InternalPretextItemLine | null {
-  const cursor = normalizeItemCursor(preparedItems, start);
-  if (cursor.itemIndex >= items.length) {
-    return null;
-  }
-
-  const safeMaxWidth = Math.max(1, maxWidth);
-  const fragments: InternalPretextItemLineFragment[] = [];
-  let remainingWidth = safeMaxWidth;
-  let current = cloneItemCursor(cursor);
-
-  while (current.itemIndex < items.length) {
-    const item = items[current.itemIndex];
-    const prepared = preparedItems[current.itemIndex];
-    if (!item || !prepared) {
-      current.itemIndex += 1;
-      current.segmentIndex = 0;
-      current.graphemeIndex = 0;
-      continue;
-    }
-
-    const itemCursor: LayoutCursor = {
-      segmentIndex: current.segmentIndex,
-      graphemeIndex: current.graphemeIndex,
-    };
-    const atItemStart = itemCursorAtStart(current);
-    const remainingItemLine =
-      item.break === "never"
-        ? wholeRemainingItemLine(prepared, itemCursor)
-        : layoutNextLine(prepared, itemCursor, Math.max(1, remainingWidth));
-    if (!remainingItemLine) {
-      current.itemIndex += 1;
-      current.segmentIndex = 0;
-      current.graphemeIndex = 0;
-      continue;
-    }
-
-    const noProgress =
-      remainingItemLine.end.segmentIndex === itemCursor.segmentIndex &&
-      remainingItemLine.end.graphemeIndex === itemCursor.graphemeIndex &&
-      remainingItemLine.text.length === 0;
-    if (noProgress) {
-      current.itemIndex += 1;
-      current.segmentIndex = 0;
-      current.graphemeIndex = 0;
-      continue;
-    }
-
-    const previousFragment = fragments[fragments.length - 1];
-    if (
-      item.break !== "never" &&
-      previousFragment &&
-      /[ \t]$/.test(previousFragment.text) &&
-      cursorSplitsLeadingBreakableSegment(
-        prepared,
-        itemCursor,
-        remainingItemLine.end
-      )
-    ) {
-      const fullWidthLine = layoutNextLine(prepared, itemCursor, safeMaxWidth);
-      if (
-        fullWidthLine &&
-        !cursorSplitsLeadingBreakableSegment(
-          prepared,
-          itemCursor,
-          fullWidthLine.end
-        )
-      ) {
-        break;
-      }
-    }
-
-    const occupiedWidth =
-      item.break === "never" && Number.isFinite(item.widthPx)
-        ? Math.max(0, item.widthPx as number)
-        : remainingItemLine.width;
-    const terminalSegmentIndex = remainingItemLine.end.segmentIndex - 1;
-    const terminalKind = prepared.kinds[terminalSegmentIndex];
-    const terminalFitAdvance = prepared.lineEndFitAdvances[terminalSegmentIndex];
-    const terminalPaintAdvance = prepared.lineEndPaintAdvances[terminalSegmentIndex];
-    const hangingSpaceAdjustment =
-      item.break !== "never" &&
-      remainingItemLine.end.graphemeIndex === 0 &&
-      (terminalKind === "space" || terminalKind === "preserved-space") &&
-      Number.isFinite(terminalFitAdvance) &&
-      Number.isFinite(terminalPaintAdvance)
-        ? Math.max(0, terminalPaintAdvance! - terminalFitAdvance!) *
-          (advanceScaleByPreparedText.get(prepared) ?? 1)
-        : 0;
-    const overflowsCurrentLine =
-      fragments.length > 0 &&
-      atItemStart &&
-      occupiedWidth - hangingSpaceAdjustment > remainingWidth + 0.5;
-    if (overflowsCurrentLine) {
-      break;
-    }
-
-    fragments.push({
-      itemIndex: current.itemIndex,
-      text: remainingItemLine.text,
-      width: occupiedWidth,
-      font: item.font,
-      start: itemCursor,
-      end: remainingItemLine.end,
-    });
-
-    remainingWidth = Math.max(0, remainingWidth - occupiedWidth);
-
-    if (remainingItemLine.end.segmentIndex >= prepared.segments.length) {
-      current.itemIndex += 1;
-      current.segmentIndex = 0;
-      current.graphemeIndex = 0;
-      if (
-        remainingWidth <= 0.5 ||
-        cursorEndedAtHardBreak(prepared, remainingItemLine.end)
-      ) {
-        break;
-      }
-      continue;
-    }
-
-    current.segmentIndex = remainingItemLine.end.segmentIndex;
-    current.graphemeIndex = remainingItemLine.end.graphemeIndex;
-    break;
-  }
-
-  if (fragments.length === 0) {
-    return null;
-  }
-
-  const lastFragment = fragments[fragments.length - 1]!;
-  const lastPrepared = preparedItems[lastFragment.itemIndex];
-  return rollbackRichLineToLegalBreak(
-    items,
-    preparedItems,
-    start,
-    {
-      end: normalizeItemCursor(preparedItems, current),
-      fragments,
-      endsAtHardBreak: Boolean(
-        lastPrepared && cursorEndedAtHardBreak(lastPrepared, lastFragment.end)
-      ),
-    },
-    lexicalSpans
-  );
-}
-
-function lineSplitsLeadingItem(
-  items: PretextLayoutItem[],
-  preparedItems: Array<PreparedTextWithSegments | undefined>,
-  start: PretextItemCursor,
-  line: InternalPretextItemLine
-): boolean {
-  if (!itemCursorAtStart(start)) {
-    return false;
-  }
-
-  const firstFragment = line.fragments[0];
-  const item = firstFragment ? items[firstFragment.itemIndex] : undefined;
-  const prepared = firstFragment
-    ? preparedItems[firstFragment.itemIndex]
-    : undefined;
-  if (
-    !firstFragment ||
-    !item ||
-    !prepared ||
-    item.break === "never" ||
-    firstFragment.itemIndex !== start.itemIndex
-  ) {
-    return false;
-  }
-
-  const wholeLine = wholeRemainingItemLine(prepared, {
-    segmentIndex: start.segmentIndex,
-    graphemeIndex: start.graphemeIndex,
-  });
-  if (!wholeLine) {
-    return false;
-  }
-
-  return firstFragment.text.length < wholeLine.text.length;
-}
-
-function laterIntervalFitsLeadingItemWithoutSplit(
-  items: PretextLayoutItem[],
-  preparedItems: Array<PreparedTextWithSegments | undefined>,
-  start: PretextItemCursor,
-  line: InternalPretextItemLine,
-  laterIntervals: Array<{
-    x: number;
-    width: number;
-  }>
-): boolean {
-  const item = items[start.itemIndex];
-  const prepared = preparedItems[start.itemIndex];
-  if (
-    !item ||
-    !prepared ||
-    !itemCursorAtStart(start) ||
-    item.break === "never"
-  ) {
-    return false;
-  }
-
-  const startCursor: LayoutCursor = {
-    segmentIndex: start.segmentIndex,
-    graphemeIndex: start.graphemeIndex,
-  };
-  const wholeLine = wholeRemainingItemLine(prepared, startCursor);
-  if (!wholeLine) {
-    return false;
-  }
-
-  if (
-    laterIntervals.some((interval) => wholeLine.width <= interval.width + 0.5)
-  ) {
-    return true;
-  }
-
-  // Even when the whole remaining run cannot fit a later slot, never split a
-  // word across wrap slots if some later slot in the same row can keep that
-  // leading word intact.
-  const firstFragment = line.fragments[0];
-  if (
-    !firstFragment ||
-    firstFragment.itemIndex !== start.itemIndex ||
-    !cursorSplitsLeadingBreakableSegment(
-      prepared,
-      startCursor,
-      firstFragment.end
-    )
-  ) {
-    return false;
-  }
-
-  return laterIntervals.some((interval) => {
-    const candidate = layoutNextLine(
-      prepared,
-      startCursor,
-      Math.max(1, interval.width)
-    );
-    if (!candidate) {
-      return false;
-    }
-
-    return !cursorSplitsLeadingBreakableSegment(
-      prepared,
-      startCursor,
-      candidate.end
-    );
-  });
+function isInvisibleSource(text: string): boolean {
+  return /^[\u00ad\u200b-\u200f\u202a-\u202e\u2060\u2066-\u2069\ufeff]*$/.test(text);
 }
 
 function cursorIsDone(
@@ -2010,8 +1624,12 @@ export function layoutTextWithPretextAroundExclusions(
           continue;
         }
 
+        const endOffset = consumedOffset + cursorAdvanceCodeUnits(prepared, cursor, line.end);
+        const sourceText = text.slice(consumedOffset, endOffset);
+        const hyphenOffset = selectedHyphenOffset(sourceText, line.text);
         fragments.push({
-          text: line.text,
+          text: sourceFragmentText(sourceText, line.text),
+          discretionaryHyphenOffset: hyphenOffset === undefined ? undefined : consumedOffset + hyphenOffset,
           width: line.width,
           x: interval.x,
           intervalX: interval.x,
@@ -2127,26 +1745,6 @@ export function layoutItemsWithPretextAroundExclusions(
   }
 
   items = joinContiguousShapingItems(joinSplitCarriageReturns(items));
-  const preparedItems = items.map((item) =>
-    prepareCached(
-      item.text,
-      item.font,
-      item.wordBreak ?? "normal",
-      item.letterSpacingPx,
-      item.fontKerning,
-      item.fontFeatureSettings,
-      item.textTransform,
-      item.horizontalScale
-    )
-  );
-  if (
-    preparedItems.some(
-      (prepared, index) => !prepared && items[index]?.text.length
-    )
-  ) {
-    return undefined;
-  }
-
   const safeContainerWidthPx = Math.max(1, containerWidthPx);
   const safeLineHeightPx = Math.max(1, lineHeightPx);
   const normalizedExclusions = (exclusions ?? []).map((exclusion) => ({
@@ -2181,24 +1779,18 @@ export function layoutItemsWithPretextAroundExclusions(
     return cachedLayout;
   }
 
-  const lexicalSpans = richTextLexicalSpans(text, items);
+  const prepared = prepareRichItems(items, layoutSignature);
+  if (!prepared) return undefined;
   const lines: PretextLineLayout[] = [];
-  const consumedOffsetsByItemIndex = items.map(() => 0);
-  let cursor: PretextItemCursor = {
-    itemIndex: 0,
-    segmentIndex: 0,
-    graphemeIndex: 0,
-  };
+  const consumedOffsets = items.map(() => 0);
+  let cursor: RichInlineCursor = { itemIndex: 0, segmentIndex: 0, graphemeIndex: 0 };
+  let finished = false;
   let rowTopPx = 0;
   let rowHeightPx = safeLineHeightPx;
 
-  while (!itemCursorIsDone(preparedItems, cursor)) {
-    cursor = normalizeItemCursor(preparedItems, cursor);
-    const rowStartCursor = cloneItemCursor(cursor);
-    const rowStartOffsets =
-      normalizedExclusions.length > 0
-        ? [...consumedOffsetsByItemIndex]
-        : undefined;
+  while (!finished) {
+    const rowStartCursor = { ...cursor };
+    const rowStartOffsets = normalizedExclusions.length > 0 ? [...consumedOffsets] : undefined;
     const rowIntervals = rowWidthsAtY(
       safeContainerWidthPx,
       rowHeightPx,
@@ -2218,64 +1810,35 @@ export function layoutItemsWithPretextAroundExclusions(
       intervalIndex < rowIntervals.length;
       intervalIndex += 1
     ) {
-      cursor = normalizeItemCursor(preparedItems, cursor);
-      if (itemCursorIsDone(preparedItems, cursor)) {
+      const interval = rowIntervals[intervalIndex]!;
+      const line = nextRichLine(prepared, cursor, interval.width);
+      if (!line) {
+        finished = true;
         break;
       }
-
-      const interval = rowIntervals[intervalIndex]!;
-      const line = layoutNextItemLine(
-        items,
-        preparedItems,
-        cursor,
-        interval.width,
-        lexicalSpans
-      );
-      if (!line) {
-        continue;
-      }
-
-      if (
-        lineSplitsLeadingItem(items, preparedItems, cursor, line) &&
-        laterIntervalFitsLeadingItemWithoutSplit(
-          items,
-          preparedItems,
-          cursor,
-          line,
-          rowIntervals.slice(intervalIndex + 1)
-        )
-      ) {
-        continue;
-      }
+      if (laterIntervalKeepsLeadingText(prepared, items, cursor, line,
+        rowIntervals.slice(intervalIndex + 1))) continue;
 
       let nextFragmentX = interval.x;
-      for (const lineFragment of line.fragments) {
-        const item = items[lineFragment.itemIndex];
-        const prepared = preparedItems[lineFragment.itemIndex];
-        if (!item || !prepared) {
-          continue;
-        }
-
-        const consumedCodeUnits = cursorAdvanceCodeUnits(
-          prepared,
-          lineFragment.start,
-          lineFragment.end
-        );
-        const startOffset =
-          item.startOffset +
-          (consumedOffsetsByItemIndex[lineFragment.itemIndex] ?? 0);
-        const endOffset = startOffset + consumedCodeUnits;
-
+      const appendFragment = (itemIndex: number, sourceEnd: number, width: number, materialized: string) => {
+        const item = items[itemIndex]!;
+        const sourceStart = consumedOffsets[itemIndex]!;
+        const sourceText = item.text.slice(sourceStart, sourceEnd);
+        const startOffset = item.startOffset + sourceStart;
+        const endOffset = item.startOffset + sourceEnd;
+        const hardBreak = /\r\n$|[\r\n]$/.exec(sourceText);
+        const hyphenOffset = selectedHyphenOffset(sourceText, materialized);
         fragments.push({
-          text: lineFragment.text,
-          width: lineFragment.width,
+          discretionaryHyphenOffset: hyphenOffset === undefined ? undefined : startOffset + hyphenOffset,
+          text: sourceFragmentText(sourceText, materialized),
+          width,
           x: nextFragmentX,
           intervalX: interval.x,
           intervalWidth: interval.width,
           startOffset,
           endOffset,
-          hardBreakOffset: hardBreakOffsetAtCursor(prepared, lineFragment.end, endOffset),
-          font: lineFragment.font,
+          hardBreakOffset: hardBreak ? endOffset - hardBreak[0].length : undefined,
+          font: item.font,
           strutFont: item.strutFont,
           letterSpacingPx: item.letterSpacingPx,
           fontKerning: item.fontKerning,
@@ -2287,17 +1850,26 @@ export function layoutItemsWithPretextAroundExclusions(
           hasCustomVerticalMetrics: item.verticalMetrics !== undefined,
           ...itemLineMetrics(item, item.lineHeightPx ?? safeLineHeightPx),
         });
-
-        consumedOffsetsByItemIndex[lineFragment.itemIndex] =
-          (consumedOffsetsByItemIndex[lineFragment.itemIndex] ?? 0) +
-          consumedCodeUnits;
-        nextFragmentX += lineFragment.width;
+        consumedOffsets[itemIndex] = sourceEnd;
+        nextFragmentX += width;
+      };
+      for (const lineFragment of line.fragments) {
+        const item = items[lineFragment.itemIndex];
+        if (!item) continue;
+        for (let index = cursor.itemIndex; index < lineFragment.itemIndex; index += 1) {
+          const skipped = items[index]!;
+          const remaining = skipped.text.slice(consumedOffsets[index]);
+          if (remaining && isInvisibleSource(remaining)) appendFragment(index, skipped.text.length, 0, remaining);
+        }
+        const atomic = item.break === "never" && Number.isFinite(item.widthPx);
+        nextFragmentX += lineFragment.gapBefore;
+        appendFragment(lineFragment.itemIndex,
+          atomic ? item.text.length : lineFragment.sourceEnd,
+          lineFragment.occupiedWidth, lineFragment.text);
       }
 
       cursor = line.end;
-      if (line.endsAtHardBreak) {
-        break;
-      }
+      if (fragments.at(-1)?.hardBreakOffset !== undefined) break;
     }
 
     if (fragments.length === 0) {
@@ -2312,19 +1884,38 @@ export function layoutItemsWithPretextAroundExclusions(
       options
     );
     if (
-      rowStartOffsets &&
+      normalizedExclusions.length > 0 &&
       (row.height ?? safeLineHeightPx) > rowHeightPx + 1e-7
     ) {
       cursor = rowStartCursor;
-      rowStartOffsets.forEach((offset, index) => {
-        consumedOffsetsByItemIndex[index] = offset;
-      });
+      rowStartOffsets?.forEach((offset, index) => { consumedOffsets[index] = offset; });
+      finished = false;
       rowHeightPx = row.height ?? safeLineHeightPx;
       continue;
     }
     lines.push(row);
     rowTopPx += row.height ?? safeLineHeightPx;
     rowHeightPx = safeLineHeightPx;
+  }
+
+  if (lines.length === 0 && items.every((item) => isInvisibleSource(item.text))) {
+    const interval = rowWidthsAtY(safeContainerWidthPx, safeLineHeightPx,
+      rowTopPx, normalizedExclusions)[0] ?? { x: 0, width: safeContainerWidthPx };
+    lines.push(createLine(rowTopPx, items.filter((item) => item.text.length > 0).map((item) => ({
+      text: item.text,
+      width: 0,
+      x: interval.x,
+      intervalX: interval.x,
+      intervalWidth: interval.width,
+      startOffset: item.startOffset,
+      endOffset: item.endOffset,
+      font: item.font,
+      strutFont: item.strutFont,
+      lineHeightPx: item.lineHeightPx ?? safeLineHeightPx,
+      verticalAlign: item.verticalAlign,
+      hasCustomVerticalMetrics: item.verticalMetrics !== undefined,
+      ...itemLineMetrics(item, item.lineHeightPx ?? safeLineHeightPx),
+    })), fallbackFont ?? items[0]?.font ?? "", safeLineHeightPx, options));
   }
 
   appendTrailingHardBreakLine(

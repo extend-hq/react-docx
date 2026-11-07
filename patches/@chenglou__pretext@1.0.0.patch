@@ -1,0 +1,1209 @@
+diff --git a/dist/han-kerning.d.ts.map b/dist/han-kerning.d.ts.map
+index ae4833031bfacc95ae4eaee3f69f7e6ee44cafac..14c68eaa4ef8254601e0e1fbacc5434f07f6185a 100644
+--- a/dist/han-kerning.d.ts.map
++++ b/dist/han-kerning.d.ts.map
+@@ -1 +1 @@
+-{"version":3,"file":"han-kerning.d.ts","sourceRoot":"","sources":["../src/han-kerning.ts"],"names":[],"mappings":"AAwBA,OAAO,EAA6B,KAAK,YAAY,EAAE,MAAM,eAAe,CAAA;AAE5E,OAAO,EAAwC,KAAK,eAAe,EAAE,MAAM,kBAAkB,CAAA;AA0B7F,wBAAgB,cAAc,CAAC,IAAI,EAAE,MAAM,GAAG,OAAO,CAEpD;AAyBD,MAAM,MAAM,kBAAkB,GAAG;IAC/B,UAAU,EAAE,MAAM,CAAA;IAClB,YAAY,EAAE,MAAM,CAAA;IACpB,gBAAgB,EAAE,MAAM,CAAA;IACxB,cAAc,EAAE,OAAO,CAAA;IACvB,KAAK,EAAE,GAAG,CAAC,MAAM,EAAE,MAAM,CAAC,CAAA;CAC3B,CAAA;AA8FD,MAAM,MAAM,eAAe,GAAG;IAI5B,UAAU,EAAE,MAAM,EAAE,GAAG,IAAI,CAAA;IAG3B,eAAe,EAAE,MAAM,EAAE,GAAG,IAAI,CAAA;IAEhC,YAAY,EAAE,MAAM,EAAE,GAAG,IAAI,CAAA;IAG7B,oBAAoB,EAAE,MAAM,EAAE,GAAG,IAAI,CAAA;CACtC,CAAA;AAQD,wBAAgB,kBAAkB,CAAC,WAAW,EAAE,eAAe,EAAE,QAAQ,EAAE,YAAY,EAAE,IAAI,EAAE,MAAM,EAAE,EAAE,EAAE,MAAM,GAAG,eAAe,CAmDlI"}
+\ No newline at end of file
++{"version":3,"file":"han-kerning.d.ts","sourceRoot":"","sources":["../src/han-kerning.ts"],"names":[],"mappings":"AAwBA,OAAO,EAA6B,KAAK,YAAY,EAAE,MAAM,eAAe,CAAA;AAE5E,OAAO,EAA6C,KAAK,eAAe,EAAE,MAAM,kBAAkB,CAAA;AA0BlG,wBAAgB,cAAc,CAAC,IAAI,EAAE,MAAM,GAAG,OAAO,CAEpD;AAyBD,MAAM,MAAM,kBAAkB,GAAG;IAC/B,UAAU,EAAE,MAAM,CAAA;IAClB,YAAY,EAAE,MAAM,CAAA;IACpB,gBAAgB,EAAE,MAAM,CAAA;IACxB,cAAc,EAAE,OAAO,CAAA;IACvB,KAAK,EAAE,GAAG,CAAC,MAAM,EAAE,MAAM,CAAC,CAAA;CAC3B,CAAA;AA6FD,MAAM,MAAM,eAAe,GAAG;IAI5B,UAAU,EAAE,MAAM,EAAE,GAAG,IAAI,CAAA;IAG3B,eAAe,EAAE,MAAM,EAAE,GAAG,IAAI,CAAA;IAEhC,YAAY,EAAE,MAAM,EAAE,GAAG,IAAI,CAAA;IAG7B,oBAAoB,EAAE,MAAM,EAAE,GAAG,IAAI,CAAA;CACtC,CAAA;AAQD,wBAAgB,kBAAkB,CAAC,WAAW,EAAE,eAAe,EAAE,QAAQ,EAAE,YAAY,EAAE,IAAI,EAAE,MAAM,EAAE,EAAE,EAAE,MAAM,GAAG,eAAe,CAmDlI"}
+\ No newline at end of file
+diff --git a/dist/han-kerning.js b/dist/han-kerning.js
+index b286f8564ed14db6e8c2114de37a77dde11b2ec4..a85f593a1f7e779e0483f2dec9bd88aad66d40b2 100644
+--- a/dist/han-kerning.js
++++ b/dist/han-kerning.js
+@@ -24,7 +24,7 @@
+ // bounds under the page's Han script (han_kerning.cc:47-168, 400-535).
+ import { KIND_BITS, TEXT, UNBROKEN } from './analysis.js';
+ import { hasProperty, PUNCTUATION } from './line-breaks.js';
+-import { getContext, getSegmentMetrics, zeros } from './measurement.js';
++import { getSegmentMetrics, measureFontText, zeros } from './measurement.js';
+ const OTHER = 0;
+ const OPEN = 1;
+ const CLOSE = 2;
+@@ -87,19 +87,19 @@ function getStaticCharType(text, index) {
+ // centered. Canvas shapes a CJK symbol next to 中 as Han, so its right edge comes from `中c`
+ // and its left edge from `c中`, where 中's ink covers neither. Curly quotes and U+FF1B are
+ // words of their own in Canvas (NextWordEndIndex) and are measured alone.
+-function getTypeFromBounds(ctx, c, hanWidth) {
++function getTypeFromBounds(measurement, c, hanWidth) {
+     const s = String.fromCharCode(c);
+     let advance;
+     let left;
+     let right;
+     if (isCanvasCjkSymbol(c)) {
+-        const after = ctx.measureText('\u4E2D' + s);
++        const after = measureFontText(measurement, '\u4E2D' + s);
+         advance = after.width - hanWidth;
+         right = after.actualBoundingBoxRight - hanWidth;
+-        left = -ctx.measureText(s + '\u4E2D').actualBoundingBoxLeft;
++        left = -measureFontText(measurement, s + '\u4E2D').actualBoundingBoxLeft;
+     }
+     else {
+-        const metrics = ctx.measureText(s);
++        const metrics = measureFontText(measurement, s);
+         advance = metrics.width;
+         left = -metrics.actualBoundingBoxLeft;
+         right = metrics.actualBoundingBoxRight;
+@@ -127,8 +127,7 @@ function getFontData(measurement) {
+         return null;
+     }
+     const hanWidth = getSegmentMetrics('\u4E2D', measurement).width;
+-    const ctx = getContext(measurement);
+-    const glyphs = [0x3001, 0x3002, 0xFF0C, 0xFF0E, 0xFF1A, 0xFF1B, 0x201C, 0x2018, 0x201D, 0x2019].map(c => getTypeFromBounds(ctx, c, hanWidth));
++    const glyphs = [0x3001, 0x3002, 0xFF0C, 0xFF0E, 0xFF1A, 0xFF1B, 0x201C, 0x2018, 0x201D, 0x2019].map(c => getTypeFromBounds(measurement, c, hanWidth));
+     // A group has one type only when its glyphs share the advance and the type (han_kerning.cc:88-135).
+     const group = (from, to) => {
+         for (let i = from + 1; i < to; i++) {
+diff --git a/dist/layout.d.ts b/dist/layout.d.ts
+index a991a773dd5842421ccd515fcc4ac12a01db7dd7..b1e046d2e97d2c95108b5b240522ad3208c5aa2c 100644
+--- a/dist/layout.d.ts
++++ b/dist/layout.d.ts
+@@ -1,4 +1,5 @@
+ import { type SegmentBreakKind, type WhiteSpaceMode, type WordBreakMode as AnalysisWordBreakMode } from './analysis.js';
++import { type TypographyOptions } from './measurement.js';
+ declare const preparedTextBrand: unique symbol;
+ export type PreparedText = {
+     readonly [preparedTextBrand]: true;
+@@ -35,7 +36,7 @@ export type LayoutLinesResult = LayoutResult & {
+     lines: LayoutLine[];
+ };
+ export type WordBreakMode = AnalysisWordBreakMode;
+-export type PrepareOptions = {
++export type PrepareOptions = TypographyOptions & {
+     whiteSpace?: WhiteSpaceMode;
+     wordBreak?: WordBreakMode;
+     letterSpacing?: number;
+diff --git a/dist/layout.d.ts.map b/dist/layout.d.ts.map
+index 31f7c76ba9b6060697fb513a4d8bebe992853ca6..9a1d8321212d4df2a84566e020348b63b833f858 100644
+--- a/dist/layout.d.ts.map
++++ b/dist/layout.d.ts.map
+@@ -1 +1 @@
+-{"version":3,"file":"layout.d.ts","sourceRoot":"","sources":["../src/layout.ts"],"names":[],"mappings":"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"}
+\ No newline at end of file
++{"version":3,"file":"layout.d.ts","sourceRoot":"","sources":["../src/layout.ts"],"names":[],"mappings":"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"}
+\ No newline at end of file
+diff --git a/dist/layout.js b/dist/layout.js
+index 3bd0ea8f3067f8c040ab4265ba356188b947ce25..ebf739c9b6ce981f5666f82fd7505c01dc6c0701 100644
+--- a/dist/layout.js
++++ b/dist/layout.js
+@@ -21,7 +21,7 @@ function prepareInternal(text, font, includeSegments, options) {
+     // One language read: break rules and measurement both follow it.
+     const language = getPreparationLanguage(engineProfile);
+     const analysis = analyzeText(text, engineProfile, options?.whiteSpace, wordBreak, language);
+-    return measureAnalysis(analysis, 0, analysis.flags.length, font, includeSegments, letterSpacing, engineProfile, language, true, null);
++    return measureAnalysis(analysis, 0, analysis.flags.length, font, includeSegments, letterSpacing, engineProfile, language, true, null, options);
+ }
+ // Prepare text for layout. Segments the text, measures each segment via canvas,
+ // and stores the widths for fast relayout at any width. Call once per text block
+diff --git a/dist/measurement.d.ts b/dist/measurement.d.ts
+index 0beb0d2238b66241f5760dfd17e89b2a4362bbfe..afbba5e5b9f3efc28e31ba8943e31d6b5f4bb8b5 100644
+--- a/dist/measurement.d.ts
++++ b/dist/measurement.d.ts
+@@ -65,7 +65,18 @@ type MeasureState = {
+     letterSpacedFonts: Map<string, FontMeasurement>;
+     segments: number;
+ };
++export type TypographyOptions = {
++    fontKerning?: 'auto' | 'normal' | 'none';
++    fontFeatureSettings?: string;
++    textTransform?: 'uppercase';
++    horizontalScale?: number;
++};
+ export type FontMeasurement = {
++    fontKerning: 'auto' | 'normal' | 'none';
++    fontFeatureSettings: string | undefined;
++    textTransform: 'uppercase' | undefined;
++    horizontalScale: number;
++    optionalLigatures: boolean;
+     state: MeasureState;
+     canvasFont: string;
+     letterSpacing: string;
+@@ -108,7 +119,9 @@ export declare function textMayContainEmoji(text: string): boolean;
+ export declare function getEmojiCorrection(font: string, measurement: FontMeasurement): number;
+ export declare function getCorrectedSegmentWidth(seg: string, metrics: SegmentMetrics, measurement: FontMeasurement, emojiCorrection: number): number;
+ export declare function getSegmentFit(seg: string, metrics: SegmentMetrics, measurement: FontMeasurement, emojiCorrection: number, mode: BreakableFitMode, followingSpaceWidth?: number | null): SegmentFit;
+-export declare function getFontMeasurement(font: string, language: string | null, letterSpaced: boolean): FontMeasurement;
++export declare function getFontMeasurement(font: string, language: string | null, letterSpaced: boolean, typography?: TypographyOptions): FontMeasurement;
++type HorizontalTextMetrics = Pick<TextMetrics, 'width' | 'actualBoundingBoxLeft' | 'actualBoundingBoxRight'>;
++export declare function measureFontText(measurement: FontMeasurement, text: string, context?: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D): HorizontalTextMetrics;
+ export declare function getContext(measurement: FontMeasurement): CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
+ export declare function clearMeasurementCaches(): void;
+ export {};
+diff --git a/dist/measurement.d.ts.map b/dist/measurement.d.ts.map
+index 9d4090ab6fa4fba58ea99139ea736693c27feaf1..39ef9a41483bd0b72d67358514898bea1d8ade73 100644
+--- a/dist/measurement.d.ts.map
++++ b/dist/measurement.d.ts.map
+@@ -1 +1 @@
+-{"version":3,"file":"measurement.d.ts","sourceRoot":"","sources":["../src/measurement.ts"],"names":[],"mappings":"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"}
+\ No newline at end of file
++{"version":3,"file":"measurement.d.ts","sourceRoot":"","sources":["../src/measurement.ts"],"names":[],"mappings":"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"}
+\ No newline at end of file
+diff --git a/dist/measurement.js b/dist/measurement.js
+index b7650b6abc9112942dd7bb129ba306d1cf3679be..d117ca596bbf1bade72198be958fab333106ca46 100644
+--- a/dist/measurement.js
++++ b/dist/measurement.js
+@@ -235,9 +235,101 @@ export const noExtraSpacings = [];
+ // for each prefix new to the font, which WebKit shapes each time, since it keeps no width
+ // measured under a letter spacing (TextMeasurementCache.h:165-167). Under a context that
+ // takes no letterSpacing every grapheme takes one.
++let glyphSpacingProbe = null;
++function getDomExtraSpacings(seg, measurement) {
++    if (typeof document === 'undefined')
++        return null;
++    if (glyphSpacingProbe?.ownerDocument !== document) {
++        glyphSpacingProbe?.remove();
++        glyphSpacingProbe = document.createElement('span');
++        glyphSpacingProbe.setAttribute('aria-hidden', 'true');
++    }
++    const probe = glyphSpacingProbe;
++    if (typeof probe.getBoundingClientRect !== 'function')
++        return null;
++    const style = probe.style;
++    style.cssText = 'all:initial!important;position:fixed!important;left:0!important;top:0!important;visibility:hidden!important;pointer-events:none!important;display:inline-block!important;white-space:pre!important;width:max-content!important;max-width:none!important;contain:layout style!important';
++    style.setProperty('font', measurement.canvasFont, 'important');
++    style.setProperty('font-kerning', measurement.fontKerning, 'important');
++    style.setProperty('font-feature-settings', measurement.fontFeatureSettings ?? 'normal', 'important');
++    probe.lang = measurement.state.language ?? '';
++    const rootZoomValue = typeof window !== 'undefined' && typeof window.getComputedStyle === 'function'
++        ? Number.parseFloat(window.getComputedStyle(document.documentElement).zoom) : 1;
++    const rootZoom = Number.isFinite(rootZoomValue) && rootZoomValue > 0 ? rootZoomValue : 1;
++    const ends = new Int32Array(seg.length);
++    const count = findGraphemeEnds(getEngineProfile().graphemeTable, seg, 0, seg.length, ends);
++    const prefixes = count <= MAX_PREFIX_FIT_GRAPHEMES;
++    let extras = noExtraSpacings;
++    let before = 0;
++    try {
++        if (!prefixes) {
++            if (!probe.isConnected)
++                document.documentElement.appendChild(probe);
++            const displayed = measurement.textTransform === 'uppercase' ? seg.toUpperCase() : seg;
++            probe.textContent = displayed;
++            const node = probe.firstChild;
++            const range = document.createRange();
++            range.setStart(node, 0);
++            let displayedOffset = 0;
++            const offsets = measurement.textTransform === 'uppercase'
++                ? Array.from({ length: count }, (_, i) => displayedOffset += seg.slice(i === 0 ? 0 : ends[i - 1], ends[i]).toUpperCase().length)
++                : ends;
++            style.setProperty('letter-spacing', '0px', 'important');
++            const plainWidths = Array.from({ length: count }, (_, i) => {
++                range.setEnd(node, offsets[i]);
++                return range.getBoundingClientRect().width;
++            });
++            style.setProperty('letter-spacing', '128px', 'important');
++            extras = zeros(count);
++            for (let i = 0; i < count; i++) {
++                range.setEnd(node, offsets[i]);
++                const glyphs = (range.getBoundingClientRect().width - plainWidths[i]) / (128 * rootZoom);
++                if (!Number.isFinite(glyphs))
++                    return null;
++                extras[i] = glyphs - before - 1;
++                before = glyphs;
++            }
++            return extras;
++        }
++        for (let i = 0, start = 0; i < count; start = ends[i++]) {
++            const text = seg.slice(prefixes ? 0 : start, ends[i]);
++            let glyphs = measurement.glyphCounts.get(text);
++            if (glyphs === undefined) {
++                if (!probe.isConnected)
++                    document.documentElement.appendChild(probe);
++                probe.textContent = measurement.textTransform === 'uppercase' ? text.toUpperCase() : text;
++                style.setProperty('letter-spacing', '0px', 'important');
++                const plain = probe.getBoundingClientRect().width;
++                style.setProperty('letter-spacing', '128px', 'important');
++                const spaced = probe.getBoundingClientRect().width;
++                if (!Number.isFinite(plain) || !Number.isFinite(spaced) || plain <= 0 || spaced < plain)
++                    return null;
++                glyphs = Math.round((spaced - plain) / (128 * rootZoom));
++                measurement.glyphCounts.set(text, glyphs);
++            }
++            const extra = glyphs - (prefixes ? before : 0) - 1;
++            before = glyphs;
++            if (extra !== 0) {
++                if (extras.length === 0)
++                    extras = zeros(count);
++                extras[i] = extra;
++            }
++        }
++    }
++    finally {
++        probe.remove();
++        probe.textContent = '';
++    }
++    return extras;
++}
+ export function getExtraSpacings(seg, measurement) {
+-    if (!measurement.state.takesLetterSpacing)
+-        return noExtraSpacings;
++    if (measurement.optionalLigatures) {
++        const measured = getDomExtraSpacings(seg, measurement);
++        if (measured !== null)
++            return measured;
++    }
++    if (!measurement.state.takesLetterSpacing || !getEngineProfile().letterSpacesGlyphs)
++        return transformedExtraSpacings(seg, measurement);
+     const ends = new Int32Array(seg.length);
+     const count = findGraphemeEnds(getEngineProfile().graphemeTable, seg, 0, seg.length, ends);
+     const prefixes = count <= MAX_PREFIX_FIT_GRAPHEMES;
+@@ -256,7 +348,7 @@ export function getExtraSpacings(seg, measurement) {
+                     context = getContext(measurement);
+                     context.letterSpacing = `${GLYPH_COUNT_SPACING}px`;
+                 }
+-                glyphs = Math.round(context.measureText(text).width / GLYPH_COUNT_SPACING);
++                glyphs = Math.round(measureFontText(measurement, text, context).width / measurement.horizontalScale / GLYPH_COUNT_SPACING);
+                 counts.set(text, glyphs);
+             }
+             const extra = glyphs - (prefixes ? before : 0) - 1;
+@@ -289,7 +381,7 @@ export function getFollowingSpaceMetrics(seg, measurement) {
+     return measurement.followingSpaceMetrics.get(seg) ?? addMetrics(measurement.followingSpaceMetrics, seg, seg + ' ', measurement);
+ }
+ function addMetrics(cache, seg, text, measurement) {
+-    const metrics = { width: getContext(measurement).measureText(text).width, emojiCount: -1, fit: null, spaceKerning: null, extraSpacings: null };
++    const metrics = { width: measureFontText(measurement, text).width, emojiCount: -1, fit: null, spaceKerning: null, extraSpacings: null };
+     cache.set(seg, metrics);
+     measurement.state.segments++;
+     if (!measurement.measuredKana && kanaRe.test(seg))
+@@ -328,17 +420,19 @@ function takesNoSpaceKerning(code) {
+ // once per font. Premise: a font that kerns no printable ASCII character with the space kerns
+ // nothing with it (RESEARCH.md, Kerning At Line Edges, has the fonts that do).
+ export function getFontSpaceKerning(measurement) {
++    if (measurement.fontKerning === 'none')
++        return null;
+     if (measurement.spaceKerning === undefined) {
+         const context = getContext(measurement);
+         let probe = '\u2028';
+         for (let code = 0x21; code <= 0x7e; code++)
+             probe += String.fromCharCode(code) + '\u2028';
+-        const kerned = context.measureText(probe).width;
++        const kerned = measureFontText(measurement, probe, context).width;
+         context.fontKerning = 'none';
+-        const unkerned = context.measureText(probe).width;
+-        context.fontKerning = 'auto';
++        const unkerned = measureFontText(measurement, probe, context).width;
++        context.fontKerning = measurement.fontKerning;
+         // Where U+2028 alone doesn't measure as the space, it doesn't stand for it.
+-        measurement.spaceKerning = kerned !== unkerned && context.measureText('\u2028').width === getSegmentMetrics(' ', measurement).width ? new Map() : null;
++        measurement.spaceKerning = kerned !== unkerned && measureFontText(measurement, '\u2028', context).width === getSegmentMetrics(' ', measurement).width ? new Map() : null;
+     }
+     return measurement.spaceKerning;
+ }
+@@ -351,7 +445,7 @@ function getCharacterSpaceKerning(code, spaceFirst, measurement, kernings) {
+         kerning = 0;
+         if (!takesNoSpaceKerning(code)) {
+             const character = String.fromCharCode(code);
+-            const pairWidth = getContext(measurement).measureText(spaceFirst ? '\u2028' + character : character + '\u2028').width;
++            const pairWidth = measureFontText(measurement, spaceFirst ? '\u2028' + character : character + '\u2028').width;
+             kerning = pairWidth - getSegmentMetrics(character, measurement).width - getSegmentMetrics(' ', measurement).width;
+             // Blink keeps a run's width as a float32 (shape_result.cc:1539-1576), so up to the pair's
+             // width / 2^22 is rounding, not kerning (RESEARCH.md, Kerning At Line Edges).
+@@ -403,6 +497,9 @@ function getWholeRunContext(measurement) {
+         state.wholeRunContext = createContext(state.language);
+         state.wholeRunContext.textRendering = 'optimizeLegibility';
+     }
++    setFontFeatures(state.wholeRunContext, measurement.fontFeatureSettings);
++    if ('fontKerning' in state.wholeRunContext)
++        state.wholeRunContext.fontKerning = measurement.fontKerning;
+     if (state.wholeRunFont !== measurement.kanaFont)
+         state.wholeRunContext.font = state.wholeRunFont = measurement.kanaFont;
+     return state.wholeRunContext;
+@@ -433,6 +530,8 @@ function sameInk(a, b) {
+ // (RESEARCH.md, Kerning At Line Edges, has the fonts measured), and one of its hiragana with
+ // U+3002 (ENGINE_FOLLOWUPS.md, Kerning between kana).
+ export function getFontKanaKerning(measurement) {
++    if (measurement.fontKerning === 'none')
++        return null;
+     if (measurement.kanaKerning === undefined) {
+         measurement.kanaKerning = null;
+         const font = measurement.canvasFont;
+@@ -445,10 +544,10 @@ export function getFontKanaKerning(measurement) {
+             const list = i === 0 ? font : font.slice(0, start) + families.slice(i).join(',');
+             measurement.kanaFont = list;
+             const context = getWholeRunContext(measurement);
+-            const kerned = context.measureText(KANA_PROBE).width;
++            const kerned = measureFontText(measurement, KANA_PROBE, context).width;
+             context.fontKerning = 'none';
+-            const unkerned = context.measureText(KANA_PROBE);
+-            context.fontKerning = 'auto';
++            const unkerned = measureFontText(measurement, KANA_PROBE, context);
++            context.fontKerning = measurement.fontKerning;
+             if (own === null)
+                 own = unkerned;
+             else if (!sameInk(own, unkerned))
+@@ -460,13 +559,13 @@ export function getFontKanaKerning(measurement) {
+                 let pairs = '';
+                 for (let code = 0x3041; code <= 0x3096; code++)
+                     pairs += String.fromCharCode(code, 0x3002);
+-                const shorter = context.measureText(pairs).width;
++                const shorter = measureFontText(measurement, pairs, context).width;
+                 measurement.kanaFont = font;
+                 const ownContext = getWholeRunContext(measurement);
+-                const ownKerned = ownContext.measureText(pairs).width;
++                const ownKerned = measureFontText(measurement, pairs, ownContext).width;
+                 ownContext.fontKerning = 'none';
+-                const ownUnkerned = ownContext.measureText(pairs).width;
+-                ownContext.fontKerning = 'auto';
++                const ownUnkerned = measureFontText(measurement, pairs, ownContext).width;
++                ownContext.fontKerning = measurement.fontKerning;
+                 if (ownKerned === ownUnkerned || Math.abs(shorter - ownKerned) > ownKerned / 0x400000)
+                     break;
+                 measurement.kanaFont = list;
+@@ -517,7 +616,7 @@ export function getKanaKerning(text, start, at, measurement, kernings) {
+ // The kerning of two kana in a row: the two in one string on the context that shapes a string
+ // whole, less each alone.
+ function measureKanaKerning(pair, measurement) {
+-    const pairWidth = getWholeRunContext(measurement).measureText(pair).width;
++    const pairWidth = measureFontText(measurement, pair, getWholeRunContext(measurement)).width;
+     const kerning = pairWidth - getSegmentMetrics(pair[0], measurement).width - getSegmentMetrics(pair[1], measurement).width;
+     // As for a character and a space, up to the pair's width / 2^22 is rounding.
+     return Math.abs(kerning) <= pairWidth / 0x400000 ? 0 : kerning;
+@@ -606,13 +705,13 @@ export function getEmojiCorrection(font, measurement) {
+     let correction = measurement.emojiCorrection;
+     if (correction !== null)
+         return correction;
+-    const fontSize = parseFontSize(font);
++    const fontSize = parseFontSize(font) * measurement.horizontalScale;
+     // Canvas's width is there already when an earlier text asked and the page had no box to read.
+     const askedBefore = measurement.emojiWidth !== 0;
+-    const canvasW = measurement.emojiWidth = getContext(measurement).measureText('\u{1F600}').width;
++    const canvasW = measurement.emojiWidth = measureFontText(measurement, '\u{1F600}').width;
+     correction = 0;
+     if (canvasW > fontSize + 0.5 && typeof document !== 'undefined') {
+-        const domW = readEmojiWidth(font);
++        const domW = readEmojiWidth(font) * measurement.horizontalScale;
+         // A document with no box for the span, as in an iframe that is display: none, has no
+         // width to read. The text goes uncorrected, as in a worker, and nothing is kept: the next
+         // text that may hold an emoji asks again.
+@@ -857,7 +956,7 @@ function isLigature(pair, measurement) {
+         const context = getContext(measurement);
+         const width = getSegmentMetrics(pair, measurement).width;
+         context.letterSpacing = LETTER_SPACED_SHAPING;
+-        ligature = context.measureText(pair).width !== width;
++        ligature = measureFontText(measurement, pair, context).width !== width;
+         context.letterSpacing = '0px';
+         measurement.ligaturePairs.set(pair, ligature);
+     }
+@@ -906,27 +1005,43 @@ function measureFitAdvances(seg, ends, count, from, metrics, measurement, emojiC
+ // measurement of its own where the context shapes it as the page does: its widths,
+ // prefixes and line-edge facts all come from that shaping. The context isn't touched
+ // here: text that is all in the font's caches measures nothing (getContext).
+-export function getFontMeasurement(font, language, letterSpaced) {
++export function getFontMeasurement(font, language, letterSpaced, typography) {
++    const fontKerning = typography?.fontKerning ?? 'auto';
++    const fontFeatureSettings = typography?.fontFeatureSettings;
++    const textTransform = typography?.textTransform;
++    const horizontalScale = typography?.horizontalScale ?? 1;
++    if (!Number.isFinite(horizontalScale) || horizontalScale <= 0)
++        throw new RangeError('horizontalScale must be finite and positive');
++    const optionalLigatures = /["'](?:liga|clig|dlig|hlig)["'](?:\s+(?:on|[1-9]\d*))?\s*(?:,|$)/i.test(fontFeatureSettings ?? '');
++    const key = JSON.stringify([font, fontKerning, fontFeatureSettings, textTransform, horizontalScale]);
+     // Measuring starts here, for a text and for each item of a rich-inline paragraph, with the
+     // language the preparation resolved. After that language changes, start again with a new
+     // context and empty caches; clearing the caches alone would re-measure with fonts resolved
+     // under the old language.
+-    if (measureState === null || measureState.language !== language)
++    if (measureState === null || measureState.language !== language) {
++        if (measureState !== null) {
++            for (const context of [measureState.context, measureState.wholeRunContext]) {
++                const canvas = context?.canvas;
++                if (typeof HTMLCanvasElement !== 'undefined' && canvas instanceof HTMLCanvasElement)
++                    canvas.remove();
++            }
++        }
+         measureState = createMeasureState(language);
++    }
+     const state = measureState;
+-    const shaped = letterSpaced && state.shapesLetterSpaced;
++    const shaped = letterSpaced && state.shapesLetterSpaced && fontFeatureSettings === undefined;
+     const fonts = shaped ? state.letterSpacedFonts : state.fonts;
+     // The first measurement after a lookup sets the font again, the same string too: Firefox's
+     // context takes a face added to document.fonts only when its font is assigned, and the
+     // question below leaves the context on a font of its own, whether it throws or not.
+     state.font = '';
+-    let measurement = fonts.get(font);
++    let measurement = fonts.get(key);
+     if (measurement === undefined) {
+         const canvasFont = state.genericFamilies === null ? font : getCanvasFont(font, state.genericFamilies);
+         if (!contextTakesFont(state.context, canvasFont))
+             throw new RangeError(`font must be a font string Canvas takes, a size in px then a family, such as 16px Inter, not "${font}"`);
+-        measurement = { state, canvasFont, letterSpacing: shaped ? LETTER_SPACED_SHAPING : '0px', metrics: new Map(), followingSpaceMetrics: new Map(), spaceKerning: undefined, measuredKana: false, kanaKerning: undefined, kanaFont: canvasFont, emojiCorrection: null, emojiWidth: 0, hyphenText: null, spaceWidth: null, hanKerning: undefined, ligaturePairs: new Map(), glyphCounts: new Map() };
+-        fonts.set(font, measurement);
++        measurement = { state, canvasFont, fontKerning, fontFeatureSettings, textTransform, horizontalScale, optionalLigatures, letterSpacing: shaped ? LETTER_SPACED_SHAPING : '0px', metrics: new Map(), followingSpaceMetrics: new Map(), spaceKerning: undefined, measuredKana: false, kanaKerning: undefined, kanaFont: canvasFont, emojiCorrection: null, emojiWidth: 0, hyphenText: null, spaceWidth: null, hanKerning: undefined, ligaturePairs: new Map(), glyphCounts: new Map() };
++        fonts.set(key, measurement);
+     }
+     return measurement;
+ }
+@@ -959,8 +1074,55 @@ function contextTakesFont(context, font) {
+ // setting, whatever was looked up or prepared in between, and text that is all cached,
+ // which measures nothing, sets nothing. What changes the context after that puts it back
+ // before it returns (getHyphenText, getExtraSpacings, getFontSpaceKerning, isLigature).
++const featureSettingsByCanvas = new WeakMap();
++function setFontFeatures(context, settings) {
++    const canvas = context.canvas;
++    if (typeof HTMLCanvasElement !== 'undefined' && canvas instanceof HTMLCanvasElement) {
++        if (!canvas.isConnected)
++            canvas.ownerDocument.documentElement.appendChild(canvas);
++        const value = settings ?? 'normal';
++        const previous = featureSettingsByCanvas.get(canvas);
++        if (previous?.requested !== value || previous.serialized !== canvas.style.fontFeatureSettings) {
++            canvas.style.fontFeatureSettings = value;
++            featureSettingsByCanvas.set(canvas, { requested: value, serialized: canvas.style.fontFeatureSettings });
++        }
++    }
++    else if ('textRendering' in context) {
++        context.textRendering = settings === '"liga" 0, "clig" 0, "dlig" 0, "hlig" 0, "calt" 0' ? 'optimizeSpeed' : 'auto';
++    }
++}
++export function measureFontText(measurement, text, context = getContext(measurement)) {
++    const metrics = context.measureText(measurement.textTransform === 'uppercase' ? text.toUpperCase() : text);
++    const scale = measurement.horizontalScale;
++    return scale === 1 ? metrics : {
++        width: metrics.width * scale,
++        actualBoundingBoxLeft: metrics.actualBoundingBoxLeft * scale,
++        actualBoundingBoxRight: metrics.actualBoundingBoxRight * scale,
++    };
++}
++function transformedExtraSpacings(seg, measurement) {
++    if (measurement.textTransform !== 'uppercase')
++        return noExtraSpacings;
++    const table = getEngineProfile().graphemeTable;
++    const ends = new Int32Array(seg.length);
++    const count = findGraphemeEnds(table, seg, 0, seg.length, ends);
++    let extras = noExtraSpacings;
++    for (let i = 0, start = 0; i < count; start = ends[i++]) {
++        const displayed = seg.slice(start, ends[i]).toUpperCase();
++        const extra = findGraphemeEnds(table, displayed, 0, displayed.length, null) - 1;
++        if (extra !== 0) {
++            if (extras.length === 0)
++                extras = zeros(count);
++            extras[i] = extra;
++        }
++    }
++    return extras;
++}
+ export function getContext(measurement) {
+     const state = measurement.state;
++    setFontFeatures(state.context, measurement.fontFeatureSettings);
++    if ('fontKerning' in state.context)
++        state.context.fontKerning = measurement.fontKerning;
+     if (state.font !== measurement.canvasFont)
+         state.context.font = state.font = measurement.canvasFont;
+     if (state.letterSpacing !== measurement.letterSpacing)
+@@ -972,10 +1134,21 @@ export function getContext(measurement) {
+ function createContext(language) {
+     // jsdom and happy-dom have a document whose canvas gives no 2D context: getContext() returns null there.
+     let context = null;
+-    if (typeof OffscreenCanvas !== 'undefined')
++    if (typeof document !== 'undefined') {
++        try {
++            const canvas = document.createElement('canvas');
++            canvas.width = canvas.height = 1;
++            context = canvas.getContext('2d');
++            if (context !== null) {
++                canvas.setAttribute('aria-hidden', 'true');
++                canvas.style.cssText = 'all:initial;position:fixed;left:0;top:0;width:0;height:0;visibility:hidden;pointer-events:none';
++                document.documentElement.appendChild(canvas);
++            }
++        }
++        catch { }
++    }
++    if (context === null && typeof OffscreenCanvas !== 'undefined')
+         context = new OffscreenCanvas(1, 1).getContext('2d');
+-    else if (typeof document !== 'undefined')
+-        context = document.createElement('canvas').getContext('2d');
+     if (context === null)
+         throw new Error('Text measurement requires OffscreenCanvas or a DOM canvas context.');
+     if (language !== null && 'lang' in context)
+diff --git a/dist/prepare.d.ts b/dist/prepare.d.ts
+index 3e6788e0a5d2f197a5dd535bc9833c2adb1a9fcc..550d92e8cafe14e8824e711c8cac205bab237dc8 100644
+--- a/dist/prepare.d.ts
++++ b/dist/prepare.d.ts
+@@ -1,5 +1,5 @@
+ import { type TextAnalysis } from './analysis.js';
+-import { type EngineProfile } from './measurement.js';
++import { type EngineProfile, type TypographyOptions } from './measurement.js';
+ import type { PreparedText } from './layout.js';
+ import type { PreparedLineBreakData } from './line-break.js';
+ import type { PreparedSegments } from './line-text.js';
+@@ -20,5 +20,5 @@ export type ParagraphLists = {
+     segmentFlags: Uint8Array;
+     breakableFitAdvances: (number[] | null)[];
+ };
+-export declare function measureAnalysis(analysis: TextAnalysis, from: number, to: number, font: string, includeSegments: boolean, letterSpacing: number, engineProfile: EngineProfile, language: string | null, overflowBreaks: boolean, paragraph: ParagraphLists | null): (PreparedText & PreparedLineBreakData) | (PreparedText & PreparedSegments);
++export declare function measureAnalysis(analysis: TextAnalysis, from: number, to: number, font: string, includeSegments: boolean, letterSpacing: number, engineProfile: EngineProfile, language: string | null, overflowBreaks: boolean, paragraph: ParagraphLists | null, typography?: TypographyOptions): (PreparedText & PreparedLineBreakData) | (PreparedText & PreparedSegments);
+ //# sourceMappingURL=prepare.d.ts.map
+\ No newline at end of file
+diff --git a/dist/prepare.d.ts.map b/dist/prepare.d.ts.map
+index 54da6dbc93c590e23a8c3abc1b821501ee8ef553..64a5e919b092dcc4ce17b08b1db700d044553183 100644
+--- a/dist/prepare.d.ts.map
++++ b/dist/prepare.d.ts.map
+@@ -1 +1 @@
+-{"version":3,"file":"prepare.d.ts","sourceRoot":"","sources":["../src/prepare.ts"],"names":[],"mappings":"AAQA,OAAO,EAeL,KAAK,YAAY,EAClB,MAAM,eAAe,CAAA;AACtB,OAAO,EAEL,KAAK,aAAa,EAsBnB,MAAM,kBAAkB,CAAA;AACzB,OAAO,KAAK,EAAE,YAAY,EAAE,MAAM,aAAa,CAAA;AAC/C,OAAO,KAAK,EAAE,qBAAqB,EAAE,MAAM,iBAAiB,CAAA;AAC5D,OAAO,KAAK,EAAE,gBAAgB,EAAE,MAAM,gBAAgB,CAAA;AAmEtD,eAAO,MAAM,YAAY,IAAI,CAAA;AAC7B,eAAO,MAAM,eAAe,IAAI,CAAA;AAChC,eAAO,MAAM,YAAY,IAAI,CAAA;AAC7B,eAAO,MAAM,YAAY,IAAI,CAAA;AAC7B,eAAO,MAAM,cAAc,KAAK,CAAA;AAChC,eAAO,MAAM,UAAU,KAAK,CAAA;AAK5B,eAAO,MAAM,kBAAkB,IAAI,CAAA;AACnC,eAAO,MAAM,kBAAkB,QAAU,CAAA;AAEzC,eAAO,MAAM,cAAc,QAAU,CAAA;AAErC,eAAO,MAAM,eAAe,QAAU,CAAA;AACtC,eAAO,MAAM,eAAe,QAAU,CAAA;AACtC,eAAO,MAAM,qBAAqB,KAAK,CAAA;AAmIvC,MAAM,MAAM,cAAc,GAAG;IAC3B,MAAM,EAAE,MAAM,EAAE,CAAA;IAChB,YAAY,EAAE,UAAU,CAAA;IACxB,oBAAoB,EAAE,CAAC,MAAM,EAAE,GAAG,IAAI,CAAC,EAAE,CAAA;CAC1C,CAAA;AA+ED,wBAAgB,eAAe,CAC7B,QAAQ,EAAE,YAAY,EACtB,IAAI,EAAE,MAAM,EACZ,EAAE,EAAE,MAAM,EACV,IAAI,EAAE,MAAM,EACZ,eAAe,EAAE,OAAO,EACxB,aAAa,EAAE,MAAM,EACrB,aAAa,EAAE,aAAa,EAC5B,QAAQ,EAAE,MAAM,GAAG,IAAI,EAGvB,cAAc,EAAE,OAAO,EAEvB,SAAS,EAAE,cAAc,GAAG,IAAI,GAC/B,CAAC,YAAY,GAAG,qBAAqB,CAAC,GAAG,CAAC,YAAY,GAAG,gBAAgB,CAAC,CA6Q5E"}
+\ No newline at end of file
++{"version":3,"file":"prepare.d.ts","sourceRoot":"","sources":["../src/prepare.ts"],"names":[],"mappings":"AAQA,OAAO,EAeL,KAAK,YAAY,EAClB,MAAM,eAAe,CAAA;AACtB,OAAO,EAEL,KAAK,aAAa,EAElB,KAAK,iBAAiB,EAqBvB,MAAM,kBAAkB,CAAA;AACzB,OAAO,KAAK,EAAE,YAAY,EAAE,MAAM,aAAa,CAAA;AAC/C,OAAO,KAAK,EAAE,qBAAqB,EAAE,MAAM,iBAAiB,CAAA;AAC5D,OAAO,KAAK,EAAE,gBAAgB,EAAE,MAAM,gBAAgB,CAAA;AAmEtD,eAAO,MAAM,YAAY,IAAI,CAAA;AAC7B,eAAO,MAAM,eAAe,IAAI,CAAA;AAChC,eAAO,MAAM,YAAY,IAAI,CAAA;AAC7B,eAAO,MAAM,YAAY,IAAI,CAAA;AAC7B,eAAO,MAAM,cAAc,KAAK,CAAA;AAChC,eAAO,MAAM,UAAU,KAAK,CAAA;AAK5B,eAAO,MAAM,kBAAkB,IAAI,CAAA;AACnC,eAAO,MAAM,kBAAkB,QAAU,CAAA;AAEzC,eAAO,MAAM,cAAc,QAAU,CAAA;AAErC,eAAO,MAAM,eAAe,QAAU,CAAA;AACtC,eAAO,MAAM,eAAe,QAAU,CAAA;AACtC,eAAO,MAAM,qBAAqB,KAAK,CAAA;AAmIvC,MAAM,MAAM,cAAc,GAAG;IAC3B,MAAM,EAAE,MAAM,EAAE,CAAA;IAChB,YAAY,EAAE,UAAU,CAAA;IACxB,oBAAoB,EAAE,CAAC,MAAM,EAAE,GAAG,IAAI,CAAC,EAAE,CAAA;CAC1C,CAAA;AA+ED,wBAAgB,eAAe,CAC7B,QAAQ,EAAE,YAAY,EACtB,IAAI,EAAE,MAAM,EACZ,EAAE,EAAE,MAAM,EACV,IAAI,EAAE,MAAM,EACZ,eAAe,EAAE,OAAO,EACxB,aAAa,EAAE,MAAM,EACrB,aAAa,EAAE,aAAa,EAC5B,QAAQ,EAAE,MAAM,GAAG,IAAI,EAGvB,cAAc,EAAE,OAAO,EAEvB,SAAS,EAAE,cAAc,GAAG,IAAI,EAChC,UAAU,CAAC,EAAE,iBAAiB,GAC7B,CAAC,YAAY,GAAG,qBAAqB,CAAC,GAAG,CAAC,YAAY,GAAG,gBAAgB,CAAC,CA8Q5E"}
+\ No newline at end of file
+diff --git a/dist/prepare.js b/dist/prepare.js
+index 03a1832e12bf76fa8071280279efcd0caf8941a9..81bfaf3da69d902eac2f8ed057f75669721a577a 100644
+--- a/dist/prepare.js
++++ b/dist/prepare.js
+@@ -298,7 +298,7 @@ export function measureAnalysis(analysis, from, to, font, includeSegments, lette
+ // which is only laid out whole, takes none.
+ overflowBreaks, 
+ // The paragraph's lists for a rich-inline item, null for a text.
+-paragraph) {
++paragraph, typography) {
+     const { normalized, texts, starts, flags } = analysis;
+     // The measured text and where it starts in the analysis's: what is asked of the whole text
+     // is asked of it, and places in it count from its start.
+@@ -320,7 +320,7 @@ paragraph) {
+     // Where the first measured segment goes in the lists.
+     const base = widths.length;
+     const hasLetterSpacing = letterSpacing !== 0;
+-    const fontMeasurement = getFontMeasurement(font, language, hasLetterSpacing);
++    const fontMeasurement = getFontMeasurement(font, language, hasLetterSpacing, typography);
+     const emojiCorrection = textMayContainEmoji(own) ? getEmojiCorrection(font, fontMeasurement) : 0;
+     // Whether the text holds a U+0020. Only then can a space follow one of its text segments
+     // (getFollowingSpaceTail), so a text of none, as most CJK paragraphs are, doesn't look for
+@@ -440,8 +440,9 @@ paragraph) {
+                         if (unspaced !== null)
+                             width -= unspaced.length * letterSpacing;
+                     }
+-                    if (engineProfile.letterSpacesGlyphs) {
+-                        extraSpacings = textMetrics.extraSpacings ??= needsComplexTextPath(text) ? getExtraSpacings(text, fontMeasurement) : noExtraSpacings;
++                    const explicitGlyphSpacing = fontMeasurement.optionalLigatures && !cursiveSpacing;
++                    if (engineProfile.letterSpacesGlyphs || fontMeasurement.textTransform === 'uppercase' || explicitGlyphSpacing) {
++                        extraSpacings = textMetrics.extraSpacings ??= (needsComplexTextPath(text) || fontMeasurement.textTransform === 'uppercase' || explicitGlyphSpacing) ? getExtraSpacings(text, fontMeasurement) : noExtraSpacings;
+                         for (let k = 0; k < extraSpacings.length; k++)
+                             width += extraSpacings[k] * letterSpacing;
+                     }
+diff --git a/dist/rich-inline.d.ts b/dist/rich-inline.d.ts
+index 987910fa2dd621269f6ca12b735ce684cecf5453..ec30393ae33aa3fc418f06649fc8697a992874f7 100644
+--- a/dist/rich-inline.d.ts
++++ b/dist/rich-inline.d.ts
+@@ -1,7 +1,8 @@
+ import type { LayoutCursor, WordBreakMode } from './layout.js';
+ import { type WhiteSpaceMode } from './analysis.js';
++import { type TypographyOptions } from './measurement.js';
+ declare const preparedRichInlineBrand: unique symbol;
+-export type RichInlineItem = {
++export type RichInlineItem = TypographyOptions & {
+     text: string;
+     font: string;
+     letterSpacing?: number;
+diff --git a/dist/rich-inline.d.ts.map b/dist/rich-inline.d.ts.map
+index 87ded8baf7dc589e8648af20df4a195e79d4822c..5a26a1bbdfa3212989a7777b1c161013b458bf4a 100644
+--- a/dist/rich-inline.d.ts.map
++++ b/dist/rich-inline.d.ts.map
+@@ -1 +1 @@
+-{"version":3,"file":"rich-inline.d.ts","sourceRoot":"","sources":["../src/rich-inline.ts"],"names":[],"mappings":"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"}
+\ No newline at end of file
++{"version":3,"file":"rich-inline.d.ts","sourceRoot":"","sources":["../src/rich-inline.ts"],"names":[],"mappings":"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"}
+\ No newline at end of file
+diff --git a/dist/rich-inline.js b/dist/rich-inline.js
+index 6a776a5f60439fc8f016a80f532a23ad62f38b77..1d72cc89e8ffc3406ee06f992ab46950e34efbc6 100644
+--- a/dist/rich-inline.js
++++ b/dist/rich-inline.js
+@@ -41,7 +41,7 @@ export function prepareRichInline(items, options) {
+     const only = onlyIndex < 0 ? undefined : items[onlyIndex];
+     if (only !== undefined && only.text !== undefined && only.break !== 'never' && (only.extraWidth ?? 0) === 0) {
+         const analysis = analyzeText(only.text, profile, whiteSpace, wordBreak, language);
+-        const data = measureAnalysis(analysis, 0, analysis.flags.length, only.font, true, readLetterSpacing(only.letterSpacing, profile), profile, language, true, null);
++        const data = measureAnalysis(analysis, 0, analysis.flags.length, only.font, true, readLetterSpacing(only.letterSpacing, profile), profile, language, true, null, only);
+         const itemSegments = [];
+         for (let index = 0; index <= items.length; index++)
+             itemSegments.push(index <= onlyIndex ? 0 : data.segmentFlags.length);
+@@ -193,7 +193,7 @@ export function prepareRichInline(items, options) {
+             }
+             else {
+                 const ownAnalysis = analyzeText(item.text, profile, 'normal', wordBreak, language);
+-                const own = measureAnalysis(ownAnalysis, 0, ownAnalysis.flags.length, item.font, false, readLetterSpacing(item.letterSpacing, profile), profile, language, false, null);
++                const own = measureAnalysis(ownAnalysis, 0, ownAnalysis.flags.length, item.font, false, readLetterSpacing(item.letterSpacing, profile), profile, language, false, null, item);
+                 const start = { segmentIndex: 0, graphemeIndex: 0 };
+                 if (normalizePreparedLineStart(own, start))
+                     width = stepPreparedLineGeometryFromStart(own, start, Number.POSITIVE_INFINITY);
+@@ -232,7 +232,7 @@ export function prepareRichInline(items, options) {
+             if (letterSpacing !== 0)
+                 simple = false;
+             flags[widths.length] = SPACE | (analysis.flags[from] & (UNBROKEN | RETURNABLE)) | (letterSpacing !== 0 ? SPACED : 0);
+-            widths.push(getSpaceWidth(getFontMeasurement(item.font, language, letterSpacing !== 0)) + (spacingsDiffer ? letterSpacing : 0));
++            widths.push(getSpaceWidth(getFontMeasurement(item.font, language, letterSpacing !== 0, item)) + (spacingsDiffer ? letterSpacing : 0));
+             segments.push(' ');
+             breakableFitAdvances.push(null);
+             sourceStarts.push(offset - starts[index]);
+@@ -322,7 +322,7 @@ export function prepareRichInline(items, options) {
+         // The item's segments, measured in its font onto the end of the paragraph's lists; `sub` holds
+         // what else measurement gives them, from the item's first segment.
+         const itemAt = widths.length;
+-        const sub = measureAnalysis(analysis, from, to, item.font, false, letterSpacing, profile, language, true, lists);
++        const sub = measureAnalysis(analysis, from, to, item.font, false, letterSpacing, profile, language, true, lists, item);
+         simple &&= sub.simpleLineCountFastPath;
+         if (readsItemFonts) {
+             // The gap before the hyphen is the letter spacing after the grapheme before it.
+diff --git a/src/han-kerning.ts b/src/han-kerning.ts
+index e14d2ca310d0fe10db76e75dbcf033b0ff876e16..679273221fe97cf572897942f3798cc52f663f62 100644
+--- a/src/han-kerning.ts
++++ b/src/han-kerning.ts
+@@ -24,7 +24,7 @@
+ // bounds under the page's Han script (han_kerning.cc:47-168, 400-535).
+ import { KIND_BITS, TEXT, UNBROKEN, type TextAnalysis } from './analysis.js'
+ import { hasProperty, PUNCTUATION } from './line-breaks.js'
+-import { getContext, getSegmentMetrics, zeros, type FontMeasurement } from './measurement.js'
++import { getSegmentMetrics, measureFontText, zeros, type FontMeasurement } from './measurement.js'
+ 
+ const OTHER = 0
+ const OPEN = 1
+@@ -91,18 +91,18 @@ export type HanKerningFontData = {
+ // centered. Canvas shapes a CJK symbol next to 中 as Han, so its right edge comes from `中c`
+ // and its left edge from `c中`, where 中's ink covers neither. Curly quotes and U+FF1B are
+ // words of their own in Canvas (NextWordEndIndex) and are measured alone.
+-function getTypeFromBounds(ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D, c: number, hanWidth: number): { advance: number; type: number } {
++function getTypeFromBounds(measurement: FontMeasurement, c: number, hanWidth: number): { advance: number; type: number } {
+   const s = String.fromCharCode(c)
+   let advance: number
+   let left: number
+   let right: number
+   if (isCanvasCjkSymbol(c)) {
+-    const after = ctx.measureText('\u4E2D' + s)
++    const after = measureFontText(measurement, '\u4E2D' + s)
+     advance = after.width - hanWidth
+     right = after.actualBoundingBoxRight - hanWidth
+-    left = -ctx.measureText(s + '\u4E2D').actualBoundingBoxLeft
++    left = -measureFontText(measurement, s + '\u4E2D').actualBoundingBoxLeft
+   } else {
+-    const metrics = ctx.measureText(s)
++    const metrics = measureFontText(measurement, s)
+     advance = metrics.width
+     left = -metrics.actualBoundingBoxLeft
+     right = metrics.actualBoundingBoxRight
+@@ -131,8 +131,7 @@ function getFontData(measurement: FontMeasurement): HanKerningFontData | null {
+     return null
+   }
+   const hanWidth = getSegmentMetrics('\u4E2D', measurement).width
+-  const ctx = getContext(measurement)
+-  const glyphs = [0x3001, 0x3002, 0xFF0C, 0xFF0E, 0xFF1A, 0xFF1B, 0x201C, 0x2018, 0x201D, 0x2019].map(c => getTypeFromBounds(ctx, c, hanWidth))
++  const glyphs = [0x3001, 0x3002, 0xFF0C, 0xFF0E, 0xFF1A, 0xFF1B, 0x201C, 0x2018, 0x201D, 0x2019].map(c => getTypeFromBounds(measurement, c, hanWidth))
+   // A group has one type only when its glyphs share the advance and the type (han_kerning.cc:88-135).
+   const group = (from: number, to: number): number => {
+     for (let i = from + 1; i < to; i++) {
+diff --git a/src/layout.ts b/src/layout.ts
+index 02fa8cb7b2b67c54a4e8a2c1f9694e6cc0c9e37d..9d7bce55c667b996bb8c6247a2f70a204d080753 100644
+--- a/src/layout.ts
++++ b/src/layout.ts
+@@ -23,6 +23,7 @@ import {
+   getPreparationLanguage,
+   readLetterSpacing,
+   setLocaleLanguage,
++  type TypographyOptions,
+ } from './measurement.js'
+ import { measureAnalysis } from './prepare.js'
+ import {
+@@ -97,7 +98,7 @@ export type LayoutLinesResult = LayoutResult & {
+ 
+ export type WordBreakMode = AnalysisWordBreakMode
+ 
+-export type PrepareOptions = {
++export type PrepareOptions = TypographyOptions & {
+   whiteSpace?: WhiteSpaceMode
+   wordBreak?: WordBreakMode
+   letterSpacing?: number
+@@ -117,7 +118,7 @@ function prepareInternal(
+   // One language read: break rules and measurement both follow it.
+   const language = getPreparationLanguage(engineProfile)
+   const analysis = analyzeText(text, engineProfile, options?.whiteSpace, wordBreak, language)
+-  return measureAnalysis(analysis, 0, analysis.flags.length, font, includeSegments, letterSpacing, engineProfile, language, true, null)
++  return measureAnalysis(analysis, 0, analysis.flags.length, font, includeSegments, letterSpacing, engineProfile, language, true, null, options)
+ }
+ 
+ // Prepare text for layout. Segments the text, measures each segment via canvas,
+diff --git a/src/measurement.ts b/src/measurement.ts
+index e66b27d4056008be8a38ed65058642b078dc9cfe..211dfa9339f476607351e85aff2a238a60c6714c 100644
+--- a/src/measurement.ts
++++ b/src/measurement.ts
+@@ -391,7 +391,19 @@ type MeasureState = {
+ let measureState: MeasureState | null = null
+ // What preparation keeps per font. It all goes together, when the caches clear or the
+ // language changes.
++export type TypographyOptions = {
++  fontKerning?: 'auto' | 'normal' | 'none'
++  fontFeatureSettings?: string
++  textTransform?: 'uppercase'
++  horizontalScale?: number
++}
++
+ export type FontMeasurement = {
++  fontKerning: 'auto' | 'normal' | 'none'
++  fontFeatureSettings: string | undefined
++  textTransform: 'uppercase' | undefined
++  horizontalScale: number
++  optionalLigatures: boolean
+   state: MeasureState // Its context, which getContext() sets to the font and its shaping
+   // The font Canvas is given: the declared font, with the generic keywords the context's
+   // language names replaced by their families.
+@@ -659,8 +671,93 @@ export const noExtraSpacings: number[] = []
+ // for each prefix new to the font, which WebKit shapes each time, since it keeps no width
+ // measured under a letter spacing (TextMeasurementCache.h:165-167). Under a context that
+ // takes no letterSpacing every grapheme takes one.
++let glyphSpacingProbe: HTMLSpanElement | null = null
++
++function getDomExtraSpacings(seg: string, measurement: FontMeasurement): number[] | null {
++  if (typeof document === 'undefined') return null
++  if (glyphSpacingProbe?.ownerDocument !== document) {
++    glyphSpacingProbe?.remove()
++    glyphSpacingProbe = document.createElement('span')
++    glyphSpacingProbe.setAttribute('aria-hidden', 'true')
++  }
++  const probe = glyphSpacingProbe
++  if (typeof probe.getBoundingClientRect !== 'function') return null
++  const style = probe.style
++  style.cssText = 'all:initial!important;position:fixed!important;left:0!important;top:0!important;visibility:hidden!important;pointer-events:none!important;display:inline-block!important;white-space:pre!important;width:max-content!important;max-width:none!important;contain:layout style!important'
++  style.setProperty('font', measurement.canvasFont, 'important')
++  style.setProperty('font-kerning', measurement.fontKerning, 'important')
++  style.setProperty('font-feature-settings', measurement.fontFeatureSettings ?? 'normal', 'important')
++  probe.lang = measurement.state.language ?? ''
++  const rootZoomValue = typeof window !== 'undefined' && typeof window.getComputedStyle === 'function'
++    ? Number.parseFloat(window.getComputedStyle(document.documentElement).zoom) : 1
++  const rootZoom = Number.isFinite(rootZoomValue) && rootZoomValue > 0 ? rootZoomValue : 1
++  const ends = new Int32Array(seg.length)
++  const count = findGraphemeEnds(getEngineProfile().graphemeTable, seg, 0, seg.length, ends)
++  const prefixes = count <= MAX_PREFIX_FIT_GRAPHEMES
++  let extras = noExtraSpacings
++  let before = 0
++  try {
++    if (!prefixes) {
++      if (!probe.isConnected) document.documentElement.appendChild(probe)
++      const displayed = measurement.textTransform === 'uppercase' ? seg.toUpperCase() : seg
++      probe.textContent = displayed
++      const node = probe.firstChild!
++      const range = document.createRange()
++      range.setStart(node, 0)
++      let displayedOffset = 0
++      const offsets = measurement.textTransform === 'uppercase'
++        ? Array.from({ length: count }, (_, i) => displayedOffset += seg.slice(i === 0 ? 0 : ends[i - 1], ends[i]).toUpperCase().length)
++        : ends
++      style.setProperty('letter-spacing', '0px', 'important')
++      const plainWidths = Array.from({ length: count }, (_, i) => {
++        range.setEnd(node, offsets[i]!)
++        return range.getBoundingClientRect().width
++      })
++      style.setProperty('letter-spacing', '128px', 'important')
++      extras = zeros(count)
++      for (let i = 0; i < count; i++) {
++        range.setEnd(node, offsets[i]!)
++        const glyphs = (range.getBoundingClientRect().width - plainWidths[i]!) / (128 * rootZoom)
++        if (!Number.isFinite(glyphs)) return null
++        extras[i] = glyphs - before - 1
++        before = glyphs
++      }
++      return extras
++    }
++    for (let i = 0, start = 0; i < count; start = ends[i++]!) {
++      const text = seg.slice(prefixes ? 0 : start, ends[i])
++      let glyphs = measurement.glyphCounts.get(text)
++      if (glyphs === undefined) {
++        if (!probe.isConnected) document.documentElement.appendChild(probe)
++        probe.textContent = measurement.textTransform === 'uppercase' ? text.toUpperCase() : text
++        style.setProperty('letter-spacing', '0px', 'important')
++        const plain = probe.getBoundingClientRect().width
++        style.setProperty('letter-spacing', '128px', 'important')
++        const spaced = probe.getBoundingClientRect().width
++        if (!Number.isFinite(plain) || !Number.isFinite(spaced) || plain <= 0 || spaced < plain) return null
++        glyphs = Math.round((spaced - plain) / (128 * rootZoom))
++        measurement.glyphCounts.set(text, glyphs)
++      }
++      const extra = glyphs - (prefixes ? before : 0) - 1
++      before = glyphs
++      if (extra !== 0) {
++        if (extras.length === 0) extras = zeros(count)
++        extras[i] = extra
++      }
++    }
++  } finally {
++    probe.remove()
++    probe.textContent = ''
++  }
++  return extras
++}
++
+ export function getExtraSpacings(seg: string, measurement: FontMeasurement): number[] {
+-  if (!measurement.state.takesLetterSpacing) return noExtraSpacings
++  if (measurement.optionalLigatures) {
++    const measured = getDomExtraSpacings(seg, measurement)
++    if (measured !== null) return measured
++  }
++  if (!measurement.state.takesLetterSpacing || !getEngineProfile().letterSpacesGlyphs) return transformedExtraSpacings(seg, measurement)
+   const ends = new Int32Array(seg.length)
+   const count = findGraphemeEnds(getEngineProfile().graphemeTable, seg, 0, seg.length, ends)
+   const prefixes = count <= MAX_PREFIX_FIT_GRAPHEMES
+@@ -679,7 +776,7 @@ export function getExtraSpacings(seg: string, measurement: FontMeasurement): num
+           context = getContext(measurement)
+           context.letterSpacing = `${GLYPH_COUNT_SPACING}px`
+         }
+-        glyphs = Math.round(context.measureText(text).width / GLYPH_COUNT_SPACING)
++        glyphs = Math.round(measureFontText(measurement, text, context).width / measurement.horizontalScale / GLYPH_COUNT_SPACING)
+         counts.set(text, glyphs)
+       }
+       const extra = glyphs - (prefixes ? before : 0) - 1
+@@ -711,7 +808,7 @@ export function getFollowingSpaceMetrics(seg: string, measurement: FontMeasureme
+ }
+ 
+ function addMetrics(cache: Map<string, SegmentMetrics>, seg: string, text: string, measurement: FontMeasurement): SegmentMetrics {
+-  const metrics: SegmentMetrics = { width: getContext(measurement).measureText(text).width, emojiCount: -1, fit: null, spaceKerning: null, extraSpacings: null }
++  const metrics: SegmentMetrics = { width: measureFontText(measurement, text).width, emojiCount: -1, fit: null, spaceKerning: null, extraSpacings: null }
+   cache.set(seg, metrics)
+   measurement.state.segments++
+   if (!measurement.measuredKana && kanaRe.test(seg)) measurement.measuredKana = true
+@@ -754,16 +851,17 @@ function takesNoSpaceKerning(code: number): boolean {
+ // once per font. Premise: a font that kerns no printable ASCII character with the space kerns
+ // nothing with it (RESEARCH.md, Kerning At Line Edges, has the fonts that do).
+ export function getFontSpaceKerning(measurement: FontMeasurement): Map<number, number> | null {
++  if (measurement.fontKerning === 'none') return null
+   if (measurement.spaceKerning === undefined) {
+     const context = getContext(measurement)
+     let probe = '\u2028'
+     for (let code = 0x21; code <= 0x7e; code++) probe += String.fromCharCode(code) + '\u2028'
+-    const kerned = context.measureText(probe).width
++    const kerned = measureFontText(measurement, probe, context).width
+     context.fontKerning = 'none'
+-    const unkerned = context.measureText(probe).width
+-    context.fontKerning = 'auto'
++    const unkerned = measureFontText(measurement, probe, context).width
++    context.fontKerning = measurement.fontKerning
+     // Where U+2028 alone doesn't measure as the space, it doesn't stand for it.
+-    measurement.spaceKerning = kerned !== unkerned && context.measureText('\u2028').width === getSegmentMetrics(' ', measurement).width ? new Map() : null
++    measurement.spaceKerning = kerned !== unkerned && measureFontText(measurement, '\u2028', context).width === getSegmentMetrics(' ', measurement).width ? new Map() : null
+   }
+   return measurement.spaceKerning
+ }
+@@ -777,7 +875,7 @@ function getCharacterSpaceKerning(code: number, spaceFirst: boolean, measurement
+     kerning = 0
+     if (!takesNoSpaceKerning(code)) {
+       const character = String.fromCharCode(code)
+-      const pairWidth = getContext(measurement).measureText(spaceFirst ? '\u2028' + character : character + '\u2028').width
++      const pairWidth = measureFontText(measurement, spaceFirst ? '\u2028' + character : character + '\u2028').width
+       kerning = pairWidth - getSegmentMetrics(character, measurement).width - getSegmentMetrics(' ', measurement).width
+       // Blink keeps a run's width as a float32 (shape_result.cc:1539-1576), so up to the pair's
+       // width / 2^22 is rounding, not kerning (RESEARCH.md, Kerning At Line Edges).
+@@ -830,13 +928,15 @@ function getWholeRunContext(measurement: FontMeasurement): CanvasRenderingContex
+     state.wholeRunContext = createContext(state.language)
+     state.wholeRunContext.textRendering = 'optimizeLegibility'
+   }
++  setFontFeatures(state.wholeRunContext, measurement.fontFeatureSettings)
++  if ('fontKerning' in state.wholeRunContext) state.wholeRunContext.fontKerning = measurement.fontKerning
+   if (state.wholeRunFont !== measurement.kanaFont) state.wholeRunContext.font = state.wholeRunFont = measurement.kanaFont
+   return state.wholeRunContext
+ }
+ 
+ // Whether two measurements of one string are of the same glyphs at the same places: as wide,
+ // with the same ink edges, to float32 rounding (getKanaKerning has the bound).
+-function sameInk(a: TextMetrics, b: TextMetrics): boolean {
++function sameInk(a: HorizontalTextMetrics, b: HorizontalTextMetrics): boolean {
+   const bound = a.width / 0x400000
+   return Math.abs(a.width - b.width) <= bound && Math.abs(a.actualBoundingBoxLeft - b.actualBoundingBoxLeft) <= bound &&
+     Math.abs(a.actualBoundingBoxRight - b.actualBoundingBoxRight) <= bound
+@@ -861,6 +961,7 @@ function sameInk(a: TextMetrics, b: TextMetrics): boolean {
+ // (RESEARCH.md, Kerning At Line Edges, has the fonts measured), and one of its hiragana with
+ // U+3002 (ENGINE_FOLLOWUPS.md, Kerning between kana).
+ export function getFontKanaKerning(measurement: FontMeasurement): Float64Array | null {
++  if (measurement.fontKerning === 'none') return null
+   if (measurement.kanaKerning === undefined) {
+     measurement.kanaKerning = null
+     const font = measurement.canvasFont
+@@ -868,15 +969,15 @@ export function getFontKanaKerning(measurement: FontMeasurement): Float64Array |
+     const start = size === null ? 0 : size.index + size[0].length
+     const families = size === null ? null : font.slice(start).match(familyRe)
+     const lists = families === null ? 1 : families.length
+-    let own: TextMetrics | null = null
++    let own: HorizontalTextMetrics | null = null
+     for (let i = 0; i < lists; i++) {
+       const list = i === 0 ? font : font.slice(0, start) + families!.slice(i).join(',')
+       measurement.kanaFont = list
+       const context = getWholeRunContext(measurement)
+-      const kerned = context.measureText(KANA_PROBE).width
++      const kerned = measureFontText(measurement, KANA_PROBE, context).width
+       context.fontKerning = 'none'
+-      const unkerned = context.measureText(KANA_PROBE)
+-      context.fontKerning = 'auto'
++      const unkerned = measureFontText(measurement, KANA_PROBE, context)
++      context.fontKerning = measurement.fontKerning
+       if (own === null) own = unkerned
+       else if (!sameInk(own, unkerned)) break
+       if (kerned === unkerned.width) continue
+@@ -884,13 +985,13 @@ export function getFontKanaKerning(measurement: FontMeasurement): Float64Array |
+         // Each hiragana letter before a U+3002: Canvas shapes each pair as one word under any list.
+         let pairs = ''
+         for (let code = 0x3041; code <= 0x3096; code++) pairs += String.fromCharCode(code, 0x3002)
+-        const shorter = context.measureText(pairs).width
++        const shorter = measureFontText(measurement, pairs, context).width
+         measurement.kanaFont = font
+         const ownContext = getWholeRunContext(measurement)
+-        const ownKerned = ownContext.measureText(pairs).width
++        const ownKerned = measureFontText(measurement, pairs, ownContext).width
+         ownContext.fontKerning = 'none'
+-        const ownUnkerned = ownContext.measureText(pairs).width
+-        ownContext.fontKerning = 'auto'
++        const ownUnkerned = measureFontText(measurement, pairs, ownContext).width
++        ownContext.fontKerning = measurement.fontKerning
+         if (ownKerned === ownUnkerned || Math.abs(shorter - ownKerned) > ownKerned / 0x400000) break
+         measurement.kanaFont = list
+       }
+@@ -936,7 +1037,7 @@ export function getKanaKerning(text: string, start: number, at: number, measurem
+ // The kerning of two kana in a row: the two in one string on the context that shapes a string
+ // whole, less each alone.
+ function measureKanaKerning(pair: string, measurement: FontMeasurement): number {
+-  const pairWidth = getWholeRunContext(measurement).measureText(pair).width
++  const pairWidth = measureFontText(measurement, pair, getWholeRunContext(measurement)).width
+   const kerning = pairWidth - getSegmentMetrics(pair[0]!, measurement).width - getSegmentMetrics(pair[1]!, measurement).width
+   // As for a character and a space, up to the pair's width / 2^22 is rounding.
+   return Math.abs(kerning) <= pairWidth / 0x400000 ? 0 : kerning
+@@ -1034,13 +1135,13 @@ export function getEmojiCorrection(font: string, measurement: FontMeasurement):
+   let correction = measurement.emojiCorrection
+   if (correction !== null) return correction
+ 
+-  const fontSize = parseFontSize(font)
++  const fontSize = parseFontSize(font) * measurement.horizontalScale
+   // Canvas's width is there already when an earlier text asked and the page had no box to read.
+   const askedBefore = measurement.emojiWidth !== 0
+-  const canvasW = measurement.emojiWidth = getContext(measurement).measureText('\u{1F600}').width
++  const canvasW = measurement.emojiWidth = measureFontText(measurement, '\u{1F600}').width
+   correction = 0
+   if (canvasW > fontSize + 0.5 && typeof document !== 'undefined') {
+-    const domW = readEmojiWidth(font)
++    const domW = readEmojiWidth(font) * measurement.horizontalScale
+     // A document with no box for the span, as in an iframe that is display: none, has no
+     // width to read. The text goes uncorrected, as in a worker, and nothing is kept: the next
+     // text that may hold an emoji asks again.
+@@ -1284,7 +1385,7 @@ function isLigature(pair: string, measurement: FontMeasurement): boolean {
+     const context = getContext(measurement)
+     const width = getSegmentMetrics(pair, measurement).width
+     context.letterSpacing = LETTER_SPACED_SHAPING
+-    ligature = context.measureText(pair).width !== width
++    ligature = measureFontText(measurement, pair, context).width !== width
+     context.letterSpacing = '0px'
+     measurement.ligaturePairs.set(pair, ligature)
+   }
+@@ -1344,25 +1445,40 @@ function measureFitAdvances(
+ // measurement of its own where the context shapes it as the page does: its widths,
+ // prefixes and line-edge facts all come from that shaping. The context isn't touched
+ // here: text that is all in the font's caches measures nothing (getContext).
+-export function getFontMeasurement(font: string, language: string | null, letterSpaced: boolean): FontMeasurement {
++export function getFontMeasurement(font: string, language: string | null, letterSpaced: boolean, typography?: TypographyOptions): FontMeasurement {
++  const fontKerning = typography?.fontKerning ?? 'auto'
++  const fontFeatureSettings = typography?.fontFeatureSettings
++  const textTransform = typography?.textTransform
++  const horizontalScale = typography?.horizontalScale ?? 1
++  if (!Number.isFinite(horizontalScale) || horizontalScale <= 0) throw new RangeError('horizontalScale must be finite and positive')
++  const optionalLigatures = /["'](?:liga|clig|dlig|hlig)["'](?:\s+(?:on|[1-9]\d*))?\s*(?:,|$)/i.test(fontFeatureSettings ?? '')
++  const key = JSON.stringify([font, fontKerning, fontFeatureSettings, textTransform, horizontalScale])
+   // Measuring starts here, for a text and for each item of a rich-inline paragraph, with the
+   // language the preparation resolved. After that language changes, start again with a new
+   // context and empty caches; clearing the caches alone would re-measure with fonts resolved
+   // under the old language.
+-  if (measureState === null || measureState.language !== language) measureState = createMeasureState(language)
++  if (measureState === null || measureState.language !== language) {
++    if (measureState !== null) {
++      for (const context of [measureState.context, measureState.wholeRunContext]) {
++        const canvas = context?.canvas
++        if (typeof HTMLCanvasElement !== 'undefined' && canvas instanceof HTMLCanvasElement) canvas.remove()
++      }
++    }
++    measureState = createMeasureState(language)
++  }
+   const state = measureState
+-  const shaped = letterSpaced && state.shapesLetterSpaced
++  const shaped = letterSpaced && state.shapesLetterSpaced && fontFeatureSettings === undefined
+   const fonts = shaped ? state.letterSpacedFonts : state.fonts
+   // The first measurement after a lookup sets the font again, the same string too: Firefox's
+   // context takes a face added to document.fonts only when its font is assigned, and the
+   // question below leaves the context on a font of its own, whether it throws or not.
+   state.font = ''
+-  let measurement = fonts.get(font)
++  let measurement = fonts.get(key)
+   if (measurement === undefined) {
+     const canvasFont = state.genericFamilies === null ? font : getCanvasFont(font, state.genericFamilies)
+     if (!contextTakesFont(state.context, canvasFont)) throw new RangeError(`font must be a font string Canvas takes, a size in px then a family, such as 16px Inter, not "${font}"`)
+-    measurement = { state, canvasFont, letterSpacing: shaped ? LETTER_SPACED_SHAPING : '0px', metrics: new Map(), followingSpaceMetrics: new Map(), spaceKerning: undefined, measuredKana: false, kanaKerning: undefined, kanaFont: canvasFont, emojiCorrection: null, emojiWidth: 0, hyphenText: null, spaceWidth: null, hanKerning: undefined, ligaturePairs: new Map(), glyphCounts: new Map() }
+-    fonts.set(font, measurement)
++    measurement = { state, canvasFont, fontKerning, fontFeatureSettings, textTransform, horizontalScale, optionalLigatures, letterSpacing: shaped ? LETTER_SPACED_SHAPING : '0px', metrics: new Map(), followingSpaceMetrics: new Map(), spaceKerning: undefined, measuredKana: false, kanaKerning: undefined, kanaFont: canvasFont, emojiCorrection: null, emojiWidth: 0, hyphenText: null, spaceWidth: null, hanKerning: undefined, ligaturePairs: new Map(), glyphCounts: new Map() }
++    fonts.set(key, measurement)
+   }
+   return measurement
+ }
+@@ -1396,8 +1512,57 @@ function contextTakesFont(context: CanvasRenderingContext2D | OffscreenCanvasRen
+ // setting, whatever was looked up or prepared in between, and text that is all cached,
+ // which measures nothing, sets nothing. What changes the context after that puts it back
+ // before it returns (getHyphenText, getExtraSpacings, getFontSpaceKerning, isLigature).
++
++const featureSettingsByCanvas = new WeakMap<HTMLCanvasElement, { requested: string; serialized: string }>()
++
++function setFontFeatures(context: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D, settings: string | undefined): void {
++  const canvas = context.canvas
++  if (typeof HTMLCanvasElement !== 'undefined' && canvas instanceof HTMLCanvasElement) {
++    if (!canvas.isConnected) canvas.ownerDocument.documentElement.appendChild(canvas)
++    const value = settings ?? 'normal'
++    const previous = featureSettingsByCanvas.get(canvas)
++    if (previous?.requested !== value || previous.serialized !== canvas.style.fontFeatureSettings) {
++      canvas.style.fontFeatureSettings = value
++      featureSettingsByCanvas.set(canvas, { requested: value, serialized: canvas.style.fontFeatureSettings })
++    }
++  } else if ('textRendering' in context) {
++    context.textRendering = settings === '"liga" 0, "clig" 0, "dlig" 0, "hlig" 0, "calt" 0' ? 'optimizeSpeed' : 'auto'
++  }
++}
++
++type HorizontalTextMetrics = Pick<TextMetrics, 'width' | 'actualBoundingBoxLeft' | 'actualBoundingBoxRight'>
++
++export function measureFontText(measurement: FontMeasurement, text: string, context = getContext(measurement)): HorizontalTextMetrics {
++  const metrics = context.measureText(measurement.textTransform === 'uppercase' ? text.toUpperCase() : text)
++  const scale = measurement.horizontalScale
++  return scale === 1 ? metrics : {
++    width: metrics.width * scale,
++    actualBoundingBoxLeft: metrics.actualBoundingBoxLeft * scale,
++    actualBoundingBoxRight: metrics.actualBoundingBoxRight * scale,
++  }
++}
++
++function transformedExtraSpacings(seg: string, measurement: FontMeasurement): number[] {
++  if (measurement.textTransform !== 'uppercase') return noExtraSpacings
++  const table = getEngineProfile().graphemeTable
++  const ends = new Int32Array(seg.length)
++  const count = findGraphemeEnds(table, seg, 0, seg.length, ends)
++  let extras = noExtraSpacings
++  for (let i = 0, start = 0; i < count; start = ends[i++]!) {
++    const displayed = seg.slice(start, ends[i]).toUpperCase()
++    const extra = findGraphemeEnds(table, displayed, 0, displayed.length, null) - 1
++    if (extra !== 0) {
++      if (extras.length === 0) extras = zeros(count)
++      extras[i] = extra
++    }
++  }
++  return extras
++}
++
+ export function getContext(measurement: FontMeasurement): CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D {
+   const state = measurement.state
++  setFontFeatures(state.context, measurement.fontFeatureSettings)
++  if ('fontKerning' in state.context) state.context.fontKerning = measurement.fontKerning
+   if (state.font !== measurement.canvasFont) state.context.font = state.font = measurement.canvasFont
+   if (state.letterSpacing !== measurement.letterSpacing) state.context.letterSpacing = state.letterSpacing = measurement.letterSpacing
+   return state.context
+@@ -1408,8 +1573,19 @@ export function getContext(measurement: FontMeasurement): CanvasRenderingContext
+ function createContext(language: string | null): CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D {
+   // jsdom and happy-dom have a document whose canvas gives no 2D context: getContext() returns null there.
+   let context: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | null = null
+-  if (typeof OffscreenCanvas !== 'undefined') context = new OffscreenCanvas(1, 1).getContext('2d')
+-  else if (typeof document !== 'undefined') context = document.createElement('canvas').getContext('2d')
++  if (typeof document !== 'undefined') {
++    try {
++      const canvas = document.createElement('canvas')
++      canvas.width = canvas.height = 1
++      context = canvas.getContext('2d')
++      if (context !== null) {
++        canvas.setAttribute('aria-hidden', 'true')
++        canvas.style.cssText = 'all:initial;position:fixed;left:0;top:0;width:0;height:0;visibility:hidden;pointer-events:none'
++        document.documentElement.appendChild(canvas)
++      }
++    } catch {}
++  }
++  if (context === null && typeof OffscreenCanvas !== 'undefined') context = new OffscreenCanvas(1, 1).getContext('2d')
+   if (context === null) throw new Error('Text measurement requires OffscreenCanvas or a DOM canvas context.')
+   if (language !== null && 'lang' in context) context.lang = language
+   return context
+diff --git a/src/prepare.ts b/src/prepare.ts
+index 886a1b5302acf7f1459bbd5ef31af1674afce6ed..062816e9c04e771536ce539706e3dca32757136c 100644
+--- a/src/prepare.ts
++++ b/src/prepare.ts
+@@ -27,6 +27,7 @@ import {
+   type BreakableFitMode,
+   type EngineProfile,
+   type FontMeasurement,
++  type TypographyOptions,
+   getCorrectedSegmentWidth,
+   getEmojiCorrection,
+   getExtraSpacings,
+@@ -362,6 +363,7 @@ export function measureAnalysis(
+   overflowBreaks: boolean,
+   // The paragraph's lists for a rich-inline item, null for a text.
+   paragraph: ParagraphLists | null,
++  typography?: TypographyOptions,
+ ): (PreparedText & PreparedLineBreakData) | (PreparedText & PreparedSegments) {
+   const { normalized, texts, starts, flags } = analysis
+   // The measured text and where it starts in the analysis's: what is asked of the whole text
+@@ -384,7 +386,7 @@ export function measureAnalysis(
+   // Where the first measured segment goes in the lists.
+   const base = widths.length
+   const hasLetterSpacing = letterSpacing !== 0
+-  const fontMeasurement = getFontMeasurement(font, language, hasLetterSpacing)
++  const fontMeasurement = getFontMeasurement(font, language, hasLetterSpacing, typography)
+   const emojiCorrection = textMayContainEmoji(own) ? getEmojiCorrection(font, fontMeasurement) : 0
+   // Whether the text holds a U+0020. Only then can a space follow one of its text segments
+   // (getFollowingSpaceTail), so a text of none, as most CJK paragraphs are, doesn't look for
+@@ -506,8 +508,9 @@ export function measureAnalysis(
+             unspaced = getUnspacedGraphemes(own, starts[mi]! - ownStart, starts[mi]! - ownStart + text.length, engineProfile.graphemeTable, engineProfile.unspacedCursive === 'run' ? scriptRuns : null)
+             if (unspaced !== null) width -= unspaced.length * letterSpacing
+           }
+-          if (engineProfile.letterSpacesGlyphs) {
+-            extraSpacings = textMetrics.extraSpacings ??= needsComplexTextPath(text) ? getExtraSpacings(text, fontMeasurement) : noExtraSpacings
++          const explicitGlyphSpacing = fontMeasurement.optionalLigatures && !cursiveSpacing
++          if (engineProfile.letterSpacesGlyphs || fontMeasurement.textTransform === 'uppercase' || explicitGlyphSpacing) {
++            extraSpacings = textMetrics.extraSpacings ??= (needsComplexTextPath(text) || fontMeasurement.textTransform === 'uppercase' || explicitGlyphSpacing) ? getExtraSpacings(text, fontMeasurement) : noExtraSpacings
+             for (let k = 0; k < extraSpacings.length; k++) width += extraSpacings[k]! * letterSpacing
+           }
+         }
+diff --git a/src/rich-inline.ts b/src/rich-inline.ts
+index 7c7974cb3a7f17a3715ad81c44a8819c928d4180..21f1132f17ae4695621502b35c392afc0deafa19 100644
+--- a/src/rich-inline.ts
++++ b/src/rich-inline.ts
+@@ -29,7 +29,7 @@ import {
+   type ParagraphSegmentData,
+   type PreparedLineData,
+ } from './line-break.js'
+-import { getEngineProfile, getFontMeasurement, getPreparationLanguage, getSpaceWidth, readLetterSpacing, zeros, type EngineProfile } from './measurement.js'
++import { getEngineProfile, getFontMeasurement, getPreparationLanguage, getSpaceWidth, readLetterSpacing, zeros, type EngineProfile, type TypographyOptions } from './measurement.js'
+ import { measureAnalysis, type ParagraphLists } from './prepare.js'
+ 
+ // Helper for rich-text inline flow under `white-space: normal` or `pre-wrap`: one paragraph's text
+@@ -53,7 +53,7 @@ declare const preparedRichInlineBrand: unique symbol
+ 
+ const PRESERVED_WHITE_SPACE = 1 << PRESERVED_SPACE | 1 << TAB
+ 
+-export type RichInlineItem = {
++export type RichInlineItem = TypographyOptions & {
+   text: string // Raw author text, including any leading/trailing collapsible spaces
+   font: string // Canvas font shorthand used to prepare and measure this item
+   letterSpacing?: number // Extra horizontal spacing between graphemes, in CSS px
+@@ -211,7 +211,7 @@ export function prepareRichInline(items: Array<RichInlineItem | RichInlineBox>,
+   const only = onlyIndex < 0 ? undefined : items[onlyIndex]!
+   if (only !== undefined && only.text !== undefined && only.break !== 'never' && (only.extraWidth ?? 0) === 0) {
+     const analysis = analyzeText(only.text, profile, whiteSpace, wordBreak, language)
+-    const data = measureAnalysis(analysis, 0, analysis.flags.length, only.font, true, readLetterSpacing(only.letterSpacing, profile), profile, language, true, null) as PreparedSegments
++    const data = measureAnalysis(analysis, 0, analysis.flags.length, only.font, true, readLetterSpacing(only.letterSpacing, profile), profile, language, true, null, only) as PreparedSegments
+     const itemSegments: number[] = []
+     for (let index = 0; index <= items.length; index++) itemSegments.push(index <= onlyIndex ? 0 : data.segmentFlags.length)
+     return findWholeLine({
+@@ -355,7 +355,7 @@ export function prepareRichInline(items: Array<RichInlineItem | RichInlineBox>,
+         width = item.width
+       } else {
+         const ownAnalysis = analyzeText(item.text, profile, 'normal', wordBreak, language)
+-        const own = measureAnalysis(ownAnalysis, 0, ownAnalysis.flags.length, item.font, false, readLetterSpacing(item.letterSpacing, profile), profile, language, false, null)
++        const own = measureAnalysis(ownAnalysis, 0, ownAnalysis.flags.length, item.font, false, readLetterSpacing(item.letterSpacing, profile), profile, language, false, null, item)
+         const start: LayoutCursor = { segmentIndex: 0, graphemeIndex: 0 }
+         if (normalizePreparedLineStart(own, start)) width = stepPreparedLineGeometryFromStart(own, start, Number.POSITIVE_INFINITY)!
+         width += item.extraWidth ?? 0
+@@ -390,7 +390,7 @@ export function prepareRichInline(items: Array<RichInlineItem | RichInlineBox>,
+       // measureAnalysis() measures one.
+       if (letterSpacing !== 0) simple = false
+       flags[widths.length] = SPACE | (analysis.flags[from]! & (UNBROKEN | RETURNABLE)) | (letterSpacing !== 0 ? SPACED : 0)
+-      widths.push(getSpaceWidth(getFontMeasurement(item.font, language, letterSpacing !== 0)) + (spacingsDiffer ? letterSpacing : 0))
++      widths.push(getSpaceWidth(getFontMeasurement(item.font, language, letterSpacing !== 0, item)) + (spacingsDiffer ? letterSpacing : 0))
+       segments.push(' ')
+       breakableFitAdvances.push(null)
+       sourceStarts.push(offset - starts[index]!)
+@@ -475,7 +475,7 @@ export function prepareRichInline(items: Array<RichInlineItem | RichInlineBox>,
+     // The item's segments, measured in its font onto the end of the paragraph's lists; `sub` holds
+     // what else measurement gives them, from the item's first segment.
+     const itemAt = widths.length
+-    const sub = measureAnalysis(analysis, from, to, item.font, false, letterSpacing, profile, language, true, lists)
++    const sub = measureAnalysis(analysis, from, to, item.font, false, letterSpacing, profile, language, true, lists, item)
+     simple &&= sub.simpleLineCountFastPath
+     if (readsItemFonts) {
+       // The gap before the hyphen is the letter spacing after the grapheme before it.

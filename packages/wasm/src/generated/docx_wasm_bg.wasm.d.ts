@@ -18,7 +18,7 @@ export const parse_document_bundle_wasm: (a: number, b: number, c: number, d: nu
 export const parse_docx_wasm: (a: number, b: number, c: number) => void;
 export const serialize_docx_from_json_wasm: (a: number, b: number, c: number, d: number) => void;
 export const serialize_docx_wasm: (a: number, b: number, c: number) => void;
-export const __wasm_bindgen_func_elem_7905: (a: number, b: number, c: number, d: number) => number;
+export const __wasm_bindgen_func_elem_7931: (a: number, b: number, c: number, d: number) => number;
 export const __wbindgen_export: (a: number, b: number) => number;
 export const __wbindgen_export2: (a: number, b: number, c: number, d: number) => number;
 export const __wbindgen_export3: (a: number) => void;

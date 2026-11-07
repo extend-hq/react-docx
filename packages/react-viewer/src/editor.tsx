@@ -223,8 +223,9 @@ import {
 } from "./pretext-layout";
 import { fontTableEntries } from "./font-table";
 import {
+  allowsWrappedLeftTabRefit,
   defaultTabStopPxForNode,
-  documentWithDefaultTabLayout,
+  documentWithDefaultTabLayout as documentWithDefaultTabLayoutContext,
   nextDefaultTabStopPx,
   paragraphWithDefaultTabStop,
   tabPositionTwipsToPx,
@@ -2179,11 +2180,11 @@ function parseSectionPageNumberStart(sectionPropertiesXml?: string): number {
   }
 
   const start = Number(startRaw);
-  if (!Number.isFinite(start) || start <= 0) {
+  if (!Number.isInteger(start) || start < 0) {
     return DEFAULT_PAGE_NUMBER_START;
   }
 
-  return Math.max(1, Math.round(start));
+  return start;
 }
 
 function parseSectionPageNumberStartOverride(
@@ -2206,11 +2207,11 @@ function parseSectionPageNumberStartOverride(
   }
 
   const start = Number(startRaw);
-  if (!Number.isFinite(start) || start <= 0) {
+  if (!Number.isInteger(start) || start < 0) {
     return undefined;
   }
 
-  return Math.max(1, Math.round(start));
+  return start;
 }
 
 function parseSectionPageNumberFormat(
@@ -6313,10 +6314,17 @@ function paragraphHasCheckboxFormField(paragraph: ParagraphNode): boolean {
   );
 }
 
+function nodeHasUncachedPageField(node: DocModel["nodes"][number]): boolean {
+  return node.type === "paragraph"
+    ? node.children.some((child) => child.type === "text" && child.fieldInstruction !== undefined)
+    : node.rows.some((row) => row.cells.some((cell) => cell.nodes.some(nodeHasUncachedPageField)));
+}
+
 function paragraphHasVisibleText(paragraph: ParagraphNode): boolean {
   return paragraph.children.some(
     (child) =>
-      (child.type === "text" && child.text.trim().length > 0) ||
+      (child.type === "text" && (child.text.trim().length > 0 ||
+        /^\s*(?:PAGE|NUMPAGES)(?=\s|\\|$)/i.test(child.fieldInstruction ?? ""))) ||
       (child.type === "form-field" &&
         formFieldDisplayValue(child).trim().length > 0)
   );
@@ -8072,10 +8080,13 @@ export function buildParagraphPretextLayoutSource(
   },
   typography?: DocxTypographyOptions
 ): ParagraphPretextLayoutSource | undefined {
+  if (paragraph.children.some((child) => child.type === "text" && child.fieldInstruction !== undefined)) {
+    return undefined;
+  }
   if (options?.defaultTabStopTwips !== undefined) {
     paragraph = paragraphWithDefaultTabStop(paragraph, options.defaultTabStopTwips);
   }
-  const cacheKey = `${options?.showTrackedChanges === true}|${options?.revisionDisplay ?? "inline"}|${options?.showCommentHighlights === true}|${options?.allowExplicitLineBreakText ? 1 : 0}|${options?.expandTabsForLayout ? 1 : 0}|${defaultTabStopPxForNode(paragraph)}|ot:${typography?.enableOpenTypeFeatures !== false}`;
+  const cacheKey = `${options?.showTrackedChanges === true}|${options?.revisionDisplay ?? "inline"}|${options?.showCommentHighlights === true}|${options?.allowExplicitLineBreakText ? 1 : 0}|${options?.expandTabsForLayout ? 1 : 0}|${defaultTabStopPxForNode(paragraph)}|wrapped-tab-refit:${allowsWrappedLeftTabRefit(paragraph)}|ot:${typography?.enableOpenTypeFeatures !== false}`;
   const cachedVariants = paragraphPretextLayoutSourceCache.get(paragraph);
   const cachedSource = cachedVariants?.get(cacheKey);
   if (cachedSource !== undefined) {
@@ -8531,6 +8542,19 @@ export function sanitizeRenderedPretextFragmentText(text: string): string {
   return text.replace(/\r\n?|\n/g, "");
 }
 
+function renderPretextSourceSlice(
+  text: string,
+  startOffset: number,
+  fragment: PretextLineFragment
+): string {
+  const offset = fragment.discretionaryHyphenOffset;
+  if (offset === undefined) return text;
+  const index = offset - startOffset;
+  return text[index] === "\u00ad"
+    ? text.slice(0, index) + "-" + text.slice(index + 1)
+    : text;
+}
+
 function buildParagraphPretextLayoutItems(
   paragraph: ParagraphNode,
   source: ParagraphPretextLayoutSource,
@@ -8761,6 +8785,7 @@ function resolveWholeTextLayoutEligibility(
 ): boolean {
   const style = paragraph.style;
   if (
+    paragraph.children.some((child) => child.type === "text" && child.fieldInstruction !== undefined) ||
     (style?.align !== undefined && style.align !== "left" &&
       !(paragraphHasHorizontalCharacterScaling(paragraph) &&
         (style.align === "center" || style.align === "right"))) ||
@@ -8937,6 +8962,27 @@ interface ParagraphPretextLineOptions {
   gridLinePitchPx?: number;
 }
 
+function paragraphUsesWrappedLeftTabStops(paragraph: ParagraphNode): boolean {
+  const tabStops = (paragraph.style?.tabStops ?? []).filter(
+    (stop) => stop.alignment !== "clear"
+  );
+  return allowsWrappedLeftTabRefit(paragraph) && tabStops.length > 0 &&
+    tabStops.every((stop) => stop.alignment === "left") &&
+    !paragraph.style?.numbering &&
+    !paragraph.style?.indent?.firstLineTwips &&
+    !paragraph.style?.indent?.hangingTwips &&
+    !paragraphLooksLikeCheckboxChoiceRow(paragraph);
+}
+
+function sourceSupportsWrappedLeftTabs(
+  paragraph: ParagraphNode,
+  source: ParagraphPretextLayoutSource
+): boolean {
+  return paragraphUsesWrappedLeftTabStops(paragraph) &&
+    source.runs.some((run) => run.kind === "tab") &&
+    source.runs.every((run) => run.kind === "text" || run.kind === "tab");
+}
+
 function layoutParagraphPretextSource(
   paragraph: ParagraphNode,
   source: ParagraphPretextLayoutSource,
@@ -9036,11 +9082,11 @@ function layoutParagraphPretextSource(
         lineHeightPx: Math.max(item.lineHeightPx ?? lineHeightPx, minimumLineHeightPx),
       }))
     : cachedItems;
-  const richLayout =
-    items.length > 0
+  const layoutRichItems = (layoutItems: PretextLayoutItem[]) =>
+    layoutItems.length > 0
       ? layoutItemsWithPretextAroundExclusions(
           source.text,
-          items,
+          layoutItems,
           containerWidthPx,
           lineHeightPx,
           layoutExclusions,
@@ -9052,7 +9098,49 @@ function layoutParagraphPretextSource(
           }
         )
       : undefined;
+  const richLayout = layoutRichItems(items);
   if (richLayout) {
+    if (sourceSupportsWrappedLeftTabs(paragraph, source)) {
+      const tabOffsets = new Set(
+        source.runs.filter((run) => run.kind === "tab").map((run) => run.startOffset)
+      );
+      const tabStops = resolveParagraphTabStopsPx(paragraph);
+      const tabOrigin = resolveParagraphFirstLineOriginPx(paragraph);
+      const defaultTabStop = defaultTabStopPxForNode(paragraph);
+      const seenWidths = new Set<string>();
+      let fittedItems = items;
+      let fittedLayout = richLayout;
+      const maxPasses = Math.min(32, tabOffsets.size + 2);
+      for (let pass = 0; pass < maxPasses; pass += 1) {
+        const positions = new Map(
+          fittedLayout.lines.flatMap((line) => line.fragments
+            .filter((fragment) => tabOffsets.has(fragment.startOffset))
+            .map((fragment) => [fragment.startOffset, fragment.x] as const))
+        );
+        let changed = false;
+        const nextItems = fittedItems.map((item) => {
+          const x = positions.get(item.startOffset);
+          if (!tabOffsets.has(item.startOffset) || x === undefined) return item;
+          const widthPx = resolveTabSpacerWidthPx(
+            tabStops, x, defaultTabStop, false, tabOrigin
+          );
+          if (Math.abs(widthPx - (item.widthPx ?? 0)) <= 1e-7) return item;
+          changed = true;
+          return { ...item, widthPx };
+        });
+        if (!changed) return alignLayout(fittedLayout);
+        const widths = nextItems
+          .filter((item) => tabOffsets.has(item.startOffset))
+          .map((item) => item.widthPx)
+          .join(",");
+        if (seenWidths.has(widths)) break;
+        seenWidths.add(widths);
+        const nextLayout = layoutRichItems(nextItems);
+        if (!nextLayout) break;
+        fittedItems = nextItems;
+        fittedLayout = nextLayout;
+      }
+    }
     return alignLayout(richLayout);
   }
 
@@ -10791,6 +10879,15 @@ function collectDocxSectionStartPageBreakNodeIndexes(
   return result;
 }
 
+function documentWithDefaultTabLayout(model: DocModel): DocModel {
+  // Keep body tab reflow on the established path while section-tail pagination
+  // can retain overflowing paragraphs. Header and footer layout stays independent.
+  return documentWithDefaultTabLayoutContext(
+    model,
+    collectDocxSectionStartPageBreakNodeIndexes(model).size === 0
+  );
+}
+
 function computeDocxSectionStartPageBreakNodeIndexes(
   model: DocModel
 ): Set<number> {
@@ -11894,7 +11991,7 @@ function cachedWrappedLineCountForParagraph(
   widthKey: number | string,
   typography?: DocxTypographyOptions
 ): number | undefined {
-  return wrappedLineCountByParagraph.get(paragraph)?.get(`${widthKey}|tab:${defaultTabStopPxForNode(paragraph)}|ot:${typography?.enableOpenTypeFeatures !== false}`);
+  return wrappedLineCountByParagraph.get(paragraph)?.get(`${widthKey}|tab:${defaultTabStopPxForNode(paragraph)}|wrapped-tab-refit:${allowsWrappedLeftTabRefit(paragraph)}|ot:${typography?.enableOpenTypeFeatures !== false}`);
 }
 
 function rememberWrappedLineCountForParagraph(
@@ -11908,7 +12005,7 @@ function rememberWrappedLineCountForParagraph(
     countsByWidth = new Map<number | string, number>();
     wrappedLineCountByParagraph.set(paragraph, countsByWidth);
   }
-  countsByWidth.set(`${widthKey}|tab:${defaultTabStopPxForNode(paragraph)}|ot:${typography?.enableOpenTypeFeatures !== false}`, lineCount);
+  countsByWidth.set(`${widthKey}|tab:${defaultTabStopPxForNode(paragraph)}|wrapped-tab-refit:${allowsWrappedLeftTabRefit(paragraph)}|ot:${typography?.enableOpenTypeFeatures !== false}`, lineCount);
   return lineCount;
 }
 
@@ -11956,9 +12053,28 @@ function estimateWrappedLineCountForParagraph(
   const useAnchoredTabLayout =
     useCenterRightTabLayout || useCenterTabLayout || useRightTabLayout;
   const paragraphEligibleForPlainPretextLineCount =
-    !paragraph.style?.indent &&
+    !paragraph.style?.indent?.firstLineTwips &&
+    !paragraph.style?.indent?.hangingTwips &&
     firstLineMaxWidthPx === maxLineWidthPx &&
     !paragraphContainsExplicitLineBreakText(paragraph);
+
+  if (
+    firstLineMaxWidthPx === maxLineWidthPx &&
+    firstLineTextOriginPx === resolveParagraphFirstLineOriginPx(paragraph) &&
+    paragraphUsesWrappedLeftTabStops(paragraph)
+  ) {
+    const source = buildParagraphPretextLayoutSource(paragraph, {
+      allowExplicitLineBreakText: true,
+      expandTabsForLayout: true,
+    }, typography);
+    if (source && sourceSupportsWrappedLeftTabs(paragraph, source)) {
+      const layout = layoutParagraphPretextSource(
+        paragraph, source, maxLineWidthPx,
+        estimateParagraphLineHeightPx(paragraph), [], undefined, typography
+      );
+      if (layout) return rememberLineCount(layout.lineCount);
+    }
+  }
 
   if (
     paragraphEligibleForPlainPretextLineCount &&
@@ -12243,7 +12359,7 @@ export function paragraphLineCountWithinWidth(
       paragraph, availableWidthPx, numberingDefinitions, numberingLabel, defaultTabStopTwips, typography
     );
   }
-  const key = `${availableWidthPx ?? "auto"}|tab-twips:${defaultTabStopTwips ?? "inherited"}|tab-px:${defaultTabStopPxForNode(paragraph)}|${docNodeContentSignature(numberingDefinitions)}|${docNodeContentSignature(numberingLabel)}|${typography?.enableOpenTypeFeatures !== false}`;
+  const key = `${availableWidthPx ?? "auto"}|tab-twips:${defaultTabStopTwips ?? "inherited"}|tab-px:${defaultTabStopPxForNode(paragraph)}|wrapped-tab-refit:${allowsWrappedLeftTabRefit(paragraph)}|${docNodeContentSignature(numberingDefinitions)}|${docNodeContentSignature(numberingLabel)}|${typography?.enableOpenTypeFeatures !== false}`;
   const entries = paragraphLineCountsByParagraph.get(paragraph);
   const cached = entries?.get(key);
   if (cached !== undefined) return cached;
@@ -12701,7 +12817,7 @@ function estimateParagraphHeightPx(
     numberingLabel?.text !== undefined
       ? `${baseWidthKey}|${numberingLabel.text}`
       : baseWidthKey;
-  widthKey = `${widthKey}|tab:${defaultTabStopPxForNode(paragraph)}|content:${docNodeContentSignature(paragraph)}|numbering:${docNodeContentSignature(numberingDefinitions)}|ot:${typography?.enableOpenTypeFeatures !== false}`;
+  widthKey = `${widthKey}|tab:${defaultTabStopPxForNode(paragraph)}|wrapped-tab-refit:${allowsWrappedLeftTabRefit(paragraph)}|content:${docNodeContentSignature(paragraph)}|numbering:${docNodeContentSignature(numberingDefinitions)}|ot:${typography?.enableOpenTypeFeatures !== false}`;
   if (excludeWrappedFloatingImageFootprint) {
     widthKey = `${widthKey}|no-wrap-footprint`;
   }
@@ -14148,7 +14264,7 @@ function estimateTableHeightPx(
   const widthKey = `${heightEstimateCacheKeyPx(
     maxAvailableWidthPx,
     docGridLinePitchPx
-  )}|tab:${defaultTabStopPxForNode(table)}|pct:${percentageReferenceWidthPx ?? "none"}|content:${docNodeContentSignature(table)}|numbering:${docNodeContentSignature(numberingDefinitions)}|ot:${typography?.enableOpenTypeFeatures !== false}|tableGrid:${typography?.adjustLineHeightInTable === true}`;
+  )}|tab:${defaultTabStopPxForNode(table)}|wrapped-tab-refit:${allowsWrappedLeftTabRefit(table)}|pct:${percentageReferenceWidthPx ?? "none"}|content:${docNodeContentSignature(table)}|numbering:${docNodeContentSignature(numberingDefinitions)}|ot:${typography?.enableOpenTypeFeatures !== false}|tableGrid:${typography?.adjustLineHeightInTable === true}`;
   if (sourceXml) {
     const cachedByWidth = tableEstimatedHeightBySourceXml.get(sourceXml);
     const cached = cachedByWidth?.get(widthKey);
@@ -20214,8 +20330,8 @@ function resolveSyntheticTextBoxFieldText(
 ): string {
   if (fieldKind === "PAGE") {
     const resolvedFieldValue =
-      Number.isFinite(pageNumber) && (pageNumber as number) > 0
-        ? Math.max(1, Math.round(pageNumber as number))
+      Number.isInteger(pageNumber) && (pageNumber as number) >= 0
+        ? pageNumber
         : undefined;
     if (Number.isFinite(resolvedFieldValue)) {
       const leadingWhitespace = rawText.match(/^\s*/)?.[0] ?? "";
@@ -21764,13 +21880,15 @@ function renderParagraphRuns(
   const useAnchoredTabLayout =
     useCenterRightTabLayout || useCenterTabLayout || useRightTabLayout;
   const pageFieldSequence = paragraphPageFieldSequence(paragraph);
-  const pageFieldValueSequence = paragraphPageFieldValueSequence(paragraph);
+  const pageFieldValueSequence = paragraphPageFieldValueSequence(paragraph)
+    .filter((token) => token.rawText.length > 0);
   const styleRefFieldValueSequence =
     paragraphStyleRefFieldValueSequence(paragraph);
   const hasPageField =
     pageFieldSequence.length > 0 || pageFieldValueSequence.length > 0;
   const hasStyleRefField = styleRefFieldValueSequence.length > 0;
   let consumedPageFieldValues = 0;
+  let consumedUncachedPageFields = 0;
   let consumedStyleRefFieldValues = 0;
   const tabStop = paragraphLeadingTabStop(paragraph);
   const tabOriginPx = resolveParagraphFirstLineOriginPx(paragraph, options?.numberingDefinitions);
@@ -22053,7 +22171,7 @@ function renderParagraphRuns(
       return value;
     }
 
-    let fieldKind = pageFieldSequence[consumedPageFieldValues];
+    let fieldKind = pageFieldSequence[consumedPageFieldValues + consumedUncachedPageFields];
     const valueToken = pageFieldValueSequence[consumedPageFieldValues];
     if (valueToken) {
       if (
@@ -22081,8 +22199,8 @@ function renderParagraphRuns(
         ? Number.isFinite(totalPages) && (totalPages as number) > 0
           ? Math.max(1, Math.round(totalPages as number))
           : undefined
-        : Number.isFinite(pageNumber) && (pageNumber as number) > 0
-        ? Math.max(1, Math.round(pageNumber as number))
+        : Number.isInteger(pageNumber) && (pageNumber as number) >= 0
+        ? pageNumber
         : undefined;
     if (!Number.isFinite(resolvedFieldValue)) {
       return value;
@@ -22091,10 +22209,7 @@ function renderParagraphRuns(
     consumedPageFieldValues += 1;
     const leadingWhitespace = value.match(/^\s*/)?.[0] ?? "";
     const trailingWhitespace = value.match(/\s*$/)?.[0] ?? "";
-    const normalizedValue = Math.max(
-      1,
-      Math.round(resolvedFieldValue as number)
-    );
+    const normalizedValue = Math.round(resolvedFieldValue as number);
     const formattedFieldValue =
       fieldKind === "PAGE"
         ? formatPageFieldValue(normalizedValue, options?.pageNumberFormat)
@@ -22130,8 +22245,31 @@ function renderParagraphRuns(
     const trailingWhitespace = value.match(/\s*$/)?.[0] ?? "";
     return `${leadingWhitespace}${resolvedValue}${trailingWhitespace}`;
   };
-  const resolveFieldText = (value: string, preferredZone?: number): string =>
-    resolvePageFieldText(resolveStyleRefFieldText(value), preferredZone);
+  const resolveFieldText = (
+    value: string,
+    preferredZone?: number,
+    fieldInstruction?: string
+  ): string => {
+    if (fieldInstruction !== undefined) {
+      const kind = fieldInstruction.trim().match(/^(PAGE|NUMPAGES)(?=\s|\\|$)/i)?.[1]?.toUpperCase();
+      if (!kind) return value;
+      consumedUncachedPageFields += 1;
+      const number = kind === "NUMPAGES" ? totalPages : pageNumber;
+      if (!Number.isFinite(number) || (number as number) < (kind === "NUMPAGES" ? 1 : 0) ||
+        (kind === "PAGE" && !Number.isInteger(number))) return value;
+      let format = kind === "PAGE" ? options?.pageNumberFormat : undefined;
+      for (const match of fieldInstruction.matchAll(/\\\*\s+(\S+)/g)) {
+        const fieldFormat = match[1];
+        if (fieldFormat === "ROMAN") format = "upperRoman";
+        else if (fieldFormat === "roman") format = "lowerRoman";
+        else if (fieldFormat === "ALPHABETIC") format = "upperLetter";
+        else if (fieldFormat === "alphabetic") format = "lowerLetter";
+        else if (fieldFormat?.toUpperCase() === "ARABIC") format = "decimal";
+      }
+      return formatPageFieldValue(Math.round(number as number), format);
+    }
+    return resolvePageFieldText(resolveStyleRefFieldText(value), preferredZone);
+  };
 
   const trackedLinkStyle = (
     style: TextRunNode["style"] | FormFieldRunNode["style"] | undefined,
@@ -22710,8 +22848,12 @@ function renderParagraphRuns(
       ),
       ...currentCommentHighlightStyle(),
     };
-    const annotationAttributes =
-      currentAnnotationAttributes(trackedInlineChange);
+    const annotationAttributes = {
+      ...currentAnnotationAttributes(trackedInlineChange),
+      ...(child.fieldInstruction !== undefined
+        ? { "data-docx-generated-text": "true" }
+        : undefined),
+    };
     const noteLabel = noteMarkerLabel(
       child.noteReference,
       safeNoteMarkerIndexes.footnote,
@@ -22895,7 +23037,7 @@ function renderParagraphRuns(
           : undefined;
       if (typeof rawText !== "string" || !rawText.includes("\t")) {
         if (child.type === "text") {
-          const resolvedText = resolveFieldText(rawText ?? "", zoneIndex);
+          const resolvedText = resolveFieldText(rawText ?? "", zoneIndex, child.fieldInstruction);
           renderRun(
             zoneTarget,
             child,
@@ -23063,7 +23205,7 @@ function renderParagraphRuns(
       }
 
       if (child.type === "text") {
-        const resolvedText = resolveFieldText(child.text);
+        const resolvedText = resolveFieldText(child.text, undefined, child.fieldInstruction);
         renderRun(
           target,
           child,
@@ -23541,6 +23683,9 @@ function formatPageFieldValue(
   value: number,
   format: string | undefined
 ): string {
+  if (value === 0 && /^(?:upper|lower)(?:roman|letter)$/i.test(format ?? "")) {
+    return "";
+  }
   const formatted = formatNumberingCounter(format, value);
   return formatted.length > 0 ? formatted : String(value);
 }
@@ -26872,6 +27017,8 @@ function mergeAdjacentTextRuns(
       previous &&
       previous.type === "text" &&
       child.type === "text" &&
+      previous.fieldInstruction === undefined &&
+      child.fieldInstruction === undefined &&
       textStylesEqual(previous.style, child.style) &&
       previous.link === child.link
     ) {
@@ -26884,6 +27031,7 @@ function mergeAdjacentTextRuns(
         ? {
             type: "text",
             text: child.text,
+            fieldInstruction: child.fieldInstruction,
             style: cloneTextStyle(child.style),
             link: child.link,
           }
@@ -26918,6 +27066,7 @@ function cloneTextRunWithMetadata(run: TextRunNode): TextRunNode {
   return {
     type: "text",
     text: run.text,
+    fieldInstruction: run.fieldInstruction,
     style: cloneTextStyle(run.style),
     link: run.link,
     noteReference: run.noteReference ? { ...run.noteReference } : undefined,
@@ -27215,12 +27364,7 @@ function mutateParagraphTextStyleInRange(
     cursor = runEnd;
 
     if (runEnd <= safeStart || runStart >= safeEnd || text.length === 0) {
-      nextChildren.push({
-        type: "text",
-        text,
-        style: cloneTextStyle(child.style),
-        link: child.link,
-      });
+      nextChildren.push(cloneTextRunWithMetadata(child));
       continue;
     }
 
@@ -27309,12 +27453,7 @@ function mutateParagraphLinkInRange(
     cursor = runEnd;
 
     if (runEnd <= safeStart || runStart >= safeEnd || text.length === 0) {
-      nextChildren.push({
-        type: "text",
-        text,
-        style: cloneTextStyle(child.style),
-        link: child.link,
-      });
+      nextChildren.push(cloneTextRunWithMetadata(child));
       continue;
     }
 
@@ -39155,6 +39294,13 @@ export function DocxEditorViewer({
   const [tableMeasuredRowHeights, setTableMeasuredRowHeights] = React.useState<
     Record<string, MeasuredTableRowHeightsEntry>
   >({});
+  // Keep completed fragment-only measurement attempts separate from reusable row heights.
+  const [tableFragmentMeasurementCompletion, setTableFragmentMeasurementCompletion] =
+    React.useState<{
+      nodes: DocModel["nodes"];
+      visibleRows: ReadonlyMap<number, ReadonlySet<number>>;
+      blockIds: ReadonlySet<string>;
+    }>();
   const [
     measuredPageContentHeightByIndex,
     setMeasuredPageContentHeightByIndex,
@@ -39309,6 +39455,7 @@ export function DocxEditorViewer({
       consecutivePasses: 0,
     };
     setTableMeasuredRowHeights({});
+    setTableFragmentMeasurementCompletion(undefined);
     setTableRowHeights({});
     setTableColumnWidths({});
     setEmbeddedTableColumnWidths({});
@@ -42386,7 +42533,15 @@ export function DocxEditorViewer({
           !measuredHeights ||
           measuredHeights.length !== tableNode.rows.length
         ) {
-          return true;
+          const fragmentMeasurementComplete =
+            tableFragmentMeasurementCompletion?.nodes === editor.model.nodes &&
+            tableFragmentMeasurementCompletion.visibleRows ===
+              visibleTableRowIndexesByNodeIndex &&
+            Boolean(tableNode.blockId &&
+              tableFragmentMeasurementCompletion.blockIds.has(tableNode.blockId));
+          if (!fragmentMeasurementComplete) {
+            return true;
+          }
         }
       }
     }
@@ -42401,6 +42556,8 @@ export function DocxEditorViewer({
     pageCount,
     pageNodeSegmentsByPage,
     tableMeasuredRowHeights,
+    tableFragmentMeasurementCompletion,
+    visibleTableRowIndexesByNodeIndex,
     visiblePageIndexes,
   ]);
   const allowPostImportPaginationMeasurement =
@@ -51089,6 +51246,7 @@ export function DocxEditorViewer({
       virtualizerMeasurementScale
     );
     const nextMeasuredHeights: Record<number, number[]> = {};
+    const fragmentOnlyTableBlockIds = new Set<string>();
     editor.model.nodes.forEach((node, nodeIndex) => {
       if (node.type !== "table") {
         return;
@@ -51101,12 +51259,33 @@ export function DocxEditorViewer({
       }
 
       const measuredByRowIndex = new Map<number, number>();
+      const fragmentRowIndexes = new Set<number>();
+      const wholeRowIndexes = new Set<number>();
+      const observeRowElement = (rowElement: HTMLElement | null): void => {
+        const rowIndex = Number.parseInt(
+          rowElement?.getAttribute("data-docx-row-index") ?? "",
+          10
+        );
+        if (Number.isFinite(rowIndex) && visibleRowIndexes.has(rowIndex)) {
+          if (
+            rowElement?.getAttribute("data-docx-row-sliced") === "true" ||
+            !tableRowHasWholeMergeGeometry(node, rowIndex, rowElement as HTMLTableRowElement)
+          ) {
+            fragmentRowIndexes.add(rowIndex);
+          } else {
+            wholeRowIndexes.add(rowIndex);
+          }
+        }
+      };
       const preserveAutomaticBorderFractions = tableAutomaticCollapsedBorderWidthPx(node) > 0;
       const normalizeRowMeasurement = (heightPx: number, rowIndex: number): number =>
         preserveAutomaticBorderFractions
           ? normalizeMeasuredTableRowHeightForDefinitionPx(heightPx, node, rowIndex)
           : normalizeMeasuredTableRowHeightPx(heightPx);
       const recordMeasuredRow = (rowIndex: number, rowHeightPx: number) => {
+        if (!Number.isFinite(rowHeightPx) || rowHeightPx <= 0) {
+          return;
+        }
         const normalizedRowIndex = Math.max(0, Math.round(rowIndex));
         if (
           normalizedRowIndex >= node.rows.length ||
@@ -51135,6 +51314,7 @@ export function DocxEditorViewer({
             `tr[data-docx-table-index='${nodeIndex}'][data-docx-row-index]`
           )
         ).forEach((rowElement) => {
+          observeRowElement(rowElement);
           if (rowElement.getAttribute("data-docx-row-sliced") === "true") {
             return;
           }
@@ -51169,11 +51349,12 @@ export function DocxEditorViewer({
         `[data-docx-table-cell='true'][data-docx-table-index='${nodeIndex}'][data-docx-row-index]`
       );
       rowCells.forEach((cellElement) => {
+        const containingRow = cellElement.closest("tr");
+        observeRowElement(containingRow);
         if (cellElement.getAttribute("data-docx-row-sliced") === "true") {
           return;
         }
 
-        const containingRow = cellElement.closest("tr");
         if (containingRow?.getAttribute("data-docx-row-sliced") === "true") {
           return;
         }
@@ -51198,7 +51379,17 @@ export function DocxEditorViewer({
         recordMeasuredRow(rowIndex, rowElement.getBoundingClientRect().height);
       });
 
+      if (Array.from(wholeRowIndexes).some(
+        (rowIndex) => !measuredByRowIndex.has(rowIndex)
+      )) {
+        return;
+      }
       if (measuredByRowIndex.size === 0) {
+        if (node.blockId && wholeRowIndexes.size === 0 && Array.from(visibleRowIndexes).every(
+          (rowIndex) => fragmentRowIndexes.has(rowIndex)
+        )) {
+          fragmentOnlyTableBlockIds.add(node.blockId);
+        }
         return;
       }
 
@@ -51230,6 +51421,27 @@ export function DocxEditorViewer({
         );
       });
       nextMeasuredHeights[nodeIndex] = measuredHeights;
+    });
+
+    setTableFragmentMeasurementCompletion((current) => {
+      if (fragmentOnlyTableBlockIds.size === 0) {
+        return undefined;
+      }
+      if (
+        current?.nodes === editor.model.nodes &&
+        current.visibleRows === visibleTableRowIndexesByNodeIndex &&
+        current.blockIds.size === fragmentOnlyTableBlockIds.size &&
+        Array.from(fragmentOnlyTableBlockIds).every((blockId) =>
+          current.blockIds.has(blockId)
+        )
+      ) {
+        return current;
+      }
+      return {
+        nodes: editor.model.nodes,
+        visibleRows: visibleTableRowIndexesByNodeIndex,
+        blockIds: fragmentOnlyTableBlockIds,
+      };
     });
 
     setTableMeasuredRowHeights((current) => {
@@ -53828,7 +54040,7 @@ export function DocxEditorViewer({
         /(\d+(?:\.\d+)?)px(?=\s)/,
         `$1px/${fragmentLineHeightPx}px`
       );
-      const textPiecesKey = `${fragment.startOffset}|${fragment.endOffset}|${fragment.horizontalScale ?? 1}|${fragment.strutFont ?? fragment.font ?? layout.font}|${baseTextStyle?.fontSizePt ?? ""}`;
+      const textPiecesKey = `${fragment.startOffset}|${fragment.endOffset}|${fragment.discretionaryHyphenOffset ?? ""}|${fragment.horizontalScale ?? 1}|${fragment.strutFont ?? fragment.font ?? layout.font}|${baseTextStyle?.fontSizePt ?? ""}`;
       const cachedPieces = canReuseTextPieces
         ? wrappedTextPiecesBySource.get(source)
         : undefined;
@@ -53925,7 +54137,9 @@ export function DocxEditorViewer({
             overlapStart - run.startOffset,
             overlapEnd - run.startOffset
           );
-          const renderedSlice = sanitizeRenderedPretextFragmentText(slice);
+          const renderedSlice = sanitizeRenderedPretextFragmentText(
+            renderPretextSourceSlice(slice, overlapStart, fragment)
+          );
           if (!renderedSlice) {
             return undefined;
           }
@@ -55245,6 +55459,14 @@ export function DocxEditorViewer({
     );
   };
 
+  const bodyTablePageFieldPresence = React.useMemo(() => {
+    const presence = new WeakMap<TableNode, boolean>();
+    for (const node of editor.model.nodes) {
+      if (node.type === "table") presence.set(node, nodeHasUncachedPageField(node));
+    }
+    return presence;
+  }, [editor.model.nodes]);
+
   const renderInteractiveParagraphRuns = React.useCallback(
     (
       paragraph: ParagraphNode,
@@ -55255,9 +55477,14 @@ export function DocxEditorViewer({
         pageFlowTopPx?: number;
         pageFlowForeignExclusions?: PretextExclusionRect[];
         pageLayout?: DocumentLayoutMetrics;
+        pageIndex?: number;
         suppressLikelyFullPageCoverImageKeys?: Set<string>;
       }
     ): React.ReactNode => {
+      const hasUncachedPageFields = nodeHasUncachedPageField(paragraph);
+      const paragraphPageIndex = options?.pageIndex ??
+        pageIndexByNodeIndex.get(nodeIndexFromParagraphLocation(location)) ?? 0;
+      const paragraphPageInfo = pageSectionInfoByIndex[paragraphPageIndex];
       const lineRange = options?.paragraphLineRange;
       const paragraphGridPitchPx = docGridLinePitchPxByNodeIndex.get(nodeIndexFromParagraphLocation(location));
       const disableGridSnap = location.kind === "table-cell" && typography?.adjustLineHeightInTable !== true;
@@ -55555,9 +55782,10 @@ export function DocxEditorViewer({
           ? tableCellParagraphLineHeightPx(paragraph, paragraphGridPitchPx, disableGridSnap)
           : estimateParagraphLineHeightPx(paragraph, paragraphGridPitchPx, disableGridSnap));
       const paragraphHasTrackedMarkup = paragraphHasTrackedInlineMarkup(paragraph);
-      const usesMarkupRuns = (isReadOnly || !paragraphHasFormField(paragraph)) &&
-        (paragraphHasTrackedMarkup || useSpecialTabLayout || paragraphHasCommentAnchors) &&
-        !hasFixedPositionWrappedImage;
+      const usesMarkupRuns = (isReadOnly && hasUncachedPageFields) ||
+        ((isReadOnly || !paragraphHasFormField(paragraph)) &&
+          (paragraphHasTrackedMarkup || useSpecialTabLayout || paragraphHasCommentAnchors ||
+            hasUncachedPageFields) && !hasFixedPositionWrappedImage);
       const wrapReviewText =
         isReadOnly && (paragraphHasTrackedMarkup || paragraphHasCommentAnchors) &&
         !useSpecialTabLayout &&
@@ -55608,9 +55836,12 @@ export function DocxEditorViewer({
             ? { left: 0, top: 0, ...interactiveBodyFloatingPageOriginPx, columnLeft: (interactiveBodyFloatingPageOriginPx?.columnLeft ?? 0) + wrappedColumnLeftPx }
             : interactiveBodyFloatingPageOriginPx,
           noteMarkerIndexes,
-          undefined,
-          undefined,
+          hasUncachedPageFields ? paragraphPageInfo?.pageNumber ?? paragraphPageIndex + 1 : undefined,
+          hasUncachedPageFields ? totalPagesForFieldResolution : undefined,
           {
+            pageNumberFormat: hasUncachedPageFields ? parseSectionPageNumberFormat(
+              paragraphPageInfo?.section.sectionPropertiesXml ?? editor.model.metadata.sectionPropertiesXml
+            ) : undefined,
             preserveUneditedVmlComposite: isReadOnly,
             showTrackedChanges: trackedChangesEnabled,
             revisionDisplay,
@@ -55697,9 +55928,15 @@ export function DocxEditorViewer({
                 );
               }
 
-              const slice = run.text.slice(
-                overlapStart - run.startOffset,
-                overlapEnd - run.startOffset
+              const slice = sanitizeRenderedPretextFragmentText(
+                renderPretextSourceSlice(
+                  run.text.slice(
+                    overlapStart - run.startOffset,
+                    overlapEnd - run.startOffset
+                  ),
+                  overlapStart,
+                  fragment
+                )
               );
               if (!slice) {
                 return undefined;
@@ -58187,6 +58424,9 @@ export function DocxEditorViewer({
       onFormFieldDoubleClick,
       isReadOnly,
       paragraphNumberingLabels,
+      pageIndexByNodeIndex,
+      pageSectionInfoByIndex,
+      totalPagesForFieldResolution,
       noteMarkerIndexes,
       scrollToBookmark,
       documentLayout,
@@ -58821,6 +59061,7 @@ export function DocxEditorViewer({
     layoutEntry: TableCellParagraphSliceLayoutEntry;
     paragraphLineRange?: ParagraphLineRange;
     useWholeTextLayout?: boolean;
+    pageIndex?: number;
   }): React.ReactNode => {
     const {
       paragraph,
@@ -58835,6 +59076,7 @@ export function DocxEditorViewer({
       layoutEntry,
       paragraphLineRange,
       useWholeTextLayout = false,
+      pageIndex,
     } = params;
     const numberingDefinitions = editor.model.metadata.numberingDefinitions;
     const location = {
@@ -59092,7 +59334,8 @@ export function DocxEditorViewer({
         fallbackParagraphRuns = renderInteractiveParagraphRuns(
           paragraph,
           `body-cell-${tableIndex}-${rowIndex}-${cellIndex}-${contentIndex}`,
-          location
+          location,
+          { pageIndex }
         );
       }
       return fallbackParagraphRuns;
@@ -59180,6 +59423,7 @@ export function DocxEditorViewer({
     isFirstInLetterheadColumn?: boolean;
     contentWidthPxOverride?: number;
     pageLayout?: DocumentLayoutMetrics;
+    pageIndex?: number;
     pageFlowTopPx?: number;
     pageFlowForeignExclusions?: PretextExclusionRect[];
     suppressLikelyFullPageCoverImageKeys?: Set<string>;
@@ -59660,6 +59904,7 @@ export function DocxEditorViewer({
               pageFlowTopPx: paragraphPageFlowTopPx,
               pageFlowForeignExclusions: options?.pageFlowForeignExclusions,
               pageLayout: resolvedPageLayout,
+              pageIndex: options?.pageIndex,
               suppressLikelyFullPageCoverImageKeys:
                 options?.suppressLikelyFullPageCoverImageKeys,
             }
@@ -60556,6 +60801,18 @@ export function DocxEditorViewer({
       );
     }
 
+    const tableHasUncachedPageFields = bodyTablePageFieldPresence.get(node) === true;
+    const tablePageIndex = options?.pageIndex ?? pageIndexByNodeIndex.get(nodeIndex) ?? 0;
+    const tablePageInfo = pageSectionInfoByIndex[tablePageIndex];
+    const tablePageNumber = tableHasUncachedPageFields
+      ? tablePageInfo?.pageNumber ?? tablePageIndex + 1 : undefined;
+    const tableTotalPages = tableHasUncachedPageFields ? totalPagesForFieldResolution : undefined;
+    const tableRunRenderOptions = tableHasUncachedPageFields ? {
+      ...paragraphRunRenderOptions,
+      pageNumberFormat: parseSectionPageNumberFormat(
+        tablePageInfo?.section.sectionPropertiesXml ?? editor.model.metadata.sectionPropertiesXml
+      ),
+    } : paragraphRunRenderOptions;
     const preserveParagraphSliceFractions = rowUsesCompleteParagraphSlicePlans(
       tableRowSlice ? node.rows[tableRowSlice.rowIndex] : undefined
     );
@@ -61297,7 +61554,8 @@ export function DocxEditorViewer({
                                               rowIndex,
                                               cellIndex,
                                               paragraphIndex,
-                                            }
+                                            },
+                                            { pageIndex: options?.pageIndex }
                                           )}
                                         </div>
                                       );
@@ -61320,9 +61578,9 @@ export function DocxEditorViewer({
                                           scrollToBookmark,
                                           undefined,
                                           undefined,
-                                          undefined,
-                                          undefined,
-                                          paragraphRunRenderOptions,
+                                          tablePageNumber,
+                                          tableTotalPages,
+                                          tableRunRenderOptions,
                                           undefined,
                                           undefined,
                                           undefined,
@@ -61356,6 +61614,7 @@ export function DocxEditorViewer({
                                       : undefined;
                                   if (wholeParagraphPlan) {
                                     return renderSlicedTableCellParagraph({
+                                      pageIndex: options?.pageIndex,
                                       paragraph: cellContent,
                                       paragraphIndex,
                                       tableIndex: nodeIndex,
@@ -61402,7 +61661,8 @@ export function DocxEditorViewer({
                                           rowIndex,
                                           cellIndex,
                                           paragraphIndex,
-                                        }
+                                        },
+                                        { pageIndex: options?.pageIndex }
                                       )}
                                     </div>
                                   );
@@ -61418,9 +61678,9 @@ export function DocxEditorViewer({
                                   scrollToBookmark,
                                   undefined,
                                   undefined,
-                                  undefined,
-                                  undefined,
-                                  paragraphRunRenderOptions,
+                                  tablePageNumber,
+                                  tableTotalPages,
+                                  tableRunRenderOptions,
                                   undefined,
                                   undefined,
                                   tableCellEditScope,
@@ -61909,12 +62169,12 @@ export function DocxEditorViewer({
                                               kind: "table-cell", tableIndex: nodeIndex,
                                               rowIndex: mergeSourceRow, cellIndex: mergeAnchor?.cellIndex ?? cellIndex,
                                               paragraphIndex: contentIndex,
-                                            })}
+                                            }, { pageIndex: options?.pageIndex })}
                                         </div>
                                       ) : renderHeaderNode(content,
                                         `merged-table-${nodeIndex}-${rowIndex}-${cellIndex}-${contentIndex}`,
                                         documentContentTheme, editor.model.metadata.numberingDefinitions,
-                                        headingStyles, cellContentWidthPx, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, typography))}
+                                        headingStyles, cellContentWidthPx, undefined, undefined, undefined, tablePageNumber, tableTotalPages, tableRunRenderOptions, undefined, undefined, undefined, undefined, undefined, undefined, undefined, typography))}
                                     </div>
                                   </div>
                                 </div>
@@ -62944,6 +63204,7 @@ export function DocxEditorViewer({
                                         }}
                                       >
                                         {renderSlicedTableCellParagraph({
+                                          pageIndex: options?.pageIndex,
                                           paragraph: plan.paragraph,
                                           paragraphIndex: plan.paragraphIndex,
                                           tableIndex: nodeIndex,
@@ -63563,6 +63824,7 @@ export function DocxEditorViewer({
                     suppressLetterheadColumnLayout: true,
                     isFirstInLetterheadColumn: isFirstInColumn,
                     pageLayout: options?.pageLayout,
+                    pageIndex: options?.pageIndex,
                     suppressLikelyFullPageCoverImageKeys:
                       options?.suppressLikelyFullPageCoverImageKeys,
                   }
@@ -64271,6 +64533,7 @@ export function DocxEditorViewer({
                       {
                         overrideBeforeSpacingPx: nextSegment?.paragraphBeforeSpacingPx,
                         pageLayout: options?.pageLayout,
+                        pageIndex: options?.pageIndex,
                         suppressLikelyFullPageCoverImageKeys:
                           options?.suppressLikelyFullPageCoverImageKeys,
                       }
@@ -64313,6 +64576,7 @@ export function DocxEditorViewer({
             {
               overrideBeforeSpacingPx: segment?.paragraphBeforeSpacingPx,
               pageLayout: options?.pageLayout,
+              pageIndex: options?.pageIndex,
               pageFlowTopPx: measuredSegmentFlowTopPx ?? pageFlowTopPx + (segment.paragraphHeaderFlowGapPx ?? 0),
               pageFlowForeignExclusions:
                 foreignWrapExclusionsBySegmentIndex[offset],
@@ -65524,6 +65788,7 @@ export function DocxEditorViewer({
                                         undefined,
                                         {
                                           pageLayout,
+                                          pageIndex,
                                           contentWidthPxOverride:
                                             columnContentWidthPx,
                                           suppressLikelyFullPageCoverImageKeys:
@@ -65557,6 +65822,7 @@ export function DocxEditorViewer({
                           {
                             overrideBeforeSpacingPx: columnSegment?.paragraphBeforeSpacingPx,
                             pageLayout,
+                            pageIndex,
                             contentWidthPxOverride: columnContentWidthPx,
                             suppressLikelyFullPageCoverImageKeys:
                               suppressedLikelyFullPageCoverImageKeys,
@@ -65700,6 +65966,7 @@ export function DocxEditorViewer({
                                             {
                                               overrideBeforeSpacingPx: overlaySegment?.paragraphBeforeSpacingPx,
                                               pageLayout,
+                                              pageIndex,
                                               suppressLikelyFullPageCoverImageKeys:
                                                 suppressedLikelyFullPageCoverImageKeys,
                                             }
@@ -66168,6 +66435,7 @@ export function DocxEditorViewer({
                                             {
                                               overrideBeforeSpacingPx: overlaySegment?.paragraphBeforeSpacingPx,
                                               pageLayout,
+                                              pageIndex,
                                               suppressLikelyFullPageCoverImageKeys:
                                                 suppressedLikelyFullPageCoverImageKeys,
                                             }

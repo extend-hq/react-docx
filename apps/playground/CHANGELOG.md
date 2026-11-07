@@ -1,5 +1,12 @@
 # @extend-ai/react-docx-playground
 
+## 0.0.14
+
+### Patch Changes
+
+- Updated dependencies
+  - @extend-ai/react-docx@0.14.6
+
 ## 0.0.13
 
 ### Patch Changes
