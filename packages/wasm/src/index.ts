@@ -11,6 +11,7 @@ import wasmInit, {
   extract_document_blocks_with_options_wasm,
   inspect_document_source_wasm,
   model_to_document_xml_from_json_wasm,
+  model_to_document_xml_wasm,
   package_to_array_buffer_wasm,
   parse_docx_wasm,
   serialize_docx_from_json_wasm,
@@ -275,18 +276,19 @@ export async function wasmCanPreserveImagePaintSource(
   ownerPartName?: string
 ): Promise<boolean> {
   await initWasm();
-  return can_preserve_image_paint_source_wasm(
-    docModelToWasmJson(image), basePackage ?? undefined, ownerPartName
-  );
+  return can_preserve_image_paint_source_wasm(image, basePackage ?? undefined, ownerPartName);
 }
 
+// Model-taking calls pass the JS object, not docModelToWasmJson output: the
+// object entry points move image `data` buffers and long `src` strings out of
+// the model JSON. Number-array image bytes cost several GiB of WASM memory for
+// a ~64 MB image and abort with `RuntimeError: unreachable`.
 export async function wasmSerializeDocx(
   model: unknown,
   basePackage?: WasmOoxmlPackage
 ): Promise<ArrayBuffer> {
   await initWasm();
-  const modelJson = docModelToWasmJson(model);
-  const bytes = serialize_docx_from_json_wasm(modelJson, basePackage ?? null);
+  const bytes = serialize_docx_wasm(model, basePackage ?? null);
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
 }
 
@@ -295,7 +297,7 @@ export async function wasmModelToDocumentXml(
   basePackage?: WasmOoxmlPackage
 ): Promise<string> {
   await initWasm();
-  return model_to_document_xml_from_json_wasm(docModelToWasmJson(model), basePackage ?? null);
+  return model_to_document_xml_wasm(model, basePackage ?? null);
 }
 
 export async function wasmPackageToArrayBuffer(pkg: WasmOoxmlPackage): Promise<ArrayBuffer> {

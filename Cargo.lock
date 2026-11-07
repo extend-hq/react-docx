@@ -580,9 +580,9 @@ checksum = "6c20b6793b5c2fa6553b250154b78d6d0db37e72700ae35fad9387a46f487c97"
 
 [[package]]
 name = "rust-docx"
-version = "0.2.14"
+version = "0.2.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7458a99f6d5e0ebaadae82723f8b3140c26d04952a729cdc434232720db24dfc"
+checksum = "45c1bd7d48187327701c339203eb36f84958498d3555ab6becfe05502238bbcf"
 dependencies = [
  "arc-swap",
  "base64",
@@ -607,9 +607,9 @@ dependencies = [
 
 [[package]]
 name = "rust-docx-wasm"
-version = "0.2.14"
+version = "0.2.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "664d516796ee1662c77af495a022383da09defaafdae924fdc9fc98fff9d77a2"
+checksum = "393aa5d88da0cfa5f80b7f0b828a6592007ec31d9caf5de9f54b86b9671d3a02"
 dependencies = [
  "js-sys",
  "rust-docx",
@@ -620,13 +620,15 @@ dependencies = [
 
 [[package]]
 name = "rust-office-art"
-version = "0.1.4"
+version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e6a39710163f989177ac760ff9a733da6a0819e534a9c3ff1e38f0cd432d396f"
+checksum = "86693bc6f3097e276bdd002bd330c93dd75462d5bbc2d34311a50249c9d504c9"
 dependencies = [
  "base64",
  "image",
  "kurbo",
+ "libm",
+ "memchr",
  "quick-xml 0.37.5",
  "roxmltree",
  "rustybuzz",
@@ -636,9 +638,9 @@ dependencies = [
 
 [[package]]
 name = "rust-office-charts"
-version = "0.1.6"
+version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5d367bdc4807d556d857572a5733da4355274d5048a24f4b4a006747b5725541"
+checksum = "facc428fbf906e69d318efc45c99f161d1c61dd41dc1170dd984f469e30dfa2b"
 dependencies = [
  "base64",
  "kurbo",
