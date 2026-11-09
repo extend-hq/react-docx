@@ -1,5 +1,11 @@
 # @extend-ai/react-docx
 
+## 0.14.8
+
+### Patch Changes
+
+- Build the font metric profile cache key with an explicit null-separated join so production minification preserves its separators.
+
 ## 0.14.7
 
 ### Patch Changes
