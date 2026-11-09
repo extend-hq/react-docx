@@ -63950,7 +63950,7 @@ export function DocxEditorViewer({
               dropCapResizePreview?.nodeIndex === nodeIndex
                 ? dropCapResizePreview
                 : undefined;
-            const dropCapText = paragraphText(node).replace(/\s+/g, " ").trim();
+            const dropCapText = paragraphText(node);
             const dropCapStyle = firstRunStyle(node);
             const nextParagraphWidthPx = paragraphAvailableTextWidthPx(
               nextNode,
@@ -64101,6 +64101,8 @@ export function DocxEditorViewer({
             rendered.push(
               <div
                 key={`dropcap-${nodeIndex}-${nextNodeIndex}`}
+                data-docx-source-id={dropCapManualWrapLayout ? nextNode.blockId : undefined}
+                data-docx-source-kind={dropCapManualWrapLayout ? "paragraph" : undefined}
                 style={{
                   display: "flow-root",
                   position: "relative",
@@ -64109,6 +64111,7 @@ export function DocxEditorViewer({
                 {!dropCapManualWrapLayout && dropCapText.length > 0 ? (
                   <span
                     data-docx-drop-cap="true"
+                    data-docx-source-id={node.blockId}
                     data-docx-drop-cap-node-index={nodeIndex}
                     contentEditable={false}
                     style={{
@@ -64345,6 +64348,7 @@ export function DocxEditorViewer({
                           dropCapText.length > 0 ? (
                             <span
                               data-docx-drop-cap="true"
+                              data-docx-source-id={node.blockId}
                               data-docx-drop-cap-node-index={nodeIndex}
                               contentEditable={false}
                               style={{

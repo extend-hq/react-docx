@@ -200,6 +200,12 @@ function rangeBoxes(
   cache: GeometryCache,
   expectedText?: string
 ): { boxes: BlockBoundingBox[]; mismatch: boolean } {
+  const input = element.matches("[data-docx-drop-cap]")
+    ? element.querySelector<HTMLInputElement>("input") : null;
+  if (input) {
+    const mismatch = expectedText !== undefined && input.value.slice(ref.start, ref.end) !== expectedText;
+    return { boxes: mismatch ? [] : inputTextBoxes(input, surface, ref.start!, ref.end!), mismatch };
+  }
   const boxes: BlockBoundingBox[] = [];
   let mismatch = false;
   const start = ref.start!, end = ref.end!;
@@ -229,6 +235,62 @@ function rangeBoxes(
     }
   }
   return { boxes, mismatch };
+}
+
+function inputTextBoxes(
+  input: HTMLInputElement,
+  surface: HTMLElement,
+  start = 0,
+  end = input.value.length
+): BlockBoundingBox[] {
+  if (start >= input.value.length || end <= start) return [];
+  const style = getComputedStyle(input);
+  const frame = input.getBoundingClientRect();
+  const px = (value: string) => parseFloat(value) || 0;
+  const insetX = px(style.borderLeftWidth) + px(style.paddingLeft);
+  const insetY = px(style.borderTopWidth) + px(style.paddingTop);
+  const paddingX = insetX + px(style.borderRightWidth) + px(style.paddingRight);
+  const paddingY = insetY + px(style.borderBottomWidth) + px(style.paddingBottom);
+  const width = px(style.width) + (style.boxSizing === "border-box" ? 0 : paddingX);
+  const height = px(style.height) + (style.boxSizing === "border-box" ? 0 : paddingY);
+  if (!width || !height) return [];
+  const xScale = frame.width / width, yScale = frame.height / height;
+  const mirror = document.createElement("span");
+  mirror.dataset.docxGeometryMeasure = "true";
+  Object.assign(mirror.style, {
+    position: "fixed", left: "-100000px", top: "0", visibility: "hidden",
+    display: "inline-block", whiteSpace: "pre", margin: "0", padding: "0", border: "0",
+  });
+  for (const property of [
+    "font-family", "font-size", "font-weight", "font-style", "font-stretch", "font-variant",
+    "font-kerning", "font-feature-settings", "font-variation-settings", "font-size-adjust",
+    "font-optical-sizing", "line-height", "letter-spacing", "word-spacing", "text-transform", "direction",
+  ]) mirror.style.setProperty(property, style.getPropertyValue(property));
+  mirror.textContent = input.value;
+  document.body.append(mirror);
+  try {
+    const measured = mirror.getBoundingClientRect();
+    const available = Math.max(0, width - paddingX - measured.width);
+    const align = style.textAlign;
+    const right = align === "right" || (align === "start" && style.direction === "rtl") ||
+      (align === "end" && style.direction !== "rtl");
+    const left = frame.left + (insetX + (right ? available : align === "center" ? available / 2 : 0) - input.scrollLeft) * xScale;
+    const top = frame.top + (insetY + (height - paddingY - measured.height) / 2) * yScale;
+    const range = document.createRange();
+    range.setStart(mirror.firstChild!, start);
+    range.setEnd(mirror.firstChild!, Math.min(end, input.value.length));
+    return [...range.getClientRects()].flatMap(rect => {
+      const box = visibleBox(input, surface, intersect(frame, {
+        left: left + (rect.left - measured.left) * xScale,
+        top: top + (rect.top - measured.top) * yScale,
+        right: left + (rect.right - measured.left) * xScale,
+        bottom: top + (rect.bottom - measured.top) * yScale,
+      }));
+      return box ? [box] : [];
+    });
+  } finally {
+    mirror.remove();
+  }
 }
 
 function combiningMarkBox(
@@ -272,6 +334,9 @@ function paragraphTextBoxes(
   cache: GeometryCache,
   xScale: number
 ): BlockBoundingBox[] {
+  const input = element.matches("[data-docx-drop-cap]")
+    ? element.querySelector<HTMLInputElement>("input") : null;
+  if (input) return inputTextBoxes(input, surface);
   const boxes: BlockBoundingBox[] = [];
   let previousExtent: BlockBoundingBox | undefined;
   const nodes = textNodes(element, true);
@@ -339,8 +404,12 @@ function resolveSourceGeometry(
   const unresolvedSourceIds: string[] = [];
   let foundElement = false;
   const issues: DocxBlockGeometry["issues"] = [];
+  let textOffset = 0;
   for (const ref of refs) {
     const ranged = ref.start !== undefined || ref.end !== undefined;
+    const textLength = Math.max(0, (ref.end ?? 0) - (ref.start ?? 0));
+    const sourceText = expectedText?.slice(textOffset, textOffset + textLength);
+    textOffset += textLength;
     if (ranged && (!Number.isInteger(ref.start) || !Number.isInteger(ref.end) || ref.start! < 0 || ref.end! <= ref.start!)) {
       issues.push({ nodeId: ref.nodeId, reason: "unsupported_range" });
       unresolvedSourceIds.push(ref.nodeId);
@@ -370,10 +439,10 @@ function resolveSourceGeometry(
       if (!box) continue;
       const metrics = pageMetrics(surface, wrapper, cache);
       if (!metrics) continue;
-      const range = ranged ? rangeBoxes(element, surface, ref, cache, expectedText) : undefined;
+      const range = ranged ? rangeBoxes(element, surface, ref, cache, sourceText) : undefined;
       if (range?.mismatch) issues.push({ nodeId: ref.nodeId, reason: "range_text_mismatch" });
       const boxes = range ? range.boxes
-        : paragraphContent || element.matches("[data-docx-paragraph-host],[data-docx-section-paragraph-host],[data-docx-table-cell-paragraph-host],[data-docx-source-kind='paragraph']")
+        : paragraphContent || element.matches("[data-docx-paragraph-host],[data-docx-section-paragraph-host],[data-docx-table-cell-paragraph-host],[data-docx-source-kind='paragraph'],[data-docx-drop-cap]")
           ? paragraphTextBoxes(element, surface, cache, metrics.xScale)
         : [box];
       const { rect: page, pageWidth, pageHeight, pageIndex, xScale, yScale } = metrics;
@@ -437,7 +506,7 @@ export function resolveDocxBlockGeometries(
   return new Map(blocks.map((block) => [
     block.id,
     resolveSourceGeometry(root, block.sourceRefs, cache,
-      block.sourceRefs.length === 1 && block.sourceRefs[0].start !== undefined ? block.content : undefined,
+      block.sourceRefs.every(ref => ref.start !== undefined && ref.end !== undefined) ? block.content : undefined,
       block.details.kind === "paragraph" || block.type === "heading" || block.type === "section_heading"),
   ]));
 }
@@ -566,7 +635,7 @@ export function DocxBlockHighlights({
       const relevant = records.some((record) => {
         if (
           record.target instanceof Element &&
-          record.target.closest("[data-docx-block-highlight]")
+          record.target.closest("[data-docx-block-highlight],[data-docx-geometry-measure]")
         )
           return false;
         if (record.type === "attributes" || record.type === "characterData")
@@ -575,7 +644,7 @@ export function DocxBlockHighlights({
           (node) =>
             !(
               node instanceof Element &&
-              node.hasAttribute("data-docx-block-highlight")
+              node.matches("[data-docx-block-highlight],[data-docx-geometry-measure]")
             )
         );
       });
@@ -619,8 +688,14 @@ export function DocxBlockHighlights({
   }
   return (
     <>
-      {displayed.flatMap((item) =>
-        (geometries.get(item.id)?.fragments ?? []).map((fragment, index) => {
+      {displayed.flatMap((item) => {
+        const geometry = geometries.get(item.id);
+        const fragments = geometry && item.details.kind === "paragraph" && item.details.dropCap
+          ? toDocxPageBlocks(item, geometry).map(page => ({
+              pageIndex: page.fragments[0].pageIndex, boundingBox: page.boundingBox,
+            }))
+          : geometry?.fragments ?? [];
+        return fragments.map((fragment, index) => {
           const surface = surfaces.get(fragment.pageIndex);
           if (!surface) return null;
           const box = fragment.boundingBox;
@@ -649,8 +724,8 @@ export function DocxBlockHighlights({
             surface,
             `${item.id}-${index}`
           );
-        })
-      )}
+        });
+      })}
     </>
   );
 }
