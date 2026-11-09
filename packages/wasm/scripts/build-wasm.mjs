@@ -9,8 +9,8 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../.
 const generated = path.join(root, "packages/wasm/src/generated");
 const binary = path.join(root, "packages/wasm/src/docx_wasm_bg.wasm");
 const workspace = process.env.RUST_DOCX_WORKSPACE;
-const registry = process.argv.includes("--registry");
-if (workspace && registry) throw new Error("Choose either a Rust workspace or the locked registry build.");
+const cargo = process.argv.includes("--cargo") || process.argv.includes("--registry");
+if (workspace && cargo) throw new Error("Choose either a Rust workspace or the locked Cargo build.");
 const required = ["extract_document_review_wasm", "extract_document_blocks_with_revisions_wasm"];
 const manifestPath = path.join(generated, "build-info.json");
 const noticesPath = path.join(root, "packages/wasm/OfficeArt-NOTICES.txt");
@@ -76,7 +76,7 @@ export function sourceInfo(workspace, binary) {
     rustc: execFileSync("rustc", ["--version"], { encoding: "utf8" }).trim() };
 }
 
-function registrySourceInfo(binary) {
+function cargoSourceInfo(binary) {
   const metadata = JSON.parse(execFileSync("cargo", ["metadata", "--locked", "--format-version", "1"], { cwd: root, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 }));
   const source = createHash("sha256");
   for (const name of ["Cargo.toml", "Cargo.lock", "crates/docx-wasm/Cargo.toml", "crates/docx-wasm/src/lib.rs"]) source.update(name).update("\0").update(readFileSync(path.join(root, name))).update("\0");
@@ -90,7 +90,10 @@ function registrySourceInfo(binary) {
     source.update(readFileSync(crate.manifest_path));
     walk(path.join(path.dirname(crate.manifest_path), "src"));
   }
-  return { source: "registry", rustDocxVersion: crates.find(p => p.name === "rust-docx")?.version,
+  const parserSource = crates.find(p => p.name === "rust-docx")?.source;
+  const rustRevision = parserSource?.startsWith("git+") ? parserSource.split("#")[1] : undefined;
+  return { source: rustRevision ? "git" : "registry", ...(rustRevision ? { rustRevision } : {}),
+    rustDocxVersion: crates.find(p => p.name === "rust-docx")?.version,
     rustDocxWasmVersion: crates.find(p => p.name === "rust-docx-wasm")?.version,
     rustOfficeArtVersion: crates.find(p => p.name === "rust-office-art")?.version,
     rustOfficeChartsVersion: crates.find(p => p.name === "rust-office-charts")?.version,
@@ -99,7 +102,7 @@ function registrySourceInfo(binary) {
     rustc: execFileSync("rustc", ["--version"], { encoding: "utf8" }).trim() };
 }
 
-if (workspace || registry) {
+if (workspace || cargo) {
   const crate = workspace ? path.resolve(workspace, "crates/rust-docx-wasm") : path.join(root, "crates/docx-wasm");
   if (!existsSync(path.join(crate, "Cargo.toml"))) throw new Error("RUST_DOCX_WORKSPACE must point to the Rust workspace containing rust-docx-wasm.");
   const output = mkdtempSync(path.join(tmpdir(), "react-docx-wasm-"));
@@ -112,7 +115,7 @@ if (workspace || registry) {
     const declarations = readFileSync(path.join(output, "docx_wasm.d.ts"), "utf8");
     if (required.some(name => !declarations.includes(`function ${name}(`))) throw new Error("The selected Rust workspace does not expose shared document review.");
     const builtBinary = path.join(output, "docx_wasm_bg.wasm");
-    const provenance = registry ? registrySourceInfo(builtBinary) : sourceInfo(path.resolve(workspace), builtBinary);
+    const provenance = cargo ? cargoSourceInfo(builtBinary) : sourceInfo(path.resolve(workspace), builtBinary);
     if (inputHash && provenance.rustSourceSha256 !== inputHash) throw new Error("Rust inputs changed during the build; rebuild before recording provenance.");
     mkdirSync(generated, { recursive: true });
     for (const name of ["docx_wasm.js", "docx_wasm.d.ts", "docx_wasm_bg.wasm.d.ts"]) copyFileSync(path.join(output, name), path.join(generated, name));
@@ -133,4 +136,4 @@ if (existsSync(manifestPath)) {
   const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
   if (manifest.noticesSha256 && manifest.noticesSha256 !== hash(readFileSync(noticesPath))) throw new Error("The bundled runtime notices do not match their source manifest.");
 }
-console.log(workspace || registry ? "Built shared Rust document review." : "Validated bundled WASM; set RUST_DOCX_WORKSPACE to rebuild from Rust source.");
+console.log(workspace || cargo ? "Built shared Rust document review." : "Validated bundled WASM; use --cargo to rebuild from locked dependencies or set RUST_DOCX_WORKSPACE to use a local Rust workspace.");
