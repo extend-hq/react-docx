@@ -11,7 +11,7 @@ publish = false
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-rust-docx-wasm = { git = "https://github.com/extend-hq/rust-office.git", rev = "5ed8521ccc8821358c691356662ac4b1fc2f798a", version = "=0.2.17" }
+rust-docx-wasm = "=0.2.20"
 
 [package.metadata.wasm-pack.profile.release]
 wasm-opt = ["-O3", "--enable-bulk-memory", "--enable-nontrapping-float-to-int", "--enable-simd"]

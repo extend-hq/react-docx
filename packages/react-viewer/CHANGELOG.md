@@ -1,5 +1,11 @@
 # @extend-ai/react-docx
 
+## 0.14.9
+
+### Patch Changes
+
+- Update the bundled Rust DOCX parser and WASM bindings to 0.2.20, retaining logical drop-cap paragraphs and including faster parsing, deterministic style resolution, and support for document models larger than the JavaScript string limit. Legacy imports containing multiple image formats may receive new document and block IDs because generated media content types now have a stable order.
+
 ## 0.14.8
 
 ### Patch Changes

@@ -2,7 +2,7 @@
 
 The Rust parser (`rust-docx`), its WASM bindings (`rust-docx-wasm`), and its chart renderer (`rust-office-charts`) are maintained and published from [rust-office](https://github.com/extend-hq/rust-office). React DOCX builds its locked Cargo dependencies into the browser module it ships. Browser applications can continue installing the viewer from npm.
 
-The Cargo manifest currently pins upstream commit `5ed8521ccc8821358c691356662ac4b1fc2f798a` to retain the drop-cap paragraph fix, which is not included in the published `0.2.17` crates. A rebuild needs no local Rust checkout. Keep that Git revision until a published release includes the fix; when adopting that release, replace the Git dependency with its exact registry version.
+The Cargo manifest pins the published `rust-docx-wasm` crate to `=0.2.20`, which includes the drop-cap paragraph fix previously consumed through a Git revision. A rebuild needs no local Rust checkout. Keep the dependency pinned to an exact registry version when adopting future releases.
 
 After changing the dependency, refresh the lockfile, rebuild the bindings and run the viewer checks:
 

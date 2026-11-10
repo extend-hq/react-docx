@@ -343,6 +343,7 @@ checksum = "4b60dfc32f652b926df6192e55525b16d186c69d47876c3ead4da5cc9f8450e2"
 dependencies = [
  "arrayvec",
  "euclid",
+ "libm",
  "polycool",
  "smallvec",
 ]
@@ -426,6 +427,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
 dependencies = [
  "autocfg",
+ "libm",
 ]
 
 [[package]]
@@ -466,6 +468,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "50596ddc09eb5ad5f75cacd40209568e66df71baf86e1499a0e99c4cff12a5a6"
 dependencies = [
  "arrayvec",
+ "libm",
 ]
 
 [[package]]
@@ -580,8 +583,9 @@ checksum = "6c20b6793b5c2fa6553b250154b78d6d0db37e72700ae35fad9387a46f487c97"
 
 [[package]]
 name = "rust-docx"
-version = "0.2.17"
-source = "git+https://github.com/extend-hq/rust-office.git?rev=5ed8521ccc8821358c691356662ac4b1fc2f798a#5ed8521ccc8821358c691356662ac4b1fc2f798a"
+version = "0.2.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b1c7da419f39d27037c9dab937d84fefa9546bba90633ee17bde380d634eb4bd"
 dependencies = [
  "arc-swap",
  "base64",
@@ -606,8 +610,9 @@ dependencies = [
 
 [[package]]
 name = "rust-docx-wasm"
-version = "0.2.17"
-source = "git+https://github.com/extend-hq/rust-office.git?rev=5ed8521ccc8821358c691356662ac4b1fc2f798a#5ed8521ccc8821358c691356662ac4b1fc2f798a"
+version = "0.2.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "db56a33dc555f9067fac451f8cc25890da5a8d27d342ba5fbb4dd65454e067d6"
 dependencies = [
  "js-sys",
  "rust-docx",
@@ -618,8 +623,9 @@ dependencies = [
 
 [[package]]
 name = "rust-office-art"
-version = "0.1.6"
-source = "git+https://github.com/extend-hq/rust-office.git?rev=5ed8521ccc8821358c691356662ac4b1fc2f798a#5ed8521ccc8821358c691356662ac4b1fc2f798a"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f55bf1e96f137b22a742e3e3c8b505a1aeb797a3cef2f6270a388efbeaefb14d"
 dependencies = [
  "base64",
  "image",
@@ -635,8 +641,9 @@ dependencies = [
 
 [[package]]
 name = "rust-office-charts"
-version = "0.1.8"
-source = "git+https://github.com/extend-hq/rust-office.git?rev=5ed8521ccc8821358c691356662ac4b1fc2f798a#5ed8521ccc8821358c691356662ac4b1fc2f798a"
+version = "0.1.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6f3b597be4c06378454666d41fc36118fa30ada48a04b9e1c46f04248879322a"
 dependencies = [
  "base64",
  "kurbo",
