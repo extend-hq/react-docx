@@ -3266,12 +3266,14 @@ function PlaygroundApp(): React.JSX.Element {
                       }
                     }}
                   >
-                    <HugeiconsIcon
-                      icon={borderControlOptionIcon(option.id)}
-                      strokeWidth={1.8}
-                      className="size-4 text-muted-foreground"
-                    />
-                    {option.label}
+                    <span className="flex items-center gap-2">
+                      <HugeiconsIcon
+                        icon={borderControlOptionIcon(option.id)}
+                        strokeWidth={1.8}
+                        className="size-4 text-muted-foreground"
+                      />
+                      {option.label}
+                    </span>
                   </MenuCheckboxItem>
                 </React.Fragment>
               );

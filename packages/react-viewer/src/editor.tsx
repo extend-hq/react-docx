@@ -39146,6 +39146,9 @@ export function DocxEditorViewer({
     start: number;
     end: number;
   } | null>(null);
+  const pendingRootCaretFocusRef = React.useRef<
+    DocxTextRangeBoundary | undefined
+  >(undefined);
   // Native selectionchange events are asynchronous. Keep the most recent
   // programmatic range in a synchronous guard long enough for React to commit
   // and for the replacement DOM to receive that range; otherwise a delayed
@@ -45438,6 +45441,11 @@ export function DocxEditorViewer({
           normalizedRange.end
         ) === 0;
 
+      pendingRootCaretFocusRef.current =
+        isCollapsed && document.activeElement === viewerRootRef.current
+          ? normalizedRange.start
+          : undefined;
+
       // Keep the synchronous selection invariant aligned with command-driven
       // changes. A selectionchange event for the collapse is delivered only
       // after React has committed; without updating this snapshot now, that
@@ -46741,6 +46749,34 @@ export function DocxEditorViewer({
     },
     [editor.model, focusWrappedParagraphTextarea, isReadOnly, syncWrappedParagraphRange, typography?.enableOpenTypeFeatures, typography?.adjustLineHeightInTable]
   );
+
+  React.useLayoutEffect(() => {
+    const boundary = pendingRootCaretFocusRef.current;
+    pendingRootCaretFocusRef.current = undefined;
+    if (
+      !boundary ||
+      isReadOnly ||
+      document.activeElement !== viewerRootRef.current
+    ) {
+      return;
+    }
+
+    // Restore input focus after the model commits, before the next keystroke.
+    beginSelectionIntent();
+    if (
+      focusWrappedParagraphRange(
+        paragraphLocationFromTextRangeLocation(boundary.location),
+        boundary.offset
+      )
+    ) {
+      return;
+    }
+    const host = resolveParagraphHostElement(boundary.location);
+    host
+      ?.closest<HTMLElement>("[contenteditable='true']")
+      ?.focus({ preventScroll: true });
+    setSelectionFromDocxBoundaries(boundary, boundary);
+  });
 
   const focusDropCapWrappedParagraph = React.useCallback(
     (
@@ -48124,9 +48160,97 @@ export function DocxEditorViewer({
     ]
   );
 
+  const replaceExpandedSelectionWithText = React.useCallback(
+    (rawText: string): boolean => {
+      if (isReadOnly) {
+        return false;
+      }
+
+      let activeRange = editor.activeTextRange;
+      if (!activeRange) {
+        const selection = window.getSelection();
+        if (selection && selection.rangeCount > 0) {
+          const domRange = selection.getRangeAt(0);
+          const startBoundary = resolveParagraphBoundaryFromSelectionPoint(
+            domRange.startContainer,
+            domRange.startOffset
+          );
+          const endBoundary = resolveParagraphBoundaryFromSelectionPoint(
+            domRange.endContainer,
+            domRange.endOffset
+          );
+          if (startBoundary && endBoundary) {
+            activeRange = normalizeTextRange({
+              start: startBoundary,
+              end: endBoundary,
+            });
+          }
+        }
+      }
+      if (!activeRange) {
+        return false;
+      }
+
+      const normalizedRange = normalizeTextRange(activeRange);
+      if (
+        compareTextRangeBoundaries(
+          normalizedRange.start,
+          normalizedRange.end
+        ) >= 0
+      ) {
+        return false;
+      }
+
+      const replacementText = rawText.replace(/\r\n?/g, "\n");
+      const collapsedRange = editor.replaceExpandedSelection(
+        replacementText,
+        normalizedRange
+      );
+      if (!collapsedRange) {
+        return false;
+      }
+
+      editingIntentContinuationRef.current = undefined;
+      tableCellDraftsRef.current.clear();
+      tableCellParagraphDraftsRef.current.clear();
+      syncSelectionFromDocxRange(collapsedRange);
+      return true;
+    },
+    [
+      editor,
+      isReadOnly,
+      resolveParagraphBoundaryFromSelectionPoint,
+      syncSelectionFromDocxRange,
+    ]
+  );
+
   const onViewerKeyDown = React.useCallback(
     (event: React.KeyboardEvent<HTMLDivElement>): void => {
       commandSelectionGuardRef.current = undefined;
+      const replacementText =
+        event.key.length === 1
+          ? event.key
+          : event.key === "Enter" && event.shiftKey
+          ? "\n"
+          : undefined;
+      if (
+        !isReadOnly &&
+        !event.defaultPrevented &&
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.altKey &&
+        !isCompositionKeyboardEvent(event) &&
+        !compositionActiveRef.current &&
+        event.target === event.currentTarget &&
+        replacementText !== undefined &&
+        replaceExpandedSelectionWithText(replacementText)
+      ) {
+        cancelPendingPointerSelectionReconcile();
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+
       if (!isReadOnly && handleDeleteAcrossTableCellSelection(event)) {
         return;
       }
@@ -48248,10 +48372,12 @@ export function DocxEditorViewer({
       selectAllDocumentText();
     },
     [
+      cancelPendingPointerSelectionReconcile,
       editor,
       extendSelectionVertically,
       handleDeleteAcrossTableCellSelection,
       isReadOnly,
+      replaceExpandedSelectionWithText,
       resolveParagraphBoundaryFromSelectionPoint,
       selectAllDocumentText,
       syncSelectionFromDocxRange,
@@ -48346,70 +48472,6 @@ export function DocxEditorViewer({
         syncSelectionFromDocxRange(collapsedRange);
       }
 
-      return true;
-    },
-    [
-      editor,
-      isReadOnly,
-      resolveParagraphBoundaryFromSelectionPoint,
-      syncSelectionFromDocxRange,
-    ]
-  );
-
-  const replaceExpandedSelectionWithText = React.useCallback(
-    (rawText: string): boolean => {
-      if (isReadOnly) {
-        return false;
-      }
-
-      let activeRange = editor.activeTextRange;
-      if (!activeRange) {
-        const selection = window.getSelection();
-        if (selection && selection.rangeCount > 0) {
-          const domRange = selection.getRangeAt(0);
-          const startBoundary = resolveParagraphBoundaryFromSelectionPoint(
-            domRange.startContainer,
-            domRange.startOffset
-          );
-          const endBoundary = resolveParagraphBoundaryFromSelectionPoint(
-            domRange.endContainer,
-            domRange.endOffset
-          );
-          if (startBoundary && endBoundary) {
-            activeRange = normalizeTextRange({
-              start: startBoundary,
-              end: endBoundary,
-            });
-          }
-        }
-      }
-      if (!activeRange) {
-        return false;
-      }
-
-      const normalizedRange = normalizeTextRange(activeRange);
-      if (
-        compareTextRangeBoundaries(
-          normalizedRange.start,
-          normalizedRange.end
-        ) >= 0
-      ) {
-        return false;
-      }
-
-      const replacementText = rawText.replace(/\r\n?/g, "\n");
-      const collapsedRange = editor.replaceExpandedSelection(
-        replacementText,
-        normalizedRange
-      );
-      if (!collapsedRange) {
-        return false;
-      }
-
-      editingIntentContinuationRef.current = undefined;
-      tableCellDraftsRef.current.clear();
-      tableCellParagraphDraftsRef.current.clear();
-      syncSelectionFromDocxRange(collapsedRange);
       return true;
     },
     [
@@ -54541,7 +54603,11 @@ export function DocxEditorViewer({
           }
 
           wrappedParagraphPendingSelectionRef.current = undefined;
-          setActiveWrappedParagraphSession(undefined);
+          if (activeWrappedParagraphSessionRef.current) {
+            // Remove the editing surface before attaching the selection to its text.
+            flushSync(() => setActiveWrappedParagraphSession(undefined));
+          }
+          viewerRootRef.current?.focus({ preventScroll: true });
           setSelectionFromDocxBoundaries(dragState.anchorBoundary, endBoundary);
         }}
         onPointerUp={(event) => {

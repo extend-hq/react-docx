@@ -655,7 +655,11 @@ test("extends the selection across paragraphs with Shift+ArrowUp/Down", async ({
   await page.keyboard.press("Shift+ArrowUp");
   await expect.poll(activeRange).toEqual([1, 0, 2, 0]);
   await page.keyboard.press("Backspace");
-  await expect(paragraph(1)).toHaveText("Bravo paragraph");
+  await expect.poll(() => paragraph(1).evaluate((element) => {
+    const content = element.cloneNode(true) as HTMLElement;
+    content.querySelectorAll("textarea").forEach((input) => input.remove());
+    return content.textContent;
+  })).toBe("Bravo paragraph");
 
   // From a heading on the wrapped-paragraph route: the textarea takes the
   // first step into the next paragraph, and the next press keeps extending.
