@@ -33,35 +33,46 @@ import {
   ArrowLeft,
   ArrowRight,
   ArrowUp,
-  AlignCenter,
-  AlignJustify,
-  AlignLeft,
-  AlignRight,
+  Baseline,
   Bold,
-  Columns2,
   Check,
+  Code,
+  Columns2,
   Download,
-  FileDiff,
+  FileText,
+  FolderOpen,
   Highlighter,
   ImagePlus,
   Italic,
   Link2,
   List,
+  ListChevronsUpDown,
   ListOrdered,
-  MessageSquareText,
+  Lock,
+  Minus,
   Moon,
-  PanelsTopLeft,
+  MoveHorizontal,
+  Plus,
+  Proportions,
+  RectangleVertical,
   Redo2,
-  Subscript,
-  Superscript,
-  Trash2,
+  Ruler,
+  Scaling,
+  Settings2,
   Strikethrough,
+  Subscript,
   Sun,
+  Superscript,
   Table2,
+  TextAlignCenter,
+  TextAlignEnd,
+  TextAlignJustify,
+  TextAlignStart,
+  Trash2,
   Underline,
-  Loader2,
   Undo2,
   Upload,
+  X,
   ZoomIn,
   ZoomOut,
 } from "lucide-react";
@@ -85,77 +96,180 @@ import {
 } from "@hugeicons/core-free-icons";
 import { useTheme } from "next-themes";
 
-import { BlockInspector } from "./components/block-inspector";
-
-import { Badge } from "./components/ui/badge";
-import { Button } from "./components/ui/button";
-import { ButtonGroup } from "./components/ui/button-group";
-import { Card, CardContent } from "./components/ui/card";
-import { ColorPicker } from "./components/ui/color-picker";
+import { BlockInspector } from "@/components/block-inspector";
+import {
+  keepSelection,
+  RibbonButton,
+  RibbonColorButton,
+  RibbonDivider,
+  RibbonGroup,
+  RibbonMenuButton,
+  RibbonToggle,
+} from "@/components/ribbon";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   ContextMenu,
-  ContextMenuContent,
   ContextMenuItem,
-  ContextMenuShortcut,
+  ContextMenuPopup,
   ContextMenuSeparator,
+  ContextMenuShortcut,
   ContextMenuSub,
-  ContextMenuSubContent,
+  ContextMenuSubPopup,
   ContextMenuSubTrigger,
   ContextMenuTrigger,
-} from "./components/ui/context-menu";
-import { Input } from "./components/ui/input";
-import {
-  DropdownMenu,
-  DropdownMenuCheckboxItem,
-  DropdownMenuContent,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "./components/ui/dropdown-menu";
-import {
-  Menubar,
-  MenubarContent,
-  MenubarItem,
-  MenubarMenu,
-  MenubarSeparator,
-  MenubarShortcut,
-  MenubarTrigger,
-} from "./components/ui/menubar";
+} from "@/components/ui/context-menu";
 import {
   Dialog,
-  DialogContent,
   DialogDescription,
   DialogFooter,
   DialogHeader,
+  DialogPanel,
+  DialogPopup,
   DialogTitle,
-} from "./components/ui/dialog";
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetHeader,
-  SheetTitle,
-} from "./components/ui/sheet";
-import {
-  HoverCard,
-  HoverCardContent,
-  HoverCardTrigger,
-  createHoverCardHandle,
-} from "./components/ui/hover-card";
+  Menu,
+  MenuCheckboxItem,
+  MenuGroup,
+  MenuGroupLabel,
+  MenuPopup,
+  MenuRadioGroup,
+  MenuRadioItem,
+  MenuSeparator,
+  MenuTrigger,
+} from "@/components/ui/menu";
 import {
   Select,
-  SelectContent,
   SelectItem,
+  SelectPopup,
   SelectTrigger,
   SelectValue,
-} from "./components/ui/select";
-import { Separator } from "./components/ui/separator";
-import { Switch } from "./components/ui/switch";
-import { Toggle } from "./components/ui/toggle";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "./components/ui/tooltip";
+} from "@/components/ui/select";
+import { Slider } from "@/components/ui/slider";
+import { Spinner } from "@/components/ui/spinner";
+import { Tabs, TabsList, TabsPanel, TabsTab } from "@/components/ui/tabs";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "@/components/ui/tooltip";
+import { cn } from "@/lib/utils";
+import { createWelcomeDocumentModel, WELCOME_FILE_NAME } from "@/lib/welcome-document";
+
+const RIBBON_TABS = ["Home", "Insert", "Layout", "Review", "View", "Developer"] as const;
+type RibbonTab = (typeof RIBBON_TABS)[number];
+
+const REVISION_DISPLAY_ITEMS = [
+  { value: "balloons", label: "Balloons" },
+  { value: "inline", label: "Inline" },
+];
+
+const FORM_TEXT_INPUT_TYPE_ITEMS = [
+  { value: "regular", label: "Regular text" },
+  { value: "number", label: "Number" },
+  { value: "date", label: "Date" },
+  { value: "currentDate", label: "Current date" },
+  { value: "currentTime", label: "Current time" },
+  { value: "calculated", label: "Calculated" },
+];
+
+const CHECKBOX_DEFAULT_ITEMS = [
+  { value: "not-checked", label: "Not checked" },
+  { value: "checked", label: "Checked" },
+];
+
+const CHECKBOX_SIZE_ITEMS = [
+  { value: "auto", label: "Auto" },
+  { value: "exact", label: "Exactly" },
+];
+
+const statusIconButtonClass =
+  "flex items-center justify-center rounded-sm text-muted-foreground hover:bg-black/5 hover:text-foreground disabled:pointer-events-none disabled:opacity-40 dark:hover:bg-white/5";
+
+/** Read-only page setup value shown in the Layout tab. */
+function RibbonInfo({
+  icon,
+  label,
+  value,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: string;
+}): React.JSX.Element {
+  return (
+    <div className="flex h-7 shrink-0 items-center gap-1.5 rounded-md px-1.5 text-[13px] [&_svg]:size-4 [&_svg]:text-muted-foreground">
+      {icon}
+      <span className="text-muted-foreground">{label}</span>
+      <span className="font-medium">{value}</span>
+    </div>
+  );
+}
+
+function CountBadge({ count }: { count: number }): React.JSX.Element {
+  return (
+    <span className="rounded-full bg-brand/10 px-1.5 text-[11px] font-medium text-brand tabular-nums">
+      {count}
+    </span>
+  );
+}
+
+function countWordsInText(text: string): number {
+  return text.split(/\s+/).filter(Boolean).length;
+}
+
+function countWordsInNodes(nodes: readonly unknown[]): number {
+  let total = 0;
+  for (const node of nodes) {
+    if (!node || typeof node !== "object") {
+      continue;
+    }
+    const record = node as Record<string, unknown>;
+    if (record.type === "paragraph") {
+      total += countWordsInText(textFromInlineValue(record.children));
+    } else if (record.type === "table" && Array.isArray(record.rows)) {
+      for (const row of record.rows as Array<{ cells?: Array<{ nodes?: unknown[] }> }>) {
+        for (const cell of row.cells ?? []) {
+          total += countWordsInNodes(cell.nodes ?? []);
+        }
+      }
+    }
+  }
+  return total;
+}
+
+const PAGE_SIZE_NAMES: Array<{ name: string; widthIn: number; heightIn: number }> = [
+  { name: "Letter", widthIn: 8.5, heightIn: 11 },
+  { name: "Legal", widthIn: 8.5, heightIn: 14 },
+  { name: "A4", widthIn: 8.27, heightIn: 11.69 },
+  { name: "A5", widthIn: 5.83, heightIn: 8.27 },
+  { name: "Executive", widthIn: 7.25, heightIn: 10.5 },
+];
+
+function formatInches(px: number): string {
+  return `${Number((px / 96).toFixed(2))}"`;
+}
+
+function describePageSize(widthPx: number, heightPx: number): string {
+  const shortIn = Math.min(widthPx, heightPx) / 96;
+  const longIn = Math.max(widthPx, heightPx) / 96;
+  const named = PAGE_SIZE_NAMES.find(
+    (size) =>
+      Math.abs(size.widthIn - shortIn) < 0.05 &&
+      Math.abs(size.heightIn - longIn) < 0.05
+  );
+  return named?.name ?? `${formatInches(widthPx)} × ${formatInches(heightPx)}`;
+}
+
+function describeMargins(margins: {
+  top: number;
+  right: number;
+  bottom: number;
+  left: number;
+}): string {
+  const values = [margins.top, margins.right, margins.bottom, margins.left];
+  if (values.every((value) => Math.abs(value - values[0]) < 0.5)) {
+    return Math.abs(values[0] - 96) < 0.5 ? `Normal (1")` : formatInches(values[0]);
+  }
+  return `${formatInches(margins.top)} top · ${formatInches(margins.left)} left`;
+}
 
 const FONT_FAMILIES = [
   "Calibri",
@@ -174,7 +288,7 @@ const LINE_SPACING_OPTIONS = [1, 1.15, 1.2, 1.5, 2, 2.5, 3] as const;
 const FONT_FAMILY_ITEMS = FONT_FAMILIES.map((value) => ({ value, label: value }));
 const FONT_SIZE_ITEMS = FONT_SIZE_OPTIONS.map((value) => ({
   value: String(value),
-  label: `${value} pt`,
+  label: String(value),
 }));
 const LINE_SPACING_ITEMS = LINE_SPACING_OPTIONS.map((value) => ({
   value: String(value),
@@ -983,11 +1097,11 @@ function renderMenuAction(
             <ContextMenuShortcut>{action.shortcut}</ContextMenuShortcut>
           ) : null}
         </ContextMenuSubTrigger>
-        <ContextMenuSubContent className="w-56" data-docx-context-menu="true">
+        <ContextMenuSubPopup className="w-56" data-docx-context-menu="true">
           {action.children.map((childAction) =>
             renderMenuAction(childAction, runAction)
           )}
-        </ContextMenuSubContent>
+        </ContextMenuSubPopup>
       </ContextMenuSub>
     );
   }
@@ -1049,7 +1163,7 @@ function ViewerContextMenuContentRenderer({
       }}
     >
       <ContextMenuTrigger id={triggerId} className="block size-px" />
-      <ContextMenuContent
+      <ContextMenuPopup
         align="start"
         side="bottom"
         sideOffset={0}
@@ -1067,7 +1181,7 @@ function ViewerContextMenuContentRenderer({
             {renderMenuAction(action, menu.runAction)}
           </React.Fragment>
         ))}
-      </ContextMenuContent>
+      </ContextMenuPopup>
     </ContextMenu>
   );
 }
@@ -1782,14 +1896,19 @@ function parseToolbarSectionColumns(
   };
 }
 
+const WELCOME_DOCUMENT = createWelcomeDocumentModel();
+
 function PlaygroundApp(): React.JSX.Element {
   const { theme, resolvedTheme, setTheme } = useTheme();
-  const editor = useDocxEditor();
+  const editor = useDocxEditor({
+    starterModel: WELCOME_DOCUMENT,
+    initialFileName: WELCOME_FILE_NAME,
+  });
   const [showBlocks, setShowBlocks] = React.useState(false);
   const blockViewerRootRef = React.useRef<HTMLDivElement>(null);
   const { documentTheme, setDocumentTheme } = useDocxDocumentTheme(editor);
   const { layout: pageLayout } = useDocxPageLayout(editor);
-  const [thumbnailsSheetOpen, setThumbnailsSheetOpen] = React.useState(false);
+  const [navigationPaneOpen, setNavigationPaneOpen] = React.useState(false);
   const thumbnailScrollRef = React.useRef<HTMLDivElement | null>(null);
   const thumbnailPageCount = Math.max(1, editor.totalPages);
   const [thumbnailRenderWindow, setThumbnailRenderWindow] =
@@ -1810,7 +1929,7 @@ function PlaygroundApp(): React.JSX.Element {
   );
   const thumbnailVirtualizer = useVirtualizer({
     count: thumbnailPageCount,
-    enabled: thumbnailsSheetOpen,
+    enabled: navigationPaneOpen,
     estimateSize: () => THUMBNAIL_ROW_ESTIMATE_PX,
     getScrollElement: () => thumbnailScrollRef.current,
     initialRect: {
@@ -1830,11 +1949,11 @@ function PlaygroundApp(): React.JSX.Element {
   });
   const thumbnailVirtualItems = thumbnailVirtualizer.getVirtualItems();
   const { thumbnails } = useDocxPageThumbnails(editor, {
-    pageIndexes: thumbnailsSheetOpen ? undefined : EMPTY_THUMBNAIL_RENDER_WINDOW.visiblePageIndexes,
+    pageIndexes: navigationPaneOpen ? undefined : EMPTY_THUMBNAIL_RENDER_WINDOW.visiblePageIndexes,
     maxWidthPx: 148,
     pixelRatio: THUMBNAIL_PIXEL_RATIO,
     minRasterIntervalMs: 80,
-    renderWindow: thumbnailsSheetOpen
+    renderWindow: navigationPaneOpen
       ? {
           visiblePageIndexes: thumbnailRenderWindow.visiblePageIndexes,
           prefetchPageIndexes: thumbnailRenderWindow.prefetchPageIndexes,
@@ -1842,7 +1961,7 @@ function PlaygroundApp(): React.JSX.Element {
       : undefined,
   });
   React.useEffect(() => {
-    if (!thumbnailsSheetOpen) {
+    if (!navigationPaneOpen) {
       updateThumbnailRenderWindow([]);
       return;
     }
@@ -1850,12 +1969,12 @@ function PlaygroundApp(): React.JSX.Element {
     updateThumbnailRenderWindow(
       thumbnailVirtualItems.map((virtualItem) => virtualItem.index)
     );
-  }, [thumbnailVirtualItems, thumbnailsSheetOpen, updateThumbnailRenderWindow]);
+  }, [thumbnailVirtualItems, navigationPaneOpen, updateThumbnailRenderWindow]);
   React.useEffect(() => {
-    if (thumbnailsSheetOpen) {
+    if (navigationPaneOpen) {
       thumbnailVirtualizer.measure();
     }
-  }, [thumbnailPageCount, thumbnailVirtualizer, thumbnailsSheetOpen]);
+  }, [thumbnailPageCount, thumbnailVirtualizer, navigationPaneOpen]);
   const { paragraphStyles, selectedParagraphStyleId, setParagraphStyle } =
     useDocxParagraphStyles(editor);
   const { lineSpacing, setLineSpacing } = useDocxLineSpacing(editor);
@@ -1868,10 +1987,6 @@ function PlaygroundApp(): React.JSX.Element {
     useDocxTrackChanges(editor);
   const { comments, showComments, setShowComments } = useDocxComments(editor);
   const [themeReady, setThemeReady] = React.useState(false);
-  const paragraphStylePreviewHandle = React.useMemo(
-    () => createHoverCardHandle<ParagraphStyleOption>(),
-    []
-  );
 
   type TextRangeBoundaryLike = {
     location: {
@@ -2331,11 +2446,6 @@ function PlaygroundApp(): React.JSX.Element {
     }, LINE_SPACING_OPTIONS[0]);
     return String(nearest);
   }, [lineSpacing.multiple]);
-  const textColorValue = sanitizeColor(selectedRunStyle?.color);
-  const highlightColorValue = normalizeEditorColor(
-    resolveHighlightPreview(selectedRunStyle?.highlight),
-    "#fff59d"
-  );
   const hasExpandedTextSelection = Boolean(
     editor.activeTextRange &&
       (editor.activeTextRange.start.offset !==
@@ -2615,7 +2725,7 @@ function PlaygroundApp(): React.JSX.Element {
         };
   const paragraphPreviewSecondaryTextColor =
     documentTheme === "dark" ? "#9ca3af" : "#6b7280";
-  const pageGapBackgroundColor = "hsl(var(--background))";
+  const pageGapBackgroundColor = "var(--canvas)";
   const renderTrackedChangeCard = React.useCallback(
     (props: DocxTrackedChangeCardRenderProps): React.ReactNode => (
       <div style={{ ...props.style, padding: "4px 8px", borderLeft: `2px solid ${props.accentColor}`,
@@ -2829,730 +2939,866 @@ function PlaygroundApp(): React.JSX.Element {
     });
   }, [editor.activeTextRange, editor.selectedLink, isParagraphLocationEqual]);
 
-  return (
-    <div className="h-screen bg-muted/30 text-foreground">
-      <div className="mx-auto flex h-full max-w-[1400px] flex-col gap-3 p-4">
-        <Card className="gap-3">
-          <CardContent className="space-y-3">
-            <div className="flex flex-wrap items-center gap-2">
-              <div className="ml-auto flex items-center gap-3">
-                {__DOCX_BUILD__ ? (
-                  <a
-                    href="/build-info.json"
-                    target="_blank"
-                    rel="noreferrer"
-                    className="text-xs text-muted-foreground hover:underline"
-                    title={`Rust source ${__DOCX_BUILD__.rustSourceSha256}; WASM ${__DOCX_BUILD__.wasmSha256}`}
-                  >
-                    Build {__DOCX_BUILD__.gitRevision.slice(0, 7)}{__DOCX_BUILD__.sourceDirty ? " (local)" : ""}
-                  </a>
-                ) : null}
-                <a
-                  href="/vanilla.html"
-                  className="text-xs font-medium text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
-                >
-                  Vanilla JS demo
-                </a>
-                <span className="text-xs text-muted-foreground">
-                  {editor.status}
+  const [ribbonTab, setRibbonTab] = React.useState<RibbonTab>("Home");
+  const [fontColor, setFontColor] = React.useState("#C00000");
+  const [highlightColor, setHighlightColor] = React.useState("#FFFF00");
+  const [resolvedZoom, setResolvedZoom] = React.useState(
+    pageLayout.viewportDefaults.zoomPercent
+  );
+  const deferredNodes = React.useDeferredValue(editor.model.nodes);
+  const wordCount = React.useMemo(
+    () => countWordsInNodes(deferredNodes),
+    [deferredNodes]
+  );
+  const isEditable = !isReadOnly && !editor.isImporting;
+  const pageSizeLabel = describePageSize(
+    pageLayout.pageWidthPx,
+    pageLayout.pageHeightPx
+  );
+  const marginLabel = describeMargins(pageLayout.marginsPx);
+  const orientationLabel =
+    pageLayout.pageWidthPx > pageLayout.pageHeightPx ? "Landscape" : "Portrait";
+  const columnsLabel = activeSectionColumns
+    ? `${activeSectionColumns.count} columns`
+    : "1 column";
+  const stylePreviewTheme: DocumentTheme = isDark ? "dark" : "light";
+  const titleButton = "h-7 text-[13px] font-normal sm:h-7";
+
+  const homeRibbon = (
+    <>
+      <RibbonGroup>
+        <RibbonButton
+          label="Undo"
+          shortcut="⌘Z"
+          disabled={!editor.canUndo}
+          onClick={editor.undo}
+          {...keepSelection}
+        >
+          <Undo2 />
+        </RibbonButton>
+        <RibbonButton
+          label="Redo"
+          shortcut="⌘⇧Z"
+          disabled={!editor.canRedo}
+          onClick={editor.redo}
+          {...keepSelection}
+        >
+          <Redo2 />
+        </RibbonButton>
+      </RibbonGroup>
+
+      <RibbonGroup className="gap-1">
+        <Select
+          items={FONT_FAMILY_ITEMS}
+          value={selectedRunStyle?.fontFamily ?? "Calibri"}
+          disabled={!isEditable}
+          onValueChange={(value: string | null) => {
+            if (value) {
+              editor.setFontFamily(value);
+            }
+          }}
+        >
+          <SelectTrigger
+            aria-label="Font"
+            className="w-36 min-w-0 text-[13px]"
+            size="sm"
+          >
+            <SelectValue className="truncate" />
+          </SelectTrigger>
+          <SelectPopup>
+            {FONT_FAMILIES.map((fontFamily) => (
+              <SelectItem key={fontFamily} value={fontFamily}>
+                <span className="block truncate" style={{ fontFamily }}>
+                  {fontFamily}
                 </span>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() =>
-                    setDocumentTheme(
-                      documentTheme === "dark" ? "light" : "dark"
-                    )
-                  }
-                >
-                  {documentTheme === "dark" ? (
-                    <Moon className="size-3.5" />
-                  ) : (
-                    <Sun className="size-3.5" />
-                  )}
-                  Document
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setTheme(isDark ? "light" : "dark")}
-                  disabled={!themeReady}
-                >
-                  {isDark ? (
-                    <Sun className="size-3.5" />
-                  ) : (
-                    <Moon className="size-3.5" />
-                  )}
-                  Theme
-                </Button>
-              </div>
-            </div>
+              </SelectItem>
+            ))}
+          </SelectPopup>
+        </Select>
+        <Select
+          items={FONT_SIZE_ITEMS}
+          value={String(Math.round(selectedRunStyle?.fontSizePt ?? 12))}
+          disabled={!isEditable}
+          onValueChange={(value: string | null) => {
+            const nextSize = Number(value);
+            if (value && Number.isFinite(nextSize)) {
+              editor.setFontSize(nextSize);
+            }
+          }}
+        >
+          <SelectTrigger
+            aria-label="Font size"
+            className="w-16 min-w-0 text-[13px]"
+            size="sm"
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectPopup>
+            {FONT_SIZE_OPTIONS.map((size) => (
+              <SelectItem key={size} value={String(size)}>
+                {size}
+              </SelectItem>
+            ))}
+          </SelectPopup>
+        </Select>
+      </RibbonGroup>
 
-            <div className="flex flex-wrap items-center gap-2">
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept=".docx,.doc,.dot,.dotx,.docm,.dotm"
-                className="hidden"
-                onChange={(event) => void onImport(event)}
+      <RibbonGroup>
+        <RibbonButton
+          label="Bold"
+          shortcut="⌘B"
+          active={Boolean(selectedRunStyle?.bold)}
+          disabled={!isEditable}
+          onClick={editor.toggleBold}
+          {...keepSelection}
+        >
+          <Bold />
+        </RibbonButton>
+        <RibbonButton
+          label="Italic"
+          shortcut="⌘I"
+          active={Boolean(selectedRunStyle?.italic)}
+          disabled={!isEditable}
+          onClick={editor.toggleItalic}
+          {...keepSelection}
+        >
+          <Italic />
+        </RibbonButton>
+        <RibbonButton
+          label="Underline"
+          shortcut="⌘U"
+          active={Boolean(selectedRunStyle?.underline)}
+          disabled={!isEditable}
+          onClick={editor.toggleUnderline}
+          {...keepSelection}
+        >
+          <Underline />
+        </RibbonButton>
+        <RibbonButton
+          label="Strikethrough"
+          active={Boolean(selectedRunStyle?.strike)}
+          disabled={!isEditable}
+          onClick={editor.toggleStrike}
+          {...keepSelection}
+        >
+          <Strikethrough />
+        </RibbonButton>
+        <RibbonButton
+          label="Subscript"
+          shortcut="⌘="
+          active={selectedRunStyle?.verticalAlign === "subscript"}
+          disabled={!isEditable}
+          onClick={editor.toggleSubscript}
+          {...keepSelection}
+        >
+          <Subscript />
+        </RibbonButton>
+        <RibbonButton
+          label="Superscript"
+          shortcut="⌘⇧="
+          active={selectedRunStyle?.verticalAlign === "superscript"}
+          disabled={!isEditable}
+          onClick={editor.toggleSuperscript}
+          {...keepSelection}
+        >
+          <Superscript />
+        </RibbonButton>
+        <RibbonColorButton
+          palette="highlight"
+          label="Text highlight color"
+          clearLabel="No color"
+          color={highlightColor}
+          disabled={!isEditable}
+          icon={<Highlighter />}
+          onApply={(color) => editor.setHighlight(color.toLowerCase())}
+          onClear={() => editor.setHighlight(undefined)}
+          onColorChange={setHighlightColor}
+        />
+        <RibbonColorButton
+          palette="font"
+          label="Font color"
+          clearLabel="Automatic"
+          color={fontColor}
+          disabled={!isEditable}
+          icon={<Baseline />}
+          onApply={(color) =>
+            editor.setTextColor(normalizeEditorColor(color, "#111827"))
+          }
+          onClear={() => editor.setTextColor(undefined)}
+          onColorChange={setFontColor}
+        />
+      </RibbonGroup>
+
+      <RibbonGroup>
+        <RibbonButton
+          label="Bullets"
+          active={editor.hasUnorderedList}
+          disabled={!isEditable}
+          onClick={() => editor.toggleList("unordered")}
+          {...keepSelection}
+        >
+          <List />
+        </RibbonButton>
+        <RibbonButton
+          label="Numbering"
+          active={editor.hasOrderedList}
+          disabled={!isEditable}
+          onClick={() => editor.toggleList("ordered")}
+          {...keepSelection}
+        >
+          <ListOrdered />
+        </RibbonButton>
+        <RibbonButton
+          label="Align left"
+          shortcut="⌘L"
+          active={
+            selectedParagraph?.style?.align === "left" ||
+            !selectedParagraph?.style?.align
+          }
+          disabled={!isEditable}
+          onClick={() => editor.setAlignment("left")}
+          {...keepSelection}
+        >
+          <TextAlignStart />
+        </RibbonButton>
+        <RibbonButton
+          label="Center"
+          shortcut="⌘E"
+          active={selectedParagraph?.style?.align === "center"}
+          disabled={!isEditable}
+          onClick={() => editor.setAlignment("center")}
+          {...keepSelection}
+        >
+          <TextAlignCenter />
+        </RibbonButton>
+        <RibbonButton
+          label="Align right"
+          shortcut="⌘R"
+          active={selectedParagraph?.style?.align === "right"}
+          disabled={!isEditable}
+          onClick={() => editor.setAlignment("right")}
+          {...keepSelection}
+        >
+          <TextAlignEnd />
+        </RibbonButton>
+        <RibbonButton
+          label="Justify"
+          shortcut="⌘J"
+          active={selectedParagraph?.style?.align === "justify"}
+          disabled={!isEditable}
+          onClick={() => editor.setAlignment("justify")}
+          {...keepSelection}
+        >
+          <TextAlignJustify />
+        </RibbonButton>
+        <Menu>
+          <MenuTrigger
+            render={
+              <RibbonMenuButton
+                label="Line and paragraph spacing"
+                showLabel={false}
+                icon={<ListChevronsUpDown />}
+                disabled={!isEditable}
               />
-              <input
-                ref={imageInputRef}
-                type="file"
-                accept="image/*"
-                className="hidden"
-                onChange={(event) => void onInsertImage(event)}
-              />
-              <ButtonGroup>
-                <Button
-                  variant="outline"
-                  onClick={editor.undo}
-                  disabled={!editor.canUndo}
-                >
-                  <Undo2 />
-                  Undo
-                </Button>
-                <Button
-                  variant="outline"
-                  onClick={editor.redo}
-                  disabled={!editor.canRedo}
-                >
-                  <Redo2 />
-                  Redo
-                </Button>
-              </ButtonGroup>
-
-              <HoverCard handle={paragraphStylePreviewHandle}>
-                {({ payload }) => {
-                  const previewOption = payload as ParagraphStyleOption | undefined;
-                  return (
-                    <>
-                      <Select
-                        items={paragraphStyleItems}
-                        value={selectedParagraphStyleValue}
-                        onOpenChange={(open) => {
-                          setIsParagraphStyleMenuOpen(open);
-                          if (!open) {
-                            paragraphStylePreviewHandle.close();
-                            return;
-                          }
-
-                          window.requestAnimationFrame(() => {
-                            paragraphStylePreviewHandle.open(
-                              paragraphStylePreviewTriggerId(selectedParagraphStyleValue)
-                            );
-                          });
-                        }}
-                        onValueChange={(value: string | null) => {
-                          if (!value) {
-                            return;
-                          }
-
-                          setParagraphStyle(value);
-                        }}
-                      >
-                        <SelectTrigger className="min-w-[130px] w-auto">
-                          <SelectValue className="truncate">
-                            {selectedParagraphStyleLabel}
-                          </SelectValue>
-                        </SelectTrigger>
-                        <SelectContent className="min-w-[210px]">
-                          {isParagraphStyleMenuOpen
-                            ? paragraphStyleOptions.map((option) => {
-                                const previewTriggerId = paragraphStylePreviewTriggerId(
-                                  option.id
-                                );
-                                return (
-                                  <SelectItem
-                                    key={option.id}
-                                    value={option.id}
-                                    className="relative min-w-[190px]"
-                                    onPointerEnter={() => {
-                                      paragraphStylePreviewHandle.open(
-                                        previewTriggerId
-                                      );
-                                    }}
-                                    onFocus={() => {
-                                      paragraphStylePreviewHandle.open(
-                                        previewTriggerId
-                                      );
-                                    }}
-                                  >
-                                    <span className="block truncate">
-                                      {option.name}
-                                    </span>
-                                    <HoverCardTrigger
-                                      id={previewTriggerId}
-                                      handle={paragraphStylePreviewHandle}
-                                      payload={option}
-                                      delay={0}
-                                      closeDelay={120}
-                                      render={
-                                        <span className="absolute inset-0 block" />
-                                      }
-                                    />
-                                  </SelectItem>
-                                );
-                              })
-                            : null}
-                        </SelectContent>
-                      </Select>
-                      {isParagraphStyleMenuOpen && previewOption ? (
-                        <HoverCardContent
-                          side="right"
-                          align="start"
-                          sideOffset={10}
-                          alignOffset={-4}
-                          className="w-[260px] p-3"
-                        >
-                          <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                            Style Preview
-                          </p>
-                          <div
-                            className="mt-2 rounded-sm border p-2.5"
-                            style={paragraphPreviewSurfaceStyle}
-                          >
-                            <p
-                              style={paragraphStylePreviewStyle(
-                                previewOption,
-                                documentTheme
-                              )}
-                            >
-                              {previewOption.name}
-                            </p>
-                            <p
-                              className="mt-1 text-[11px]"
-                              style={{
-                                textAlign: previewOption.align ?? "left",
-                                color: paragraphPreviewSecondaryTextColor,
-                              }}
-                            >
-                              The quick brown fox jumps over the lazy dog.
-                            </p>
-                          </div>
-                        </HoverCardContent>
-                      ) : null}
-                    </>
-                  );
-                }}
-              </HoverCard>
-
-              <Select
-                items={FONT_FAMILY_ITEMS}
-                value={selectedRunStyle?.fontFamily ?? "Calibri"}
-                onValueChange={(value: string | null) => {
-                  if (!value) {
-                    return;
-                  }
-
-                  editor.setFontFamily(value);
-                }}
-              >
-                <SelectTrigger className="min-w-[165px] w-auto">
-                  <SelectValue placeholder="Font" className="truncate" />
-                </SelectTrigger>
-                <SelectContent>
-                  {FONT_FAMILIES.map((fontFamily) => (
-                    <SelectItem key={fontFamily} value={fontFamily}>
-                      <span className="block truncate" style={{ fontFamily }}>
-                        {fontFamily}
-                      </span>
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-
-              <Select
-                items={FONT_SIZE_ITEMS}
-                value={String(Math.round(selectedRunStyle?.fontSizePt ?? 12))}
-                onValueChange={(value: string | null) => {
-                  if (!value) {
-                    return;
-                  }
-
-                  const nextSize = Number(value);
-                  if (!Number.isFinite(nextSize)) {
-                    return;
-                  }
-
-                  editor.setFontSize(nextSize);
-                }}
-              >
-                <SelectTrigger className="min-w-[95px] w-auto">
-                  <SelectValue placeholder="Size" className="truncate" />
-                </SelectTrigger>
-                <SelectContent>
-                  {FONT_SIZE_OPTIONS.map((size) => (
-                    <SelectItem key={size} value={String(size)}>
-                      {size} pt
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-
-              <div className="flex items-center gap-1">
-                <Tooltip>
-                  <TooltipTrigger
-                    render={
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon"
-                        className="size-8 text-muted-foreground"
-                        aria-label="Line spacing"
-                      />
-                    }
-                  >
-                    <AlignJustify className="size-4" />
-                  </TooltipTrigger>
-                  <TooltipContent side="bottom">Line spacing</TooltipContent>
-                </Tooltip>
-                <Select
-                  items={LINE_SPACING_ITEMS}
-                  value={selectedLineSpacingValue}
-                  onValueChange={(value: string | null) => {
-                    if (!value) {
-                      return;
-                    }
-
-                    const nextSpacing = Number(value);
-                    if (!Number.isFinite(nextSpacing)) {
-                      return;
-                    }
-
+            }
+          />
+          <MenuPopup align="start" className="w-40">
+            <MenuGroup>
+              <MenuGroupLabel>Line spacing</MenuGroupLabel>
+              <MenuRadioGroup
+                value={selectedLineSpacingValue}
+                onValueChange={(value: string) => {
+                  const nextSpacing = Number(value);
+                  if (Number.isFinite(nextSpacing)) {
                     setLineSpacing(nextSpacing);
-                  }}
-                >
-                  <SelectTrigger className="min-w-[110px] w-auto">
-                    <SelectValue
-                      placeholder="Line space"
-                      className="truncate"
-                    />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {LINE_SPACING_OPTIONS.map((spacing) => (
-                      <SelectItem key={spacing} value={String(spacing)}>
-                        {spacing}x
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-
-              <ButtonGroup>
-                <Toggle
-                  pressed={Boolean(selectedRunStyle?.bold)}
-                  onPressedChange={editor.toggleBold}
-                  onMouseDown={preserveTextSelectionOnMouseDown}
-                  onPointerDown={preserveTextSelectionOnPointerDown}
-                >
-                  <Bold />
-                  Bold
-                </Toggle>
-                <Toggle
-                  pressed={Boolean(selectedRunStyle?.italic)}
-                  onPressedChange={editor.toggleItalic}
-                  onMouseDown={preserveTextSelectionOnMouseDown}
-                  onPointerDown={preserveTextSelectionOnPointerDown}
-                >
-                  <Italic />
-                  Italic
-                </Toggle>
-                <Toggle
-                  pressed={Boolean(selectedRunStyle?.underline)}
-                  onPressedChange={editor.toggleUnderline}
-                  onMouseDown={preserveTextSelectionOnMouseDown}
-                  onPointerDown={preserveTextSelectionOnPointerDown}
-                >
-                  <Underline />
-                  Underline
-                </Toggle>
-                <Toggle
-                  pressed={Boolean(selectedRunStyle?.strike)}
-                  onPressedChange={editor.toggleStrike}
-                  onMouseDown={preserveTextSelectionOnMouseDown}
-                  onPointerDown={preserveTextSelectionOnPointerDown}
-                >
-                  <Strikethrough />
-                  Strike
-                </Toggle>
-                <Toggle
-                  pressed={selectedRunStyle?.verticalAlign === "superscript"}
-                  onPressedChange={editor.toggleSuperscript}
-                  onMouseDown={preserveTextSelectionOnMouseDown}
-                  onPointerDown={preserveTextSelectionOnPointerDown}
-                >
-                  <Superscript />
-                  Superscript
-                </Toggle>
-                <Toggle
-                  pressed={selectedRunStyle?.verticalAlign === "subscript"}
-                  onPressedChange={editor.toggleSubscript}
-                  onMouseDown={preserveTextSelectionOnMouseDown}
-                  onPointerDown={preserveTextSelectionOnPointerDown}
-                >
-                  <Subscript />
-                  Subscript
-                </Toggle>
-              </ButtonGroup>
-
-              <div className="flex items-center gap-2 rounded-md border border-border/70 bg-background/70 px-2 py-1">
-                <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                  Text
-                </span>
-                <ColorPicker
-                  color={textColorValue}
-                  onChange={(color: string) => {
-                    editor.setTextColor(normalizeEditorColor(color, "#111827"));
-                  }}
-                  triggerClassName="h-7 min-w-[170px]"
-                  onTriggerMouseDown={preserveTextSelectionOnMouseDown}
-                  onTriggerPointerDown={preserveTextSelectionOnPointerDown}
-                />
-              </div>
-
-              <div className="flex items-center gap-2 rounded-md border border-border/70 bg-background/70 px-2 py-1">
-                <span className="inline-flex items-center gap-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                  <Highlighter className="size-3" />
-                  Highlight
-                </span>
-                <ColorPicker
-                  color={highlightColorValue}
-                  onChange={(color: string) => {
-                    editor.setHighlight(normalizeEditorColor(color, "#fff59d"));
-                  }}
-                  triggerClassName="h-7 min-w-[170px]"
-                  onTriggerMouseDown={preserveTextSelectionOnMouseDown}
-                  onTriggerPointerDown={preserveTextSelectionOnPointerDown}
-                />
-              </div>
-
-              <ButtonGroup>
-                <Button
-                  variant="outline"
-                  onMouseDown={preserveTextSelectionOnMouseDown}
-                  onPointerDown={preserveTextSelectionOnPointerDown}
-                  onClick={openLinkEditor}
-                >
-                  <Link2 />
-                  Link
-                </Button>
-              </ButtonGroup>
-
-              <ButtonGroup>
-                <Toggle
-                  pressed={
-                    selectedParagraph?.style?.align === "left" ||
-                    !selectedParagraph?.style?.align
                   }
-                  onPressedChange={() => editor.setAlignment("left")}
-                  onMouseDown={preserveTextSelectionOnMouseDown}
-                  onPointerDown={preserveTextSelectionOnPointerDown}
-                >
-                  <AlignLeft />
-                  Left
-                </Toggle>
-                <Toggle
-                  pressed={selectedParagraph?.style?.align === "center"}
-                  onPressedChange={() => editor.setAlignment("center")}
-                  onMouseDown={preserveTextSelectionOnMouseDown}
-                  onPointerDown={preserveTextSelectionOnPointerDown}
-                >
-                  <AlignCenter />
-                  Center
-                </Toggle>
-                <Toggle
-                  pressed={selectedParagraph?.style?.align === "right"}
-                  onPressedChange={() => editor.setAlignment("right")}
-                  onMouseDown={preserveTextSelectionOnMouseDown}
-                  onPointerDown={preserveTextSelectionOnPointerDown}
-                >
-                  <AlignRight />
-                  Right
-                </Toggle>
-                <Toggle
-                  pressed={selectedParagraph?.style?.align === "justify"}
-                  onPressedChange={() => editor.setAlignment("justify")}
-                  onMouseDown={preserveTextSelectionOnMouseDown}
-                  onPointerDown={preserveTextSelectionOnPointerDown}
-                >
-                  <AlignJustify />
-                  Justify
-                </Toggle>
-              </ButtonGroup>
-
-              <ButtonGroup>
-                <Toggle
-                  pressed={editor.hasUnorderedList}
-                  onClick={() => editor.toggleList("unordered")}
-                  onMouseDown={preserveTextSelectionOnMouseDown}
-                  onPointerDown={preserveTextSelectionOnPointerDown}
-                >
-                  <List />
-                  Bullet
-                </Toggle>
-                <Toggle
-                  pressed={editor.hasOrderedList}
-                  onClick={() => editor.toggleList("ordered")}
-                  onMouseDown={preserveTextSelectionOnMouseDown}
-                  onPointerDown={preserveTextSelectionOnPointerDown}
-                >
-                  <ListOrdered />
-                  Numbered
-                </Toggle>
-              </ButtonGroup>
-
-              <ButtonGroup>
-                <div className="border-input bg-input/20 dark:bg-input/30 h-8 rounded-md border px-2 py-1.5 text-xs/relaxed text-muted-foreground flex items-center gap-2">
-                  <Columns2 className="size-3.5" />
-                  <span>
-                    {activeSectionColumns
-                      ? `${activeSectionColumns.count} columns`
-                      : "1 column"}
-                  </span>
-                </div>
-              </ButtonGroup>
-
-              <ButtonGroup>
-                <Button
-                  variant="outline"
-                  onClick={() => setThumbnailsSheetOpen(true)}
-                >
-                  <PanelsTopLeft />
-                  Pages
-                </Button>
-              </ButtonGroup>
-
-              <ButtonGroup>
-                <DropdownMenu>
-                  <DropdownMenuTrigger className="border-input bg-input/20 dark:bg-input/30 dark:hover:bg-input/50 hover:bg-input/30 focus-visible:border-ring focus-visible:ring-ring/30 h-8 rounded-md border px-2 py-1.5 text-xs/relaxed transition-colors focus-visible:ring-2 flex items-center gap-2 outline-none">
-                    <HugeiconsIcon
-                      icon={borderTriggerIcon}
-                      strokeWidth={1.8}
-                      className="size-3.5 text-muted-foreground"
-                    />
-                    <span className="truncate">{borderTriggerLabel}</span>
-                    {borderActiveCountBadge ? (
-                      <Badge
-                        variant="secondary"
-                        className="h-4 min-w-4 px-1 text-[10px]"
-                      >
-                        {borderActiveCountBadge}
-                      </Badge>
-                    ) : null}
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent className="w-56">
-                    {BORDER_CONTROL_OPTIONS.map((option) => {
-                      const enabledForContext =
-                        !option.contexts ||
-                        option.contexts.includes(borderContext);
-                      const checked = activeBorderPresets[option.id];
-                      const BorderOptionIcon = borderControlOptionIcon(
-                        option.id
-                      );
-
-                      return (
-                        <React.Fragment key={option.id}>
-                          {option.separatorBefore ? (
-                            <DropdownMenuSeparator />
-                          ) : null}
-                          <DropdownMenuCheckboxItem
-                            checked={checked}
-                            disabled={!enabledForContext}
-                            closeOnClick={false}
-                            onCheckedChange={() => {
-                              if (!enabledForContext) {
-                                return;
-                              }
-                              applyBorderPreset(option.id);
-                            }}
-                          >
-                            <HugeiconsIcon
-                              icon={BorderOptionIcon}
-                              strokeWidth={1.8}
-                              className="size-3.5 text-muted-foreground"
-                            />
-                            {option.label}
-                          </DropdownMenuCheckboxItem>
-                        </React.Fragment>
-                      );
-                    })}
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              </ButtonGroup>
-
-              <ButtonGroup>
-                <Button
-                  variant="outline"
-                  onClick={() => imageInputRef.current?.click()}
-                >
-                  <ImagePlus />
-                  Image
-                </Button>
-                <Button variant="outline" onClick={editor.insertTable}>
-                  <Table2 />
-                  Table
-                </Button>
-              </ButtonGroup>
-
-              <ButtonGroup>
-                <Button
-                  variant="outline"
-                  onClick={() => shiftZoom(-1)}
-                  disabled={
-                    typeof zoomPercent === "number" &&
-                    zoomPercent <= ZOOM_PERCENT_OPTIONS[0]
-                  }
-                >
-                  <ZoomOut />
-                  Zoom Out
-                </Button>
-                <Select
-                  items={ZOOM_ITEMS}
-                  value={String(zoomPercent)}
-                  onValueChange={(value: string | null) => {
-                    if (!value) {
-                      return;
-                    }
-
-                    const parsed = Number(value);
-                    setZoomPercent(
-                      Number.isFinite(parsed)
-                        ? parsed
-                        : (value as ViewerZoomLevel)
-                    );
-                  }}
-                >
-                  <SelectTrigger
-                    aria-label="Zoom"
-                    className="min-w-[98px] w-auto"
+                }}
+              >
+                {LINE_SPACING_OPTIONS.map((spacing) => (
+                  <MenuRadioItem key={spacing} value={String(spacing)}>
+                    {Number.isInteger(spacing) ? spacing.toFixed(1) : String(spacing)}
+                  </MenuRadioItem>
+                ))}
+              </MenuRadioGroup>
+            </MenuGroup>
+          </MenuPopup>
+        </Menu>
+        <Menu>
+          <MenuTrigger
+            render={
+              <RibbonMenuButton
+                label={borderTriggerLabel}
+                showLabel={false}
+                disabled={!isEditable}
+                icon={
+                  <HugeiconsIcon
+                    icon={borderTriggerIcon}
+                    strokeWidth={1.8}
+                    className="size-4"
+                  />
+                }
+              >
+                {borderActiveCountBadge ? (
+                  <Badge
+                    variant="secondary"
+                    className="h-4 min-w-4 px-1 text-[10px]"
                   >
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {ZOOM_ITEMS.map((item) => (
-                      <SelectItem key={item.value} value={item.value}>
-                        {item.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <Button
-                  variant="outline"
-                  onClick={() => shiftZoom(1)}
-                  disabled={
-                    typeof zoomPercent === "number" &&
-                    zoomPercent >=
-                    ZOOM_PERCENT_OPTIONS[ZOOM_PERCENT_OPTIONS.length - 1]
-                  }
-                >
-                  <ZoomIn />
-                  Zoom In
-                </Button>
-              </ButtonGroup>
+                    {borderActiveCountBadge}
+                  </Badge>
+                ) : null}
+              </RibbonMenuButton>
+            }
+          />
+          <MenuPopup align="start" className="w-60">
+            {BORDER_CONTROL_OPTIONS.map((option) => {
+              const enabledForContext =
+                !option.contexts || option.contexts.includes(borderContext);
+              return (
+                <React.Fragment key={option.id}>
+                  {option.separatorBefore ? <MenuSeparator /> : null}
+                  <MenuCheckboxItem
+                    checked={activeBorderPresets[option.id]}
+                    disabled={!enabledForContext}
+                    closeOnClick={false}
+                    onCheckedChange={() => {
+                      if (enabledForContext) {
+                        applyBorderPreset(option.id);
+                      }
+                    }}
+                  >
+                    <HugeiconsIcon
+                      icon={borderControlOptionIcon(option.id)}
+                      strokeWidth={1.8}
+                      className="size-4 text-muted-foreground"
+                    />
+                    {option.label}
+                  </MenuCheckboxItem>
+                </React.Fragment>
+              );
+            })}
+          </MenuPopup>
+        </Menu>
+      </RibbonGroup>
 
-              <ButtonGroup>
-                <Button
-                  variant="outline"
-                  onClick={() => fileInputRef.current?.click()}
-                  disabled={editor.isImporting}
-                >
-                  {editor.isImporting ? (
-                    <Loader2 className="animate-spin" />
-                  ) : (
-                    <Upload />
-                  )}
-                  {editor.isImporting ? "Loading…" : "Import"}
-                </Button>
-                <Button
-                  onClick={editor.exportDocx}
-                  disabled={editor.isImporting}
-                >
-                  <Download />
-                  Download
-                </Button>
-              </ButtonGroup>
-
-              <ButtonGroup>
-                <div className="flex items-center gap-2 px-2">
-                  <label htmlFor="show-blocks" className="text-sm text-muted-foreground">Blocks</label>
-                  <Switch id="show-blocks" aria-label="Blocks" checked={showBlocks} onCheckedChange={setShowBlocks} />
-                </div>
-                <Separator orientation="vertical" className="h-6" />
-                <div className="flex items-center gap-2 px-2">
-                  <span className="inline-flex items-center gap-1 text-sm text-muted-foreground">
-                    <FileDiff className="h-4 w-4" />
-                    Show edits
-                  </span>
-                  <Switch
-                    checked={showTrackedChanges}
-                    onCheckedChange={setShowTrackedChanges}
-                  />
-                  {showTrackedChanges ? (
-                    <select aria-label="Revision display" value={revisionDisplay}
-                      onChange={event => setRevisionDisplay(event.target.value as "balloons" | "inline")}
-                      className="rounded border bg-background px-2 py-1 text-xs">
-                      <option value="balloons">Balloons</option><option value="inline">Inline</option>
-                    </select>
-                  ) : null}
-                </div>
-                <Separator orientation="vertical" className="h-6" />
-                <div className="flex items-center gap-2 px-2">
-                  <span className="inline-flex items-center gap-1 text-sm text-muted-foreground">
-                    <MessageSquareText className="h-4 w-4" />
-                    Show comments
-                    {comments.length > 0 ? (
-                      <span className="rounded-full bg-amber-500/15 px-1.5 text-xs font-medium text-amber-600">
-                        {comments.length}
+      <RibbonGroup>
+        <Select
+          items={paragraphStyleItems}
+          value={selectedParagraphStyleValue}
+          disabled={!isEditable}
+          onOpenChange={setIsParagraphStyleMenuOpen}
+          onValueChange={(value: string | null) => {
+            if (value) {
+              setParagraphStyle(value);
+            }
+          }}
+        >
+          <SelectTrigger
+            aria-label="Styles"
+            className="w-40 min-w-0 text-[13px]"
+            size="sm"
+          >
+            <SelectValue className="truncate">
+              {selectedParagraphStyleLabel}
+            </SelectValue>
+          </SelectTrigger>
+          <SelectPopup className="min-w-56">
+            {isParagraphStyleMenuOpen
+              ? paragraphStyleOptions.map((option) => {
+                  const preview = paragraphStylePreviewStyle(
+                    option,
+                    stylePreviewTheme
+                  );
+                  return (
+                    <SelectItem key={option.id} value={option.id}>
+                      <span
+                        className="block truncate py-0.5"
+                        style={{
+                          ...preview,
+                          fontSize: preview.fontSize
+                            ? `min(${preview.fontSize}, 18px)`
+                            : undefined,
+                          lineHeight: 1.25,
+                        }}
+                      >
+                        {option.name}
                       </span>
-                    ) : null}
-                  </span>
-                  <Switch
-                    checked={showComments}
-                    onCheckedChange={setShowComments}
-                  />
-                </div>
-                <Separator orientation="vertical" className="h-6" />
-                <div className="flex items-center gap-2 px-2">
-                  <span className="text-sm text-muted-foreground">
-                    Read only
-                  </span>
-                  <Switch
-                    checked={isReadOnly}
-                    onCheckedChange={setIsReadOnly}
-                  />
-                </div>
-              </ButtonGroup>
-            </div>
-          </CardContent>
-        </Card>
+                    </SelectItem>
+                  );
+                })
+              : null}
+          </SelectPopup>
+        </Select>
+      </RibbonGroup>
+    </>
+  );
 
-        <div className="flex min-h-0 flex-1 flex-col gap-3 lg:flex-row">
+  const insertRibbon = (
+    <>
+      <RibbonGroup>
+        <RibbonButton
+          label="Table"
+          showLabel
+          disabled={!isEditable}
+          onClick={editor.insertTable}
+          {...keepSelection}
+        >
+          <Table2 />
+        </RibbonButton>
+        <RibbonButton
+          label="Pictures"
+          showLabel
+          disabled={!isEditable}
+          onClick={() => imageInputRef.current?.click()}
+          {...keepSelection}
+        >
+          <ImagePlus />
+        </RibbonButton>
+      </RibbonGroup>
+      <RibbonGroup>
+        <RibbonButton
+          label="Link"
+          shortcut="⌘K"
+          showLabel
+          disabled={!isEditable}
+          onClick={openLinkEditor}
+          {...keepSelection}
+        >
+          <Link2 />
+        </RibbonButton>
+      </RibbonGroup>
+    </>
+  );
+
+  const layoutRibbon = (
+    <>
+      <RibbonGroup className="gap-1 pe-3">
+        <RibbonInfo icon={<Ruler />} label="Margins" value={marginLabel} />
+        <RibbonInfo
+          icon={<RectangleVertical />}
+          label="Orientation"
+          value={orientationLabel}
+        />
+        <RibbonInfo icon={<Proportions />} label="Size" value={pageSizeLabel} />
+        <RibbonInfo icon={<Columns2 />} label="Columns" value={columnsLabel} />
+      </RibbonGroup>
+      <span className="px-3 text-xs text-muted-foreground">
+        Page setup is read from the open document.
+      </span>
+    </>
+  );
+
+  const reviewRibbon = (
+    <>
+      <RibbonGroup className="gap-1">
+        <RibbonToggle
+          label="Show tracked changes"
+          checked={showTrackedChanges}
+          onCheckedChange={setShowTrackedChanges}
+        >
+          {editor.trackedChanges.length > 0 ? (
+            <CountBadge count={editor.trackedChanges.length} />
+          ) : null}
+        </RibbonToggle>
+        <Select
+          items={REVISION_DISPLAY_ITEMS}
+          value={revisionDisplay}
+          disabled={!showTrackedChanges}
+          onValueChange={(value: string | null) => {
+            if (value === "balloons" || value === "inline") {
+              setRevisionDisplay(value);
+            }
+          }}
+        >
+          <SelectTrigger
+            aria-label="Revision display"
+            className="w-28 min-w-0 text-[13px]"
+            size="sm"
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectPopup>
+            {REVISION_DISPLAY_ITEMS.map((item) => (
+              <SelectItem key={item.value} value={item.value}>
+                {item.label}
+              </SelectItem>
+            ))}
+          </SelectPopup>
+        </Select>
+      </RibbonGroup>
+      <RibbonGroup>
+        <RibbonToggle
+          label="Show comments"
+          checked={showComments}
+          onCheckedChange={setShowComments}
+        >
+          {comments.length > 0 ? <CountBadge count={comments.length} /> : null}
+        </RibbonToggle>
+      </RibbonGroup>
+    </>
+  );
+
+  const viewRibbon = (
+    <>
+      <RibbonGroup className="gap-1">
+        <RibbonToggle
+          label="Navigation pane"
+          checked={navigationPaneOpen}
+          onCheckedChange={setNavigationPaneOpen}
+        />
+        <RibbonToggle
+          label="Dark page"
+          checked={documentTheme === "dark"}
+          onCheckedChange={(checked) =>
+            setDocumentTheme(checked ? "dark" : "light")
+          }
+        />
+      </RibbonGroup>
+      <RibbonGroup>
+        <RibbonButton
+          label="Zoom out"
+          disabled={
+            typeof zoomPercent === "number" &&
+            zoomPercent <= ZOOM_PERCENT_OPTIONS[0]
+          }
+          onClick={() => shiftZoom(-1)}
+        >
+          <ZoomOut />
+        </RibbonButton>
+        <RibbonButton label="100%" showLabel onClick={() => setZoomPercent(100)} />
+        <RibbonButton
+          label="Zoom in"
+          disabled={
+            typeof zoomPercent === "number" &&
+            zoomPercent >= ZOOM_PERCENT_OPTIONS[ZOOM_PERCENT_OPTIONS.length - 1]
+          }
+          onClick={() => shiftZoom(1)}
+        >
+          <ZoomIn />
+        </RibbonButton>
+      </RibbonGroup>
+      <RibbonGroup>
+        <RibbonButton
+          label="One page"
+          showLabel
+          active={zoomPercent === "fit-page"}
+          onClick={() => setZoomPercent("fit-page")}
+        >
+          <RectangleVertical />
+        </RibbonButton>
+        <RibbonButton
+          label="Page width"
+          showLabel
+          active={zoomPercent === "fit-width"}
+          onClick={() => setZoomPercent("fit-width")}
+        >
+          <MoveHorizontal />
+        </RibbonButton>
+        <RibbonButton
+          label="Automatic"
+          showLabel
+          active={zoomPercent === "automatic"}
+          onClick={() => setZoomPercent("automatic")}
+        >
+          <Scaling />
+        </RibbonButton>
+      </RibbonGroup>
+    </>
+  );
+
+  const developerRibbon = (
+    <>
+      <RibbonGroup className="gap-1">
+        <RibbonToggle label="Blocks" checked={showBlocks} onCheckedChange={setShowBlocks} />
+        <RibbonButton
+          label="Form field properties"
+          showLabel
+          disabled={!selectedFormField || !isEditable}
+          onClick={() => setFormWidgetDialogOpen(true)}
+        >
+          <Settings2 />
+        </RibbonButton>
+      </RibbonGroup>
+      <RibbonGroup className="gap-4 px-3 text-xs">
+        {__DOCX_BUILD__ ? (
+          <a
+            href="/build-info.json"
+            target="_blank"
+            rel="noreferrer"
+            className="flex items-center gap-1.5 hover:underline"
+            title={`Rust source ${__DOCX_BUILD__.rustSourceSha256}; WASM ${__DOCX_BUILD__.wasmSha256}`}
+          >
+            <span className="text-muted-foreground">Build</span>
+            <span className="font-mono font-medium">
+              {__DOCX_BUILD__.gitRevision.slice(0, 7)}
+              {__DOCX_BUILD__.sourceDirty ? " (local)" : ""}
+            </span>
+          </a>
+        ) : (
+          <span className="text-muted-foreground">Build info unavailable in dev</span>
+        )}
+        <span className="flex items-center gap-1.5">
+          <span className="text-muted-foreground">Selection</span>
+          <span className="font-medium capitalize">
+            {editor.selection.kind.replace("-", " ")}
+          </span>
+        </span>
+      </RibbonGroup>
+    </>
+  );
+
+  return (
+    <div className="relative flex h-dvh flex-col overflow-hidden bg-chrome text-foreground">
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".docx,.doc,.dot,.dotx,.docm,.dotm"
+        className="hidden"
+        onChange={(event) => void onImport(event)}
+      />
+      <input
+        ref={imageInputRef}
+        type="file"
+        accept="image/*"
+        className="hidden"
+        onChange={(event) => void onInsertImage(event)}
+      />
+
+      {/* Title bar */}
+      <header className="flex h-11 shrink-0 items-center gap-3 px-3">
+        <div className="flex min-w-0 flex-1 items-center gap-2.5">
+          <div className="flex size-7 shrink-0 items-center justify-center rounded-md bg-brand text-brand-foreground">
+            <FileText className="size-4" />
+          </div>
+          <span className="truncate text-[13px] font-semibold">
+            {editor.fileName || "Document1"}
+          </span>
+          {isReadOnly ? (
+            <Badge className="rounded px-1.5 text-[10px]" variant="outline">
+              Read-only
+            </Badge>
+          ) : null}
+          <span className="hidden truncate text-xs text-muted-foreground md:inline">
+            React DOCX Playground
+          </span>
+        </div>
+        <div className="flex shrink-0 items-center gap-0.5">
+          <Button
+            className={titleButton}
+            size="sm"
+            variant="ghost"
+            disabled={editor.isImporting}
+            onClick={() => fileInputRef.current?.click()}
+          >
+            {editor.isImporting ? <Spinner className="size-4" /> : <FolderOpen />}
+            {editor.isImporting ? "Opening…" : "Open"}
+          </Button>
+          <Button
+            className={titleButton}
+            size="sm"
+            variant="ghost"
+            disabled={editor.isImporting}
+            onClick={editor.exportDocx}
+          >
+            <Download />
+            Download
+          </Button>
+          <Button
+            className={titleButton}
+            size="sm"
+            variant="ghost"
+            render={<a href="/vanilla.html" />}
+          >
+            <Code />
+            Vanilla JS
+          </Button>
+          <RibbonDivider />
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  aria-label={isDark ? "Switch to light mode" : "Switch to dark mode"}
+                  className="size-7 sm:size-7"
+                  disabled={!themeReady}
+                  onClick={() => setTheme(isDark ? "light" : "dark")}
+                  size="icon-sm"
+                  variant="ghost"
+                />
+              }
+            >
+              {isDark ? <Sun /> : <Moon />}
+            </TooltipTrigger>
+            <TooltipPopup side="bottom">
+              {isDark ? "Light mode" : "Dark mode"}
+            </TooltipPopup>
+          </Tooltip>
+        </div>
+      </header>
+
+      {/* Ribbon */}
+      <Tabs
+        className="shrink-0 gap-0 px-2 pb-2"
+        value={ribbonTab}
+        onValueChange={(value) => setRibbonTab(value as RibbonTab)}
+      >
+        <div className="flex items-center gap-2">
+          <TabsList
+            className="h-8 gap-0.5 p-0 *:data-[slot=tab-indicator]:bg-brand *:data-[slot=tabs-tab]:hover:bg-black/5 dark:*:data-[slot=tabs-tab]:hover:bg-white/5"
+            variant="underline"
+          >
+            {RIBBON_TABS.map((name) => (
+              <TabsTab
+                key={name}
+                value={name}
+                className="h-7 grow-0 rounded-sm px-2.5 text-[13px] font-normal text-foreground/75 hover:text-foreground data-active:font-semibold data-active:text-brand"
+              >
+                {name}
+              </TabsTab>
+            ))}
+          </TabsList>
+          <div className="ms-auto flex items-center">
+            <RibbonToggle
+              label="Read only"
+              checked={isReadOnly}
+              onCheckedChange={setIsReadOnly}
+            />
+          </div>
+        </div>
+        <div className="mt-1 flex h-11 items-center overflow-x-auto rounded-lg border bg-background px-2 shadow-xs/5 [scrollbar-width:none]">
+          <TabsPanel className="flex items-center" value="Home">
+            {homeRibbon}
+          </TabsPanel>
+          <TabsPanel className="flex items-center" value="Insert">
+            {insertRibbon}
+          </TabsPanel>
+          <TabsPanel className="flex items-center" value="Layout">
+            {layoutRibbon}
+          </TabsPanel>
+          <TabsPanel className="flex items-center" value="Review">
+            {reviewRibbon}
+          </TabsPanel>
+          <TabsPanel className="flex items-center" value="View">
+            {viewRibbon}
+          </TabsPanel>
+          <TabsPanel className="flex items-center" value="Developer">
+            {developerRibbon}
+          </TabsPanel>
+        </div>
+      </Tabs>
+
+      {/* Document canvas */}
+      <main className="flex min-h-0 min-w-0 flex-1 border-t">
+        {navigationPaneOpen ? (
+          <aside
+            aria-label="Navigation"
+            className="flex w-60 shrink-0 flex-col border-e bg-background"
+          >
+            <div className="flex h-10 shrink-0 items-center justify-between gap-2 border-b ps-3 pe-1.5">
+              <span className="text-[13px] font-semibold">Navigation</span>
+              <span className="ms-auto text-xs text-muted-foreground tabular-nums">
+                {thumbnailPageCount} {thumbnailPageCount === 1 ? "page" : "pages"}
+              </span>
+              <Button
+                aria-label="Close navigation pane"
+                className="size-6 sm:size-6"
+                onClick={() => setNavigationPaneOpen(false)}
+                size="icon-xs"
+                variant="ghost"
+              >
+                <X />
+              </Button>
+            </div>
+            <div
+              ref={thumbnailScrollRef}
+              className="min-h-0 flex-1 overflow-y-auto px-3 py-2"
+            >
+              <div
+                style={{
+                  height: `${thumbnailVirtualizer.getTotalSize()}px`,
+                  position: "relative",
+                  width: "100%",
+                }}
+              >
+                {thumbnailVirtualItems.map((virtualItem) => {
+                  const thumbnail = thumbnails[virtualItem.index];
+                  if (!thumbnail) {
+                    return null;
+                  }
+                  const isCurrent = thumbnail.pageNumber === editor.currentPage;
+
+                  return (
+                    <div
+                      key={virtualItem.key}
+                      data-index={virtualItem.index}
+                      style={{
+                        left: 0,
+                        position: "absolute",
+                        top: 0,
+                        transform: `translateY(${virtualItem.start}px)`,
+                        width: "100%",
+                      }}
+                    >
+                      <button
+                        type="button"
+                        aria-label={`Page ${thumbnail.pageNumber}`}
+                        aria-current={isCurrent ? "page" : undefined}
+                        title={
+                          thumbnail.error
+                            ? thumbnail.error.message
+                            : `${Math.round(thumbnail.sourceWidthPx)} × ${Math.round(
+                                thumbnail.sourceHeightPx
+                              )} · ${thumbnail.isMounted ? thumbnail.status : "offscreen render"}`
+                        }
+                        onClick={() => scrollToPage(thumbnail.pageIndex)}
+                        className="group flex w-full flex-col items-center gap-1.5 rounded-md p-2 outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring"
+                      >
+                        <div
+                          className={cn(
+                            "overflow-hidden rounded-[2px] bg-white shadow-xs ring-1 ring-black/10",
+                            isCurrent && "ring-2 ring-brand"
+                          )}
+                          style={{
+                            width: `${thumbnail.widthPx}px`,
+                            height: `${thumbnail.heightPx}px`,
+                          }}
+                        >
+                          <canvas
+                            ref={thumbnail.canvasRef}
+                            width={thumbnail.pixelWidthPx}
+                            height={thumbnail.pixelHeightPx}
+                            style={{
+                              width: `${thumbnail.widthPx}px`,
+                              height: `${thumbnail.heightPx}px`,
+                              display: "block",
+                            }}
+                          />
+                        </div>
+                        <span
+                          className={cn(
+                            "text-[11px] tabular-nums text-muted-foreground",
+                            isCurrent && "font-semibold text-brand"
+                          )}
+                        >
+                          {thumbnail.pageNumber}
+                        </span>
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </aside>
+        ) : null}
+
         <div
           ref={viewerScrollRef}
-          className="relative min-h-0 flex-1 overflow-auto rounded-lg border bg-muted/40 p-4"
+          className="relative min-h-0 min-w-0 flex-1 overflow-auto bg-canvas"
         >
-          {isReadOnly && isImportDragOver ? (
-            <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-lg border-2 border-dashed border-primary/50 bg-background/75 p-6 backdrop-blur-[1px]">
-              <div className="flex max-w-sm items-center gap-3 rounded-xl border bg-card/95 px-4 py-3 shadow-sm">
-                <Upload className="size-5 text-primary" />
-                <div className="space-y-1">
-                  <p className="text-sm font-medium text-foreground">
-                    Drop a DOCX file to import
-                  </p>
-                  <p className="text-xs text-muted-foreground">
-                    Read-only mode blocks editing, but import is still allowed
-                    in the playground.
-                  </p>
-                </div>
-              </div>
-            </div>
-          ) : null}
-          <div className="flex min-h-full min-w-full w-max justify-center">
+          <div className="flex min-h-full min-w-full w-max justify-center px-6 py-5">
             <div ref={blockViewerRootRef}>
               <DocxEditorViewer
                 editor={editor}
                 zoom={zoomPercent}
+                onZoomChange={(state) => setResolvedZoom(state.resolvedZoom)}
                 pageGapBackgroundColor={pageGapBackgroundColor}
                 pageVirtualization={{}}
                 mode={isReadOnly ? "read-only" : "edit"}
@@ -3572,124 +3818,118 @@ function PlaygroundApp(): React.JSX.Element {
           </div>
         </div>
 
-        {showBlocks ? <BlockInspector model={editor.model} rootRef={blockViewerRootRef} /> : null}
-        </div>
+        {showBlocks ? (
+          <BlockInspector model={editor.model} rootRef={blockViewerRootRef} />
+        ) : null}
+      </main>
 
-        <Sheet open={thumbnailsSheetOpen} onOpenChange={setThumbnailsSheetOpen}>
-          <SheetContent side="right" className="w-[24rem] sm:max-w-[24rem]">
-            <SheetHeader className="pb-3">
-              <SheetTitle>Page Thumbnails</SheetTitle>
-              <SheetDescription>
-                Jump to any page from independent thumbnail renders.
-              </SheetDescription>
-            </SheetHeader>
-
-            <div
-              ref={thumbnailScrollRef}
-              className="min-h-0 flex-1 overflow-y-auto px-4 pb-4"
+      {/* Status bar */}
+      <footer className="flex h-7 shrink-0 items-center gap-4 border-t bg-chrome px-3 text-[11px] text-foreground/70">
+        <span className="tabular-nums">
+          Page {Math.max(1, editor.currentPage)} of {thumbnailPageCount}
+        </span>
+        <span className="hidden tabular-nums sm:inline">
+          {wordCount.toLocaleString()} {wordCount === 1 ? "word" : "words"}
+        </span>
+        <span className="flex min-w-0 items-center gap-1.5">
+          {editor.isImporting ? <Spinner className="size-3" /> : null}
+          <span className="truncate">{editor.status}</span>
+        </span>
+        <div className="flex-1" />
+        {isReadOnly ? (
+          <span className="hidden items-center gap-1 sm:flex">
+            <Lock className="size-3" />
+            Read-only
+          </span>
+        ) : null}
+        <div className="flex items-center gap-1">
+          <button
+            aria-label="Zoom out"
+            className={cn(statusIconButtonClass, "size-5")}
+            onClick={() => shiftZoom(-1)}
+            type="button"
+          >
+            <Minus className="size-3" />
+          </button>
+          <Slider
+            aria-label="Zoom level"
+            className="w-24 **:data-[slot=slider-control]:min-w-0 **:data-[slot=slider-indicator]:bg-foreground/40 **:data-[slot=slider-thumb]:size-3 sm:**:data-[slot=slider-thumb]:size-3"
+            min={ZOOM_PERCENT_OPTIONS[0]}
+            max={ZOOM_PERCENT_OPTIONS[ZOOM_PERCENT_OPTIONS.length - 1]}
+            value={Math.round(resolvedZoom)}
+            onValueChange={(value) =>
+              setZoomPercent(Array.isArray(value) ? value[0] : value)
+            }
+          />
+          <button
+            aria-label="Zoom in"
+            className={cn(statusIconButtonClass, "size-5")}
+            onClick={() => shiftZoom(1)}
+            type="button"
+          >
+            <Plus className="size-3" />
+          </button>
+          <Select
+            items={ZOOM_ITEMS}
+            value={String(zoomPercent)}
+            onValueChange={(value: string | null) => {
+              if (!value) {
+                return;
+              }
+              const parsed = Number(value);
+              setZoomPercent(
+                Number.isFinite(parsed) ? parsed : (value as ViewerZoomLevel)
+              );
+            }}
+          >
+            <SelectTrigger
+              aria-label="Zoom"
+              className="min-h-5 w-11 min-w-0 shrink-0 justify-end rounded-sm border-transparent bg-transparent px-1 text-[11px] text-foreground/70 shadow-none before:hidden hover:bg-black/5 sm:min-h-5 sm:text-[11px] dark:bg-transparent dark:hover:bg-white/5 [&_[data-slot=select-icon]]:hidden"
+              size="sm"
             >
-              <div
-                style={{
-                  height: `${thumbnailVirtualizer.getTotalSize()}px`,
-                  position: "relative",
-                  width: "100%",
-                }}
-              >
-                {thumbnailVirtualItems.map((virtualItem) => {
-                  const thumbnail = thumbnails[virtualItem.index];
-                  if (!thumbnail) {
-                    return null;
-                  }
+              <SelectValue className="tabular-nums">
+                {`${Math.round(resolvedZoom)}%`}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectPopup align="end" side="top" alignItemWithTrigger={false}>
+              {ZOOM_ITEMS.map((item) => (
+                <SelectItem key={item.value} value={item.value}>
+                  {item.label}
+                </SelectItem>
+              ))}
+            </SelectPopup>
+          </Select>
+        </div>
+      </footer>
 
-                  return (
-                    <div
-                      key={virtualItem.key}
-                      data-index={virtualItem.index}
-                      style={{
-                        left: 0,
-                        paddingBottom: "0.75rem",
-                        position: "absolute",
-                        top: 0,
-                        transform: `translateY(${virtualItem.start}px)`,
-                        width: "100%",
-                      }}
-                    >
-                      <button
-                        type="button"
-                        onClick={() => {
-                          scrollToPage(thumbnail.pageIndex);
-                          setThumbnailsSheetOpen(false);
-                        }}
-                        className="bg-card hover:bg-accent/60 border-border flex w-full items-start gap-3 rounded-xl border p-3 text-left transition-colors"
-                      >
-                        <div className="flex min-w-10 flex-col items-center gap-1 pt-1">
-                          <span className="text-xs font-medium text-foreground">
-                            {thumbnail.pageNumber}
-                          </span>
-                          <span className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
-                            {thumbnail.status}
-                          </span>
-                        </div>
-
-                        <div className="flex min-w-0 flex-1 flex-col gap-2">
-                          <div className="bg-muted/60 ring-border/70 flex min-h-[10rem] items-center justify-center overflow-hidden rounded-md p-3 ring-1">
-                            <div
-                              style={{
-                                width: `${thumbnail.widthPx}px`,
-                                height: `${thumbnail.heightPx}px`,
-                                display: "flex",
-                                alignItems: "center",
-                                justifyContent: "center",
-                              }}
-                            >
-                              <canvas
-                                ref={thumbnail.canvasRef}
-                                width={thumbnail.pixelWidthPx}
-                                height={thumbnail.pixelHeightPx}
-                                style={{
-                                  width: `${thumbnail.widthPx}px`,
-                                  height: `${thumbnail.heightPx}px`,
-                                  display: "block",
-                                }}
-                              />
-                            </div>
-                          </div>
-                          <div className="flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
-                            <span>
-                              {Math.round(thumbnail.sourceWidthPx)} x{" "}
-                              {Math.round(thumbnail.sourceHeightPx)}
-                            </span>
-                            {!thumbnail.isMounted ? (
-                              <span>Offscreen render</span>
-                            ) : thumbnail.error ? (
-                              <span>{thumbnail.error.message}</span>
-                            ) : null}
-                          </div>
-                        </div>
-                      </button>
-                    </div>
-                  );
-                })}
-              </div>
+      {isReadOnly && isImportDragOver ? (
+        <div className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center bg-background/70 backdrop-blur-[2px]">
+          <div className="flex flex-col items-center gap-2 rounded-xl border-2 border-dashed border-brand/60 bg-background px-10 py-8 text-center shadow-lg">
+            <Upload className="size-6 text-brand" />
+            <div className="text-sm font-medium">Drop a DOCX file to open it</div>
+            <div className="text-xs text-muted-foreground">
+              Read-only mode blocks editing, but opening files still works.
             </div>
-          </SheetContent>
-        </Sheet>
+          </div>
+        </div>
+      ) : null}
 
-        <Dialog
-          open={formWidgetDialogOpen && Boolean(selectedFormField)}
-          onOpenChange={handleFormWidgetDialogOpenChange}
-        >
-          <DialogContent className="sm:max-w-lg">
-            <DialogHeader>
-              <DialogTitle>Form Field Settings</DialogTitle>
-              <DialogDescription>
-                Configure the selected Word form widget.
-              </DialogDescription>
-            </DialogHeader>
+      <Dialog
+        open={formWidgetDialogOpen && Boolean(selectedFormField)}
+        onOpenChange={handleFormWidgetDialogOpenChange}
+      >
+        <DialogPopup className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Form field properties</DialogTitle>
+            <DialogDescription>
+              Configure the selected Word form widget.
+            </DialogDescription>
+          </DialogHeader>
 
+          <DialogPanel>
             {selectedFormField ? (
               <div className="space-y-4">
-                <div className="grid grid-cols-1 gap-1 rounded-md border bg-muted/40 p-2 text-xs sm:grid-cols-2">
+                <div className="grid grid-cols-1 gap-1 rounded-md border bg-muted p-2 text-xs sm:grid-cols-2">
                   <span className="text-muted-foreground">Type</span>
                   <span className="font-medium capitalize">
                     {selectedFormField.field.fieldType}
@@ -3708,6 +3948,7 @@ function PlaygroundApp(): React.JSX.Element {
                         Text field type
                       </span>
                       <Select
+                        items={FORM_TEXT_INPUT_TYPE_ITEMS}
                         value={formWidgetDraft?.text.inputType ?? "regular"}
                         onValueChange={(value: string | null) => {
                           if (!value) {
@@ -3735,18 +3976,13 @@ function PlaygroundApp(): React.JSX.Element {
                         <SelectTrigger>
                           <SelectValue />
                         </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="regular">Regular text</SelectItem>
-                          <SelectItem value="number">Number</SelectItem>
-                          <SelectItem value="date">Date</SelectItem>
-                          <SelectItem value="currentDate">
-                            Current date
-                          </SelectItem>
-                          <SelectItem value="currentTime">
-                            Current time
-                          </SelectItem>
-                          <SelectItem value="calculated">Calculated</SelectItem>
-                        </SelectContent>
+                        <SelectPopup>
+                          {FORM_TEXT_INPUT_TYPE_ITEMS.map((item) => (
+                            <SelectItem key={item.value} value={item.value}>
+                              {item.label}
+                            </SelectItem>
+                          ))}
+                        </SelectPopup>
                       </Select>
                     </div>
 
@@ -3758,9 +3994,7 @@ function PlaygroundApp(): React.JSX.Element {
                         value={formWidgetDraft?.text.defaultText ?? ""}
                         placeholder={selectedFormFieldDefaultValuePlaceholder}
                         disabled={selectedFormFieldDefaultValueDisabled}
-                        onChange={(
-                          event: React.ChangeEvent<HTMLInputElement>
-                        ) => {
+                        onChange={(event: React.ChangeEvent<HTMLInputElement>) => {
                           const nextValue = event.target.value;
                           updateFormWidgetDraft((draft) => ({
                             ...draft,
@@ -3782,9 +4016,7 @@ function PlaygroundApp(): React.JSX.Element {
                         min={0}
                         placeholder="Unlimited"
                         value={formWidgetDraft?.text.maxLength ?? ""}
-                        onChange={(
-                          event: React.ChangeEvent<HTMLInputElement>
-                        ) => {
+                        onChange={(event: React.ChangeEvent<HTMLInputElement>) => {
                           const nextValue = event.target.value;
                           updateFormWidgetDraft((draft) => ({
                             ...draft,
@@ -3796,7 +4028,7 @@ function PlaygroundApp(): React.JSX.Element {
                         }}
                       />
                       {hasInvalidFormWidgetMaxLength ? (
-                        <span className="text-xs text-destructive">
+                        <span className="text-xs text-destructive-foreground">
                           Enter a number greater than or equal to 0.
                         </span>
                       ) : null}
@@ -3807,6 +4039,7 @@ function PlaygroundApp(): React.JSX.Element {
                         {selectedFormFieldFormatLabel}
                       </span>
                       <Select
+                        items={selectedFormFieldFormatOptions}
                         value={selectedFormFieldEffectiveTextFormatValue}
                         onValueChange={(value: string | null) => {
                           if (!value) {
@@ -3829,13 +4062,13 @@ function PlaygroundApp(): React.JSX.Element {
                         >
                           <SelectValue />
                         </SelectTrigger>
-                        <SelectContent className="w-max min-w-(--anchor-width) overflow-x-visible">
+                        <SelectPopup className="w-max min-w-(--anchor-width) overflow-x-visible">
                           {selectedFormFieldFormatOptions.map((option) => (
                             <SelectItem key={option.value} value={option.value}>
                               {option.label}
                             </SelectItem>
                           ))}
-                        </SelectContent>
+                        </SelectPopup>
                       </Select>
                     </div>
                   </div>
@@ -3848,6 +4081,7 @@ function PlaygroundApp(): React.JSX.Element {
                         Default value
                       </span>
                       <Select
+                        items={CHECKBOX_DEFAULT_ITEMS}
                         value={
                           formWidgetDraft?.checkbox.defaultChecked
                             ? "checked"
@@ -3869,12 +4103,13 @@ function PlaygroundApp(): React.JSX.Element {
                         <SelectTrigger>
                           <SelectValue />
                         </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="not-checked">
-                            Not checked
-                          </SelectItem>
-                          <SelectItem value="checked">Checked</SelectItem>
-                        </SelectContent>
+                        <SelectPopup>
+                          {CHECKBOX_DEFAULT_ITEMS.map((item) => (
+                            <SelectItem key={item.value} value={item.value}>
+                              {item.label}
+                            </SelectItem>
+                          ))}
+                        </SelectPopup>
                       </Select>
                     </div>
 
@@ -3883,6 +4118,7 @@ function PlaygroundApp(): React.JSX.Element {
                         Checkbox size
                       </span>
                       <Select
+                        items={CHECKBOX_SIZE_ITEMS}
                         value={formWidgetDraft?.checkbox.sizeMode ?? "auto"}
                         onValueChange={(value: string | null) => {
                           if (!value) {
@@ -3905,15 +4141,17 @@ function PlaygroundApp(): React.JSX.Element {
                         <SelectTrigger>
                           <SelectValue />
                         </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="auto">Auto</SelectItem>
-                          <SelectItem value="exact">Exactly</SelectItem>
-                        </SelectContent>
+                        <SelectPopup>
+                          {CHECKBOX_SIZE_ITEMS.map((item) => (
+                            <SelectItem key={item.value} value={item.value}>
+                              {item.label}
+                            </SelectItem>
+                          ))}
+                        </SelectPopup>
                       </Select>
                     </div>
 
-                    {(formWidgetDraft?.checkbox.sizeMode ?? "auto") ===
-                    "exact" ? (
+                    {(formWidgetDraft?.checkbox.sizeMode ?? "auto") === "exact" ? (
                       <div className="grid gap-1.5">
                         <span className="text-xs text-muted-foreground">
                           Exact size (pt)
@@ -3923,9 +4161,7 @@ function PlaygroundApp(): React.JSX.Element {
                           min={1}
                           step={0.5}
                           value={formWidgetDraft?.checkbox.sizePt ?? "10"}
-                          onChange={(
-                            event: React.ChangeEvent<HTMLInputElement>
-                          ) => {
+                          onChange={(event: React.ChangeEvent<HTMLInputElement>) => {
                             const nextValue = event.target.value;
                             updateFormWidgetDraft((draft) => ({
                               ...draft,
@@ -3938,7 +4174,7 @@ function PlaygroundApp(): React.JSX.Element {
                           }}
                         />
                         {hasInvalidFormWidgetCheckboxSize ? (
-                          <span className="text-xs text-destructive">
+                          <span className="text-xs text-destructive-foreground">
                             Enter a number greater than 0.
                           </span>
                         ) : null}
@@ -3948,104 +4184,99 @@ function PlaygroundApp(): React.JSX.Element {
                 ) : null}
               </div>
             ) : null}
+          </DialogPanel>
 
-            <DialogFooter>
-              <Button variant="outline" onClick={handleCancelFormWidgetDialog}>
-                Cancel
-              </Button>
-              <Button
-                onClick={handleSaveFormWidgetDialog}
-                disabled={!canSaveFormWidgetDialog}
-              >
-                Save
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
+          <DialogFooter>
+            <Button variant="outline" onClick={handleCancelFormWidgetDialog}>
+              Cancel
+            </Button>
+            <Button
+              onClick={handleSaveFormWidgetDialog}
+              disabled={!canSaveFormWidgetDialog}
+            >
+              Save
+            </Button>
+          </DialogFooter>
+        </DialogPopup>
+      </Dialog>
 
-        {linkHoverCard && !linkEditorOpen ? (
-          <div
-            className="fixed z-50 rounded-md border bg-popover px-2 py-1.5 text-xs shadow-md"
-            style={{
-              top: linkHoverCard.top,
-              left: linkHoverCard.left,
-              transform: "translate(-50%, 0)",
-            }}
-          >
-            <div className="flex items-center gap-2">
-              <a
-                href={linkHoverCard.href}
-                target={
-                  linkHoverCard.href.startsWith("#") ? undefined : "_blank"
-                }
-                rel={
-                  linkHoverCard.href.startsWith("#")
-                    ? undefined
-                    : "noreferrer noopener"
-                }
-                className="max-w-[280px] truncate text-blue-600 underline"
-              >
-                {linkHoverCard.href}
-              </a>
-              <Button
-                variant="outline"
-                size="xs"
-                onMouseDown={preserveTextSelectionOnMouseDown}
-                onClick={openLinkEditor}
-              >
-                Edit
-              </Button>
-            </div>
-          </div>
-        ) : null}
-
-        {linkEditorOpen && linkEditorPosition ? (
-          <div
-            className="fixed z-[60] w-[320px] rounded-lg border bg-popover p-3 shadow-lg"
-            style={{
-              top: linkEditorPosition.top,
-              left: linkEditorPosition.left,
-              transform: "translate(-50%, 0)",
-            }}
-          >
-            <p className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-              Edit Link
-            </p>
-            <Input
-              value={linkEditorValue}
-              onChange={(event: React.ChangeEvent<HTMLInputElement>) =>
-                setLinkEditorValue(event.target.value)
+      {linkHoverCard && !linkEditorOpen ? (
+        <div
+          className="fixed z-50 rounded-lg border bg-popover px-2 py-1.5 text-xs shadow-md"
+          style={{
+            top: linkHoverCard.top,
+            left: linkHoverCard.left,
+            transform: "translate(-50%, 0)",
+          }}
+        >
+          <div className="flex items-center gap-2">
+            <a
+              href={linkHoverCard.href}
+              target={linkHoverCard.href.startsWith("#") ? undefined : "_blank"}
+              rel={
+                linkHoverCard.href.startsWith("#")
+                  ? undefined
+                  : "noreferrer noopener"
               }
-              onKeyDown={(event: React.KeyboardEvent<HTMLInputElement>) => {
-                if (event.key === "Enter") {
-                  event.preventDefault();
-                  applyLinkFromEditor();
-                } else if (event.key === "Escape") {
-                  event.preventDefault();
-                  closeLinkEditor();
-                }
-              }}
-              placeholder="https://example.com"
-              autoFocus
-            />
-            <div className="mt-2 flex items-center justify-end gap-1">
-              <Button variant="ghost" size="sm" onClick={closeLinkEditor}>
-                Cancel
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={removeLinkFromEditor}
-              >
-                Remove
-              </Button>
-              <Button size="sm" onClick={applyLinkFromEditor}>
-                Apply
-              </Button>
-            </div>
+              className="max-w-[280px] truncate text-brand underline"
+            >
+              {linkHoverCard.href}
+            </a>
+            <Button
+              variant="outline"
+              size="xs"
+              onMouseDown={preserveTextSelectionOnMouseDown}
+              onClick={openLinkEditor}
+            >
+              Edit
+            </Button>
           </div>
-        ) : null}
-      </div>
+        </div>
+      ) : null}
+
+      {linkEditorOpen && linkEditorPosition ? (
+        <div
+          className="fixed z-[60] w-[320px] rounded-lg border bg-popover p-3 shadow-lg"
+          style={{
+            top: linkEditorPosition.top,
+            left: linkEditorPosition.left,
+            transform: "translate(-50%, 0)",
+          }}
+        >
+          <p className="mb-2 text-xs font-medium text-muted-foreground">
+            Edit link
+          </p>
+          <Input
+            value={linkEditorValue}
+            size="sm"
+            onChange={(event: React.ChangeEvent<HTMLInputElement>) =>
+              setLinkEditorValue(event.target.value)
+            }
+            onKeyDown={(event: React.KeyboardEvent<HTMLInputElement>) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                applyLinkFromEditor();
+              } else if (event.key === "Escape") {
+                event.preventDefault();
+                closeLinkEditor();
+              }
+            }}
+            placeholder="https://example.com"
+            autoFocus
+          />
+          <div className="mt-2 flex items-center justify-end gap-1">
+            <Button variant="ghost" size="sm" onClick={closeLinkEditor}>
+              Cancel
+            </Button>
+            <Button variant="outline" size="sm" onClick={removeLinkFromEditor}>
+              Remove
+            </Button>
+            <Button size="sm" onClick={applyLinkFromEditor}>
+              Apply
+            </Button>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

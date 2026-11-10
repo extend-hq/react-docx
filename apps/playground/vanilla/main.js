@@ -1,4 +1,5 @@
 import { createDocxViewer } from "@extend-ai/react-docx/vanilla";
+import { createWelcomeDocumentModel as createSampleModel, WELCOME_FILE_NAME } from "../src/lib/welcome-document";
 
 const byId = (id) => document.getElementById(id);
 const fileInput = byId("file-input");
@@ -10,35 +11,6 @@ const statusText = byId("status-text");
 const message = byId("message");
 let opening = false;
 
-function createSampleModel() {
-  const paragraph = (text, style = {}) => ({
-    type: "paragraph",
-    children: [{ type: "text", text, style: { fontFamily: "Calibri", fontSizePt: 11, color: "#111827", ...style } }],
-  });
-  return {
-    nodes: [
-      paragraph("A place for ideas.", { fontFamily: "Georgia", fontSizePt: 26, bold: true }),
-      paragraph("A little room to think, write, and make something.", { fontSizePt: 13 }),
-      paragraph(""),
-      paragraph("Welcome to the DOCX playground", { fontSizePt: 15, bold: true }),
-      paragraph("This document is yours to explore. Click anywhere in the text to make a change, or open a document of your own."),
-      paragraph(""),
-      paragraph("Try it out", { fontSizePt: 14, bold: true }),
-      paragraph("Switch to read-only mode to preview a document, change the zoom, or export your edits as a DOCX."),
-      paragraph(""),
-      paragraph("Made for the browser, ready for your workflow.", { italic: true }),
-    ],
-    metadata: {
-      sourceParts: 1,
-      warnings: [],
-      headerSections: [],
-      footerSections: [],
-      paragraphStyles: [{ id: "Normal", name: "Body", isDefault: true, runStyle: { fontFamily: "Calibri", fontSizePt: 11 } }],
-      defaultParagraphStyleId: "Normal",
-    },
-  };
-}
-
 function showMessage(text, isError = false) {
   message.textContent = text;
   message.dataset.error = String(isError);
@@ -46,7 +18,7 @@ function showMessage(text, isError = false) {
 
 const viewer = createDocxViewer(byId("viewer"), {
   starterModel: createSampleModel(),
-  initialFileName: "Welcome.docx",
+  initialFileName: WELCOME_FILE_NAME,
   mode: "edit",
   defaultZoom: "fit-width",
   onZoomChange: ({ resolvedZoom }) => { byId("zoom").textContent = `${Math.round(resolvedZoom)}%`; },

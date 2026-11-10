@@ -1,8 +1,9 @@
 import * as React from "react";
 import { Analytics } from "@vercel/analytics/react";
+import { ThemeProvider } from "next-themes";
 import { createRoot } from "react-dom/client";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { App } from "./App";
-import { ThemeProvider } from "./components/theme-provider";
 import "./index.css";
 
 // StrictMode double-invokes render work in dev, which skews editor perf
@@ -12,8 +13,10 @@ const useStrictMode =
   import.meta.env.VITE_STRICT_MODE === "1";
 
 const app = (
-  <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange>
-    <App />
+  <ThemeProvider attribute="class" defaultTheme="light" disableTransitionOnChange enableSystem={false}>
+    <TooltipProvider delay={400}>
+      <App />
+    </TooltipProvider>
     <Analytics />
   </ThemeProvider>
 );

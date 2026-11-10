@@ -2,7 +2,20 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "jsx": "react-jsx",
-    "baseUrl": "../.."
+    "baseUrl": "../..",
+    "paths": {
+      "@/*": ["apps/playground/src/*"],
+      "@extend-ai/react-docx-ooxml-core": ["packages/ooxml-core/src/index.ts"],
+      "@extend-ai/react-docx-doc-model": ["packages/doc-model/src/index.ts"],
+      "@extend-ai/react-docx-layout-core": ["packages/layout-core/src/index.ts"],
+      "@extend-ai/react-docx-layout-engine": ["packages/layout-engine/src/index.ts"],
+      "@extend-ai/react-docx-editor-ops": ["packages/editor-ops/src/index.ts"],
+      "@extend-ai/react-docx-wasm": ["packages/wasm/src/index.ts"],
+      "@extend-ai/react-docx-serializer": ["packages/serializer/src/index.ts"],
+      "@extend-ai/react-docx": ["packages/react-viewer/src/index.tsx"],
+      "@extend-ai/react-docx/vanilla": ["packages/react-viewer/src/vanilla.tsx"],
+      "@extend-ai/react-docx/internal": ["packages/react-viewer/src/internal.ts"]
+    }
   },
   "include": ["src", "vite.config.ts"]
 }

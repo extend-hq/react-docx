@@ -199,10 +199,10 @@ export function BlockInspector({
     <>
       <aside
         aria-label="Parsed blocks"
-        className="flex max-h-[45vh] min-h-0 w-full shrink-0 flex-col overflow-hidden rounded-lg border bg-background lg:max-h-none lg:w-[400px]"
+        className="flex min-h-0 w-[400px] max-w-[45vw] shrink-0 flex-col overflow-hidden border-s bg-background"
       >
-        <div className="flex items-center gap-2 border-b px-4 py-3">
-          <h2 className="text-sm font-semibold">Blocks</h2>
+        <div className="flex h-10 items-center gap-2 border-b ps-3 pe-1.5">
+          <h2 className="text-[13px] font-semibold">Blocks</h2>
           <span className="text-xs text-muted-foreground">
             {busy ? (
               <Loader2 className="size-3 animate-spin" />
@@ -262,7 +262,6 @@ export function BlockInspector({
           <label className="mt-3 flex items-center justify-between text-xs">
             Show all highlights
             <Switch
-              size="sm"
               aria-label="Show all highlights"
               checked={showAllHighlights}
               onCheckedChange={setShowAllHighlights}
