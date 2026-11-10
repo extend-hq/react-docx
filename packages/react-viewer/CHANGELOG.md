@@ -1,5 +1,11 @@
 # @extend-ai/react-docx
 
+## 0.14.10
+
+### Patch Changes
+
+- Keep focus in the editor when selecting across paragraphs so Space and typed characters replace the selection instead of scrolling the page. Restore the caret before the next keystroke after replacing or deleting selected text.
+
 ## 0.14.9
 
 ### Patch Changes
