@@ -6,76 +6,134 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="description" content="Explore the DOCX viewer with its JavaScript API." />
     <link rel="icon" href="data:," />
+    <script>
+      try { if (localStorage.getItem("theme") === "dark") document.documentElement.classList.add("dark"); } catch {}
+    </script>
     <link rel="stylesheet" href="/vanilla/style.css" />
-    <title>Vanilla JS · DOCX Playground</title>
+    <title>Vanilla DOCX Playground</title>
   </head>
   <body>
-    <div class="page-shell">
-      <header class="site-header">
-        <a class="brand" href="/" aria-label="Return to the React playground">
-          <span class="brand-mark" aria-hidden="true">D</span>
-          <span>DOCX <span class="brand-muted">Playground</span></span>
-        </a>
-        <a class="back-link" href="/"><span aria-hidden="true">←</span> React playground</a>
+    <div class="app" id="app">
+      <input id="file-input" type="file" accept=".docx,.doc,.dot,.dotx,.docm,.dotm" hidden />
+
+      <!-- Title bar -->
+      <header class="titlebar">
+        <div class="titlebar-start">
+          <div class="app-icon"><i data-icon="file-text"></i></div>
+          <span class="doc-name" id="file-name">Document1</span>
+          <span class="badge" id="read-only-badge" hidden>Read-only</span>
+          <span class="app-subtitle">Vanilla DOCX Playground</span>
+        </div>
+        <div class="titlebar-end">
+          <button class="btn btn-title" id="open-file" type="button"><span id="open-icon"><i data-icon="folder-open"></i></span><span class="btn-text" id="open-label">Open</span></button>
+          <button class="btn btn-title" id="export" type="button" disabled><i data-icon="download"></i><span class="btn-text">Download</span></button>
+          <a class="btn btn-title" href="/"><i data-icon="code"></i><span class="btn-text">React</span></a>
+          <span class="divider" aria-hidden="true"></span>
+          <button class="btn btn-icon-only" id="theme-toggle" type="button" data-tooltip="Dark mode"></button>
+        </div>
       </header>
 
-      <main class="main-content">
-        <section class="page-intro" aria-labelledby="page-title">
-          <div>
-            <div class="eyebrow"><span class="eyebrow-dot"></span> JAVASCRIPT PLAYGROUND</div>
-            <h1 id="page-title">Documents for plain JavaScript.</h1>
-            <p>Open a document and explore the viewer's imperative API.</p>
+      <!-- Ribbon -->
+      <div class="ribbon">
+        <div class="ribbon-row">
+          <div class="ribbon-tabs" role="tablist" aria-label="Ribbon">
+            <button class="ribbon-tab" role="tab" data-tab="Home" type="button">Home</button>
+            <button class="ribbon-tab" role="tab" data-tab="View" type="button">View</button>
+            <button class="ribbon-tab" role="tab" data-tab="Developer" type="button">Developer</button>
           </div>
-          <div class="entry-label"><span>IMPORT FROM</span><code>@extend-ai/react-docx/vanilla</code></div>
-        </section>
+          <div class="ribbon-end">
+            <label class="toggle"><input id="read-only" type="checkbox" /><span class="switch"></span>Read only</label>
+          </div>
+        </div>
 
-        <section class="workspace" aria-label="Document viewer">
-          <div class="workspace-toolbar">
-            <div class="toolbar-primary">
-              <button class="button button-primary" id="open-file" type="button">
-                <svg aria-hidden="true" viewBox="0 0 20 20"><path d="M3 6.5a2 2 0 0 1 2-2h3l1.5 1.7H15a2 2 0 0 1 2 2v6.3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M10 13V8.5m-2 2 2-2 2 2"/></svg>
-                Open document
-              </button>
-              <input id="file-input" type="file" accept=".docx,.doc,.dot,.dotx,.docm,.dotm" hidden />
-              <button class="button button-quiet" id="load-sample" type="button">Load sample</button>
-              <span class="toolbar-divider" aria-hidden="true"></span>
-              <form class="url-form" id="url-form">
-                <label class="sr-only" for="document-url">Document URL</label>
-                <input id="document-url" type="text" inputmode="url" placeholder="Document URL" />
-                <button class="button button-quiet" type="submit">Open URL</button>
-              </form>
+        <div class="ribbon-panel">
+          <div role="tabpanel" data-panel="Home">
+            <div class="group" role="group">
+              <button class="btn" id="undo" type="button" aria-label="Undo" data-tooltip="Undo" data-shortcut="⌘Z" data-keep disabled><i data-icon="undo"></i></button>
+              <button class="btn" id="redo" type="button" aria-label="Redo" data-tooltip="Redo" data-shortcut="⌘⇧Z" data-keep disabled><i data-icon="redo"></i></button>
             </div>
-            <div class="toolbar-options">
-              <label class="check-option"><input id="read-only" type="checkbox" /><span>Read only</span></label>
-              <label class="check-option"><input id="dark-mode" type="checkbox" /><span>Dark document</span></label>
+            <div class="group group-wide" role="group">
+              <span class="select" style="width: 144px"><select id="font-family" aria-label="Font" data-edit></select><i data-icon="chevrons-up-down"></i></span>
+              <span class="select" style="width: 64px"><select id="font-size" aria-label="Font size" data-edit></select><i data-icon="chevrons-up-down"></i></span>
+            </div>
+            <div class="group" role="group">
+              <button class="btn" type="button" data-command="bold" aria-label="Bold" data-tooltip="Bold" data-shortcut="⌘B" data-keep data-edit><i data-icon="bold"></i></button>
+              <button class="btn" type="button" data-command="italic" aria-label="Italic" data-tooltip="Italic" data-shortcut="⌘I" data-keep data-edit><i data-icon="italic"></i></button>
+              <button class="btn" type="button" data-command="underline" aria-label="Underline" data-tooltip="Underline" data-shortcut="⌘U" data-keep data-edit><i data-icon="underline"></i></button>
+              <button class="btn" type="button" data-command="strike" aria-label="Strikethrough" data-tooltip="Strikethrough" data-keep data-edit><i data-icon="strikethrough"></i></button>
+              <button class="btn" type="button" data-command="subscript" aria-label="Subscript" data-tooltip="Subscript" data-shortcut="⌘=" data-keep data-edit><i data-icon="subscript"></i></button>
+              <button class="btn" type="button" data-command="superscript" aria-label="Superscript" data-tooltip="Superscript" data-shortcut="⌘⇧=" data-keep data-edit><i data-icon="superscript"></i></button>
+            </div>
+            <div class="group" role="group">
+              <button class="btn" type="button" data-command="bullets" aria-label="Bullets" data-tooltip="Bullets" data-keep data-edit><i data-icon="list"></i></button>
+              <button class="btn" type="button" data-command="numbering" aria-label="Numbering" data-tooltip="Numbering" data-keep data-edit><i data-icon="list-ordered"></i></button>
+              <button class="btn" type="button" data-command="align-left" aria-label="Align left" data-tooltip="Align left" data-shortcut="⌘L" data-keep data-edit><i data-icon="align-start"></i></button>
+              <button class="btn" type="button" data-command="align-center" aria-label="Center" data-tooltip="Center" data-shortcut="⌘E" data-keep data-edit><i data-icon="align-center"></i></button>
+              <button class="btn" type="button" data-command="align-right" aria-label="Align right" data-tooltip="Align right" data-shortcut="⌘R" data-keep data-edit><i data-icon="align-end"></i></button>
+              <button class="btn" type="button" data-command="align-justify" aria-label="Justify" data-tooltip="Justify" data-shortcut="⌘J" data-keep data-edit><i data-icon="align-justify"></i></button>
+            </div>
+            <div class="group" role="group">
+              <span class="select" style="width: 144px"><select id="paragraph-style" aria-label="Paragraph style" data-edit></select><i data-icon="chevrons-up-down"></i></span>
             </div>
           </div>
 
-          <div class="document-meta">
-            <div class="document-label">
-              <span class="document-icon" aria-hidden="true">▤</span>
-              <div><strong id="file-name">Document</strong><span id="page-count">Preparing viewer</span></div>
+          <div role="tabpanel" data-panel="View" hidden>
+            <div class="group group-wide" role="group">
+              <label class="toggle"><input id="dark-page" type="checkbox" /><span class="switch"></span>Dark page</label>
             </div>
-            <div class="status" id="status" role="status" aria-live="polite"><span class="status-dot"></span><span id="status-text">Starting</span></div>
+            <div class="group" role="group">
+              <button class="btn" id="zoom-out" type="button" aria-label="Zoom out" data-tooltip="Zoom out" data-zoom disabled><i data-icon="zoom-out"></i></button>
+              <button class="btn btn-label" id="zoom-100" type="button" data-zoom disabled>100%</button>
+              <button class="btn" id="zoom-in" type="button" aria-label="Zoom in" data-tooltip="Zoom in" data-zoom disabled><i data-icon="zoom-in"></i></button>
+            </div>
+            <div class="group" role="group">
+              <button class="btn btn-label" type="button" data-zoom-level="fit-page" data-zoom disabled><i data-icon="rectangle-vertical"></i>One page</button>
+              <button class="btn btn-label" type="button" data-zoom-level="fit-width" data-zoom disabled><i data-icon="move-horizontal"></i>Page width</button>
+              <button class="btn btn-label" type="button" data-zoom-level="automatic" data-zoom disabled><i data-icon="scaling"></i>Automatic</button>
+            </div>
           </div>
 
-          <div class="viewer-stage" id="viewer-stage"><div class="viewer-canvas"><div id="viewer"></div></div></div>
-
-          <div class="workspace-footer">
-            <div class="footer-actions">
-              <button class="button button-quiet" id="undo" type="button" disabled>Undo</button>
-              <button class="button button-quiet" id="redo" type="button" disabled>Redo</button>
-              <span class="toolbar-divider" aria-hidden="true"></span>
-              <button class="button button-icon" id="zoom-out" type="button" aria-label="Zoom out" disabled>−</button>
-              <output id="zoom" aria-label="Zoom level">100%</output>
-              <button class="button button-icon" id="zoom-in" type="button" aria-label="Zoom in" disabled>+</button>
-              <button class="button button-text" id="fit-width" type="button" disabled>Fit width</button>
+          <div role="tabpanel" data-panel="Developer" hidden>
+            <div class="group" role="group">
+              <button class="btn btn-label" id="load-sample" type="button"><i data-icon="sparkles"></i>Load sample</button>
             </div>
-            <button class="button button-quiet" id="export" type="button" disabled>Export DOCX</button>
+            <form class="group group-wide" id="url-form" role="group">
+              <label class="sr-only" for="document-url">Document URL</label>
+              <input class="text-input" id="document-url" type="text" inputmode="url" placeholder="https://example.com/file.docx" />
+              <button class="btn btn-outline" type="submit"><i data-icon="link"></i>Open URL</button>
+            </form>
+            <div class="group" role="group">
+              <span class="ribbon-note">Import from <code>@extend-ai/react-docx/vanilla</code></span>
+            </div>
           </div>
-        </section>
-        <p class="page-note" id="message" role="status" aria-live="polite">Choose a document, or edit the sample to get started.</p>
+        </div>
+      </div>
+
+      <!-- Document canvas -->
+      <main class="workspace">
+        <div class="canvas-scroll" id="viewer-scroll">
+          <div class="canvas-inner"><div id="viewer"></div></div>
+        </div>
       </main>
+
+      <!-- Status bar -->
+      <footer class="statusbar">
+        <span class="num" id="page-count">Page 1 of 1</span>
+        <span class="num hide-sm" id="word-count">0 words</span>
+        <span class="status-item"><span class="spinner" id="status-spinner" hidden></span><span id="status-text">Starting</span></span>
+        <span class="spacer"></span>
+        <span class="status-item hide-sm" id="read-only-status" hidden><i data-icon="lock"></i>Read-only</span>
+        <div class="zoom">
+          <button class="status-btn" id="status-zoom-out" type="button" aria-label="Zoom out" data-zoom disabled><i data-icon="minus"></i></button>
+          <input class="slider" id="zoom-slider" type="range" min="50" max="200" step="1" value="100" aria-label="Zoom level" data-zoom disabled />
+          <button class="status-btn" id="status-zoom-in" type="button" aria-label="Zoom in" data-zoom disabled><i data-icon="plus"></i></button>
+          <select class="zoom-value" id="zoom-select" aria-label="Zoom" data-zoom disabled></select>
+        </div>
+      </footer>
+
+      <div class="drop-overlay" id="drop-overlay" hidden>
+        <div class="drop-card"><i data-icon="upload"></i><span>Drop to open document</span></div>
+      </div>
     </div>
     <script type="module" src="/vanilla/main.js"></script>
   </body>
