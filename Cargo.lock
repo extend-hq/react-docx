@@ -583,9 +583,9 @@ checksum = "6c20b6793b5c2fa6553b250154b78d6d0db37e72700ae35fad9387a46f487c97"
 
 [[package]]
 name = "rust-docx"
-version = "0.2.20"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b1c7da419f39d27037c9dab937d84fefa9546bba90633ee17bde380d634eb4bd"
+checksum = "e9c7b57127c2ef9066a9fc1a5f0885cca269eab59676c52cdabb71f0c4812a21"
 dependencies = [
  "arc-swap",
  "base64",
@@ -598,21 +598,23 @@ dependencies = [
  "rayon",
  "regex",
  "roxmltree",
+ "rust-odf",
  "rust-office-art",
  "rust-office-charts",
  "serde",
  "serde_bytes",
  "serde_json",
  "sha2",
+ "simdutf8",
  "unicode-segmentation",
  "zlib-rs",
 ]
 
 [[package]]
 name = "rust-docx-wasm"
-version = "0.2.20"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "db56a33dc555f9067fac451f8cc25890da5a8d27d342ba5fbb4dd65454e067d6"
+checksum = "74fff1a54f9fadb8c74f1626ee89d007541b112cde3217e0954eec1e462b6e13"
 dependencies = [
  "js-sys",
  "rust-docx",
@@ -622,10 +624,23 @@ dependencies = [
 ]
 
 [[package]]
-name = "rust-office-art"
-version = "0.1.7"
+name = "rust-odf"
+version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f55bf1e96f137b22a742e3e3c8b505a1aeb797a3cef2f6270a388efbeaefb14d"
+checksum = "3866913b9e947fd71b995f8dc757231de2a30198ba09d7bab3302f8c50dd9f01"
+dependencies = [
+ "base64",
+ "memchr",
+ "miniz_oxide 0.8.9",
+ "quick-xml 0.37.5",
+ "zlib-rs",
+]
+
+[[package]]
+name = "rust-office-art"
+version = "0.1.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5326ba85e56257618204fbc2dee7d12cd7bca420ac500ce71136e33b63acb7cb"
 dependencies = [
  "base64",
  "image",
@@ -641,9 +656,9 @@ dependencies = [
 
 [[package]]
 name = "rust-office-charts"
-version = "0.1.9"
+version = "0.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6f3b597be4c06378454666d41fc36118fa30ada48a04b9e1c46f04248879322a"
+checksum = "d4b6d60db065ae6993ee69b162de6210a9d7b773b6ca9ad0966bb7588248788a"
 dependencies = [
  "base64",
  "kurbo",
@@ -763,6 +778,12 @@ name = "simd-adler32"
 version = "0.3.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a219298ac11a56ea9a6d2120044824d6f01aeb034955e7af7bc16858527deea"
+
+[[package]]
+name = "simdutf8"
+version = "0.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
 
 [[package]]
 name = "siphasher"

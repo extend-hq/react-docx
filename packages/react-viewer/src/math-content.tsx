@@ -24,6 +24,10 @@ const tags = new Set([
   "mtd",
   "mphantom",
 ]);
+// Wrappers drawn as a plain group. LibreOffice puts every formula in
+// <semantics> beside an <annotation> of its source text, which is dropped
+// like any other unlisted element, and styles parts of one with <mstyle>.
+const groupTags = new Set(["semantics", "mstyle"]);
 const cache = new Map<string, React.ReactNode>();
 
 export function mathContent(image: ImageRunNode): React.ReactNode {
@@ -36,9 +40,11 @@ export function mathContent(image: ImageRunNode): React.ReactNode {
   );
   function render(node: Node, key: number): React.ReactNode {
     if (node.nodeType === Node.TEXT_NODE) return node.textContent;
-    if (!(node instanceof Element) || !tags.has(node.localName)) return null;
+    if (!(node instanceof Element)) return null;
+    const group = groupTags.has(node.localName);
+    if (!group && !tags.has(node.localName)) return null;
     return React.createElement(
-      node.localName,
+      group ? "mrow" : node.localName,
       { key },
       Array.from(node.childNodes).map(render)
     );

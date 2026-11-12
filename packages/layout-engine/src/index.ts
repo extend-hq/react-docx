@@ -185,6 +185,29 @@ function formFieldDisplayText(field: FormFieldRunNode): string {
   }
 }
 
+/** Plain text of a text frame's nested story, one line per paragraph. */
+function contentFrameText(nodes: readonly (ParagraphNode | TableNode)[]): string {
+  return nodes
+    .map((node) =>
+      node.type === "paragraph"
+        ? node.children
+            .map((child) =>
+              child.type === "text"
+                ? child.text
+                : child.type === "form-field"
+                ? formFieldDisplayText(child)
+                : child.contentNodes
+                ? contentFrameText(child.contentNodes)
+                : ""
+            )
+            .join("")
+        : node.rows
+            .map((row) => row.cells.map((cell) => contentFrameText(cell.nodes)).join("\t"))
+            .join("\n")
+    )
+    .join("\n");
+}
+
 function paragraphToLayout(
   paragraph: ParagraphNode,
   idPrefix: string,
@@ -244,6 +267,19 @@ function paragraphToLayout(
         style: child.style,
         link: child.link,
         formField
+      };
+    }
+
+    // A text frame without a picture (OpenDocument) has only its nested
+    // story to show; this simple layout carries it as text.
+    if (!child.src && !child.sourceXml && child.contentNodes?.length) {
+      const firstParagraph = child.contentNodes.find((node) => node.type === "paragraph");
+      const firstText = firstParagraph?.children.find((run) => run.type === "text");
+      return {
+        kind: "text",
+        id: `${idPrefix}-run-${runIndex}`,
+        text: contentFrameText(child.contentNodes),
+        style: firstText?.type === "text" ? firstText.style : undefined
       };
     }
 

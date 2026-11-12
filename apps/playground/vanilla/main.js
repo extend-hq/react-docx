@@ -160,7 +160,9 @@ renderZoom();
 
 function render(controller) {
   const ready = controller.hasDocument && !controller.isLoading && !controller.error;
-  const readOnly = readOnlyInput.checked;
+  // OpenDocument files open view-only whatever the toggle says.
+  const viewOnlyReason = controller.viewOnlyReason;
+  const readOnly = readOnlyInput.checked || Boolean(viewOnlyReason);
   const editable = ready && !readOnly && !controller.isImporting;
   const runStyle = controller.selectedRunStyle;
   const align = controller.selectedParagraph?.style?.align;
@@ -168,6 +170,8 @@ function render(controller) {
   byId("file-name").textContent = controller.fileName || "Document1";
   document.title = `${controller.fileName || "Document1"} · Vanilla DOCX Playground`;
   byId("read-only-badge").hidden = !readOnly;
+  byId("read-only-badge").textContent = viewOnlyReason ? "View-only" : "Read-only";
+  byId("read-only-badge").title = viewOnlyReason ?? "";
   byId("read-only-status").hidden = !readOnly;
   byId("page-count").textContent = `Page ${Math.max(1, controller.currentPage || 1)} of ${Math.max(1, controller.totalPages || 1)}`;
   scheduleWordCount(controller.model?.nodes);
@@ -178,7 +182,8 @@ function render(controller) {
   byId("open-icon").innerHTML = loading ? '<span class="spinner" style="width:16px;height:16px"></span>' : icon("folder-open");
   byId("open-label").textContent = loading ? "Opening…" : "Open";
   byId("open-file").disabled = loading;
-  byId("export").disabled = !ready;
+  byId("export").disabled = !ready || Boolean(viewOnlyReason);
+  byId("export").title = viewOnlyReason ?? "";
 
   byId("undo").disabled = !editable || !controller.canUndo;
   byId("redo").disabled = !editable || !controller.canRedo;

@@ -42,7 +42,11 @@ function runtimeNotices(directory) {
     collect("", false);
     if (["rust-office-art", "rust-office-charts"].includes(pkg.name)) collect("src", true);
     if (pkg.name === "rust-office-art") paths.add("src/geometry_data/SOURCE.md");
-    if (!paths.size) throw new Error(`Missing license text for ${pkg.name}.`);
+    if (!paths.size) {
+      // Some crates (base64-simd, vsimd) publish no license file; name the declared licence instead of failing the build.
+      if (!pkg.license || !pkg.repository) throw new Error(`Missing license text for ${pkg.name}.`);
+      return `${pkg.name} ${pkg.version}\n${pkg.license}\n${pkg.repository}\n\nThe published crate contains no license file. It declares the ${pkg.license} license; the text is in the repository above.`;
+    }
     const text = [...paths].sort().map(name => readFileSync(path.join(directory, name), "utf8").replace(/\r\n/g, "\n").replace(/[ \t]+$/gm, "")).join("\n\n");
     return `${pkg.name} ${pkg.version}\n${pkg.license ?? ""}\n${pkg.repository ?? ""}\n\n${text}`;
   });
@@ -58,7 +62,9 @@ export function sourceInfo(workspace, binary) {
       else files.push(name);
     }
   };
-  for (const crate of ["rust-docx", "rust-docx-wasm", "rust-office-art", "rust-office-charts"]) {
+  // rust-odf (OpenDocument input) exists from rust-docx 0.3.0 on.
+  const hasOdf = existsSync(path.join(workspace, "crates/rust-odf/Cargo.toml"));
+  for (const crate of ["rust-docx", "rust-docx-wasm", "rust-office-art", "rust-office-charts", ...(hasOdf ? ["rust-odf"] : [])]) {
     files.push(`crates/${crate}/Cargo.toml`);
     walk(`crates/${crate}/src`);
   }
@@ -72,6 +78,7 @@ export function sourceInfo(workspace, binary) {
   } catch {}
   return { source: "workspace", rustDocxVersion: version("rust-docx"), rustDocxWasmVersion: version("rust-docx-wasm"), ...gitInfo,
     rustOfficeArtVersion: version("rust-office-art"), rustOfficeChartsVersion: version("rust-office-charts"),
+    ...(hasOdf ? { rustOdfVersion: version("rust-odf") } : {}),
     rustSourceSha256: source.digest("hex"), ...(binary ? { wasmSha256: hash(readFileSync(binary)) } : {}),
     rustc: execFileSync("rustc", ["--version"], { encoding: "utf8" }).trim() };
 }

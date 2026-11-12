@@ -1012,6 +1012,14 @@ THE SOFTWARE.
 
 --------------------
 
+base64-simd 0.8.0
+MIT
+https://github.com/Nugine/simd
+
+The published crate contains no license file. It declares the MIT license; the text is in the repository above.
+
+--------------------
+
 bitflags 2.13.2
 MIT OR Apache-2.0
 https://github.com/bitflags/bitflags
@@ -7632,6 +7640,34 @@ DEALINGS IN THE SOFTWARE.
 
 --------------------
 
+outref 0.5.2
+MIT
+https://github.com/Nugine/outref
+
+MIT License
+
+Copyright (c) 2022 Nugine
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+--------------------
+
 pin-project-lite 0.2.17
 Apache-2.0 OR MIT
 https://github.com/taiki-e/pin-project-lite
@@ -10202,7 +10238,7 @@ SOFTWARE.
 
 --------------------
 
-rust-docx 0.2.20
+rust-docx 0.3.0
 MIT
 https://github.com/extend-hq/rust-office
 
@@ -10231,7 +10267,7 @@ SOFTWARE.
 
 --------------------
 
-rust-docx-wasm 0.2.20
+rust-docx-wasm 0.3.0
 MIT
 https://github.com/extend-hq/rust-office
 
@@ -10260,7 +10296,36 @@ SOFTWARE.
 
 --------------------
 
-rust-office-art 0.1.7
+rust-odf 0.1.0
+MIT
+https://github.com/extend-hq/rust-office
+
+MIT License
+
+Copyright (c) 2026 CrowdView Inc, dba Extend
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+
+--------------------
+
+rust-office-art 0.1.8
 MIT AND Apache-2.0 AND OFL-1.1
 https://github.com/extend-hq/rust-office
 
@@ -11036,7 +11101,7 @@ The preset guide data is evaluated by the same bounded geometry evaluator as ord
 
 --------------------
 
-rust-office-charts 0.1.9
+rust-office-charts 0.1.10
 MIT AND OFL-1.1
 https://github.com/extend-hq/rust-office
 
@@ -16258,6 +16323,14 @@ COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
 IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
+
+--------------------
+
+vsimd 0.8.0
+MIT
+https://github.com/Nugine/simd
+
+The published crate contains no license file. It declares the MIT license; the text is in the repository above.
 
 --------------------
 

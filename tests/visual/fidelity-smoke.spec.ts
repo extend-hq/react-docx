@@ -1,6 +1,14 @@
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
 import { expect, test, type Locator } from "@playwright/test";
 
 import { createZip } from "../unit/helpers/zip";
+
+const OPEN_DOCUMENT_FIXTURES = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "../fixtures/opendocument"
+);
 
 const CONTENT_TYPES_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
@@ -350,6 +358,47 @@ test("loads a generated DOCX and settles on its explicit page geometry", async (
   await expect.poll(() => renderedPages.count()).toBe(2);
   await expect(renderedPages.nth(0)).toContainText("Fidelity smoke page one");
   await expect(renderedPages.nth(1)).toContainText("Fidelity smoke page two");
+});
+
+test("opens OpenDocument text view-only with its frames, images and page fields", async ({
+  page,
+}) => {
+  await page.goto("/");
+
+  await page
+    .locator('input[type="file"][accept*=".odt"]')
+    .setInputFiles(path.join(OPEN_DOCUMENT_FIXTURES, "frames-and-fields.fodt"));
+
+  const surface = page.locator("[data-docx-page-surface='true']").first();
+  await expect(surface.getByText("Frames and fields")).toBeVisible({ timeout: 20_000 });
+
+  // Text frames are drawn from their nested content at the frame's size.
+  const frames = surface.locator("[data-docx-content-frame]");
+  await expect(frames).toHaveCount(2);
+  await expect(frames.nth(0)).toContainText("Figure 1: inline frame caption");
+  await expect(frames.nth(1)).toContainText("Floating frame text");
+  await expect(frames.nth(1).locator("table")).toContainText("Cell B");
+  const inlineFrame = (await frames.nth(0).boundingBox())!;
+  expect(inlineFrame.width).toBeCloseTo(226.77, 0);
+  expect(inlineFrame.height).toBeCloseTo(113.39, 0);
+
+  // The picture inside the frame is decoded from the image node's own bytes.
+  const picture = frames.nth(0).locator("img");
+  await expect(picture).toHaveAttribute("src", /^data:image\/png;base64,/);
+  await expect.poll(() => picture.evaluate((image: HTMLImageElement) => image.naturalWidth)).toBe(1);
+  await expect(surface).not.toContainText("Missing image");
+
+  // The footer shows the live page number, not the saved "Page 7 of 9".
+  await expect(surface).toContainText("Page 1 of 1");
+  await expect(surface).not.toContainText("of 9");
+
+  // View-only: no download, no editing surface, typing changes nothing.
+  await expect(page.getByRole("button", { name: "Download" })).toBeDisabled();
+  await expect(surface.locator("[contenteditable='true']")).toHaveCount(0);
+  await surface.getByText("Last paragraph.").click();
+  await page.keyboard.type("XYZ");
+  await expect(surface).not.toContainText("XYZ");
+  await expect(surface).toContainText("Last paragraph.");
 });
 
 test("collapses selection after deleting selected text", async ({

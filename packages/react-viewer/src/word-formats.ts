@@ -1,4 +1,6 @@
 const wordExtension = /\.(?:doc|dot)[xm]?$/i;
+// OpenDocument text, its template, master and web variants, and flat XML.
+const openDocumentTextExtension = /\.(?:odt|ott|odm|otm|oth|fodt)$/i;
 const documentFormat = {
   extension: "docx",
   mime: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -12,6 +14,22 @@ const variants = [
 export function isWordFileName(name: string): boolean {
   return wordExtension.test(name);
 }
+
+export function isOpenDocumentTextFileName(name: string): boolean {
+  return openDocumentTextExtension.test(name);
+}
+
+/** File names the viewer opens. The parser decides the format from the bytes. */
+export function isSupportedDocumentFileName(name: string): boolean {
+  return isWordFileName(name) || isOpenDocumentTextFileName(name);
+}
+
+export const SUPPORTED_DOCUMENT_FORMATS_MESSAGE =
+  "Supported formats are Word (.doc, .dot, .docx, .dotx, .docm, .dotm) and OpenDocument text (.odt, .ott, .odm, .otm, .oth, .fodt).";
+
+/** Shown wherever editing or export is refused for an OpenDocument file. */
+export const OPEN_DOCUMENT_VIEW_ONLY_REASON =
+  "OpenDocument files are view-only: they cannot be edited or saved as DOCX.";
 
 export function wordDownloadFormat(contentTypes: string | undefined): typeof documentFormat {
   if (!contentTypes) return documentFormat;

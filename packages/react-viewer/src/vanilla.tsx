@@ -1,4 +1,4 @@
-import { isWordFileName } from "./word-formats";
+import { isSupportedDocumentFileName } from "./word-formats";
 import * as React from "react";
 import { createRoot } from "react-dom/client";
 import type { Properties as CssProperties } from "csstype";
@@ -116,7 +116,7 @@ function fileNameForSource(options: DocxVanillaViewerOptions, owner: Document): 
   if (options.src) {
     try {
       const name = decodeURIComponent(new URL(options.src, owner.baseURI).pathname.split("/").pop() ?? "");
-      if (isWordFileName(name)) return name;
+      if (isSupportedDocumentFileName(name)) return name;
     } catch {
       return "document.docx";
     }

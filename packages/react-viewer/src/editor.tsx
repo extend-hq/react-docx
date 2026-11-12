@@ -3,7 +3,13 @@ import { textEffectCss, textEffectSvgAttributes } from "./text-effects";
 import { reviewRevisionColor } from "./review-presentation";
 import { documentReview, documentReviewReady, initializeDocumentReview, paragraphReview, tableRevisions, reviewChangeKind, reviewChangeText, reviewDisplayModel, reviewParagraphCollapsed } from "./review-model";
 import { safeHyperlink } from "./safe-hyperlink";
-import { isWordFileName, wordDownloadFormat, wordDownloadName } from "./word-formats";
+import {
+  OPEN_DOCUMENT_VIEW_ONLY_REASON,
+  SUPPORTED_DOCUMENT_FORMATS_MESSAGE,
+  isSupportedDocumentFileName,
+  wordDownloadFormat,
+  wordDownloadName,
+} from "./word-formats";
 import { prepareImagePaintBoundsForExport } from "./image-paint-export";
 import { PaintBoundsImage } from "./paint-bounds-image";
 import { VmlCompositeStorySurface } from "./vml-composite-story-surface";
@@ -46,6 +52,8 @@ import {
   cloneDocModel,
   cloneFormFieldSourcePreview,
   invalidateFormFieldSource,
+  isOpenDocumentBlockId,
+  isOpenDocumentModel,
   resolveFormFieldSourcePreview,
   cloneParagraphMarkFormatting,
   collectDuplicateDocModelBlockIds,
@@ -4427,6 +4435,14 @@ export interface DocxEditorController {
   status: string;
   importError?: Error;
   isImporting: boolean;
+  /**
+   * Set when the loaded document can only be viewed, with the reason to show
+   * the user. OpenDocument text (`.odt` and its variants) has no Word package
+   * to save into, so `DocxEditorViewer` renders it read-only whatever its
+   * `mode`, edits leave the model unchanged, `exportDocx()` reports this
+   * reason in `status` and `getDocxBytes()` rejects with it.
+   */
+  viewOnlyReason?: string;
   documentTheme: DocxDocumentTheme;
   selection: DocxEditorSelection;
   activeTextRange?: DocxTextRange;
@@ -10336,6 +10352,18 @@ function paragraphReferencedNoteIds(
   paragraphNoteReferences.set(paragraph, { ...cached, [noteType]: references });
   const sourceXml = paragraph.sourceXml ?? "";
   if (!sourceXml) {
+    // A paragraph without Word markup (OpenDocument) states its note
+    // references on its runs.
+    for (const child of paragraph.children) {
+      const reference = child.type === "text" ? child.noteReference : undefined;
+      if (
+        reference?.kind === noteType &&
+        Number.isFinite(reference.id) &&
+        reference.id >= 0
+      ) {
+        references.push(Math.round(reference.id));
+      }
+    }
     return references;
   }
 
@@ -19284,7 +19312,10 @@ function paragraphBlockStyle(
     : undefined;
   const emptyMarkCss = emptyMarkStyle ? runStyleToCss(emptyMarkStyle, undefined, undefined, undefined, typography) : undefined;
   const headingLevel = paragraph.style?.headingLevel;
-  const applyWordLikeHeadingFallback = !paragraph.sourceXml;
+  // Headings typed in the editor take Word's default look. OpenDocument
+  // paragraphs have no Word markup either, but their formatting is resolved.
+  const applyWordLikeHeadingFallback =
+    !paragraph.sourceXml && !isOpenDocumentBlockId(paragraph.blockId);
   const hasSoftLineBreak = paragraphText(paragraph).includes("\n");
   const headingStyle =
     headingLevel && headingLevel >= 1 && headingLevel <= 9
@@ -20700,6 +20731,109 @@ function scaledVmlText(text: string, style: React.CSSProperties, scale: number, 
       letterSpacing: spacing ? `${Number(spacing[1]) / scale}${spacing[2]}` : style.letterSpacing,
       transform: `scaleX(${scale})`, transformOrigin: "left center" }}
   >{text}</span></span>;
+}
+
+/**
+ * A text frame the parser supplies no picture for, as in OpenDocument text:
+ * it is drawn from its nested story. Word text boxes arrive with a generated
+ * picture and their source markup and keep their own rendering.
+ */
+function imageIsContentFrame(image: ImageRunNode): boolean {
+  return (
+    !image.src &&
+    !image.sourceXml &&
+    !image.mathMl &&
+    Boolean(image.contentNodes?.length)
+  );
+}
+
+/** The nested paragraphs and tables of a content frame, drawn as ordinary blocks. */
+function renderContentFrameNodes(
+  image: ImageRunNode,
+  keyPrefix: string,
+  documentTheme: DocxDocumentTheme,
+  numberingDefinitions: NumberingDefinitionSet | undefined,
+  widthPx: number | undefined,
+  pageNumber?: number,
+  totalPages?: number,
+  runRenderOptions?: ParagraphRunRenderOptions,
+  typography?: DocxTypographyOptions
+): React.ReactNode {
+  return image.contentNodes?.map((node, index) =>
+    renderHeaderNode(
+      node,
+      `${keyPrefix}-content-${index}`,
+      documentTheme,
+      numberingDefinitions,
+      undefined,
+      widthPx,
+      undefined,
+      undefined,
+      undefined,
+      pageNumber,
+      totalPages,
+      runRenderOptions,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      widthPx,
+      0,
+      typography
+    )
+  );
+}
+
+/** Box of a content frame: the frame's size, with content allowed to run past it. */
+function contentFrameBoxStyle(
+  widthPx: number | undefined,
+  heightPx: number | undefined
+): React.CSSProperties {
+  return {
+    display: "inline-block",
+    position: "relative",
+    boxSizing: "border-box",
+    width: widthPx ? `${widthPx}px` : undefined,
+    height: heightPx ? `${heightPx}px` : undefined,
+    overflow: "visible",
+    verticalAlign: "top",
+    textAlign: "left",
+    textIndent: 0,
+    whiteSpace: "normal",
+  };
+}
+
+/** A content frame at its own size, for places that draw an image run directly. */
+function renderContentFrameBox(
+  image: ImageRunNode,
+  key: string,
+  documentTheme: DocxDocumentTheme,
+  numberingDefinitions: NumberingDefinitionSet | undefined,
+  typography?: DocxTypographyOptions,
+  display: "inline-block" | "block" = "inline-block"
+): React.ReactElement {
+  return (
+    <span
+      key={key}
+      contentEditable={false}
+      data-docx-source-id={image.blockId}
+      data-docx-content-frame="true"
+      style={{ ...contentFrameBoxStyle(image.widthPx, image.heightPx), display }}
+    >
+      {renderContentFrameNodes(
+        image,
+        key,
+        documentTheme,
+        numberingDefinitions,
+        image.widthPx,
+        undefined,
+        undefined,
+        { numberingDefinitions },
+        typography
+      )}
+    </span>
+  );
 }
 
 function syntheticTextBoxForegroundZIndex(image: ImageRunNode): number {
@@ -22614,6 +22748,46 @@ function renderParagraphRuns(
           options?.resolveStyleRefFieldValue,
           options?.preserveUneditedVmlComposite === true
         ) ?? resolveRenderableImageSource(child);
+
+      if (imageIsContentFrame(child)) {
+        target.push(
+          <span
+            key={key}
+            ref={registerSectionFloatingOrigin}
+            data-docx-source-id={child.blockId ?? (paragraph.blockId ? `${paragraph.blockId}/child/${childIndex}` : undefined)}
+            data-docx-content-frame="true"
+            data-docx-header-footer-overlay={isHeaderFooterOverlay || undefined}
+            style={{
+              ...contentFrameBoxStyle(widthPx, heightPx),
+              ...trackedImageStyle,
+              ...floatingStyleWithMovePreview,
+            }}
+          >
+            {renderContentFrameNodes(
+              child,
+              key,
+              documentTheme,
+              options?.numberingDefinitions,
+              widthPx,
+              pageNumber,
+              totalPages,
+              {
+                numberingDefinitions: options?.numberingDefinitions,
+                pageNumberFormat: options?.pageNumberFormat,
+                resolveStyleRefFieldValue: options?.resolveStyleRefFieldValue,
+                imageFilterSuffix: options?.imageFilterSuffix,
+                defaultTabStopTwips: options?.defaultTabStopTwips,
+                headerFooterRegion: options?.headerFooterRegion,
+              },
+              typography
+            )}
+          </span>
+        );
+        if (!isWrappedFloatingImage && !isAbsoluteFloatingImage) {
+          trackInlineAdvance(widthPx ?? 0);
+        }
+        return;
+      }
 
       if (!child.src) {
         target.push(
@@ -30734,6 +30908,15 @@ export function useDocxEditor(
       if (!patch) {
         return false;
       }
+      // A view-only document keeps its model: every edit goes through here.
+      if (
+        patch.model &&
+        patch.model !== currentModel &&
+        isOpenDocumentModel(currentModel)
+      ) {
+        setStatus(OPEN_DOCUMENT_VIEW_ONLY_REASON);
+        return false;
+      }
 
       const hasExplicitRangePatch = Object.prototype.hasOwnProperty.call(
         patch,
@@ -31133,10 +31316,10 @@ export function useDocxEditor(
       activeImportAbortControllerRef.current = undefined;
       embeddedFontLoadNonceRef.current += 1;
 
-      if (!isWordFileName(file.name)) {
+      if (!isSupportedDocumentFileName(file.name)) {
         replaceDocumentWithImportError(
           file.name,
-          new Error("Supported Word formats are .doc, .dot, .docx, .dotx, .docm, and .dotm.")
+          new Error(SUPPORTED_DOCUMENT_FORMATS_MESSAGE)
         );
         return;
       }
@@ -31205,7 +31388,11 @@ export function useDocxEditor(
         setPendingRunStyle(undefined);
         setSelectedFormFieldLocation(undefined);
         setImportError(undefined);
-        setStatus(`Loaded ${file.name}`);
+        setStatus(
+          isOpenDocumentModel(nextModel)
+            ? `Loaded ${file.name} (view-only)`
+            : `Loaded ${file.name}`
+        );
         markDocxImportPerformance(stateEndMark);
         measureDocxImportPerformance(
           `${traceName}:state-dispatch`,
@@ -31263,6 +31450,10 @@ export function useDocxEditor(
 
   const getDocxBytes = React.useCallback(async (): Promise<ArrayBuffer> => {
     const sourceModel = canonicalEditorStateRef.current.model;
+    if (isOpenDocumentModel(sourceModel)) {
+      setStatus(OPEN_DOCUMENT_VIEW_ONLY_REASON);
+      throw new Error(OPEN_DOCUMENT_VIEW_ONLY_REASON);
+    }
     let transformedModel: DocModel;
     try {
       transformedModel = pendingExportModelTransformerRef.current
@@ -31281,6 +31472,10 @@ export function useDocxEditor(
   }, [basePackage, dispatchEditorTransaction]);
 
   const exportDocx = React.useCallback(async (): Promise<void> => {
+    if (isOpenDocumentModel(canonicalEditorStateRef.current.model)) {
+      setStatus(OPEN_DOCUMENT_VIEW_ONLY_REASON);
+      return;
+    }
     const output = await getDocxBytes();
     const format = wordDownloadFormat(basePackage?.parts.get("[Content_Types].xml")?.content);
     const blob = new Blob([output], { type: format.mime });
@@ -35313,6 +35508,9 @@ export function useDocxEditor(
     status,
     importError,
     isImporting,
+    viewOnlyReason: isOpenDocumentModel(model)
+      ? OPEN_DOCUMENT_VIEW_ONLY_REASON
+      : undefined,
     documentTheme,
     trackedChanges,
     showTrackedChanges,
@@ -35742,7 +35940,8 @@ function docxThumbnailFallbackHeadingRunStyle(
   paragraph: ParagraphNode
 ): TextRunNode["style"] | undefined {
   const headingLevel = paragraph.style?.headingLevel;
-  return headingLevel && headingLevel >= 1 && headingLevel <= 9
+  return headingLevel && headingLevel >= 1 && headingLevel <= 9 &&
+    !isOpenDocumentBlockId(paragraph.blockId)
     ? DEFAULT_WORD_HEADING_RUN_STYLES[headingLevel]
     : undefined;
 }
@@ -38958,7 +39157,10 @@ export function DocxEditorViewer({
   // Comments share the tracked-change gutter: cards for both annotation kinds
   // stack in the same margin column.
   const showTrackedChangeGutter = (trackedChangesEnabled && revisionDisplay === "balloons") || commentsEnabled;
-  const isReadOnly = mode === "read-only" || trackedChangesEnabled;
+  const isReadOnly =
+    mode === "read-only" ||
+    trackedChangesEnabled ||
+    Boolean(editor.viewOnlyReason);
   const isNightReaderMode = isReadOnly && editor.documentTheme === "dark";
   const documentContentTheme: DocxDocumentTheme = isNightReaderMode
     ? "light"
@@ -54130,6 +54332,15 @@ export function DocxEditorViewer({
                 undefined,
                 isReadOnly
               ) ?? resolveRenderableImageSource(run.image);
+            if (!renderableImageSrc && imageIsContentFrame(run.image)) {
+              return renderContentFrameBox(
+                run.image,
+                `${keyPrefix}-fragment-frame-${lineIndex}-${run.key}-${overlapStart}`,
+                documentContentTheme,
+                editor.model.metadata.numberingDefinitions,
+                typography
+              );
+            }
             if (!renderableImageSrc) {
               return undefined;
             }
@@ -55956,6 +56167,15 @@ export function DocxEditorViewer({
                     undefined,
                     isReadOnly
                   ) ?? resolveRenderableImageSource(run.image);
+                if (!renderableImageSrc && imageIsContentFrame(run.image)) {
+                  return renderContentFrameBox(
+                    run.image,
+                    `${keyPrefix}-dual-line-frame-${lineIndex}-${run.key}-${overlapStart}`,
+                    documentContentTheme,
+                    editor.model.metadata.numberingDefinitions,
+                    typography
+                  );
+                }
                 if (!renderableImageSrc) {
                   return undefined;
                 }
@@ -56306,6 +56526,15 @@ export function DocxEditorViewer({
                     heightPx
                   )}
                 </span>
+              ) : imageIsContentFrame(manualImage) ? (
+                renderContentFrameBox(
+                  manualImage,
+                  `${keyPrefix}-manual-frame-${manualImageKey}`,
+                  documentContentTheme,
+                  editor.model.metadata.numberingDefinitions,
+                  typography,
+                  "block"
+                )
               ) : null}
 
               {!isReadOnly && isSelectedImage ? (
@@ -56544,6 +56773,15 @@ export function DocxEditorViewer({
                     heightPx
                   )}
                 </span>
+              ) : imageIsContentFrame(manualImage) ? (
+                renderContentFrameBox(
+                  manualImage,
+                  `${keyPrefix}-manual-frame-${manualImageKey}`,
+                  documentContentTheme,
+                  editor.model.metadata.numberingDefinitions,
+                  typography,
+                  "block"
+                )
               ) : null}
 
               {!isReadOnly && isSelectedImage ? (
@@ -56805,6 +57043,15 @@ export function DocxEditorViewer({
                     heightPx
                   )}
                 </span>
+              ) : imageIsContentFrame(manualImage) ? (
+                renderContentFrameBox(
+                  manualImage,
+                  `${keyPrefix}-manual-frame-${manualImageKey}`,
+                  documentContentTheme,
+                  editor.model.metadata.numberingDefinitions,
+                  typography,
+                  "block"
+                )
               ) : null}
 
               {!isReadOnly && isSelectedImage ? (
@@ -57168,26 +57415,33 @@ export function DocxEditorViewer({
               undefined,
               isReadOnly
             ) ?? resolveRenderableImageSource(child);
-          const isLiveSyntheticTextBox =
+          // A frame without a generated picture (OpenDocument) always shows
+          // its nested story through the structured text box path.
+          const isContentFrame = imageIsContentFrame(child);
+          const isLiveSyntheticTextBox = isContentFrame || (
             !coherentVmlComposite && child.syntheticTextBox &&
             !syntheticTextBoxContainsPictureLayer(child, false) &&
-            !(isReadOnly && (coherentVmlComposite || hasUneditedVmlPictureComposite(child)));
-          const hasStructuredTextBoxContent =
+            !(isReadOnly && (coherentVmlComposite || hasUneditedVmlPictureComposite(child))));
+          const hasStructuredTextBoxContent = isContentFrame || (
             child.textBoxText === undefined &&
             child.contentNodes?.some(
               (node) => node.type === "table" ||
                 (node.type === "paragraph" &&
                   node.children.some((run) => run.type === "image"))
-            );
+            ));
           const syntheticTextBoxParagraphs = isLiveSyntheticTextBox
             ? resolveSyntheticTextBoxParagraphs(child)
             : undefined;
           const syntheticTextBoxText = isLiveSyntheticTextBox
             ? syntheticTextBoxTextValue(child) ?? ""
             : "";
-          const syntheticTextBoxFrame = isLiveSyntheticTextBox
+          const syntheticTextBoxFrame = isLiveSyntheticTextBox && !isContentFrame
             ? syntheticTextBoxFrameStyleFromRunXml(child.sourceXml ?? "")
             : undefined;
+          // Word's default text box insets; a content frame states none.
+          const defaultTextBoxInsetPx = isContentFrame
+            ? { vertical: 0, horizontal: 0 }
+            : { vertical: 3, horizontal: 6 };
           const showsUnsupportedFallback =
             imageUsesPlaceholderFallback(child) ||
             (child.src && !renderableImageSrc);
@@ -57432,6 +57686,7 @@ export function DocxEditorViewer({
               ) : isLiveSyntheticTextBox ? (
                 <TextBoxContentSurface
                   key={`${editor.documentLoadNonce}:${child.blockId ?? runKey}`}
+                  data-docx-content-frame={isContentFrame || undefined}
                   resetRevision={editor.historyRevision}
                   value={syntheticTextBoxParagraphs?.length
                     ? syntheticTextBoxParagraphs.map((paragraph) => paragraph.segments.map((segment) => segment.text).join("")).join("\n")
@@ -57482,11 +57737,11 @@ export function DocxEditorViewer({
                           border: `${syntheticTextBoxFrame.borderWidthPx}px solid ${syntheticTextBoxFrame.borderColor}`,
                         }
                       : { border: "none" }),
-                    paddingTop: syntheticTextBoxFrame?.paddingTopPx ?? 3,
-                    paddingRight: syntheticTextBoxFrame?.paddingRightPx ?? 6,
-                    paddingBottom: syntheticTextBoxFrame?.paddingBottomPx ?? 3,
-                    paddingLeft: syntheticTextBoxFrame?.paddingLeftPx ?? 6,
-                    whiteSpace: "pre-wrap",
+                    paddingTop: syntheticTextBoxFrame?.paddingTopPx ?? defaultTextBoxInsetPx.vertical,
+                    paddingRight: syntheticTextBoxFrame?.paddingRightPx ?? defaultTextBoxInsetPx.horizontal,
+                    paddingBottom: syntheticTextBoxFrame?.paddingBottomPx ?? defaultTextBoxInsetPx.vertical,
+                    paddingLeft: syntheticTextBoxFrame?.paddingLeftPx ?? defaultTextBoxInsetPx.horizontal,
+                    whiteSpace: isContentFrame ? "normal" : "pre-wrap",
                     textIndent: 0,
                     cursor: isReadOnly ? "default" : "text",
                     outline: "none",
@@ -58512,7 +58767,7 @@ export function DocxEditorViewer({
   const extractDroppedDocxFile = React.useCallback(
     (dataTransfer: DataTransfer | null): File | undefined => {
       return Array.from(dataTransfer?.files ?? []).find((candidate) =>
-        isWordFileName(candidate.name)
+        isSupportedDocumentFileName(candidate.name)
       );
     },
     []

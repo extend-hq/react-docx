@@ -1,6 +1,6 @@
 # @extend-ai/react-docx
 
-JavaScript and React viewing and editing components for rendering `.docx` files in a browser.
+JavaScript and React viewing and editing components for rendering `.docx` files in a browser. Legacy Word files open as well, and OpenDocument text (`.odt`) opens view-only; see [Supported formats](#supported-formats).
 
 `@extend-ai/react-docx` gives you:
 
@@ -75,6 +75,41 @@ view-only use or `mode="edit"` for editing.
 
 It also re-exports lower-level document/model/layout/serializer APIs, so you can work below the UI layer when needed.
 
+## Supported formats
+
+The parser decides the format from the file's bytes, not its name. The file name is only checked against the extensions below when a file is opened through `editor.importDocxFile` or dropped on the viewer.
+
+| Format | Extensions | View | Edit and export |
+| --- | --- | --- | --- |
+| Word (Office Open XML) | `.docx`, `.dotx`, `.docm`, `.dotm` | Yes | Yes |
+| Legacy Word | `.doc`, `.dot` | Yes | Yes, saved as DOCX |
+| OpenDocument text | `.odt`, `.ott` (template), `.odm` (master), `.otm` (master template), `.oth` (web), `.fodt` (flat XML) | Yes | No |
+
+Other OpenDocument types (spreadsheets, presentations, drawings), encrypted OpenDocument files and the older OpenOffice.org 1.x formats (`.sxw`) are rejected with an import error.
+
+### OpenDocument text is view-only
+
+An OpenDocument file is read straight into the document model. There is no Word package behind it, so it cannot be saved as DOCX or written back as OpenDocument:
+
+- `editor.viewOnlyReason` holds a message to show the user; it is `undefined` for Word files. Use it to disable your own save and edit controls.
+- `DocxEditorViewer` renders the document read-only even with `mode="edit"`, and editing commands leave the model unchanged.
+- `editor.exportDocx()` does nothing except set `editor.status` to that message, and `editor.getDocxBytes()` rejects with it.
+- `parseDocxForViewer` returns the model with an empty `package`. `parseDocx`, which returns a Word package, rejects OpenDocument input; use `buildDocModelFromBytes` or `parseDocxForViewer`.
+- `isOpenDocumentModel(model)` tells whether a model came from an OpenDocument file.
+
+Displayed: paragraphs and headings with their resolved formatting, hyperlinks, tabs and line breaks, bullet and numbered lists, tables with merged cells, borders and shading, inline and anchored images, text frames (drawn from their own paragraphs, tables and images at the frame's size), footnotes and endnotes, comments with their anchors, page size and margins, headers and footers including first-page and even-page variants, live page number and page count fields, and formulas (from their MathML).
+
+Not displayed:
+
+- Drawing shapes without text. A shape with text shows its text without the outline.
+- Text frame backgrounds, borders and padding, and text that overflows a frame is not clipped.
+- Embedded objects other than formulas (charts, OLE): the saved preview image is shown, or nothing when the file has none.
+- Tracked changes are shown as accepted, and hidden text is left out.
+- Bookmarks, image cropping, line spacing given as extra leading, multi-column sections and table default cell styles.
+- Fonts embedded in the file; the viewer uses installed or caller-provided fonts.
+
+The parser lists what it skipped in `model.metadata.warnings`. Its side of the import is described in [OpenDocument input](https://github.com/extend-hq/rust-office/blob/main/docs/opendocument.md).
+
 ## Quick Start
 
 ### Vanilla JavaScript
@@ -134,7 +169,7 @@ document.getElementById("file").addEventListener("change", (event) => {
 });
 ```
 
-`file` accepts a `File`, `Blob`, or `ArrayBuffer`. A `File` uses its own name by default; a `Blob` or `ArrayBuffer` uses `document.docx` unless `fileName` is supplied. An explicit `fileName` must end in `.docx` or `.doc`.
+`file` accepts a `File`, `Blob`, or `ArrayBuffer`. A `File` uses its own name by default; a `Blob` or `ArrayBuffer` uses `document.docx` unless `fileName` is supplied. An explicit `fileName` must end in one of the [supported extensions](#supported-formats), such as `.docx`, `.doc` or `.odt`.
 
 #### Read state and control the viewer
 
@@ -523,7 +558,7 @@ const output = serializeDocx(model, pkg);
 
 ## Viewer Notes
 
-- `DocxEditorViewer` supports `mode="edit"` and `mode="read-only"`.
+- `DocxEditorViewer` supports `mode="edit"` and `mode="read-only"`. A view-only document (OpenDocument text) is rendered read-only in either mode.
 - `pageBackgroundColor` controls the page surface color.
 - `pageGapBackgroundColor` controls the area between pages and defaults to transparent.
 - In read-only dark document mode, the viewer uses an inversion-based night reader path so document content inverts cleanly while images keep their hues.

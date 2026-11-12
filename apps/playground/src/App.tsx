@@ -155,6 +155,11 @@ import { cn } from "@/lib/utils";
 import { createWelcomeDocumentModel, WELCOME_FILE_NAME } from "@/lib/welcome-document";
 
 const RIBBON_TABS = ["Home", "Insert", "Layout", "Review", "View", "Developer"] as const;
+// Word files, and OpenDocument text (opened view-only).
+const SUPPORTED_DOCUMENT_ACCEPT =
+  ".docx,.doc,.dot,.dotx,.docm,.dotm,.odt,.ott,.odm,.otm,.oth,.fodt";
+const SUPPORTED_DOCUMENT_FILE_NAME =
+  /\.(?:(?:doc|dot)[xm]?|odt|ott|odm|otm|oth|fodt)$/i;
 type RibbonTab = (typeof RIBBON_TABS)[number];
 
 const REVISION_DISPLAY_ITEMS = [
@@ -2037,7 +2042,10 @@ function PlaygroundApp(): React.JSX.Element {
   const [zoomPercent, setZoomPercent] = React.useState<ViewerZoomLevel>(
     () => pageLayout.viewportDefaults.zoomPercent
   );
-  const [isReadOnly, setIsReadOnly] = React.useState(false);
+  const [readOnlyRequested, setIsReadOnly] = React.useState(false);
+  // OpenDocument files open view-only whatever the toggle says.
+  const viewOnlyReason = editor.viewOnlyReason;
+  const isReadOnly = readOnlyRequested || Boolean(viewOnlyReason);
   const [isImportDragOver, setIsImportDragOver] = React.useState(false);
   const [isParagraphStyleMenuOpen, setIsParagraphStyleMenuOpen] =
     React.useState(false);
@@ -2090,7 +2098,7 @@ function PlaygroundApp(): React.JSX.Element {
   const extractDroppedDocxFile = React.useCallback(
     (dataTransfer: DataTransfer | null): File | undefined => {
       return Array.from(dataTransfer?.files ?? []).find((candidate) =>
-        /\.(?:doc|dot)[xm]?$/i.test(candidate.name)
+        SUPPORTED_DOCUMENT_FILE_NAME.test(candidate.name)
       );
     },
     []
@@ -3553,7 +3561,7 @@ function PlaygroundApp(): React.JSX.Element {
       <input
         ref={fileInputRef}
         type="file"
-        accept=".docx,.doc,.dot,.dotx,.docm,.dotm"
+        accept={SUPPORTED_DOCUMENT_ACCEPT}
         className="hidden"
         onChange={(event) => void onImport(event)}
       />
@@ -3575,8 +3583,12 @@ function PlaygroundApp(): React.JSX.Element {
             {editor.fileName || "Document1"}
           </span>
           {isReadOnly ? (
-            <Badge className="rounded px-1.5 text-[10px]" variant="outline">
-              Read-only
+            <Badge
+              className="rounded px-1.5 text-[10px]"
+              title={viewOnlyReason}
+              variant="outline"
+            >
+              {viewOnlyReason ? "View-only" : "Read-only"}
             </Badge>
           ) : null}
           <span className="hidden truncate text-xs text-muted-foreground md:inline">
@@ -3598,7 +3610,8 @@ function PlaygroundApp(): React.JSX.Element {
             className={titleButton}
             size="sm"
             variant="ghost"
-            disabled={editor.isImporting}
+            disabled={editor.isImporting || Boolean(viewOnlyReason)}
+            title={viewOnlyReason}
             onClick={editor.exportDocx}
           >
             <Download />
@@ -3839,9 +3852,9 @@ function PlaygroundApp(): React.JSX.Element {
         </span>
         <div className="flex-1" />
         {isReadOnly ? (
-          <span className="hidden items-center gap-1 sm:flex">
+          <span className="hidden items-center gap-1 sm:flex" title={viewOnlyReason}>
             <Lock className="size-3" />
-            Read-only
+            {viewOnlyReason ? "View-only" : "Read-only"}
           </span>
         ) : null}
         <div className="flex items-center gap-1">
@@ -3908,7 +3921,7 @@ function PlaygroundApp(): React.JSX.Element {
         <div className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center bg-background/70 backdrop-blur-[2px]">
           <div className="flex flex-col items-center gap-2 rounded-xl border-2 border-dashed border-brand/60 bg-background px-10 py-8 text-center shadow-lg">
             <Upload className="size-6 text-brand" />
-            <div className="text-sm font-medium">Drop a DOCX file to open it</div>
+            <div className="text-sm font-medium">Drop a Word or OpenDocument file to open it</div>
             <div className="text-xs text-muted-foreground">
               Read-only mode blocks editing, but opening files still works.
             </div>

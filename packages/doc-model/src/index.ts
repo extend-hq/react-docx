@@ -33,6 +33,7 @@ export { cloneDocModel, cloneFormFieldSourcePreview, cloneParagraphMarkFormattin
 export { invalidateFormFieldSource, resolveFormFieldSourcePreview } from "./form-field";
 export { deepFreezeDocModel } from "./freeze";
 export { normalizeDocModel } from "./normalize";
+export { isOpenDocumentBlockId, isOpenDocumentModel } from "./opendocument";
 
 export async function buildDocModel(pkg: OoxmlPackage, options?: DocxParseOptions): Promise<DocModel> {
   const wasmPackage = mapsToWasmPackage({

@@ -103,8 +103,15 @@ export interface TextOutline {
 
 export interface TextRunNode {
   type: "text";
+  /**
+   * Run text. For a run with `fieldInstruction`, Word files leave this empty
+   * and OpenDocument files store the field's saved result (e.g. "7").
+   */
   text: string;
-  /** Raw instruction retained when a dynamic field has no cached result. */
+  /**
+   * Instruction of a dynamic field such as `PAGE` or `NUMPAGES`. The viewer
+   * shows the live value in place of `text` when it can resolve one.
+   */
   fieldInstruction?: string;
   style?: TextStyle;
   link?: string;
@@ -216,11 +223,21 @@ export interface ImageRunNode {
   chartData?: ChartData;
   chartPartName?: string;
   paintBounds?: ImagePaintBounds;
+  /** MathML of a formula; `semanticKind` is then "formula". */
   mathMl?: string;
   blockId?: string;
+  /**
+   * Nested story of a text box or text frame. An OpenDocument text frame has
+   * no `src` picture and is drawn from these nodes.
+   */
   contentNodes?: DocNode[];
+  /** Parser classification, e.g. "text_box" or "formula". */
   semanticKind?: string;
   type: "image";
+  /**
+   * Picture to draw. Images of OpenDocument files arrive with `data` and
+   * `contentType` only; `normalizeDocModel` fills this from them.
+   */
   src?: string;
   alt?: string;
   widthPx?: number;
@@ -428,8 +445,25 @@ export interface ParagraphMarkFormattingSource {
   directStyle?: TextStyle;
 }
 
+/**
+ * Part of a paragraph that a comment is anchored to, as a range of the
+ * paragraph's children. Present on paragraphs that carry no Word source markup
+ * (OpenDocument text); for Word files the anchors are read from `sourceXml`.
+ */
+export interface ParagraphCommentRange {
+  commentId: number;
+  /** Index of the first child inside the range. */
+  childStart: number;
+  /** Index after the last child inside the range. */
+  childEnd: number;
+  /** True when the comment's anchor ends in this paragraph. */
+  endsHere: boolean;
+}
+
 export interface ParagraphNode {
   reviewContent?: { sourceXml: string; children: ParagraphChildNode[] }[];
+  /** Comment anchors of a paragraph without Word source markup. */
+  commentRanges?: ParagraphCommentRange[];
   type: "paragraph";
   /** Stable identity for measurement caches; survives edits via cloneParagraph. */
   blockId?: string;

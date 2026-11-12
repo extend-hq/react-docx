@@ -6,6 +6,13 @@ import type {
   TableCellContentNode
 } from "./types";
 import { invalidateFormFieldSource, resolveFormFieldSourcePreview } from "./form-field";
+import { imageDataSource, isOpenDocumentModel } from "./opendocument";
+
+interface NormalizeContext {
+  invalidated: Set<object>;
+  /** OpenDocument images have no `src`; it is built from their bytes. */
+  fillImageSources: boolean;
+}
 
 function normalizeUint8Array(value: unknown): Uint8Array | undefined {
   if (value instanceof Uint8Array) {
@@ -19,8 +26,9 @@ function normalizeUint8Array(value: unknown): Uint8Array | undefined {
 
 function normalizeParagraphChild(
   child: ParagraphChildNode,
-  invalidated: Set<object>
+  context: NormalizeContext
 ): ParagraphChildNode {
+  const { invalidated } = context;
   if (child.type === "form-field" && child.sourcePreview) {
     const image = resolveFormFieldSourcePreview(child);
     if (!image) {
@@ -34,7 +42,7 @@ function normalizeParagraphChild(
       if (stateChanged) invalidated.add(normalized);
       return normalized;
     }
-    const normalizedImage = normalizeParagraphChild(image, invalidated) as ImageRunNode;
+    const normalizedImage = normalizeParagraphChild(image, context) as ImageRunNode;
     return normalizedImage === image
       ? child
       : { ...child, sourcePreview: { ...child.sourcePreview, image: normalizedImage } };
@@ -50,31 +58,36 @@ function normalizeParagraphChild(
   const model3d = modelAsset && modelData !== modelAsset.data
     ? { ...image.model3d!, asset: { ...modelAsset, data: modelData } }
     : image.model3d;
-  if (data === image.data && model3d === image.model3d && !image.contentNodes) {
+  const src = context.fillImageSources && !image.src && !image.contentNodes
+    ? imageDataSource({ data, contentType: image.contentType })
+    : image.src;
+  if (data === image.data && model3d === image.model3d && src === image.src && !image.contentNodes) {
     return child;
   }
 
   return {
     ...image,
+    ...(src === image.src ? {} : { src }),
     data,
     model3d,
-    contentNodes: image.contentNodes?.map((node) => normalizeDocNode(node, invalidated))
+    contentNodes: image.contentNodes?.map((node) => normalizeDocNode(node, context))
   };
 }
 
-function normalizeTableCellContent(node: TableCellContentNode, invalidated: Set<object>): TableCellContentNode {
-  return normalizeDocNode(node, invalidated) as TableCellContentNode;
+function normalizeTableCellContent(node: TableCellContentNode, context: NormalizeContext): TableCellContentNode {
+  return normalizeDocNode(node, context) as TableCellContentNode;
 }
 
-function normalizeDocNode(node: DocNode, invalidated: Set<object>): DocNode {
+function normalizeDocNode(node: DocNode, context: NormalizeContext): DocNode {
+  const { invalidated } = context;
   if (node.type === "paragraph") {
-    const children = node.children.map((child) => normalizeParagraphChild(child, invalidated));
+    const children = node.children.map((child) => normalizeParagraphChild(child, context));
     const stateChanged = invalidated.size > 0 && children.some((child) => invalidated.has(child));
     const normalized = {
       ...node,
       reviewContent: node.reviewContent?.map((fragment) => ({
         ...fragment,
-        children: fragment.children.map((child) => normalizeParagraphChild(child, invalidated)),
+        children: fragment.children.map((child) => normalizeParagraphChild(child, context)),
       })),
       ...(stateChanged ? { sourceXml: undefined, sourceTextPatch: undefined } : {}),
       children
@@ -87,7 +100,7 @@ function normalizeDocNode(node: DocNode, invalidated: Set<object>): DocNode {
     ...row,
     cells: row.cells.map((cell) => ({
       ...cell,
-      nodes: cell.nodes.map((content) => normalizeTableCellContent(content, invalidated))
+      nodes: cell.nodes.map((content) => normalizeTableCellContent(content, context))
     }))
   }));
   const stateChanged = invalidated.size > 0 && rows.some((row) => row.cells.some((cell) => cell.nodes.some((content) => invalidated.has(content))));
@@ -95,7 +108,7 @@ function normalizeDocNode(node: DocNode, invalidated: Set<object>): DocNode {
     ...node,
     reviewRows: node.reviewRows?.map((fragment) => ({
       ...fragment,
-      row: (normalizeDocNode({ type: "table", rows: [fragment.row] }, invalidated) as typeof node).rows[0],
+      row: (normalizeDocNode({ type: "table", rows: [fragment.row] }, context) as typeof node).rows[0],
     })),
     ...(stateChanged ? { sourceXml: undefined, sourceTextPatches: undefined } : {}),
     rows
@@ -105,8 +118,11 @@ function normalizeDocNode(node: DocNode, invalidated: Set<object>): DocNode {
 }
 
 export function normalizeDocModel(model: DocModel): DocModel {
-  const invalidated = new Set<object>();
-  const normalize = (node: DocNode): DocNode => normalizeDocNode(node, invalidated);
+  const context: NormalizeContext = {
+    invalidated: new Set<object>(),
+    fillImageSources: isOpenDocumentModel(model),
+  };
+  const normalize = (node: DocNode): DocNode => normalizeDocNode(node, context);
   return {
     ...model,
     nodes: model.nodes.map(normalize),

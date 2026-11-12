@@ -204,6 +204,7 @@ function cloneParagraph(paragraph: ParagraphNode): ParagraphNode {
     sourceParagraphMarkPropertiesXml: paragraph.sourceParagraphMarkPropertiesXml,
     paragraphMarkDeleted: paragraph.paragraphMarkDeleted,
     sourceXml: paragraph.sourceXml,
+    commentRanges: paragraph.commentRanges?.map((range) => ({ ...range })),
     reviewContent: paragraph.reviewContent?.map((fragment) => ({
       sourceXml: fragment.sourceXml,
       children: cloneParagraph({ type: "paragraph", children: fragment.children }).children,
