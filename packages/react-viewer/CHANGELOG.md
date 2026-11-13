@@ -1,5 +1,16 @@
 # @extend-ai/react-docx
 
+## 0.15.0
+
+### Minor Changes
+
+- Open OpenDocument text for viewing, preserving images, text frames, tables, page number fields, footnotes and formulas. Expose the view-only reason and prevent editing or DOCX export for these documents.
+
+### Patch Changes
+
+- Allow zoom down to 10% and account for surrounding padding, borders and margins when fitting a page to the viewport. Recalculate when wrapper sizes change and stabilize scrollbar space in the playgrounds to prevent horizontal overflow during resizing.
+- Update the bundled Rust DOCX/WASM runtime to 0.3.1 with OpenDocument 0.2.0, Office Art 0.1.9 and Office Charts 0.2.0. Render supported OpenDocument chart and drawing artwork and retain cached chart data, exact numeric values and sparse point indices for downstream extraction.
+
 ## 0.14.10
 
 ### Patch Changes
