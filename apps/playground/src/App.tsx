@@ -607,7 +607,7 @@ const HIGHLIGHT_PRESET_OPTIONS = [
 ] as const;
 
 const ZOOM_PERCENT_OPTIONS = [
-  50, 75, 90, 100, 110, 125, 150, 175, 200,
+  10, 25, 50, 75, 90, 100, 110, 125, 150, 175, 200,
 ] as const;
 
 const ZOOM_PERCENT_ITEMS = ZOOM_PERCENT_OPTIONS.map((value) => ({

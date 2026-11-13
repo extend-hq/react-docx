@@ -15,9 +15,9 @@ describe("viewer zoom", () => {
 
   it.each([
     ["fit-width", 1200, 900, 150],
-    ["fit-width", 400, 900, VIEWER_ZOOM_MIN],
+    ["fit-width", 400, 900, 50],
     ["fit-page", 1200, 600, 60],
-    ["fit-page", 400, 400, VIEWER_ZOOM_MIN],
+    ["fit-page", 400, 400, 40],
     ["automatic", 1200, 900, 100],
     ["automatic", 640, 900, 80],
   ] as const)(
@@ -52,7 +52,7 @@ describe("viewer zoom", () => {
   });
 
   it("clamps numeric and responsive percentages to supported bounds", () => {
-    expect(normalizeViewerZoomLevel(10)).toBe(VIEWER_ZOOM_MIN);
+    expect(normalizeViewerZoomLevel(1)).toBe(VIEWER_ZOOM_MIN);
     expect(normalizeViewerZoomLevel(900)).toBe(VIEWER_ZOOM_MAX);
     expect(
       resolveViewerZoom("fit-width", {

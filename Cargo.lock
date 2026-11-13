@@ -583,9 +583,9 @@ checksum = "6c20b6793b5c2fa6553b250154b78d6d0db37e72700ae35fad9387a46f487c97"
 
 [[package]]
 name = "rust-docx"
-version = "0.3.0"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e9c7b57127c2ef9066a9fc1a5f0885cca269eab59676c52cdabb71f0c4812a21"
+checksum = "1af8587fa7176ff4608b3c1ec26c7878f0909fe52666ad9d1fc561f5e45341e3"
 dependencies = [
  "arc-swap",
  "base64",
@@ -612,9 +612,9 @@ dependencies = [
 
 [[package]]
 name = "rust-docx-wasm"
-version = "0.3.0"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "74fff1a54f9fadb8c74f1626ee89d007541b112cde3217e0954eec1e462b6e13"
+checksum = "2ab44fdccfa57dee28e230f9df8cb3e5349d668369714ebaba578c7bb675d453"
 dependencies = [
  "js-sys",
  "rust-docx",
@@ -625,9 +625,9 @@ dependencies = [
 
 [[package]]
 name = "rust-odf"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3866913b9e947fd71b995f8dc757231de2a30198ba09d7bab3302f8c50dd9f01"
+checksum = "31bd441ed53bc485e9fe8f9335c29fa52bd808d6fa137e5b75315f0c78995581"
 dependencies = [
  "base64",
  "memchr",
@@ -638,9 +638,9 @@ dependencies = [
 
 [[package]]
 name = "rust-office-art"
-version = "0.1.8"
+version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5326ba85e56257618204fbc2dee7d12cd7bca420ac500ce71136e33b63acb7cb"
+checksum = "f27c4afe14a36fd77f51834ac582d84b4a94699c966888e107ecf255bde27eff"
 dependencies = [
  "base64",
  "image",
@@ -649,6 +649,7 @@ dependencies = [
  "memchr",
  "quick-xml 0.37.5",
  "roxmltree",
+ "rust-odf",
  "rustybuzz",
  "serde",
  "serde_bytes",
@@ -656,14 +657,15 @@ dependencies = [
 
 [[package]]
 name = "rust-office-charts"
-version = "0.1.10"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d4b6d60db065ae6993ee69b162de6210a9d7b773b6ca9ad0966bb7588248788a"
+checksum = "3b358d5dc40bd98842bb545a510bc780d092230c4afcd00ddedb3a2c2f72144e"
 dependencies = [
  "base64",
  "kurbo",
  "miniz_oxide 0.8.9",
  "roxmltree",
+ "rust-odf",
  "rust-office-art",
  "serde",
  "svgtypes",

@@ -2,7 +2,7 @@
 
 The Rust parser (`rust-docx`), its WASM bindings (`rust-docx-wasm`), and its chart renderer (`rust-office-charts`) are maintained and published from [rust-office](https://github.com/extend-hq/rust-office). React DOCX builds its locked Cargo dependencies into the browser module it ships. Browser applications can continue installing the viewer from npm.
 
-The Cargo manifest pins the published `rust-docx-wasm` crate to `=0.3.0`, which adds OpenDocument text input through the `rust-odf` crate. A rebuild needs no local Rust checkout. Keep the dependency pinned to an exact registry version when adopting future releases.
+The Cargo manifest pins the published `rust-docx-wasm` crate to `=0.3.1`, with ODF 0.2.0, Office Art 0.1.9 and Office Charts 0.2.0 for OpenDocument chart data and artwork. A rebuild needs no local Rust checkout. Keep the dependency pinned to an exact registry version when adopting future releases.
 
 After changing the dependency, refresh the lockfile, rebuild the bindings and run the viewer checks:
 
@@ -14,4 +14,4 @@ pnpm run typecheck
 pnpm run test:unit
 ```
 
-Commit the lockfiles, generated JavaScript and TypeScript declarations, rebuilt WASM binary, build provenance, and generated runtime notices together. The Cargo rebuild uses `--locked`, records DOCX, Office Art and Office Charts versions plus the Git revision when applicable, and regenerates the dependency and bundled-data notices. The previous `--registry` flag remains an alias for `--cargo`. Ordinary builds validate the committed WASM and notices without recompiling Rust. The published viewer includes that provenance as `dist/rust-runtime-build-info.json`. Benchmark tooling, measured results, and chart comparisons are maintained in [rust-office](https://github.com/extend-hq/rust-office#packages-benchmarks-and-chart-accuracy).
+Commit the lockfiles, generated JavaScript and TypeScript declarations, rebuilt WASM binary, build provenance, and generated runtime notices together. The Cargo rebuild uses `--locked`, records DOCX, OpenDocument, Office Art and Office Charts versions plus the Git revision when applicable, and regenerates the dependency and bundled-data notices. The previous `--registry` flag remains an alias for `--cargo`. Ordinary builds validate the committed WASM and notices without recompiling Rust. The published viewer includes that provenance as `dist/rust-runtime-build-info.json`. Benchmark tooling, measured results, and chart comparisons are maintained in [rust-office](https://github.com/extend-hq/rust-office#packages-benchmarks-and-chart-accuracy).

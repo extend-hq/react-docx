@@ -87,7 +87,7 @@ function cargoSourceInfo(binary) {
   const metadata = JSON.parse(execFileSync("cargo", ["metadata", "--locked", "--format-version", "1"], { cwd: root, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 }));
   const source = createHash("sha256");
   for (const name of ["Cargo.toml", "Cargo.lock", "crates/docx-wasm/Cargo.toml", "crates/docx-wasm/src/lib.rs"]) source.update(name).update("\0").update(readFileSync(path.join(root, name))).update("\0");
-  const crates = metadata.packages.filter(pkg => ["rust-docx", "rust-docx-wasm", "rust-office-art", "rust-office-charts"].includes(pkg.name));
+  const crates = metadata.packages.filter(pkg => ["rust-docx", "rust-docx-wasm", "rust-office-art", "rust-office-charts", "rust-odf"].includes(pkg.name));
   for (const crate of crates.sort((a, b) => a.name.localeCompare(b.name))) {
     const walk = directory => readdirSync(directory, { withFileTypes: true }).sort((a,b) => a.name.localeCompare(b.name)).forEach(entry => {
       const name = path.join(directory, entry.name);
@@ -104,6 +104,7 @@ function cargoSourceInfo(binary) {
     rustDocxWasmVersion: crates.find(p => p.name === "rust-docx-wasm")?.version,
     rustOfficeArtVersion: crates.find(p => p.name === "rust-office-art")?.version,
     rustOfficeChartsVersion: crates.find(p => p.name === "rust-office-charts")?.version,
+    rustOdfVersion: crates.find(p => p.name === "rust-odf")?.version,
     rustSourceSha256: source.digest("hex"), wasmSha256: hash(readFileSync(binary)),
     cargoLockSha256: hash(readFileSync(path.join(root, "Cargo.lock"))),
     rustc: execFileSync("rustc", ["--version"], { encoding: "utf8" }).trim() };

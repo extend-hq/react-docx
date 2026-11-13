@@ -14,7 +14,7 @@ import {
 
 const FONT_FAMILIES = ["Calibri", "Arial", "Times New Roman", "Georgia", "Helvetica", "Courier New"];
 const FONT_SIZES = [8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 32, 36, 48];
-const ZOOM_PERCENTS = [50, 75, 90, 100, 110, 125, 150, 175, 200];
+const ZOOM_PERCENTS = [10, 25, 50, 75, 90, 100, 110, 125, 150, 175, 200];
 
 const byId = (id) => document.getElementById(id);
 const fileInput = byId("file-input");

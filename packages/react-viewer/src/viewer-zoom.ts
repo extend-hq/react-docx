@@ -8,7 +8,7 @@ export type ViewerZoomState = {
   resolvedZoom: number;
 };
 
-export const VIEWER_ZOOM_MIN = 50;
+export const VIEWER_ZOOM_MIN = 10;
 export const VIEWER_ZOOM_MAX = 200;
 
 export interface ViewerZoomDimensions {

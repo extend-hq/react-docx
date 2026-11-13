@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { createZip } from "../unit/helpers/zip";
 
-const MIN_ZOOM = 50;
+const MIN_ZOOM = 10;
 const MAX_ZOOM = 200;
 const PAGE_COUNT = 15;
 const CONTENT_TYPES_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -81,7 +81,7 @@ async function expectedZoom(
         : nextMode === "automatic"
           ? Math.min(fitWidth, 100)
           : fitWidth;
-    return Math.max(50, Math.min(200, raw));
+    return Math.max(10, Math.min(200, raw));
   }, mode);
 }
 

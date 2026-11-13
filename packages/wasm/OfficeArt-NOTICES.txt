@@ -10238,7 +10238,7 @@ SOFTWARE.
 
 --------------------
 
-rust-docx 0.3.0
+rust-docx 0.3.1
 MIT
 https://github.com/extend-hq/rust-office
 
@@ -10267,7 +10267,7 @@ SOFTWARE.
 
 --------------------
 
-rust-docx-wasm 0.3.0
+rust-docx-wasm 0.3.1
 MIT
 https://github.com/extend-hq/rust-office
 
@@ -10296,7 +10296,7 @@ SOFTWARE.
 
 --------------------
 
-rust-odf 0.1.0
+rust-odf 0.2.0
 MIT
 https://github.com/extend-hq/rust-office
 
@@ -10325,7 +10325,7 @@ SOFTWARE.
 
 --------------------
 
-rust-office-art 0.1.8
+rust-office-art 0.1.9
 MIT AND Apache-2.0 AND OFL-1.1
 https://github.com/extend-hq/rust-office
 
@@ -11101,7 +11101,7 @@ The preset guide data is evaluated by the same bounded geometry evaluator as ord
 
 --------------------
 
-rust-office-charts 0.1.10
+rust-office-charts 0.2.0
 MIT AND OFL-1.1
 https://github.com/extend-hq/rust-office
 
