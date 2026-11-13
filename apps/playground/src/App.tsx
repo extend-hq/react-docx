@@ -3806,7 +3806,7 @@ function PlaygroundApp(): React.JSX.Element {
 
         <div
           ref={viewerScrollRef}
-          className="relative min-h-0 min-w-0 flex-1 overflow-auto bg-canvas"
+          className="relative min-h-0 min-w-0 flex-1 overflow-auto bg-canvas [scrollbar-gutter:stable]"
         >
           <div className="flex min-h-full min-w-full w-max justify-center px-6 py-5">
             <div ref={blockViewerRootRef}>

@@ -99,7 +99,7 @@ function nearestScrollableAncestor(element: HTMLElement): HTMLElement {
   return (document.scrollingElement as HTMLElement | null) ?? document.documentElement;
 }
 
-function elementPadding(element: HTMLElement): {
+function elementSpacing(element: HTMLElement, includeOuterSpacing = false): {
   horizontal: number;
   vertical: number;
 } {
@@ -109,8 +109,18 @@ function elementPadding(element: HTMLElement): {
     return Number.isFinite(parsed) ? parsed : 0;
   };
   return {
-    horizontal: number(style.paddingLeft) + number(style.paddingRight),
-    vertical: number(style.paddingTop) + number(style.paddingBottom),
+    horizontal:
+      number(style.paddingLeft) + number(style.paddingRight) +
+      (includeOuterSpacing
+        ? number(style.borderLeftWidth) + number(style.borderRightWidth) +
+          number(style.marginLeft) + number(style.marginRight)
+        : 0),
+    vertical:
+      number(style.paddingTop) + number(style.paddingBottom) +
+      (includeOuterSpacing
+        ? number(style.borderTopWidth) + number(style.borderBottomWidth) +
+          number(style.marginTop) + number(style.marginBottom)
+        : 0),
   };
 }
 
@@ -272,22 +282,36 @@ export function useViewerZoom({
     }
     const scroller = nearestScrollableAncestor(root);
     scrollerRef.current = scroller;
+    const viewport = isWindowScroller(scroller)
+      ? document.documentElement
+      : scroller;
+    const wrappers: HTMLElement[] = [];
+    let ancestor = root.parentElement;
+    while (ancestor && ancestor !== viewport) {
+      wrappers.push(ancestor);
+      ancestor = ancestor.parentElement;
+    }
     let frame = 0;
     const recalculate = (): void => {
       frame = 0;
-      const scrollerPadding = elementPadding(scroller);
-      const rootPadding = elementPadding(root);
-      const viewportWidth =
-        (isWindowScroller(scroller) ? window.innerWidth : scroller.clientWidth) -
-        scrollerPadding.horizontal;
-      const viewportHeight =
-        (isWindowScroller(scroller) ? window.innerHeight : scroller.clientHeight) -
-        scrollerPadding.vertical;
+      const viewportPadding = elementSpacing(viewport);
+      const rootSpacing = elementSpacing(root, true);
+      let viewportWidth = viewport.clientWidth - viewportPadding.horizontal;
+      let viewportHeight = viewport.clientHeight - viewportPadding.vertical;
+      // Wrapper spacing stays outside the viewer's own zoomed coordinate space.
+      for (let index = wrappers.length - 1; index >= 0; index -= 1) {
+        const wrapper = wrappers[index];
+        const spacing = elementSpacing(wrapper, true);
+        const zoom = Number.parseFloat(window.getComputedStyle(wrapper).zoom);
+        const scale = Number.isFinite(zoom) && zoom > 0 ? zoom : 1;
+        viewportWidth = viewportWidth / scale - spacing.horizontal;
+        viewportHeight = viewportHeight / scale - spacing.vertical;
+      }
       const dimensions = {
         viewportWidth,
         viewportHeight,
-        contentWidth: contentWidth + rootPadding.horizontal,
-        contentHeight: contentHeight + rootPadding.vertical,
+        contentWidth: contentWidth + rootSpacing.horizontal,
+        contentHeight: contentHeight + rootSpacing.vertical,
       };
       dimensionsRef.current = dimensions;
       const nextResolved = resolveViewerZoom(levelRef.current, dimensions);
@@ -307,7 +331,8 @@ export function useViewerZoom({
     };
     const observer =
       typeof ResizeObserver === "function" ? new ResizeObserver(schedule) : undefined;
-    observer?.observe(scroller);
+    observer?.observe(viewport);
+    wrappers.forEach((wrapper) => observer?.observe(wrapper));
     observer?.observe(root);
     window.addEventListener("resize", schedule);
     recalculate();

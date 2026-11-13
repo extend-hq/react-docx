@@ -220,6 +220,20 @@ test("virtualization reaches the last page at the resolved responsive scale", as
     "fit-width"
   );
 
+  for (const width of [900, 600, 1200]) {
+    await page.setViewportSize({ width, height: 900 });
+    await expect.poll(() => wrappers.first().evaluate((wrapper) => {
+      let ancestor = wrapper.parentElement;
+      while (ancestor) {
+        if (["auto", "scroll"].includes(getComputedStyle(ancestor).overflowX)) {
+          return ancestor.scrollWidth - ancestor.clientWidth;
+        }
+        ancestor = ancestor.parentElement;
+      }
+      throw new Error("Missing viewer scroll container");
+    })).toBe(0);
+  }
+
   await page.evaluate(() => {
     const wrapper = document.querySelector("[data-docx-page-wrapper]");
     let node = wrapper?.parentElement ?? null;

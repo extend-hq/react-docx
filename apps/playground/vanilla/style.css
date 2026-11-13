@@ -118,7 +118,7 @@ svg.icon { width: 16px; height: 16px; flex: none; fill: none; stroke: currentCol
 
 /* Document canvas */
 .workspace { min-height: 0; min-width: 0; flex: 1; display: flex; border-top: 1px solid var(--border); }
-.canvas-scroll { position: relative; min-height: 0; min-width: 0; flex: 1; overflow: auto; background: var(--canvas); }
+.canvas-scroll { position: relative; min-height: 0; min-width: 0; flex: 1; overflow: auto; scrollbar-gutter: stable; background: var(--canvas); }
 .canvas-inner { display: flex; justify-content: center; min-width: 100%; min-height: 100%; width: max-content; padding: 20px 24px; }
 
 /* Status bar */
