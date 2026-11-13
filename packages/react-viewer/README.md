@@ -1,6 +1,6 @@
 # @extend-ai/react-docx
 
-JavaScript and React viewing and editing components for rendering `.docx` files in a browser. Legacy Word files open as well, and OpenDocument text (`.odt`) opens view-only; see [Supported formats](#supported-formats).
+JavaScript and React viewing and editing components for rendering `.docx` files in a browser. Legacy Word files also open. OpenDocument text (`.odt`) has **experimental, view-only support**; see [Supported formats](#supported-formats).
 
 `@extend-ai/react-docx` gives you:
 
@@ -83,11 +83,13 @@ The parser decides the format from the file's bytes, not its name. The file name
 | --- | --- | --- | --- |
 | Word (Office Open XML) | `.docx`, `.dotx`, `.docm`, `.dotm` | Yes | Yes |
 | Legacy Word | `.doc`, `.dot` | Yes | Yes, saved as DOCX |
-| OpenDocument text | `.odt`, `.ott` (template), `.odm` (master), `.otm` (master template), `.oth` (web), `.fodt` (flat XML) | Yes | No |
+| OpenDocument text | `.odt`, `.ott` (template), `.odm` (master), `.otm` (master template), `.oth` (web), `.fodt` (flat XML) | Experimental | No |
 
 Other OpenDocument types (spreadsheets, presentations, drawings), encrypted OpenDocument files and the older OpenOffice.org 1.x formats (`.sxw`) are rejected with an import error.
 
 ### OpenDocument text is view-only
+
+**OpenDocument text support is experimental.** Rendering coverage and layout fidelity may vary.
 
 An OpenDocument file is read straight into the document model. There is no Word package behind it, so it cannot be saved as DOCX or written back as OpenDocument:
 

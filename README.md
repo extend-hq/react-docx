@@ -3,7 +3,7 @@
 [![npm version](https://img.shields.io/npm/v/%40extend-ai%2Freact-docx)](https://www.npmjs.com/package/@extend-ai/react-docx)
 [![Monthly npm downloads](https://img.shields.io/npm/dm/%40extend-ai%2Freact-docx)](https://www.npmjs.com/package/@extend-ai/react-docx)
 
-JavaScript and React DOCX viewer/editor with pagination, editing, import/export, document review and thumbnails. It also opens legacy Word files and, view-only, OpenDocument text (`.odt`); see [supported formats](packages/react-viewer/README.md#supported-formats). The browser runtime uses the Rust/WASM parser from [Rust Office](https://github.com/extend-hq/rust-office).
+JavaScript and React DOCX viewer/editor with pagination, editing, import/export, document review and thumbnails. It also opens legacy Word files and offers **experimental, view-only support for OpenDocument text** (`.odt`); see [supported formats](packages/react-viewer/README.md#supported-formats). The browser runtime uses the Rust/WASM parser from [Rust Office](https://github.com/extend-hq/rust-office).
 
 ## Quick start
 
@@ -40,7 +40,7 @@ Use `mode="edit"` for editing and `editor.exportDocx()` for export. For a parsed
 - Built-in imports require a Web Worker. `parseDocxForViewer` permits main-thread fallback unless `useWorker: "required"` is set. Layout and React rendering run on the main thread.
 - Embedded fonts load by default. After changing caller fonts, call `refreshDocxFontMetrics()`; recreate standalone thumbnail renderers. See [font handling](packages/react-viewer/README.md#caller-fonts).
 - Review mutations support limited text revisions and plain-text comment ranges. Unsupported or stale actions leave the document unchanged; [review hooks and boundaries](packages/react-viewer/README.md#useful-hooks) describe the contract.
-- OpenDocument text (`.odt`, `.ott`, `.odm`, `.otm`, `.oth`, flat `.fodt`) opens view-only: `editor.viewOnlyReason` is set, the viewer renders read-only in any `mode`, and `exportDocx()`/`getDocxBytes()` are refused. [What is and is not displayed](packages/react-viewer/README.md#supported-formats).
+- OpenDocument text support (`.odt`, `.ott`, `.odm`, `.otm`, `.oth`, flat `.fodt`) is **experimental and view-only**; rendering coverage and layout fidelity may vary. `editor.viewOnlyReason` is set, the viewer renders read-only in any `mode`, and `exportDocx()`/`getDocxBytes()` are refused. [What is and is not displayed](packages/react-viewer/README.md#supported-formats).
 - Saved 3D previews remain visible; `parseDocxForViewer(source, { include3dModels: true })` additionally exposes original assets and scene XML. [Shared renderer coverage](https://github.com/extend-hq/rust-office/blob/main/docs/picture-coverage.md) distinguishes rendering from preserved previews.
 
 ## Development
