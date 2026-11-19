@@ -188,10 +188,111 @@ dependencies = [
 ]
 
 [[package]]
+name = "duke-odf"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2d33ff3c471ec7060af818515246eee83fd4c007853b3a9ad0106d30f7eed3b6"
+dependencies = [
+ "base64",
+ "encoding_rs",
+ "memchr",
+ "miniz_oxide 0.8.9",
+ "quick-xml 0.37.5",
+ "zlib-rs",
+]
+
+[[package]]
+name = "duke-office-art"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "716210e2f4f8cbdd2776532f69f9efce4ea9b28fe241614bd2d2d90d3b9c95ca"
+dependencies = [
+ "base64",
+ "duke-odf",
+ "image",
+ "kurbo",
+ "libm",
+ "memchr",
+ "quick-xml 0.37.5",
+ "roxmltree",
+ "rustybuzz",
+ "serde",
+ "serde_bytes",
+]
+
+[[package]]
+name = "duke-office-charts"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1696be95ad88cc4cd22a9118f564d70a1e16c7e3debf3b716de4f3dcbaa8f214"
+dependencies = [
+ "base64",
+ "duke-odf",
+ "duke-office-art",
+ "kurbo",
+ "miniz_oxide 0.8.9",
+ "quick-xml 0.37.5",
+ "roxmltree",
+ "serde",
+ "svgtypes",
+]
+
+[[package]]
+name = "duke-pages"
+version = "0.5.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "346c092713529be553ac927e737a701caafcf778d332c2d1bf1bd8ffdb80cb1d"
+dependencies = [
+ "arc-swap",
+ "base64",
+ "base64-simd",
+ "duke-odf",
+ "duke-office-art",
+ "duke-office-charts",
+ "itoa",
+ "libdeflater",
+ "memchr",
+ "miniz_oxide 0.8.9",
+ "quick-xml 0.42.0",
+ "rayon",
+ "regex",
+ "roxmltree",
+ "serde",
+ "serde_bytes",
+ "serde_json",
+ "sha2",
+ "simdutf8",
+ "unicode-segmentation",
+ "zlib-rs",
+]
+
+[[package]]
+name = "duke-pages-wasm"
+version = "0.5.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8a85d1d7e2f6421db9785d80b94e97eb092c6c3b1b145dcdfdc8b5d92fd5b39e"
+dependencies = [
+ "duke-pages",
+ "js-sys",
+ "serde",
+ "serde_json",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "either"
 version = "1.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0e9c71c2167ca323c882b99918929403426e2373ea17242ff5653e0d5e1058be"
+
+[[package]]
+name = "encoding_rs"
+version = "0.8.35"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "75030f3c4f45dafd7586dd6780965a8c7e8e285a5ecb86713e63a79c5b2766f3"
+dependencies = [
+ "cfg-if",
+]
 
 [[package]]
 name = "euclid"
@@ -543,7 +644,7 @@ dependencies = [
 name = "react-docx-runtime"
 version = "0.1.0"
 dependencies = [
- "rust-docx-wasm",
+ "duke-pages-wasm",
 ]
 
 [[package]]
@@ -580,96 +681,6 @@ name = "roxmltree"
 version = "0.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6c20b6793b5c2fa6553b250154b78d6d0db37e72700ae35fad9387a46f487c97"
-
-[[package]]
-name = "rust-docx"
-version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1af8587fa7176ff4608b3c1ec26c7878f0909fe52666ad9d1fc561f5e45341e3"
-dependencies = [
- "arc-swap",
- "base64",
- "base64-simd",
- "itoa",
- "libdeflater",
- "memchr",
- "miniz_oxide 0.8.9",
- "quick-xml 0.42.0",
- "rayon",
- "regex",
- "roxmltree",
- "rust-odf",
- "rust-office-art",
- "rust-office-charts",
- "serde",
- "serde_bytes",
- "serde_json",
- "sha2",
- "simdutf8",
- "unicode-segmentation",
- "zlib-rs",
-]
-
-[[package]]
-name = "rust-docx-wasm"
-version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2ab44fdccfa57dee28e230f9df8cb3e5349d668369714ebaba578c7bb675d453"
-dependencies = [
- "js-sys",
- "rust-docx",
- "serde",
- "serde_json",
- "wasm-bindgen",
-]
-
-[[package]]
-name = "rust-odf"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "31bd441ed53bc485e9fe8f9335c29fa52bd808d6fa137e5b75315f0c78995581"
-dependencies = [
- "base64",
- "memchr",
- "miniz_oxide 0.8.9",
- "quick-xml 0.37.5",
- "zlib-rs",
-]
-
-[[package]]
-name = "rust-office-art"
-version = "0.1.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f27c4afe14a36fd77f51834ac582d84b4a94699c966888e107ecf255bde27eff"
-dependencies = [
- "base64",
- "image",
- "kurbo",
- "libm",
- "memchr",
- "quick-xml 0.37.5",
- "roxmltree",
- "rust-odf",
- "rustybuzz",
- "serde",
- "serde_bytes",
-]
-
-[[package]]
-name = "rust-office-charts"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3b358d5dc40bd98842bb545a510bc780d092230c4afcd00ddedb3a2c2f72144e"
-dependencies = [
- "base64",
- "kurbo",
- "miniz_oxide 0.8.9",
- "roxmltree",
- "rust-odf",
- "rust-office-art",
- "serde",
- "svgtypes",
-]
 
 [[package]]
 name = "rustversion"

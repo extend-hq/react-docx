@@ -21,7 +21,7 @@ For the React entry, install `react` and `react-dom` as well. The vanilla entry 
 
 ## Benchmarks and chart accuracy
 
-See [Rust Office](https://github.com/extend-hq/rust-office#packages-benchmarks-and-chart-accuracy) for parser benchmarks, accuracy results, and chart comparisons with Microsoft Word.
+See [Duke Office](https://github.com/extend-hq/duke-office#packages-benchmarks-and-chart-accuracy) for parser benchmarks, accuracy results, and chart comparisons with Microsoft Word.
 
 ## WebAssembly Asset
 
@@ -110,7 +110,7 @@ Not displayed:
 - Bookmarks, image cropping, line spacing given as extra leading, multi-column sections and table default cell styles.
 - Fonts embedded in the file; the viewer uses installed or caller-provided fonts.
 
-The parser lists what it skipped in `model.metadata.warnings`. Its side of the import is described in [OpenDocument input](https://github.com/extend-hq/rust-office/blob/main/docs/opendocument.md).
+The parser lists what it skipped in `model.metadata.warnings`. Its side of the import is described in [OpenDocument input](https://github.com/extend-hq/duke-office/blob/main/docs/opendocument.md).
 
 ## Quick Start
 

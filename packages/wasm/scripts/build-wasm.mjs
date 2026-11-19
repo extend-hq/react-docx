@@ -9,6 +9,11 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../.
 const generated = path.join(root, "packages/wasm/src/generated");
 const binary = path.join(root, "packages/wasm/src/docx_wasm_bg.wasm");
 const workspace = process.env.RUST_DOCX_WORKSPACE;
+const dukeCrates = { parser: "duke-pages", wasm: "duke-pages-wasm", art: "duke-office-art", charts: "duke-office-charts", odf: "duke-odf" };
+const legacyCrates = { parser: "rust-docx", wasm: "rust-docx-wasm", art: "rust-office-art", charts: "rust-office-charts", odf: "rust-odf" };
+function workspaceCrates(directory) {
+  return existsSync(path.join(directory, "crates", dukeCrates.wasm, "Cargo.toml")) ? dukeCrates : legacyCrates;
+}
 const cargo = process.argv.includes("--cargo") || process.argv.includes("--registry");
 if (workspace && cargo) throw new Error("Choose either a Rust workspace or the locked Cargo build.");
 const required = ["extract_document_review_wasm", "extract_document_blocks_with_revisions_wasm"];
@@ -16,7 +21,7 @@ const manifestPath = path.join(generated, "build-info.json");
 const noticesPath = path.join(root, "packages/wasm/OfficeArt-NOTICES.txt");
 const hash = bytes => createHash("sha256").update(bytes).digest("hex");
 
-function runtimeNotices(directory) {
+function runtimeNotices(directory, names) {
   const metadata = JSON.parse(execFileSync("cargo", ["metadata", "--locked", "--format-version", "1", "--filter-platform", "wasm32-unknown-unknown"], { cwd: directory, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 }));
   const graph = new Map(metadata.resolve.nodes.map(node => [node.id, node]));
   const reached = new Set();
@@ -27,7 +32,7 @@ function runtimeNotices(directory) {
       if (dependency.dep_kinds.some(kind => kind.kind !== "dev")) visit(dependency.pkg);
     }
   };
-  visit(metadata.packages.find(pkg => pkg.name === "rust-docx-wasm").id);
+  visit(metadata.packages.find(pkg => pkg.name === names.wasm).id);
   const isNotice = name => /(?:^|[-_.])(licen[cs]e|copying|copyright|notice|unlicense)(?:$|[-_.])/i.test(name);
   const notices = metadata.packages.filter(pkg => reached.has(pkg.id)).sort((a, b) => a.name.localeCompare(b.name)).map(pkg => {
     const directory = path.dirname(pkg.manifest_path);
@@ -40,8 +45,8 @@ function runtimeNotices(directory) {
       }
     };
     collect("", false);
-    if (["rust-office-art", "rust-office-charts"].includes(pkg.name)) collect("src", true);
-    if (pkg.name === "rust-office-art") paths.add("src/geometry_data/SOURCE.md");
+    if ([names.art, names.charts].includes(pkg.name)) collect("src", true);
+    if (pkg.name === names.art) paths.add("src/geometry_data/SOURCE.md");
     if (!paths.size) {
       // Some crates (base64-simd, vsimd) publish no license file; name the declared licence instead of failing the build.
       if (!pkg.license || !pkg.repository) throw new Error(`Missing license text for ${pkg.name}.`);
@@ -50,10 +55,11 @@ function runtimeNotices(directory) {
     const text = [...paths].sort().map(name => readFileSync(path.join(directory, name), "utf8").replace(/\r\n/g, "\n").replace(/[ \t]+$/gm, "")).join("\n\n");
     return `${pkg.name} ${pkg.version}\n${pkg.license ?? ""}\n${pkg.repository ?? ""}\n\n${text}`;
   });
-  return "Scope: non-development Cargo dependencies of rust-docx-wasm for wasm32-unknown-unknown, including bundled geometry, map and font data.\n\n" + notices.join("\n\n--------------------\n\n").trimEnd() + "\n";
+  return `Scope: non-development Cargo dependencies of ${names.wasm} for wasm32-unknown-unknown, including bundled geometry, map and font data.\n\n` + notices.join("\n\n--------------------\n\n").trimEnd() + "\n";
 }
 
 export function sourceInfo(workspace, binary) {
+  const names = workspaceCrates(workspace);
   const files = ["Cargo.toml", "Cargo.lock"];
   const walk = relative => {
     for (const entry of readdirSync(path.join(workspace, relative), { withFileTypes: true })) {
@@ -62,9 +68,8 @@ export function sourceInfo(workspace, binary) {
       else files.push(name);
     }
   };
-  // rust-odf (OpenDocument input) exists from rust-docx 0.3.0 on.
-  const hasOdf = existsSync(path.join(workspace, "crates/rust-odf/Cargo.toml"));
-  for (const crate of ["rust-docx", "rust-docx-wasm", "rust-office-art", "rust-office-charts", ...(hasOdf ? ["rust-odf"] : [])]) {
+  const hasOdf = existsSync(path.join(workspace, "crates", names.odf, "Cargo.toml"));
+  for (const crate of [names.parser, names.wasm, names.art, names.charts, ...(hasOdf ? [names.odf] : [])]) {
     files.push(`crates/${crate}/Cargo.toml`);
     walk(`crates/${crate}/src`);
   }
@@ -76,18 +81,19 @@ export function sourceInfo(workspace, binary) {
     gitInfo = { rustRevision: execFileSync("git", ["rev-parse", "HEAD"], { cwd: workspace, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim(),
       rustSourceDirty: Boolean(execFileSync("git", ["status", "--porcelain", "--", ...files], { cwd: workspace, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim()) };
   } catch {}
-  return { source: "workspace", rustDocxVersion: version("rust-docx"), rustDocxWasmVersion: version("rust-docx-wasm"), ...gitInfo,
-    rustOfficeArtVersion: version("rust-office-art"), rustOfficeChartsVersion: version("rust-office-charts"),
-    ...(hasOdf ? { rustOdfVersion: version("rust-odf") } : {}),
+  return { source: "workspace", rustDocxVersion: version(names.parser), rustDocxWasmVersion: version(names.wasm), ...gitInfo,
+    rustOfficeArtVersion: version(names.art), rustOfficeChartsVersion: version(names.charts),
+    ...(hasOdf ? { rustOdfVersion: version(names.odf) } : {}),
     rustSourceSha256: source.digest("hex"), ...(binary ? { wasmSha256: hash(readFileSync(binary)) } : {}),
     rustc: execFileSync("rustc", ["--version"], { encoding: "utf8" }).trim() };
 }
 
 function cargoSourceInfo(binary) {
+  const names = dukeCrates;
   const metadata = JSON.parse(execFileSync("cargo", ["metadata", "--locked", "--format-version", "1"], { cwd: root, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 }));
   const source = createHash("sha256");
   for (const name of ["Cargo.toml", "Cargo.lock", "crates/docx-wasm/Cargo.toml", "crates/docx-wasm/src/lib.rs"]) source.update(name).update("\0").update(readFileSync(path.join(root, name))).update("\0");
-  const crates = metadata.packages.filter(pkg => ["rust-docx", "rust-docx-wasm", "rust-office-art", "rust-office-charts", "rust-odf"].includes(pkg.name));
+  const crates = metadata.packages.filter(pkg => [names.parser, names.wasm, names.art, names.charts, names.odf].includes(pkg.name));
   for (const crate of crates.sort((a, b) => a.name.localeCompare(b.name))) {
     const walk = directory => readdirSync(directory, { withFileTypes: true }).sort((a,b) => a.name.localeCompare(b.name)).forEach(entry => {
       const name = path.join(directory, entry.name);
@@ -97,22 +103,23 @@ function cargoSourceInfo(binary) {
     source.update(readFileSync(crate.manifest_path));
     walk(path.join(path.dirname(crate.manifest_path), "src"));
   }
-  const parserSource = crates.find(p => p.name === "rust-docx")?.source;
+  const parserSource = crates.find(p => p.name === names.parser)?.source;
   const rustRevision = parserSource?.startsWith("git+") ? parserSource.split("#")[1] : undefined;
   return { source: rustRevision ? "git" : "registry", ...(rustRevision ? { rustRevision } : {}),
-    rustDocxVersion: crates.find(p => p.name === "rust-docx")?.version,
-    rustDocxWasmVersion: crates.find(p => p.name === "rust-docx-wasm")?.version,
-    rustOfficeArtVersion: crates.find(p => p.name === "rust-office-art")?.version,
-    rustOfficeChartsVersion: crates.find(p => p.name === "rust-office-charts")?.version,
-    rustOdfVersion: crates.find(p => p.name === "rust-odf")?.version,
+    rustDocxVersion: crates.find(p => p.name === names.parser)?.version,
+    rustDocxWasmVersion: crates.find(p => p.name === names.wasm)?.version,
+    rustOfficeArtVersion: crates.find(p => p.name === names.art)?.version,
+    rustOfficeChartsVersion: crates.find(p => p.name === names.charts)?.version,
+    rustOdfVersion: crates.find(p => p.name === names.odf)?.version,
     rustSourceSha256: source.digest("hex"), wasmSha256: hash(readFileSync(binary)),
     cargoLockSha256: hash(readFileSync(path.join(root, "Cargo.lock"))),
     rustc: execFileSync("rustc", ["--version"], { encoding: "utf8" }).trim() };
 }
 
 if (workspace || cargo) {
-  const crate = workspace ? path.resolve(workspace, "crates/rust-docx-wasm") : path.join(root, "crates/docx-wasm");
-  if (!existsSync(path.join(crate, "Cargo.toml"))) throw new Error("RUST_DOCX_WORKSPACE must point to the Rust workspace containing rust-docx-wasm.");
+  const names = workspace ? workspaceCrates(workspace) : dukeCrates;
+  const crate = workspace ? path.resolve(workspace, "crates", names.wasm) : path.join(root, "crates/docx-wasm");
+  if (!existsSync(path.join(crate, "Cargo.toml"))) throw new Error("RUST_DOCX_WORKSPACE must point to the Rust document parser workspace.");
   const output = mkdtempSync(path.join(tmpdir(), "react-docx-wasm-"));
   try {
     const inputHash = workspace ? sourceInfo(path.resolve(workspace)).rustSourceSha256 : undefined;
@@ -128,7 +135,7 @@ if (workspace || cargo) {
     mkdirSync(generated, { recursive: true });
     for (const name of ["docx_wasm.js", "docx_wasm.d.ts", "docx_wasm_bg.wasm.d.ts"]) copyFileSync(path.join(output, name), path.join(generated, name));
     copyFileSync(builtBinary, binary);
-    writeFileSync(noticesPath, runtimeNotices(workspace ? path.resolve(workspace) : root));
+    writeFileSync(noticesPath, runtimeNotices(workspace ? path.resolve(workspace) : root, names));
     provenance.noticesSha256 = hash(readFileSync(noticesPath));
     writeFileSync(manifestPath, `${JSON.stringify(provenance, null, 2)}\n`);
   } finally {

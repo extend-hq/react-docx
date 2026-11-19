@@ -1,1 +1,1 @@
-pub use rust_docx_wasm::*;
+pub use duke_pages_wasm::*;
