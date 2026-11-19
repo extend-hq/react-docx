@@ -3,7 +3,7 @@
 [![npm version](https://img.shields.io/npm/v/%40extend-ai%2Freact-docx)](https://www.npmjs.com/package/@extend-ai/react-docx)
 [![Monthly npm downloads](https://img.shields.io/npm/dm/%40extend-ai%2Freact-docx)](https://www.npmjs.com/package/@extend-ai/react-docx)
 
-JavaScript and React DOCX viewer/editor with pagination, editing, import/export, document review and thumbnails. It also opens legacy Word files and offers **experimental, view-only support for OpenDocument text** (`.odt`); see [supported formats](packages/react-viewer/README.md#supported-formats). The browser runtime uses the Rust/WASM parser from [Rust Office](https://github.com/extend-hq/rust-office).
+JavaScript and React DOCX viewer/editor with pagination, editing, import/export, document review and thumbnails. It also opens legacy Word files and offers **experimental, view-only support for OpenDocument text** (`.odt`); see [supported formats](packages/react-viewer/README.md#supported-formats). The browser runtime uses the Rust/WASM parser from [Duke Office](https://github.com/extend-hq/duke-office).
 
 ## Quick start
 
@@ -41,7 +41,7 @@ Use `mode="edit"` for editing and `editor.exportDocx()` for export. For a parsed
 - Embedded fonts load by default. After changing caller fonts, call `refreshDocxFontMetrics()`; recreate standalone thumbnail renderers. See [font handling](packages/react-viewer/README.md#caller-fonts).
 - Review mutations support limited text revisions and plain-text comment ranges. Unsupported or stale actions leave the document unchanged; [review hooks and boundaries](packages/react-viewer/README.md#useful-hooks) describe the contract.
 - OpenDocument text support (`.odt`, `.ott`, `.odm`, `.otm`, `.oth`, flat `.fodt`) is **experimental and view-only**; rendering coverage and layout fidelity may vary. `editor.viewOnlyReason` is set, the viewer renders read-only in any `mode`, and `exportDocx()`/`getDocxBytes()` are refused. [What is and is not displayed](packages/react-viewer/README.md#supported-formats).
-- Saved 3D previews remain visible; `parseDocxForViewer(source, { include3dModels: true })` additionally exposes original assets and scene XML. [Shared renderer coverage](https://github.com/extend-hq/rust-office/blob/main/docs/picture-coverage.md) distinguishes rendering from preserved previews.
+- Saved 3D previews remain visible; `parseDocxForViewer(source, { include3dModels: true })` additionally exposes original assets and scene XML. [Shared renderer coverage](https://github.com/extend-hq/duke-office/blob/main/docs/picture-coverage.md) distinguishes rendering from preserved previews.
 
 ## Development
 
@@ -65,7 +65,7 @@ pnpm test:visual
 | WASM build and Rust adapter | [packages/wasm](packages/wasm), [crates/docx-wasm](crates/docx-wasm) |
 | Manual and automated validation | [apps/playground](apps/playground), [tests](tests), [Word fidelity harness](docs/word-fidelity-harness.md) |
 
-Parser fixes belong in [Rust Office](https://github.com/extend-hq/rust-office). Normal JS builds validate the committed WASM; [runtime updates](docs/rust-publishing.md) must include rebuilt bindings, lockfiles, provenance and notices. npm releases use Changesets; Rust and npm versions are independent. See [playground deployment](docs/playground-deployment.md) for build provenance.
+Parser fixes belong in [Duke Office](https://github.com/extend-hq/duke-office). Normal JS builds validate the committed WASM; [runtime updates](docs/rust-publishing.md) must include rebuilt bindings, lockfiles, provenance and notices. npm releases use Changesets; Rust and npm versions are independent. See [playground deployment](docs/playground-deployment.md) for build provenance.
 
 ## Visual comparisons
 
@@ -73,7 +73,7 @@ Parser fixes belong in [Rust Office](https://github.com/extend-hq/rust-office). 
 
 [![Microsoft Word chart comparisons side by side](https://raw.githubusercontent.com/extend-hq/rust-office/7d8d3e2d13ae2076c5e4e23333f2f5725b67c85f/docs/readme-assets/word-chart-overview.png)](https://github.com/extend-hq/rust-office/blob/7d8d3e2d13ae2076c5e4e23333f2f5725b67c85f/docs/chart-comparisons.md)
 
-November 4, 2026, React DOCX 0.14.0: **155/157 charts rendered**, with 28 pairs in this overview. [Galleries, measurements and method](https://github.com/extend-hq/rust-office/blob/7d8d3e2d13ae2076c5e4e23333f2f5725b67c85f/docs/chart-comparisons.md) retain differences and missing charts. [Parser benchmarks](https://github.com/extend-hq/rust-office/blob/main/docs/docx-benchmarks.md) measure native extraction separately from viewer layout.
+November 4, 2026, React DOCX 0.14.0: **155/157 charts rendered**, with 28 pairs in this overview. [Galleries, measurements and method](https://github.com/extend-hq/rust-office/blob/7d8d3e2d13ae2076c5e4e23333f2f5725b67c85f/docs/chart-comparisons.md) retain differences and missing charts. [Parser benchmarks](https://github.com/extend-hq/duke-office/blob/main/docs/docx-benchmarks.md) measure native extraction separately from viewer layout.
 
 ### Office Art
 

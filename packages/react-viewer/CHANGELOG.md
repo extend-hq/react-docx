@@ -1,5 +1,11 @@
 # @extend-ai/react-docx
 
+## 0.15.1
+
+### Patch Changes
+
+- Update to Duke Pages 0.5.7 for Word and OpenDocument note references, image descriptions and text formatting.
+
 ## 0.15.0
 
 ### Minor Changes
