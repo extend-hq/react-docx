@@ -1,5 +1,12 @@
 # @extend-ai/react-docx
 
+## 0.15.2
+
+### Patch Changes
+
+- bc98d7f: Add a `useWorker` option to `useDocxEditor`, `useDocxModel` and the vanilla viewer so imports can fall back to, or always use, main-thread parsing when the import worker cannot start, such as when the worker script is served from another origin. The default still requires the worker.
+- bc98d7f: Fall back to main-thread parsing when the import worker's script cannot be fetched or evaluated, not only when the worker cannot be constructed. This applies to imports that allow a fallback (`useWorker: true` and the `parseDocxForViewer` default); imports that require the worker still report an error.
+
 ## 0.15.1
 
 ### Patch Changes
