@@ -119,6 +119,22 @@ export interface ReactDocxViewerProps {
   emptyState?: React.ReactNode;
 }
 
+export interface UseDocxModelOptions {
+  /**
+   * Worker mode for the import, with the same values as `parseDocxForViewer`:
+   * `"required"` reports an error when the import worker cannot start, `true`
+   * parses on the main thread when the worker cannot start, and `false` always
+   * parses on the main thread.
+   *
+   * Browsers refuse to run a worker script from another origin, so pass `false`
+   * when the package's assets are served from a different origin than the page.
+   * Changing this value parses the current file again.
+   *
+   * @defaultValue `"required"`
+   */
+  useWorker?: boolean | "required";
+}
+
 export interface UseDocxModelState {
   /** Parsed document model, available once loading succeeds. */
   model?: DocModel;
@@ -182,7 +198,11 @@ function headingFontSize(level?: HeadingLevel): string | undefined {
   }
 }
 
-export function useDocxModel(file?: ArrayBuffer): UseDocxModelState {
+export function useDocxModel(
+  file?: ArrayBuffer,
+  options: UseDocxModelOptions = {}
+): UseDocxModelState {
+  const { useWorker = "required" } = options;
   const [state, setState] = React.useState<UseDocxModelState>({
     isLoading: Boolean(file),
   });
@@ -203,7 +223,7 @@ export function useDocxModel(file?: ArrayBuffer): UseDocxModelState {
         const { model } = await importDocxBuffer(docxFile, {
           signal: abortController.signal,
           transferBuffer: false,
-          useWorker: "required",
+          useWorker,
         });
         if (!isCurrent) {
           return;
@@ -232,7 +252,7 @@ export function useDocxModel(file?: ArrayBuffer): UseDocxModelState {
       isCurrent = false;
       abortController.abort();
     };
-  }, [file]);
+  }, [file, useWorker]);
 
   return state;
 }

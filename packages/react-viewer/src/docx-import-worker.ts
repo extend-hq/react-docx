@@ -3,6 +3,7 @@ import { setWasmSource } from "@extend-ai/react-docx-wasm";
 import { collectImportTransferables } from "./import-transferables";
 
 import type {
+  DocxImportWorkerReadyMessage,
   DocxImportWorkerRequest,
   DocxImportWorkerResponse,
   DocxImportWorkerTimings,
@@ -73,3 +74,8 @@ self.addEventListener(
     }
   }
 );
+
+// Tells the importer that this script and its imports loaded, so a failure
+// from here on is a parse failure rather than a worker that could not start.
+const ready: DocxImportWorkerReadyMessage = { type: "ready" };
+self.postMessage(ready);

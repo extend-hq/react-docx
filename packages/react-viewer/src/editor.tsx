@@ -4372,6 +4372,20 @@ export interface UseDocxEditorOptions {
    */
   loadEmbeddedFonts?: boolean;
   /**
+   * Worker mode for `editor.importDocxFile`, with the same values as
+   * `parseDocxForViewer`: `"required"` reports an import error when the import
+   * worker cannot start, `true` parses on the main thread when the worker
+   * cannot start, and `false` always parses on the main thread.
+   *
+   * Browsers refuse to run a worker script from another origin, so pass `false`
+   * when the package's assets are served from a different origin than the page.
+   * Unlike the other options, this one is read on every import.
+   *
+   * @defaultValue `"required"`, or `false` when the configured WASM source
+   * cannot be forwarded to a worker
+   */
+  useWorker?: boolean | "required";
+  /**
    * Model used for `editor.newDocument()` and for the initial empty editor.
    *
    * @defaultValue `defaultStarterModel`
@@ -30302,6 +30316,10 @@ export function useDocxEditor(
   const activeImportAbortControllerRef = React.useRef<
     AbortController | undefined
   >(undefined);
+  const importUseWorkerRef = React.useRef(options.useWorker);
+  React.useEffect(() => {
+    importUseWorkerRef.current = options.useWorker;
+  }, [options.useWorker]);
   const [historyRestoreRequest, setHistoryRestoreRequest] = React.useState<
     DocxHistoryRestoreRequest | undefined
   >();
@@ -31354,7 +31372,9 @@ export function useDocxEditor(
         const importResult = await importDocxBuffer(buffer, {
           signal: importAbortController.signal,
           transferBuffer: true,
-          useWorker: canUseConfiguredWasmSourceInWorker() ? "required" : false,
+          useWorker:
+            importUseWorkerRef.current ??
+            (canUseConfiguredWasmSourceInWorker() ? "required" : false),
         });
         markDocxImportPerformance(workerEndMark);
         measureDocxImportPerformance(

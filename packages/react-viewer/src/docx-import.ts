@@ -55,6 +55,17 @@ export type DocxImportWorkerResponse =
   | DocxImportWorkerSuccessResponse
   | DocxImportWorkerErrorResponse;
 
+/** Posted once by the worker when its script and imports have loaded. */
+export interface DocxImportWorkerReadyMessage {
+  type: "ready";
+}
+
+export type DocxImportWorkerMessage =
+  | DocxImportWorkerReadyMessage
+  | DocxImportWorkerResponse;
+
+const WORKER_DID_NOT_START = Symbol("docx-import-worker-did-not-start");
+
 let nextImportWorkerRequestId = 1;
 
 function createAbortError(): Error {
@@ -163,8 +174,19 @@ export async function importDocxBuffer(
   const requestId = nextImportWorkerRequestId;
   nextImportWorkerRequestId += 1;
 
-  const workerResult = new Promise<DocxImportResult>((resolve, reject) => {
+  const mayFallBack = options.useWorker !== "required";
+  const transfer = options.transferBuffer ? [buffer] : [];
+  // A transferred buffer is detached on this thread, which would leave nothing
+  // to parse if the worker then failed to start. Hold it until the worker has
+  // loaded whenever a fallback is allowed.
+  const postWhenReady = mayFallBack && transfer.length > 0;
+
+  const workerResult = new Promise<
+    DocxImportResult | typeof WORKER_DID_NOT_START
+  >((resolve, reject) => {
     let settled = false;
+    let workerReady = false;
+    let requestPosted = false;
 
     const cleanup = (): void => {
       worker.removeEventListener("message", handleMessage);
@@ -190,6 +212,12 @@ export async function importDocxBuffer(
     };
 
     const handleError = (event: ErrorEvent): void => {
+      // The constructor only throws for some startup failures. A script that
+      // cannot be fetched or evaluated is reported here, before "ready".
+      if (mayFallBack && !workerReady) {
+        settle(() => resolve(WORKER_DID_NOT_START));
+        return;
+      }
       const message = event.message || "DOCX import worker failed";
       settle(() => reject(new Error(message)));
     };
@@ -198,11 +226,40 @@ export async function importDocxBuffer(
       settle(() => reject(new Error("DOCX import worker returned an unreadable response")));
     };
 
+    const postRequest = (): void => {
+      if (requestPosted) {
+        return;
+      }
+      requestPosted = true;
+      try {
+        const request: DocxImportWorkerRequest = {
+          id: requestId,
+          type: "import-docx",
+          buffer,
+          wasmSource: getConfiguredWorkerWasmSource(),
+          parseOptions: { include3dModels: options.include3dModels },
+        };
+        worker.postMessage(request, transfer);
+      } catch (error) {
+        settle(() =>
+          reject(error instanceof Error ? error : new Error("Failed to start DOCX import worker"))
+        );
+      }
+    };
+
     const handleMessage = (
-      event: MessageEvent<DocxImportWorkerResponse>
+      event: MessageEvent<DocxImportWorkerMessage>
     ): void => {
       const response = event.data;
-      if (!response || response.id !== requestId) {
+      if (!response) {
+        return;
+      }
+      if (response.type === "ready") {
+        workerReady = true;
+        postRequest();
+        return;
+      }
+      if (response.id !== requestId) {
         return;
       }
 
@@ -226,24 +283,15 @@ export async function importDocxBuffer(
     worker.addEventListener("messageerror", handleMessageError);
     options.signal?.addEventListener("abort", handleAbort, { once: true });
 
-    try {
-      const request: DocxImportWorkerRequest = {
-        id: requestId,
-        type: "import-docx",
-        buffer,
-        wasmSource: getConfiguredWorkerWasmSource(),
-        parseOptions: { include3dModels: options.include3dModels },
-      };
-      const transfer = options.transferBuffer ? [buffer] : [];
-      worker.postMessage(request, transfer);
-    } catch (error) {
-      settle(() =>
-        reject(error instanceof Error ? error : new Error("Failed to start DOCX import worker"))
-      );
+    if (!postWhenReady) {
+      postRequest();
     }
   });
 
   const result = await workerResult;
+  if (result === WORKER_DID_NOT_START) {
+    return importDocxOnMainThread(buffer, options);
+  }
   // Block ids are assigned on the main thread so the allocation counter is
   // shared with editor ops that create nodes later.
   const { ensureDocModelBlockIds } = await import(

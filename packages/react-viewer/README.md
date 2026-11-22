@@ -64,6 +64,26 @@ export default defineConfig({
 });
 ```
 
+## Import Worker
+
+File imports run in a Web Worker that ships as `dist/docx-import-worker.js`. The loader references it as `new URL("./docx-import-worker.js", import.meta.url)`, so bundlers emit it next to your other assets.
+
+`editor.importDocxFile`, `useDocxModel`, and the vanilla viewer require that worker by default. If it cannot start, they report an import error instead of parsing on the main thread. Browsers refuse a worker script from another origin, whatever CORS headers it is served with, so the default fails when the script is served from a different origin than the page, such as a CDN or a micro-frontend remote. Set `useWorker` to choose another mode:
+
+```tsx
+const editor = useDocxEditor({ useWorker: false });
+const { model } = useDocxModel(buffer, { useWorker: false });
+const viewer = createDocxViewer(container, { src, useWorker: false });
+```
+
+| `useWorker` | Behavior |
+| --- | --- |
+| `"required"` | Import in the worker and report an error if it cannot start. Default for the hooks and the vanilla viewer. |
+| `true` | Import in the worker, and parse on the main thread when the worker cannot start. Default for `parseDocxForViewer`. |
+| `false` | Always parse on the main thread. |
+
+`true` falls back when the worker cannot start: the browser refuses to construct it, or its script cannot be fetched or evaluated. A parse failure or crash in a worker that did load is reported as an import error and is not retried on the main thread. Use `false` when you know the worker is unreachable, to skip the failed attempt. Main-thread parsing blocks input while a large document loads.
+
 ## Main Entry Points
 
 `@extend-ai/react-docx/vanilla` exports `createDocxViewer`, the `DocxViewer` instance class, and utilities for JavaScript applications.

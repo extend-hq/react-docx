@@ -37,7 +37,7 @@ Use `mode="edit"` for editing and `editor.exportDocx()` for export. For a parsed
 ## Integration notes
 
 - WASM loads lazily. Configure `setWasmSource` before the first parse/export for custom hosting; see [WASM and Vite setup](packages/react-viewer/README.md#webassembly-asset).
-- Built-in imports require a Web Worker. `parseDocxForViewer` permits main-thread fallback unless `useWorker: "required"` is set. Layout and React rendering run on the main thread.
+- Built-in imports require a same-origin Web Worker by default. Pass `useWorker` to `useDocxEditor` or `useDocxModel` to permit or force main-thread parsing; `parseDocxForViewer` permits main-thread fallback unless `useWorker: "required"` is set. Layout and React rendering run on the main thread. See [import worker](packages/react-viewer/README.md#import-worker).
 - Embedded fonts load by default. After changing caller fonts, call `refreshDocxFontMetrics()`; recreate standalone thumbnail renderers. See [font handling](packages/react-viewer/README.md#caller-fonts).
 - Review mutations support limited text revisions and plain-text comment ranges. Unsupported or stale actions leave the document unchanged; [review hooks and boundaries](packages/react-viewer/README.md#useful-hooks) describe the contract.
 - OpenDocument text support (`.odt`, `.ott`, `.odm`, `.otm`, `.oth`, flat `.fodt`) is **experimental and view-only**; rendering coverage and layout fidelity may vary. `editor.viewOnlyReason` is set, the viewer renders read-only in any `mode`, and `exportDocx()`/`getDocxBytes()` are refused. [What is and is not displayed](packages/react-viewer/README.md#supported-formats).
