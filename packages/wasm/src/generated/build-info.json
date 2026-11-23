@@ -1,13 +1,13 @@
 {
   "source": "registry",
-  "rustDocxVersion": "0.5.7",
-  "rustDocxWasmVersion": "0.5.7",
-  "rustOfficeArtVersion": "0.2.2",
-  "rustOfficeChartsVersion": "0.3.3",
-  "rustOdfVersion": "0.3.2",
-  "rustSourceSha256": "7834e2a4ba470e326a18062f252424b723e6a4e9251189af2523d20b2c3af1c5",
-  "wasmSha256": "9f97d07312e9a8e08c73a038311e48f8475a3295a3c3e233f5debd8c6deea3b2",
-  "cargoLockSha256": "faea336a095e7f6d87f11b37a9a928acb05081172ad5c9a80631e1adfc2adbb3",
+  "rustDocxVersion": "0.6.5",
+  "rustDocxWasmVersion": "0.6.5",
+  "rustOfficeArtVersion": "0.3.0",
+  "rustOfficeChartsVersion": "0.4.0",
+  "rustOdfVersion": "0.4.0",
+  "rustSourceSha256": "42bbfe1c61c41cdc440eb5fabae6e4b455fca7d3338cd691ae32bd71a0a93488",
+  "wasmSha256": "7cb0eb90e5995e03b2b218907ca4cf5c074038bc8d0eaf2f78fabe7ecc755f0a",
+  "cargoLockSha256": "3124fd2507fb25a88d0c5f1ec6f92f4eaeee1253626fc3392dcad8d9861a0f48",
   "rustc": "rustc 1.93.1 (01f6ddf75 2026-02-11)",
-  "noticesSha256": "97b56de03efaa0fc8fa5f8999e8ddc0d2fecc7b4a65af4be74302251d3eadc55"
+  "noticesSha256": "8fa990d618dcad3a1fed1c24d40af78819596a0655a66d69b1dd349cf783dfa3"
 }
