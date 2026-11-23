@@ -2,7 +2,7 @@
 
 The Rust parser (`duke-pages`), its WASM bindings (`duke-pages-wasm`), and its chart renderer (`duke-office-charts`) are maintained and published from [duke-office](https://github.com/extend-hq/duke-office). React DOCX builds its locked Cargo dependencies into the browser module it ships. Browser applications can continue installing the viewer from npm.
 
-The Cargo manifest pins the published `duke-pages-wasm` crate to `=0.5.7`, with ODF 0.3.2, Office Art 0.2.2 and Office Charts 0.3.3 for OpenDocument chart data and artwork. A rebuild needs no local Rust checkout. Keep the dependency pinned to an exact registry version when adopting future releases.
+The Cargo manifest pins the published `duke-pages-wasm` crate to `=0.6.5`, with ODF 0.4.0, Office Art 0.3.0 and Office Charts 0.4.0 for OpenDocument chart data and artwork. A rebuild needs no local Rust checkout. Keep the dependency pinned to an exact registry version when adopting future releases.
 
 After changing the dependency, refresh the lockfile, rebuild the bindings and run the viewer checks:
 

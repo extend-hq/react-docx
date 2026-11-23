@@ -1,5 +1,9 @@
 # @extend-ai/react-docx
 
+## 0.15.3
+
+- Update the bundled Rust parser to Duke Pages 0.6.5, with Duke Office Art 0.3.0, Office Charts 0.4.0, and ODF 0.4.0.
+
 ## 0.15.2
 
 ### Patch Changes
