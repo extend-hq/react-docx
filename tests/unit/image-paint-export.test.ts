@@ -1,5 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
-import type { DocModel, ImagePaintRect, ImageRunNode, ParagraphNode, TableNode } from "@extend-ai/react-docx-doc-model";
+import {
+  buildDocModel,
+  type DocModel,
+  type ImagePaintRect,
+  type ImageRunNode,
+  type ParagraphNode,
+  type TableNode,
+} from "@extend-ai/react-docx-doc-model";
+import { createMinimalDocxPackage } from "@extend-ai/react-docx-ooxml-core";
+import { serializeDocModel } from "@extend-ai/react-docx-serializer";
 import { prepareImagePaintBoundsForExport } from "../../packages/react-viewer/src/image-paint-export";
 
 const png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
@@ -27,6 +36,41 @@ describe("image paint export preparation", () => {
     expect(output).not.toBe(source);
     expect(first(output).sourceXml).toBe("<w:pict/>");
     expect(first(output).contentNodes).toHaveLength(1);
+    expect(rasterize).not.toHaveBeenCalled();
+  });
+  it("round-trips an imported floating line with its original geometry", async () => {
+    const drawing = `<w:drawing><wp:anchor simplePos="0" relativeHeight="1" behindDoc="0" locked="0" layoutInCell="1" allowOverlap="1">
+      <wp:simplePos x="0" y="0"/>
+      <wp:positionH relativeFrom="column"><wp:posOffset>0</wp:posOffset></wp:positionH>
+      <wp:positionV relativeFrom="paragraph"><wp:posOffset>120000</wp:posOffset></wp:positionV>
+      <wp:extent cx="2169695" cy="0"/><wp:effectExtent l="0" t="0" r="15240" b="12700"/>
+      <wp:wrapNone/><wp:docPr id="1" name="Line"/>
+      <a:graphic><a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">
+        <wps:wsp><wps:cNvCnPr/><wps:spPr>
+          <a:xfrm><a:off x="0" y="0"/><a:ext cx="2169695" cy="0"/></a:xfrm>
+          <a:prstGeom prst="line"><a:avLst/></a:prstGeom>
+          <a:ln w="12700"><a:solidFill><a:srgbClr val="000000"/></a:solidFill></a:ln>
+        </wps:spPr><wps:bodyPr/></wps:wsp>
+      </a:graphicData></a:graphic>
+    </wp:anchor></w:drawing>`;
+    const pkg = createMinimalDocxPackage(`<w:document
+      xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+      xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+      xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+      xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">
+      <w:body><w:p><w:r>${drawing}</w:r></w:p></w:body></w:document>`);
+    const source = await buildDocModel(pkg);
+    const line = first(source);
+    expect(line.floating).toBeDefined();
+    expect(line.paintBounds).toBeDefined();
+
+    const prepared = await prepareImagePaintBoundsForExport(source, pkg);
+    const exported = await serializeDocModel(prepared, pkg);
+    expect(exported.parts.get("word/document.xml")?.content).toContain(drawing);
+
+    delete line.sourceXml;
+    const rasterize = vi.fn();
+    await expect(prepareImagePaintBoundsForExport(source, pkg, { rasterize })).rejects.toThrow("floating");
     expect(rasterize).not.toHaveBeenCalled();
   });
   it("rasterizes a clone and invalidates source replay while preserving live state", async () => {

@@ -200,11 +200,12 @@ export async function prepareImagePaintBoundsForExport(
   ): Promise<void> {
     if (image.paintBounds) {
       const bounds = resolveImagePaintBounds(image);
-      if (!bounds || image.floating || image.crop || image.cssFilter !== undefined
+      if (!bounds || image.crop || image.cssFilter !== undefined
         || image.cssOpacity !== undefined) {
         throw new Error("Image paint bounds are invalid or conflict with image effects.");
       }
       if (await preserve(image, basePackage, owner)) return;
+      if (image.floating) throw new Error("Image paint fallback is unsupported for floating images.");
       {
         if (unsupported) throw new Error(`Image paint fallback is unsupported in ${unsupported}.`);
         const png = await rasterize(image, bounds);
