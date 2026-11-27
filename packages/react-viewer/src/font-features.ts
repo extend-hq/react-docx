@@ -1,6 +1,7 @@
 import type { TextStyle } from "@extend-ai/react-docx-doc-model";
 
 export interface DocxTypographyOptions {
+  compatibilityMode?: number;
   enableOpenTypeFeatures?: boolean;
   adjustLineHeightInTable?: boolean | null;
 }

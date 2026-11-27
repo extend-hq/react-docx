@@ -8323,13 +8323,27 @@ function columnBreakRunIndexes(paragraph: ParagraphNode): Set<number> | undefine
   return ordinal === breaks.length && indexes.size ? indexes : undefined;
 }
 
-function renderColumnRunGroups(groups: React.ReactNode[][]): React.ReactNode {
+function columnSegmentLastLineAlignment(
+  paragraph: ParagraphNode,
+  compatibilityMode: number | undefined,
+  continuesInNextColumn: boolean
+): "justify" | "auto" {
+  return continuesInNextColumn && paragraph.style?.align === "justify" && (compatibilityMode ?? 0) < 15
+    ? "justify"
+    : "auto";
+}
+
+function renderColumnRunGroups(
+  groups: React.ReactNode[][],
+  paragraph: ParagraphNode,
+  compatibilityMode: number | undefined
+): React.ReactNode {
   return groups.map((runs, index) => (
     <span key={index} style={{
       display: "block",
       position: "relative",
       breakBefore: index > 0 ? "column" : undefined,
-      textAlignLast: "auto",
+      textAlignLast: columnSegmentLastLineAlignment(paragraph, compatibilityMode, index < groups.length - 1),
     }}>
       {runs}
       {index < groups.length - 1 && <span hidden>{"\n"}</span>}
@@ -23446,7 +23460,9 @@ function renderParagraphRuns(
     appendTrackedDeletionSegments(trailingTarget, `${keyPrefix}-tail`);
   }
 
-  if (columnGroups && columnGroups.length > 1) return renderColumnRunGroups(columnGroups);
+  if (columnGroups && columnGroups.length > 1) {
+    return renderColumnRunGroups(columnGroups, paragraph, typography?.compatibilityMode);
+  }
 
   if (useCenterRightTabLayout) {
     const zones = buildAnchoredTabZones(3);
@@ -58771,7 +58787,9 @@ export function DocxEditorViewer({
         );
       }
 
-      if (columnGroups && columnGroups.length > 1) return renderColumnRunGroups(columnGroups);
+      if (columnGroups && columnGroups.length > 1) {
+        return renderColumnRunGroups(columnGroups, paragraph, typography?.compatibilityMode);
+      }
       return paragraph.style?.spacing?.lineRule === "atLeast" &&
         Number.isFinite(paragraph.style.spacing.lineTwips) &&
         paragraph.children.every((child) => child.type === "text") ? (
@@ -66171,11 +66189,12 @@ export function DocxEditorViewer({
                                   return (
                                     <div
                                       key={`column-layout-node-${pageIndex}-${columnSegment.nodeIndex}-column-break-${segmentIndex}`}
-                                      style={
-                                        segmentIndex > 0
-                                          ? { breakBefore: "column" }
-                                          : undefined
-                                      }
+                                      style={{
+                                        breakBefore: segmentIndex > 0 ? "column" : undefined,
+                                        textAlignLast: columnSegmentLastLineAlignment(
+                                          segmentParagraph, typography?.compatibilityMode, !isLastSegment
+                                        ),
+                                      }}
                                     >
                                       {renderDocumentNode(
                                         segmentParagraph,

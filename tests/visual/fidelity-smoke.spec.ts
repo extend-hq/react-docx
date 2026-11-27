@@ -967,7 +967,7 @@ test("keeps row handles on rendered borders in a virtualized large table documen
   await expectAligned();
 });
 
-test("flows a justified paragraph and its floating drawing through an explicit column break", async ({ page }) => {
+function justifiedColumnsDocx(compatibilityMode: number): Buffer {
   const drawing = `<w:drawing><wp:anchor simplePos="0" relativeHeight="1" behindDoc="0" locked="0" layoutInCell="1" allowOverlap="1">
     <wp:simplePos x="0" y="0"/>
     <wp:positionH relativeFrom="column"><wp:posOffset>0</wp:posOffset></wp:positionH>
@@ -988,26 +988,45 @@ test("flows a justified paragraph and its floating drawing through an explicit c
     <w:r>${drawing}</w:r><w:r><w:t>Right column</w:t></w:r></w:p>
     <w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:left="1440" w:right="1440" w:top="1440" w:bottom="1440"/>
     <w:cols w:num="2" w:space="720"/></w:sectPr></w:body></w:document>`;
-  await page.goto("/");
-  await page.locator('input[type="file"][accept*=".doc"]').setInputFiles({
-    name: "columns.docx",
-    mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    buffer: Buffer.from(createZip([
-      { name: "[Content_Types].xml", content: CONTENT_TYPES_XML },
-      { name: "_rels/.rels", content: ROOT_RELATIONSHIPS_XML },
-      { name: "word/document.xml", content: xml },
-    ])),
+  const settings = `<w:settings xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+    <w:compat><w:compatSetting w:name="compatibilityMode" w:uri="http://schemas.microsoft.com/office/word" w:val="${compatibilityMode}"/></w:compat>
+    </w:settings>`;
+  return Buffer.from(createZip([
+    { name: "[Content_Types].xml", content: CONTENT_TYPES_XML.replace("</Types>", '<Override PartName="/word/settings.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"/></Types>') },
+    { name: "_rels/.rels", content: ROOT_RELATIONSHIPS_XML },
+    { name: "word/document.xml", content: xml },
+    { name: "word/_rels/document.xml.rels", content: '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings" Target="settings.xml"/></Relationships>' },
+    { name: "word/settings.xml", content: settings },
+  ]));
+}
+
+for (const compatibilityMode of [14, 15]) {
+  test(`flows a justified paragraph and its floating drawing through an explicit column break in mode ${compatibilityMode}`, async ({ page }) => {
+    await page.goto("/");
+    await page.locator('input[type="file"][accept*=".doc"]').setInputFiles({
+      name: "columns.docx",
+      mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      buffer: justifiedColumnsDocx(compatibilityMode),
+    });
+    const paragraph = page.locator("[data-docx-paragraph-host]").filter({ hasText: "Right column" }).first();
+    await expect(paragraph).toBeVisible();
+    const left = await paragraph.getByText("Left column", { exact: true }).boundingBox();
+    const right = await paragraph.getByText("Right column", { exact: true }).boundingBox();
+    const rule = await paragraph.locator("[data-docx-image-location]").first().boundingBox();
+    expect(right!.y).toBeCloseTo(left!.y, 0);
+    const firstColumnWidth = await paragraph.getByText("Left column", { exact: true })
+      .evaluate(el => el.parentElement!.getBoundingClientRect().width);
+    if (compatibilityMode === 14) {
+      expect(left!.width).toBeCloseTo(firstColumnWidth, 0);
+    } else {
+      expect(left!.width).toBeLessThan(firstColumnWidth / 2);
+    }
+    expect(right!.width).toBeLessThan(firstColumnWidth / 2);
+    expect(right!.x).toBeGreaterThan(left!.x + firstColumnWidth);
+    expect(rule!.x).toBeCloseTo(right!.x, 0);
+    expect(rule!.y).toBeGreaterThan(right!.y);
+    await page.mouse.click(right!.x + right!.width - 1, right!.y + right!.height / 2);
+    await page.keyboard.type(" edited");
+    await expect(paragraph.getByText("Right column edited", { exact: true })).toBeVisible();
   });
-  const paragraph = page.locator("[data-docx-paragraph-host]").filter({ hasText: "Right column" }).first();
-  await expect(paragraph).toBeVisible();
-  const left = await paragraph.getByText("Left column", { exact: true }).boundingBox();
-  const right = await paragraph.getByText("Right column", { exact: true }).boundingBox();
-  const rule = await paragraph.locator("[data-docx-image-location]").first().boundingBox();
-  expect(right!.y).toBeCloseTo(left!.y, 0);
-  expect(right!.x - left!.x).toBeGreaterThan(left!.width * 2);
-  expect(rule!.x).toBeCloseTo(right!.x, 0);
-  expect(rule!.y).toBeGreaterThan(right!.y);
-  await page.mouse.click(right!.x + right!.width - 1, right!.y + right!.height / 2);
-  await page.keyboard.type(" edited");
-  await expect(paragraph.getByText("Right column edited", { exact: true })).toBeVisible();
-});
+}
