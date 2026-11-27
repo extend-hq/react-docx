@@ -47,6 +47,21 @@ const DOCUMENT_WITH_SIMPLE_FIELD_XML =
   '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:fldSimple w:instr=" DATE \\@ &quot;MMMM d, yyyy&quot; "><w:r><w:t>July 9, 2026</w:t></w:r></w:fldSimple></w:p></w:body></w:document>';
 
 describe("round-trip", () => {
+  it("retains a column break through successive text edits and removes it when deleted", async () => {
+    const pkg = createMinimalDocxPackage(`<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+      <w:body><w:p><w:r><w:t>Left</w:t><w:br w:type="column"/><w:t>Right</w:t></w:r></w:p>
+      <w:sectPr><w:cols w:num="2"/></w:sectPr></w:body></w:document>`);
+    const source = await buildDocModel(pkg);
+    const leftEdited = updateParagraphText(source, 0, "Left & middle\nRight");
+    const bothEdited = updateParagraphText(leftEdited, 0, "Left & middle\n Right");
+    const saved = await serializeDocModel(bothEdited, pkg);
+    const xml = saved.parts.get("word/document.xml")!.content;
+    expect(xml).toContain('<w:t>Left &amp; middle</w:t><w:br w:type="column"/><w:t xml:space="preserve"> Right</w:t>');
+    const joined = updateParagraphText(bothEdited, 0, "Left & middle Right");
+    const withoutBreak = await serializeDocModel(joined, pkg);
+    expect(withoutBreak.parts.get("word/document.xml")!.content).not.toContain('w:type="column"');
+  });
+
   it("patches plain paragraph text without dropping unmodeled Word markup", async () => {
     const seed = createMinimalDocxPackage(
       DOCUMENT_WITH_UNMODELED_TEXT_MARKUP_XML

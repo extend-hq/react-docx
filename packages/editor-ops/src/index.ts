@@ -1,3 +1,4 @@
+import { decodeXmlText, directChildElements, escapeXmlText, scanBalancedXml, setXmlAttribute } from "./xml";
 import type {
   DocModel,
   FormFieldRunNode,
@@ -407,14 +408,69 @@ function paragraphTextEditIsFailClosed(
   );
 }
 
+function editTextWithinColumnRun(
+  source: ParagraphNode,
+  original: string,
+  text: string,
+  options?: UpdateTextOptions
+): ParagraphNode | undefined {
+  const xml = source.sourceXml;
+  if (!xml || !/<w:br\b[^>]*w:type=["']column["']/.test(xml)) return undefined;
+  const start = commonPrefixLength(original, text);
+  const suffix = commonSuffixLength(original, text, start);
+  const end = original.length - suffix;
+  const inserted = text.slice(start, text.length - suffix);
+  if (/[\r\n\t]/.test(inserted)) return undefined;
+
+  const scan = scanBalancedXml(xml);
+  const paragraph = scan.elements[0];
+  if (scan.malformed || paragraph?.tagName !== "w:p") return undefined;
+  let index = 0;
+  let offset = 0;
+  let result: ParagraphNode | undefined;
+  const runs = directChildElements(scan, paragraph).filter(child => child.tagName !== "w:pPr");
+  if (runs.some(child => child.tagName !== "w:r")) return undefined;
+  const runStarts = new Set(runs.map(run => run.start));
+  for (const element of scan.elements) {
+    if (element.parentStart === undefined || !runStarts.has(element.parentStart)) continue;
+    if (element.tagName === "w:rPr") continue;
+    const child = source.children[index++];
+    if (element.tagName === "w:drawing" && child?.type === "image") continue;
+    if (child?.type !== "text" || child.fieldInstruction || child.noteReference) return undefined;
+    if (element.tagName === "w:br" && child.text === "\n") {
+      offset++;
+      continue;
+    }
+    if (element.tagName !== "w:t" || element.selfClosing ||
+      decodeXmlText(xml.slice(element.openEnd, element.closeStart)) !== child.text) return undefined;
+    const next = offset + child.text.length;
+    if (!result && offset <= start && end <= next) {
+      if (options?.insertedStyle && !textStylesEqual(child.style, options.insertedStyle)) return undefined;
+      const value = child.text.slice(0, start - offset) + inserted + child.text.slice(end - offset);
+      const children = [...source.children];
+      children[index - 1] = { ...child, text: value };
+      const tag = /^\s|\s$/.test(value)
+        ? setXmlAttribute(element.openTag, "xml:space", "preserve") : element.openTag;
+      result = {
+        ...source,
+        children,
+        sourceXml: xml.slice(0, element.start) + tag + escapeXmlText(value) + xml.slice(element.closeStart),
+      };
+    }
+    offset = next;
+  }
+  return index === source.children.length && offset === original.length ? result : undefined;
+}
+
 function updatedParagraphNodeText(
   source: ParagraphNode,
   text: string,
   options?: UpdateTextOptions
 ): ParagraphNode {
-  if (paragraphEditableText(source) === text) {
-    return source;
-  }
+  const original = paragraphEditableText(source);
+  if (original === text) return source;
+  const columnEdit = editTextWithinColumnRun(source, original, text, options);
+  if (columnEdit) return columnEdit;
 
   const paragraph: ParagraphNode = {
     ...source,

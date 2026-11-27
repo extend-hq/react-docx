@@ -966,3 +966,48 @@ test("keeps row handles on rendered borders in a virtualized large table documen
   expect((await geometry()).rows[3]!.height).toBeLessThan(beforeDrag.rows[3]!.height + 28);
   await expectAligned();
 });
+
+test("flows a justified paragraph and its floating drawing through an explicit column break", async ({ page }) => {
+  const drawing = `<w:drawing><wp:anchor simplePos="0" relativeHeight="1" behindDoc="0" locked="0" layoutInCell="1" allowOverlap="1">
+    <wp:simplePos x="0" y="0"/>
+    <wp:positionH relativeFrom="column"><wp:posOffset>0</wp:posOffset></wp:positionH>
+    <wp:positionV relativeFrom="paragraph"><wp:posOffset>300000</wp:posOffset></wp:positionV>
+    <wp:extent cx="1200000" cy="0"/><wp:wrapNone/><wp:docPr id="1" name="Rule"/>
+    <a:graphic><a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">
+      <wps:wsp><wps:cNvCnPr/><wps:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="1200000" cy="0"/></a:xfrm>
+      <a:prstGeom prst="line"><a:avLst/></a:prstGeom><a:ln w="12700"><a:solidFill><a:srgbClr val="000000"/></a:solidFill></a:ln>
+      </wps:spPr><wps:bodyPr/></wps:wsp>
+    </a:graphicData></a:graphic>
+  </wp:anchor></w:drawing>`;
+  const xml = `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+    xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+    xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">
+    <w:body><w:p><w:pPr><w:jc w:val="both"/></w:pPr>
+    <w:r><w:t>Left column</w:t><w:br w:type="column"/></w:r>
+    <w:r>${drawing}</w:r><w:r><w:t>Right column</w:t></w:r></w:p>
+    <w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:left="1440" w:right="1440" w:top="1440" w:bottom="1440"/>
+    <w:cols w:num="2" w:space="720"/></w:sectPr></w:body></w:document>`;
+  await page.goto("/");
+  await page.locator('input[type="file"][accept*=".doc"]').setInputFiles({
+    name: "columns.docx",
+    mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    buffer: Buffer.from(createZip([
+      { name: "[Content_Types].xml", content: CONTENT_TYPES_XML },
+      { name: "_rels/.rels", content: ROOT_RELATIONSHIPS_XML },
+      { name: "word/document.xml", content: xml },
+    ])),
+  });
+  const paragraph = page.locator("[data-docx-paragraph-host]").filter({ hasText: "Right column" }).first();
+  await expect(paragraph).toBeVisible();
+  const left = await paragraph.getByText("Left column", { exact: true }).boundingBox();
+  const right = await paragraph.getByText("Right column", { exact: true }).boundingBox();
+  const rule = await paragraph.locator("[data-docx-image-location]").first().boundingBox();
+  expect(right!.y).toBeCloseTo(left!.y, 0);
+  expect(right!.x - left!.x).toBeGreaterThan(left!.width * 2);
+  expect(rule!.x).toBeCloseTo(right!.x, 0);
+  expect(rule!.y).toBeGreaterThan(right!.y);
+  await page.mouse.click(right!.x + right!.width - 1, right!.y + right!.height / 2);
+  await page.keyboard.type(" edited");
+  await expect(paragraph.getByText("Right column edited", { exact: true })).toBeVisible();
+});

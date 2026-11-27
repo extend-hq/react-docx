@@ -6132,13 +6132,6 @@ function paragraphContainsOnlyFixedFloatAnchors(paragraph: ParagraphNode): boole
     images.every(image => isPageOrMarginAnchoredWrappedFloatingImage(image) || shouldRenderAbsoluteFloatingImage(image));
 }
 
-function paragraphHasAbsoluteFloatingImage(paragraph: ParagraphNode): boolean {
-  return paragraph.children.some((child) => {
-    const image = paragraphChildImage(child);
-    return image ? shouldRenderAbsoluteFloatingImage(image) : false;
-  });
-}
-
 function collectHeadingTextColorByLevel(
   model: DocModel
 ): Partial<Record<number, string>> {
@@ -8313,6 +8306,35 @@ export function buildParagraphPretextLayoutSource(
     text: combinedText,
     runs,
   });
+}
+
+function columnBreakRunIndexes(paragraph: ParagraphNode): Set<number> | undefined {
+  if (!paragraphHasExplicitColumnBreak(paragraph)) return undefined;
+  const breaks = [...(paragraph.sourceXml ?? "").matchAll(/<w:(?:br|cr)\b[^>]*>/gi)];
+  const indexes = new Set<number>();
+  let ordinal = 0;
+  paragraph.children.forEach((child, index) => {
+    if (child.type !== "text") return;
+    if (child.text === "\n" && COLUMN_BREAK_XML_PATTERN.test(breaks[ordinal]?.[0] ?? "")) {
+      indexes.add(index);
+    }
+    ordinal += child.text.match(/\n/g)?.length ?? 0;
+  });
+  return ordinal === breaks.length && indexes.size ? indexes : undefined;
+}
+
+function renderColumnRunGroups(groups: React.ReactNode[][]): React.ReactNode {
+  return groups.map((runs, index) => (
+    <span key={index} style={{
+      display: "block",
+      position: "relative",
+      breakBefore: index > 0 ? "column" : undefined,
+      textAlignLast: "auto",
+    }}>
+      {runs}
+      {index < groups.length - 1 && <span hidden>{"\n"}</span>}
+    </span>
+  ));
 }
 
 function splitParagraphAtExplicitColumnBreaks(
@@ -21960,6 +21982,7 @@ function formFieldPreviewPresentation(
 }
 
 interface ParagraphRunRenderOptions {
+  columnBreakRuns?: ReadonlySet<number>;
   paragraphContentWidthPx?: number;
   preserveUneditedVmlComposite?: boolean;
   showTrackedChanges?: boolean;
@@ -22009,6 +22032,7 @@ function renderParagraphRuns(
     paragraph = paragraphWithDefaultTabStop(paragraph, options.defaultTabStopTwips);
   }
   const runs: React.ReactNode[] = [];
+  const columnGroups = options?.columnBreakRuns ? [runs] : undefined;
   const runsLeft: React.ReactNode[] = [];
   const runsRight: React.ReactNode[] = [];
   const safeNoteMarkerIndexes = {
@@ -23288,11 +23312,16 @@ function renderParagraphRuns(
   if (!useAnchoredTabLayout) {
     paragraph.children.forEach((child, childIndex) => {
       const key = `${keyPrefix}-run-${childIndex}`;
+      if (columnGroups && options?.columnBreakRuns?.has(childIndex)) {
+        columnGroups.push([]);
+        consumeTrackedVisibleChild(child);
+        return;
+      }
       const target = useTabLeaderLayout
         ? hasTabSplit
           ? runsRight
           : runsLeft
-        : runs;
+        : columnGroups?.at(-1) ?? runs;
       appendTrackedDeletionSegments(
         target,
         `${key}-before`,
@@ -23413,9 +23442,11 @@ function renderParagraphRuns(
       ? hasTabSplit
         ? runsRight
         : runsLeft
-      : runs;
+      : columnGroups?.at(-1) ?? runs;
     appendTrackedDeletionSegments(trailingTarget, `${keyPrefix}-tail`);
   }
+
+  if (columnGroups && columnGroups.length > 1) return renderColumnRunGroups(columnGroups);
 
   if (useCenterRightTabLayout) {
     const zones = buildAnchoredTabZones(3);
@@ -55770,6 +55801,7 @@ export function DocxEditorViewer({
       keyPrefix: string,
       location: ParagraphLocation,
       options?: {
+        columnBreakRuns?: ReadonlySet<number>;
         paragraphLineRange?: ParagraphLineRange;
         pageFlowTopPx?: number;
         pageFlowForeignExclusions?: PretextExclusionRect[];
@@ -55813,7 +55845,8 @@ export function DocxEditorViewer({
           : 0;
         return anchorTop >= sliceTop && anchorTop < sliceEnd;
       };
-      const nodes: React.ReactNode[] = [];
+      let nodes: React.ReactNode[] = [];
+      const columnGroups = options?.columnBreakRuns ? [nodes] : undefined;
       const checkboxChoiceRow = paragraphLooksLikeCheckboxChoiceRow(paragraph);
       const fallbackTabWidthPx = checkboxChoiceRow
         ? checkboxChoiceRowTabWidthPx(paragraph)
@@ -56139,6 +56172,7 @@ export function DocxEditorViewer({
             pageNumberFormat: hasUncachedPageFields ? parseSectionPageNumberFormat(
               paragraphPageInfo?.section.sectionPropertiesXml ?? editor.model.metadata.sectionPropertiesXml
             ) : undefined,
+            columnBreakRuns: options?.columnBreakRuns,
             preserveUneditedVmlComposite: isReadOnly,
             showTrackedChanges: trackedChangesEnabled,
             revisionDisplay,
@@ -57307,6 +57341,11 @@ export function DocxEditorViewer({
 
       previewParagraph.children.forEach((child, childIndex) => {
         const runKey = `${keyPrefix}-run-${childIndex}`;
+        if (columnGroups && options?.columnBreakRuns?.has(childIndex)) {
+          nodes = [];
+          columnGroups.push(nodes);
+          return;
+        }
         if (child.type === "image" && child.mathMl) {
           nodes.push(<span key={runKey} data-docx-source-id={child.blockId} role="math" aria-label={child.alt} contentEditable={false} style={{ display: "inline-block", verticalAlign: "middle" }}>{mathContent(child)}</span>);
           return;
@@ -58732,6 +58771,7 @@ export function DocxEditorViewer({
         );
       }
 
+      if (columnGroups && columnGroups.length > 1) return renderColumnRunGroups(columnGroups);
       return paragraph.style?.spacing?.lineRule === "atLeast" &&
         Number.isFinite(paragraph.style.spacing.lineTwips) &&
         paragraph.children.every((child) => child.type === "text") ? (
@@ -59758,6 +59798,7 @@ export function DocxEditorViewer({
   };
 
   interface RenderDocumentNodeOptions {
+    columnBreakRuns?: ReadonlySet<number>;
     letterheadFloatSide?: LetterheadFloatSide;
     oppositeLetterheadFloatSide?: LetterheadFloatSide;
     suppressLetterheadColumnLayout?: boolean;
@@ -60241,6 +60282,7 @@ export function DocxEditorViewer({
               nodeIndex,
             },
             {
+              columnBreakRuns: options?.columnBreakRuns,
               paragraphLineRange: hasPartialLineRange ? paragraphLineRange : undefined,
               pageFlowTopPx: paragraphPageFlowTopPx,
               pageFlowForeignExclusions: options?.pageFlowForeignExclusions,
@@ -66059,7 +66101,13 @@ export function DocxEditorViewer({
                           ) {
                             return false;
                           }
-                          return paragraphHasAbsoluteFloatingImage(segmentNode);
+                          return segmentNode.children.some((child) => {
+                            const image = paragraphChildImage(child);
+                            if (!image?.floating || !shouldRenderAbsoluteFloatingImage(image)) return false;
+                            const { horizontalRelativeTo, verticalRelativeTo } = image.floating;
+                            return (horizontalRelativeTo !== "column" && horizontalRelativeTo !== "character") ||
+                              (verticalRelativeTo !== "paragraph" && verticalRelativeTo !== "line");
+                          });
                         }
                       );
                       const explicitColumnWidthsPx =
@@ -66093,15 +66141,19 @@ export function DocxEditorViewer({
                           return null;
                         }
 
-                        const explicitColumnBreakParagraphSegments =
+                        const canSplitAtColumnBreaks =
                           columnNode.type === "paragraph" &&
                           !columnSegment.tableRowRange &&
                           !columnSegment.tableRowSlice &&
                           !columnSegment.paragraphLineRange &&
                           !explicitColumnWidthsPx &&
-                          (sectionColumns?.count ?? 0) > 1
-                            ? splitParagraphAtExplicitColumnBreaks(columnNode)
-                            : undefined;
+                          (sectionColumns?.count ?? 0) > 1;
+                        const columnBreakRuns = canSplitAtColumnBreaks && paragraphHasImage(columnNode)
+                          ? columnBreakRunIndexes(columnNode)
+                          : undefined;
+                        const explicitColumnBreakParagraphSegments = canSplitAtColumnBreaks && !columnBreakRuns
+                          ? splitParagraphAtExplicitColumnBreaks(columnNode)
+                          : undefined;
                         if (
                           explicitColumnBreakParagraphSegments &&
                           explicitColumnBreakParagraphSegments.length > 1
@@ -66168,6 +66220,7 @@ export function DocxEditorViewer({
                             overrideBeforeSpacingPx: columnSegment?.paragraphBeforeSpacingPx,
                             pageLayout,
                             pageIndex,
+                            columnBreakRuns,
                             contentWidthPxOverride: columnContentWidthPx,
                             suppressLikelyFullPageCoverImageKeys:
                               suppressedLikelyFullPageCoverImageKeys,
