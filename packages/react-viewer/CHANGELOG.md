@@ -1,5 +1,11 @@
 # @extend-ai/react-docx
 
+## 0.15.4
+
+### Patch Changes
+
+- Preserve anchored drawings when exporting edited documents. Keep floating drawings in their intended column across explicit column breaks and match Word’s compatibility-mode spacing for justified text before the break.
+
 ## 0.15.3
 
 - Update the bundled Rust parser to Duke Pages 0.6.5, with Duke Office Art 0.3.0, Office Charts 0.4.0, and ODF 0.4.0.
